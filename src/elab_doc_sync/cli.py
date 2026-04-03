@@ -165,7 +165,7 @@ def cmd_init(args):
         target["title"] = ""
 
     data = {
-        "elabftw": {"url": url, "verify_ssl": verify_ssl},
+        "elabftw": {"url": url, "api_key": "", "verify_ssl": verify_ssl},
         "targets": [target],
     }
 
@@ -178,15 +178,12 @@ def cmd_init(args):
 
     print(f"\n✅ 設定ファイルを作成しました: {config_path}")
     print(
-        "\n次に、eLabFTW の API キーを環境変数に設定してください:\n"
-        '  export ELABFTW_API_KEY="your_api_key"\n'
-        "\n永続化するには ~/.bashrc (Linux) に追記してください:\n"
-        '  echo \'export ELABFTW_API_KEY="your_api_key"\' >> ~/.bashrc\n'
-        "\nWindows (PowerShell) の場合:\n"
-        '  [System.Environment]::SetEnvironmentVariable("ELABFTW_API_KEY","your_api_key","User")\n'
+        "\n次に、eLabFTW の API キーを設定してください:\n"
+        f"  {config_path} の elabftw.api_key にキーを記入するか、\n"
+        "  環境変数 ELABFTW_API_KEY を設定してください（環境変数が優先されます）。\n"
         "\n準備ができたら以下で同期を開始できます:\n"
-        "  elab-doc-sync --dry-run  （確認）\n"
-        "  elab-doc-sync            （実行）"
+        "  uv run elab-doc-sync --dry-run  （確認）\n"
+        "  uv run elab-doc-sync            （実行）"
     )
 
 
