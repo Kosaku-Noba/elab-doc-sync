@@ -1,11 +1,13 @@
 """CLI entry point for elab-doc-sync."""
 
 import argparse
+import json
 import shutil
 import sys
 from pathlib import Path
 
 import yaml
+from markdownify import markdownify as html_to_md
 
 from .client import ELabFTWClient
 from .config import load_config
@@ -101,6 +103,108 @@ def cmd_status(args):
             print(f"  [{target.title}] {status}（{id_str}）")
 
 
+def cmd_pull(args):
+    """eLabFTW からエンティティを取得してローカルに Markdown として保存する。"""
+    config_path = Path(args.config)
+    project_root = config_path.parent or Path(".")
+    config = load_config(config_path)
+    client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
+
+    pulled = 0
+    for target in config.targets:
+        if args.target and target.title != args.target:
+            continue
+
+        docs_dir = project_root / target.docs_dir
+        docs_dir.mkdir(parents=True, exist_ok=True)
+        entity_label = "実験ノート" if target.entity == "experiments" else "アイテム"
+        get_fn = client.get_experiment if target.entity == "experiments" else client.get_item
+        list_fn = client.list_experiments if target.entity == "experiments" else client.list_items
+
+        if target.mode == "each":
+            syncer = EachDocsSyncer(client, target, project_root)
+            mapping = syncer._load_mapping()
+
+            if args.id:
+                # 指定 ID を pull
+                entities = {args.id}
+            elif mapping:
+                # 既存 mapping の ID を pull
+                entities = set(mapping.values())
+            else:
+                # mapping がない場合は全件取得
+                all_entities = list_fn()
+                entities = {e["id"] for e in all_entities}
+
+            for eid in entities:
+                try:
+                    data = get_fn(eid)
+                except Exception as e:
+                    print(f"  {entity_label} #{eid} の取得に失敗: {e}", file=sys.stderr)
+                    continue
+
+                title = data.get("title", f"untitled_{eid}")
+                body_html = data.get("body", "") or ""
+                body_md = html_to_md(body_html, heading_style="ATX").strip()
+
+                filename = f"{title}.md"
+                filepath = docs_dir / filename
+
+                if not args.force and filepath.exists():
+                    print(f"  [{title}] 既にローカルに存在（スキップ、--force で上書き）")
+                    continue
+
+                filepath.write_text(body_md + "\n", encoding="utf-8")
+
+                # mapping を更新
+                mapping[filename] = eid
+                syncer._save_mapping(mapping)
+                # hash を保存して次回 push 時に差分なしと判定されるようにする
+                syncer._save_hash(filename, body_md)
+
+                print(f"  [{title}] {entity_label} #{eid} → {filepath}")
+                pulled += 1
+
+        else:
+            # merge モード: 1 エンティティ → 1 ファイル
+            syncer = DocsSyncer(client, target, project_root)
+            eid = syncer.read_item_id()
+
+            if args.id:
+                eid = args.id
+
+            if eid is None:
+                print(f"  [{target.title}] 同期先の ID が不明です（--id で指定してください）")
+                continue
+
+            try:
+                data = get_fn(eid)
+            except Exception as e:
+                print(f"  [{target.title}] {entity_label} #{eid} の取得に失敗: {e}", file=sys.stderr)
+                continue
+
+            body_html = data.get("body", "") or ""
+            body_md = html_to_md(body_html, heading_style="ATX").strip()
+
+            filename = f"{target.title or 'pulled'}.md"
+            filepath = docs_dir / filename
+
+            if not args.force and filepath.exists():
+                print(f"  [{target.title}] 既にローカルに存在（スキップ、--force で上書き）")
+                continue
+
+            filepath.write_text(body_md + "\n", encoding="utf-8")
+
+            # ID とハッシュを保存
+            syncer.save_item_id(eid)
+            syncer.save_hash(body_md)
+
+            print(f"  [{target.title}] {entity_label} #{eid} → {filepath}")
+            pulled += 1
+
+    print(f"\n完了: {pulled} 件取得しました")
+
+
 def _template_dir():
     """パッケージ同梱の template ディレクトリを返す。"""
     return Path(__file__).resolve().parent / "template"
@@ -187,21 +291,44 @@ def cmd_init(args):
     )
 
 
+HELP_EPILOG = """\
+使用例:
+  elab-doc-sync                  ローカル → eLabFTW に同期（push）
+  elab-doc-sync pull             eLabFTW → ローカルに取得
+  elab-doc-sync pull --id 42     指定 ID のエンティティを取得
+  elab-doc-sync status           同期状態を確認
+  elab-doc-sync init             対話的に設定ファイルを作成
+  elab-doc-sync --dry-run        実行せずに同期内容を確認
+  elab-doc-sync --force          変更がなくても強制同期
+  elab-doc-sync -t "名前"        特定のターゲットだけ同期
+"""
+
+
 def main():
-    parser = argparse.ArgumentParser(prog="elab-doc-sync", description="Markdown ドキュメントを eLabFTW に同期")
-    parser.add_argument("--config", "-c", default=DEFAULT_CONFIG, help="設定ファイルのパス")
-    parser.add_argument("--target", "-t", default=None, help="同期するターゲット名")
-    parser.add_argument("--force", "-f", action="store_true", help="変更がなくても強制同期")
+    parser = argparse.ArgumentParser(
+        prog="elab-doc-sync",
+        description="Markdown ドキュメントを eLabFTW に同期する CLI ツール",
+        epilog=HELP_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--config", "-c", default=DEFAULT_CONFIG, help="設定ファイルのパス（デフォルト: .elab-sync.yaml）")
+    parser.add_argument("--target", "-t", default=None, help="同期するターゲット名（指定しない場合は全ターゲット）")
+    parser.add_argument("--force", "-f", action="store_true", help="変更がなくても強制同期 / pull 時は既存ファイルを上書き")
     parser.add_argument("--dry-run", "-n", action="store_true", help="実行せずに同期内容を確認")
 
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("status", help="同期状態を確認")
     sub.add_parser("init", help="対話的に設定ファイルを作成")
 
+    pull_parser = sub.add_parser("pull", help="eLabFTW からエンティティを取得してローカルに保存")
+    pull_parser.add_argument("--id", type=int, default=None, help="取得するエンティティの ID")
+
     args = parser.parse_args()
     if args.command == "status":
         cmd_status(args)
     elif args.command == "init":
         cmd_init(args)
+    elif args.command == "pull":
+        cmd_pull(args)
     else:
         cmd_sync(args)
