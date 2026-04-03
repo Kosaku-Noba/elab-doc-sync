@@ -57,6 +57,7 @@
 
 elabftw:
   url: "https://your-elabftw.example.com"
+  api_key: ""    # eLabFTW の API キーをここに記入（環境変数 ELABFTW_API_KEY が優先）
   verify_ssl: false
 
 targets:

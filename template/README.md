@@ -2,25 +2,37 @@
 
 `docs/` の Markdown を eLabFTW に自動同期します。
 
-## 使い方（初回のみ）
-
-### ① ツールをインストール
+## セットアップ（初回のみ）
 
 ```bash
+mkdir doc_sync
+cd doc_sync
+uv venv
 uv pip install git+https://github.com/Kosaku-Noba/elab-doc-sync.git
-```
-
-### ② 設定ファイルを作る（質問に答えるだけ）
-
-```bash
 uv run elab-doc-sync init
+
+=== elab-doc-sync セットアップ ===
+
+eLabFTW の URL: #elabFTWのURLを入力
+SSL 証明書を検証しますか？ [Y/n]: n
+ドキュメントディレクトリ [docs/]: 
+ファイルパターン [*.md]: 
+同期モード — merge: 全ファイルを1つに結合 / each: 1ファイル=1ノート [merge]: each
+送信先 — items: アイテム / experiments: 実験ノート [items]: items
+
+テンプレートファイルを展開中...
+  .gitignore を作成しました
+  README.md を作成しました
+  docs/ ディレクトリを作成しました
+
+✅ 設定ファイルを作成しました: .elab-sync.yaml
 ```
 
 ### ③ API キーを設定する
 
 eLabFTW → ユーザー設定 → API Keys でキーを作成し、以下のいずれかの方法で設定してください。
 
-**方法 A: `.elab-sync.yaml` に直接記載（最も簡単）**
+`.elab-sync.yaml` に直接記載（最も簡単）**
 
 `.elab-sync.yaml` の `elabftw` セクションに `api_key` を追加:
 
@@ -31,24 +43,6 @@ elabftw:
   verify_ssl: false
 ```
 
-> ⚠️ `.elab-sync.yaml` は `.gitignore` に含まれているため、キーが Git に公開されることはありません。
-
-**方法 B: 環境変数で設定（yaml より優先されます）**
-
-Linux / macOS:
-```bash
-export ELABFTW_API_KEY="ここにキーを貼る"
-```
-
-Windows (PowerShell) — 現在のセッションのみ:
-```powershell
-$env:ELABFTW_API_KEY = "ここにキーを貼る"
-```
-
-Windows (PowerShell) — 永続化（設定後 PowerShell を再起動）:
-```powershell
-[System.Environment]::SetEnvironmentVariable("ELABFTW_API_KEY", "ここにキーを貼る", "User")
-```
 
 ## 使い方（毎回）
 
