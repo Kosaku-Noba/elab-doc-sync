@@ -379,6 +379,25 @@ def cmd_init(args):
     )
 
 
+REPO_URL = "git+https://github.com/Kosaku-Noba/elab-doc-sync.git"
+
+
+def cmd_update(args):
+    """ツール自体を最新版に更新する。"""
+    import subprocess
+    print("elab-doc-sync を最新版に更新しています...")
+    # uv が使えるか試す → だめなら pip
+    for installer in (["uv", "pip", "install", "--upgrade"], ["pip", "install", "--upgrade"]):
+        try:
+            subprocess.run([*installer, REPO_URL], check=True)
+            print("\n✅ 更新が完了しました")
+            return
+        except FileNotFoundError:
+            continue
+    print("エラー: uv も pip も見つかりません", file=sys.stderr)
+    sys.exit(1)
+
+
 HELP_EPILOG = """\
 使用例:
   elab-doc-sync                  ローカル → eLabFTW に同期（push）
@@ -387,6 +406,7 @@ HELP_EPILOG = """\
   elab-doc-sync diff             ローカルと eLabFTW の差分を表示
   elab-doc-sync status           同期状態を確認
   elab-doc-sync init             対話的に設定ファイルを作成
+  elab-doc-sync update           ツールを最新版に更新
   elab-doc-sync --dry-run        実行せずに同期内容を確認
   elab-doc-sync --force          変更がなくても強制同期
   elab-doc-sync -t "名前"        特定のターゲットだけ同期
@@ -409,6 +429,7 @@ def main():
     sub.add_parser("status", help="同期状態を確認")
     sub.add_parser("init", help="対話的に設定ファイルを作成")
     sub.add_parser("diff", help="ローカルと eLabFTW の差分を表示")
+    sub.add_parser("update", help="ツールを最新版に更新")
 
     pull_parser = sub.add_parser("pull", help="eLabFTW からエンティティを取得してローカルに保存")
     pull_parser.add_argument("--id", type=int, default=None, help="取得するエンティティの ID")
@@ -422,5 +443,7 @@ def main():
         cmd_pull(args)
     elif args.command == "diff":
         cmd_diff(args)
+    elif args.command == "update":
+        cmd_update(args)
     else:
         cmd_sync(args)
