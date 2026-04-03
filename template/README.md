@@ -4,12 +4,28 @@
 
 ## セットアップ（初回のみ）
 
+### ① ツールをインストール
+
+**uv を使う場合（推奨）:**
+
 ```bash
-mkdir doc_sync
-cd doc_sync
-uv venv
 uv pip install git+https://github.com/Kosaku-Noba/elab-doc-sync.git
+```
+
+**pip を使う場合:**
+
+```bash
+pip install git+https://github.com/Kosaku-Noba/elab-doc-sync.git
+```
+
+### ② 設定ファイルを作る（質問に答えるだけ）
+
+```bash
+# uv の場合
 uv run elab-doc-sync init
+
+# pip の場合
+elab-doc-sync init
 
 === elab-doc-sync セットアップ ===
 
@@ -30,11 +46,7 @@ SSL 証明書を検証しますか？ [Y/n]: n
 
 ### ③ API キーを設定する
 
-eLabFTW → ユーザー設定 → API Keys でキーを作成し、以下のいずれかの方法で設定してください。
-
-`.elab-sync.yaml` に直接記載（最も簡単）**
-
-`.elab-sync.yaml` の `elabftw` セクションに `api_key` を追加:
+eLabFTW → ユーザー設定 → API Keys でキーを作成し、`.elab-sync.yaml` の `api_key` にキーを貼ってください:
 
 ```yaml
 elabftw:
@@ -43,29 +55,32 @@ elabftw:
   verify_ssl: false
 ```
 
-
 ## 使い方（毎回）
 
 ```bash
-# 同期
-uv run elab-doc-sync
+# uv の場合
+uv run elab-doc-sync            # 同期
+uv run elab-doc-sync --dry-run  # 同期前に確認
 
-# 同期前に確認したいとき
-uv run elab-doc-sync --dry-run
+# pip の場合
+elab-doc-sync                   # 同期
+elab-doc-sync --dry-run         # 同期前に確認
 ```
 
 ## その他のコマンド
 
 ```bash
-uv run elab-doc-sync status     # 同期状態を確認
-uv run elab-doc-sync --force    # 変更がなくても強制同期
-uv run elab-doc-sync -t "名前"  # 特定のターゲットだけ同期
+elab-doc-sync status     # 同期状態を確認
+elab-doc-sync --force    # 変更がなくても強制同期
+elab-doc-sync -t "名前"  # 特定のターゲットだけ同期
 ```
+
+> **Note:** uv でインストールした場合は各コマンドの前に `uv run` を付けてください。
 
 ## 困ったとき
 
 | メッセージ | やること |
 |-----------|---------|
 | `API キーが設定されていません` | 上の③をやる |
-| `設定ファイルが見つかりません` | `uv run elab-doc-sync init` を実行 |
+| `設定ファイルが見つかりません` | `elab-doc-sync init` を実行 |
 | `ファイルがありません` | `docs/` に `.md` ファイルを置く |
