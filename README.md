@@ -43,8 +43,7 @@ uv sync
 ## ユーザーへの配布方法
 
 1. `template/` の中身をユーザーのドキュメントリポジトリにコピー
-2. `template/sync.py` 内の `TOOL_REPO` を社内リポジトリの URL に変更
-3. ユーザーに `python sync.py init` を実行してもらう
+2. `python sync.py init` を実行
 
 ## CLI リファレンス
 
