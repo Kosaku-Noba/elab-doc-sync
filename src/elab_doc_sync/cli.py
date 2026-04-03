@@ -1,6 +1,7 @@
 """CLI entry point for elab-doc-sync."""
 
 import argparse
+import shutil
 import sys
 from pathlib import Path
 
@@ -100,6 +101,35 @@ def cmd_status(args):
             print(f"  [{target.title}] {status}（{id_str}）")
 
 
+def _template_dir():
+    """パッケージ同梱の template ディレクトリを返す。"""
+    return Path(__file__).resolve().parent / "template"
+
+
+def _copy_template_files(docs_dir):
+    """テンプレートファイル (.gitignore, README.md, docs/) をコピーする。"""
+    tmpl = _template_dir()
+    if not tmpl.is_dir():
+        return
+
+    for name in [".gitignore", "README.md"]:
+        src = tmpl / name
+        if not src.exists():
+            continue
+        dst = Path(name)
+        if dst.exists():
+            print(f"  {name} は既に存在するためスキップ")
+        else:
+            shutil.copy2(src, dst)
+            print(f"  {name} を作成しました")
+
+    docs_path = Path(docs_dir)
+    if not docs_path.exists():
+        docs_path.mkdir(parents=True)
+        (docs_path / ".gitkeep").touch()
+        print(f"  {docs_dir} ディレクトリを作成しました")
+
+
 def cmd_init(args):
     config_path = Path(args.config)
 
@@ -142,23 +172,9 @@ def cmd_init(args):
     with open(config_path, "w") as f:
         yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
 
-    # .gitignore の更新
-    gitignore = Path(".gitignore")
-    entries = [".tool/", ".elab-sync-ids/"]
-    existing = gitignore.read_text().splitlines() if gitignore.exists() else []
-    to_add = [e for e in entries if e not in existing]
-    if to_add:
-        with open(gitignore, "a") as f:
-            if existing and existing[-1] != "":
-                f.write("\n")
-            f.write("\n".join(to_add) + "\n")
-        print(f"\n.gitignore に追記しました: {', '.join(to_add)}")
-
-    # docs ディレクトリ作成
-    docs_path = Path(docs_dir)
-    if not docs_path.exists():
-        docs_path.mkdir(parents=True)
-        print(f"{docs_dir} ディレクトリを作成しました")
+    # テンプレートファイルのコピー
+    print("\nテンプレートファイルを展開中...")
+    _copy_template_files(docs_dir)
 
     print(f"\n✅ 設定ファイルを作成しました: {config_path}")
     print(
@@ -169,8 +185,8 @@ def cmd_init(args):
         "\nWindows (PowerShell) の場合:\n"
         '  [System.Environment]::SetEnvironmentVariable("ELABFTW_API_KEY","your_api_key","User")\n'
         "\n準備ができたら以下で同期を開始できます:\n"
-        "  python sync.py --dry-run  （確認）\n"
-        "  python sync.py            （実行）"
+        "  elab-doc-sync --dry-run  （確認）\n"
+        "  elab-doc-sync            （実行）"
     )
 
 

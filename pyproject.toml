@@ -19,3 +19,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/elab_doc_sync"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"template" = "elab_doc_sync/template"

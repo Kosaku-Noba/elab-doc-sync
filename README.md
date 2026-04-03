@@ -18,16 +18,21 @@ pip install git+https://github.com/Kosaku-Noba/elab-doc-sync.git
 
 ## ユーザーへの配布方法
 
-1. `template/` の中身をユーザーのドキュメントリポジトリにコピー
-2. ユーザーに `pip install` → `elab-doc-sync init` を実行してもらう
+1. ユーザーに `pip install` → `elab-doc-sync init` を実行してもらう
+2. `init` で設定ファイル・`.gitignore`・`README.md`・`docs/` が自動生成される
 
-ユーザー側のリポジトリ構成:
+```bash
+pip install git+https://github.com/Kosaku-Noba/elab-doc-sync.git
+elab-doc-sync init
+```
+
+実行後のリポジトリ構成:
 ```
 my-docs-repo/
 ├── docs/           ← Markdown を置く
 ├── .elab-sync.yaml ← init で自動生成
-├── .gitignore      ← template/ からコピー
-└── README.md       ← template/ からコピー
+├── .gitignore      ← init で自動生成
+└── README.md       ← init で自動生成
 ```
 
 ## 開発
