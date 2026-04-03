@@ -1,6 +1,7 @@
 """CLI entry point for elab-doc-sync."""
 
 import argparse
+import difflib
 import json
 import shutil
 import sys
@@ -205,6 +206,93 @@ def cmd_pull(args):
     print(f"\n完了: {pulled} 件取得しました")
 
 
+def _show_diff(title, local_text, remote_text):
+    """unified diff を表示。差分がなければ False を返す。"""
+    local_lines = local_text.splitlines(keepends=True)
+    remote_lines = remote_text.splitlines(keepends=True)
+    diff = list(difflib.unified_diff(
+        remote_lines, local_lines,
+        fromfile=f"eLabFTW: {title}",
+        tofile=f"ローカル: {title}",
+    ))
+    if not diff:
+        return False
+    sys.stdout.writelines(diff)
+    print()
+    return True
+
+
+def cmd_diff(args):
+    """ローカルと eLabFTW 上の内容の差分を表示する。"""
+    config_path = Path(args.config)
+    project_root = config_path.parent or Path(".")
+    config = load_config(config_path)
+    client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
+
+    has_diff = False
+    for target in config.targets:
+        if args.target and target.title != args.target:
+            continue
+
+        docs_dir = project_root / target.docs_dir
+        get_fn = client.get_experiment if target.entity == "experiments" else client.get_item
+
+        if target.mode == "each":
+            syncer = EachDocsSyncer(client, target, project_root)
+            mapping = syncer._load_mapping()
+
+            for filename, eid in mapping.items():
+                local_path = docs_dir / filename
+                if not local_path.exists():
+                    print(f"  [{filename}] ローカルにファイルなし（eLabFTW #{eid} のみ存在）\n")
+                    has_diff = True
+                    continue
+
+                try:
+                    data = get_fn(eid)
+                except Exception as e:
+                    print(f"  [{filename}] eLabFTW #{eid} の取得に失敗: {e}\n", file=sys.stderr)
+                    continue
+
+                local_md = local_path.read_text(encoding="utf-8").strip()
+                remote_md = html_to_md(data.get("body", "") or "", heading_style="ATX").strip()
+
+                if _show_diff(filename, local_md, remote_md):
+                    has_diff = True
+                else:
+                    print(f"  [{filename}] 差分なし")
+
+        else:
+            syncer = DocsSyncer(client, target, project_root)
+            eid = syncer.read_item_id()
+            if eid is None:
+                print(f"  [{target.title}] 同期先の ID が不明です")
+                continue
+
+            try:
+                data = get_fn(eid)
+            except Exception as e:
+                print(f"  [{target.title}] eLabFTW #{eid} の取得に失敗: {e}\n", file=sys.stderr)
+                continue
+
+            try:
+                local_md = syncer.collect_docs()
+            except FileNotFoundError as e:
+                print(f"  [{target.title}] {e}\n")
+                has_diff = True
+                continue
+
+            remote_md = html_to_md(data.get("body", "") or "", heading_style="ATX").strip()
+
+            if _show_diff(target.title, local_md, remote_md):
+                has_diff = True
+            else:
+                print(f"  [{target.title}] 差分なし")
+
+    if not has_diff:
+        print("\nすべて最新です")
+
+
 def _template_dir():
     """パッケージ同梱の template ディレクトリを返す。"""
     return Path(__file__).resolve().parent / "template"
@@ -296,6 +384,7 @@ HELP_EPILOG = """\
   elab-doc-sync                  ローカル → eLabFTW に同期（push）
   elab-doc-sync pull             eLabFTW → ローカルに取得
   elab-doc-sync pull --id 42     指定 ID のエンティティを取得
+  elab-doc-sync diff             ローカルと eLabFTW の差分を表示
   elab-doc-sync status           同期状態を確認
   elab-doc-sync init             対話的に設定ファイルを作成
   elab-doc-sync --dry-run        実行せずに同期内容を確認
@@ -319,6 +408,7 @@ def main():
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("status", help="同期状態を確認")
     sub.add_parser("init", help="対話的に設定ファイルを作成")
+    sub.add_parser("diff", help="ローカルと eLabFTW の差分を表示")
 
     pull_parser = sub.add_parser("pull", help="eLabFTW からエンティティを取得してローカルに保存")
     pull_parser.add_argument("--id", type=int, default=None, help="取得するエンティティの ID")
@@ -330,5 +420,7 @@ def main():
         cmd_init(args)
     elif args.command == "pull":
         cmd_pull(args)
+    elif args.command == "diff":
+        cmd_diff(args)
     else:
         cmd_sync(args)
