@@ -13,22 +13,57 @@ Markdown ドキュメントを eLabFTW に同期する CLI ツール。
 ## インストール
 
 ```bash
-pip install git+https://github.com/Kosaku-Noba/elab-doc-sync.git
+mkdir doc_sync
+cd doc_sync
+uv venv
+uv pip install git+https://github.com/Kosaku-Noba/elab-doc-sync.git
+uv run elab-doc-sync init
+
+=== elab-doc-sync セットアップ ===
+
+eLabFTW の URL: #elabFTWのURLを入力
+SSL 証明書を検証しますか？ [Y/n]: n
+ドキュメントディレクトリ [docs/]: 
+ファイルパターン [*.md]: 
+同期モード — merge: 全ファイルを1つに結合 / each: 1ファイル=1ノート [merge]: each
+送信先 — items: アイテム / experiments: 実験ノート [items]: items
+
+テンプレートファイルを展開中...
+  .gitignore を作成しました
+  README.md を作成しました
+  docs/ ディレクトリを作成しました
+
+✅ 設定ファイルを作成しました: .elab-sync.yaml
 ```
 
-## ユーザーへの配布方法
+次に、eLabFTW の API キーを環境変数に設定してください:
 
-1. ユーザーに `pip install` → `elab-doc-sync init` を実行してもらう
-2. `init` で設定ファイル・`.gitignore`・`README.md`・`docs/` が自動生成される
+Linux
 
 ```bash
-pip install git+https://github.com/Kosaku-Noba/elab-doc-sync.git
-elab-doc-sync init
+export ELABFTW_API_KEY="your_api_key"
+```
+
+永続化するには ~/.bashrc (Linux) に追記してください:
+```bash
+echo 'export ELABFTW_API_KEY="your_api_key"' >> ~/.bashrc
+```
+
+Windows (PowerShell) 
+
+```PowerShell
+[System.Environment]::SetEnvironmentVariable("ELABFTW_API_KEY","your_api_key","User")
+```
+
+準備ができたら以下で同期を開始できます:
+```bash
+elab-doc-sync --dry-run  （確認）
+elab-doc-sync            （実行）
 ```
 
 実行後のリポジトリ構成:
 ```
-my-docs-repo/
+./
 ├── docs/           ← Markdown を置く
 ├── .elab-sync.yaml ← init で自動生成
 ├── .gitignore      ← init で自動生成
