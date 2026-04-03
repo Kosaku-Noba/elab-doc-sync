@@ -395,7 +395,7 @@ HELP_EPILOG = """\
 
 def main():
     parser = argparse.ArgumentParser(
-        prog="elab-doc-sync",
+        prog=Path(sys.argv[0]).stem if Path(sys.argv[0]).stem in ("esync", "elab-doc-sync") else "elab-doc-sync",
         description="Markdown ドキュメントを eLabFTW に同期する CLI ツール",
         epilog=HELP_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
