@@ -1,6 +1,14 @@
-# ドキュメント同期
+# elab-doc-sync
 
-`docs/` の Markdown を eLabFTW に自動同期します。
+Markdown ドキュメントを eLabFTW に同期する CLI ツール。
+
+## 特徴
+
+- 差分検知（SHA-256）で変更があるファイルだけ更新
+- 画像の自動アップロード・URL 書き換え
+- 2つの同期モード: `merge`（全結合→1エンティティ）/ `each`（1ファイル=1エンティティ）
+- アイテム (`items`) と実験ノート (`experiments`) の両方に対応
+- Windows / Linux 両対応
 
 ## セットアップ（初回のみ）
 
@@ -31,8 +39,8 @@ elab-doc-sync init
 
 eLabFTW の URL: #elabFTWのURLを入力
 SSL 証明書を検証しますか？ [Y/n]: n
-ドキュメントディレクトリ [docs/]: 
-ファイルパターン [*.md]: 
+Markdown ファイルを置くディレクトリ（空欄で docs/）: 
+同期する Markdown のファイルパターン（空欄で *.md）: 
 同期モード — merge: 全ファイルを1つに結合 / each: 1ファイル=1ノート [merge]: each
 送信先 — items: アイテム / experiments: 実験ノート [items]: items
 
