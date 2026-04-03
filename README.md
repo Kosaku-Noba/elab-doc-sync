@@ -10,18 +10,23 @@ Markdown ドキュメントを eLabFTW に同期する CLI ツール。
 - アイテム (`items`) と実験ノート (`experiments`) の両方に対応
 - Windows / Linux 両対応
 
+## インストール
+
+```bash
+pip install git+https://github.com/Kosaku-Noba/elab-doc-sync.git
+```
+
 ## ユーザーへの配布方法
 
 1. `template/` の中身をユーザーのドキュメントリポジトリにコピー
-2. `python sync.py init` を実行
+2. ユーザーに `pip install` → `elab-doc-sync init` を実行してもらう
 
 ユーザー側のリポジトリ構成:
 ```
 my-docs-repo/
 ├── docs/           ← Markdown を置く
-├── sync.py         ← template/ からコピー（これだけ実行）
 ├── .elab-sync.yaml ← init で自動生成
-├── .gitignore      ← init で自動生成
+├── .gitignore      ← template/ からコピー
 └── README.md       ← template/ からコピー
 ```
 
