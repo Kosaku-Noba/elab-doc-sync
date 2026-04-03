@@ -1,14 +1,6 @@
-# elab-doc-sync
+# ドキュメント同期
 
-Markdown ドキュメントを eLabFTW に同期する CLI ツール。
-
-## 特徴
-
-- 差分検知（SHA-256）で変更があるファイルだけ更新
-- 画像の自動アップロード・URL 書き換え
-- 2つの同期モード: `merge`（全結合→1エンティティ）/ `each`（1ファイル=1エンティティ）
-- アイテム (`items`) と実験ノート (`experiments`) の両方に対応
-- Windows / Linux 両対応
+`docs/` の Markdown を eLabFTW に自動同期します。
 
 ## セットアップ（初回のみ）
 
@@ -63,32 +55,27 @@ elabftw:
   verify_ssl: false
 ```
 
-## 使い方（毎回）
+## コマンド一覧
 
-```bash
-# uv の場合
-uv run elab-doc-sync            # 同期
-uv run elab-doc-sync --dry-run  # 同期前に確認
+| コマンド | 説明 |
+|---------|------|
+| `esync` | ローカル → eLabFTW に同期（push） |
+| `esync pull` | eLabFTW → ローカルに取得 |
+| `esync pull --id 42` | 指定 ID のエンティティを取得 |
+| `esync diff` | ローカルと eLabFTW の差分を表示 |
+| `esync status` | 同期状態を確認 |
+| `esync update` | ツールを最新版に更新 |
+| `esync --dry-run` | 実行せずに同期内容を確認 |
+| `esync --force` | 変更がなくても強制同期 |
+| `esync -t "名前"` | 特定のターゲットだけ同期 |
 
-# pip の場合
-elab-doc-sync                   # 同期
-elab-doc-sync --dry-run         # 同期前に確認
-```
-
-## その他のコマンド
-
-```bash
-elab-doc-sync status     # 同期状態を確認
-elab-doc-sync --force    # 変更がなくても強制同期
-elab-doc-sync -t "名前"  # 特定のターゲットだけ同期
-```
-
-> **Note:** uv でインストールした場合は各コマンドの前に `uv run` を付けてください。
+> **Note:** `esync` は `elab-doc-sync` のエイリアスです。どちらでも同じように使えます。
+> uv でインストールした場合は `uv run esync` のように実行してください。
 
 ## 困ったとき
 
 | メッセージ | やること |
 |-----------|---------|
 | `API キーが設定されていません` | 上の③をやる |
-| `設定ファイルが見つかりません` | `elab-doc-sync init` を実行 |
+| `設定ファイルが見つかりません` | `esync init` を実行 |
 | `ファイルがありません` | `docs/` に `.md` ファイルを置く |

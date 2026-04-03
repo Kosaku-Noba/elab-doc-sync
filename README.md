@@ -1,6 +1,6 @@
 # elab-doc-sync
 
-Markdown ドキュメントを eLabFTW に同期する CLI ツール。
+Markdown ドキュメントを eLabFTW に同期する CLI ツール。`esync` エイリアスでも使えます。
 
 ## 特徴
 
@@ -8,16 +8,33 @@ Markdown ドキュメントを eLabFTW に同期する CLI ツール。
 - 画像の自動アップロード・URL 書き換え
 - 2つの同期モード: `merge`（全結合→1エンティティ）/ `each`（1ファイル=1エンティティ）
 - アイテム (`items`) と実験ノート (`experiments`) の両方に対応
+- eLabFTW からのプル（pull）・差分表示（diff）に対応
 - Windows / Linux 両対応
 
-## インストール
+## セットアップ（初回のみ）
+
+### ① ツールをインストール
+
+**uv を使う場合（推奨）:**
 
 ```bash
-mkdir doc_sync
-cd doc_sync
-uv venv
 uv pip install git+https://github.com/Kosaku-Noba/elab-doc-sync.git
+```
+
+**pip を使う場合:**
+
+```bash
+pip install git+https://github.com/Kosaku-Noba/elab-doc-sync.git
+```
+
+### ② 設定ファイルを作る（質問に答えるだけ）
+
+```bash
+# uv の場合
 uv run elab-doc-sync init
+
+# pip の場合
+elab-doc-sync init
 
 === elab-doc-sync セットアップ ===
 
@@ -36,70 +53,34 @@ Markdown ファイルを置くディレクトリ（空欄で docs/）:
 ✅ 設定ファイルを作成しました: .elab-sync.yaml
 ```
 
-次に、eLabFTW の API キーを設定してください。以下のいずれかの方法で設定できます:
+### ③ API キーを設定する
 
-### 方法 1: `.elab-sync.yaml` に直接記載（最も簡単）
-
-`.elab-sync.yaml` の `elabftw` セクションに `api_key` を追加:
+eLabFTW → ユーザー設定 → API Keys でキーを作成し、`.elab-sync.yaml` の `api_key` にキーを貼ってください:
 
 ```yaml
 elabftw:
   url: "https://your-elabftw.example.com"
-  api_key: "your_api_key"
+  api_key: "ここにキーを貼る"
   verify_ssl: false
 ```
 
-> **⚠️ 注意:** yaml に API キーを書く場合、`.gitignore` に `.elab-sync.yaml` が含まれていることを確認してください（`init` で自動追加済み）。
+## コマンド一覧
 
-### 方法 2: 環境変数で設定（yaml より優先されます）
+| コマンド | 説明 |
+|---------|------|
+| `esync` | ローカル → eLabFTW に同期（push） |
+| `esync pull` | eLabFTW → ローカルに取得 |
+| `esync pull --id 42` | 指定 ID のエンティティを取得 |
+| `esync diff` | ローカルと eLabFTW の差分を表示 |
+| `esync status` | 同期状態を確認 |
+| `esync init` | 対話的に設定ファイルを作成 |
+| `esync update` | ツールを最新版に更新 |
+| `esync --dry-run` | 実行せずに同期内容を確認 |
+| `esync --force` | 変更がなくても強制同期 |
+| `esync -t "名前"` | 特定のターゲットだけ同期 |
 
-#### Linux / macOS
-
-```bash
-export ELABFTW_API_KEY="your_api_key"
-```
-
-永続化するには `~/.bashrc` 等に追記してください:
-```bash
-echo 'export ELABFTW_API_KEY="your_api_key"' >> ~/.bashrc
-```
-
-#### Windows (PowerShell)
-
-現在のセッションのみ有効:
-```powershell
-$env:ELABFTW_API_KEY = "your_api_key"
-```
-
-永続化（ユーザー環境変数に保存、設定後 PowerShell を再起動）:
-```powershell
-[System.Environment]::SetEnvironmentVariable("ELABFTW_API_KEY", "your_api_key", "User")
-```
-
-準備ができたら以下で同期を開始できます:
-```bash
-uv run elab-doc-sync --dry-run  （確認）
-uv run elab-doc-sync            （実行）
-```
-
-> **Note:** `uv pip install` でインストールした場合、コマンドは `uv run elab-doc-sync` で実行してください。
-
-実行後のリポジトリ構成:
-```
-./
-├── docs/           ← Markdown を置く
-├── .elab-sync.yaml ← init で自動生成
-├── .gitignore      ← init で自動生成
-└── README.md       ← init で自動生成
-```
-
-## 開発
-
-```bash
-git clone https://github.com/Kosaku-Noba/elab-doc-sync.git
-cd elab-doc-sync
-uv sync
-```
+> **Note:** `esync` は `elab-doc-sync` のエイリアスです。どちらでも同じように使えます。
+> uv でインストールした場合は `uv run esync` のように実行してください。
 
 ## 同期モード
 
@@ -143,7 +124,7 @@ targets:
 | キー | 必須 | デフォルト | 説明 |
 |------|------|-----------|------|
 | `elabftw.url` | ✅ | — | eLabFTW の URL |
-| `elabftw.api_key` | — | — | API キー（環境変数 `ELABFTW_API_KEY` が優先） |
+| `elabftw.api_key` | ✅ | — | API キー（環境変数 `ELABFTW_API_KEY` が優先） |
 | `elabftw.verify_ssl` | — | `true` | SSL 検証 |
 | `targets[].title` | merge時✅ | — | エンティティのタイトル |
 | `targets[].docs_dir` | ✅ | — | Markdown のディレクトリ |
@@ -153,6 +134,22 @@ targets:
 | `targets[].id_file` | — | `.elab-sync-ids/default.id` | ID 保存先 |
 
 サンプル: [`.elab-sync.yaml.example`](.elab-sync.yaml.example)
+
+## 困ったとき
+
+| メッセージ | やること |
+|-----------|---------|
+| `API キーが設定されていません` | 上の③をやる |
+| `設定ファイルが見つかりません` | `esync init` を実行 |
+| `ファイルがありません` | `docs/` に `.md` ファイルを置く |
+
+## 開発
+
+```bash
+git clone https://github.com/Kosaku-Noba/elab-doc-sync.git
+cd elab-doc-sync
+uv sync
+```
 
 ## ライセンス
 
