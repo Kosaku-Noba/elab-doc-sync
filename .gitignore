@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.elab-sync-ids/
+.tool/
+docs/test.md
+.elab-sync.yaml

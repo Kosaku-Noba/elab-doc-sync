@@ -1,0 +1,65 @@
+# 基本設定（merge モード）: 全 md を結合して 1 つのアイテムに送る
+#
+# elabftw:
+#   url: "https://your-elabftw.example.com"
+#   verify_ssl: false
+#
+# targets:
+#   - title: "プロジェクトドキュメント"
+#     docs_dir: "docs/"
+#     pattern: "*.md"
+#     mode: merge            # 全ファイルを結合して 1 エンティティ（デフォルト）
+#     entity: items          # items or experiments（デフォルト: items）
+#
+# ─────────────────────────────────────────────
+# each モード: 1 ファイル = 1 実験ノート
+#
+# elabftw:
+#   url: "https://your-elabftw.example.com"
+#   verify_ssl: false
+#
+# targets:
+#   - docs_dir: "experiments/"
+#     pattern: "*.md"
+#     mode: each             # 1 ファイル = 1 エンティティ
+#     entity: experiments    # 実験ノートとして送信
+#
+# ─────────────────────────────────────────────
+# 複数ターゲットの組み合わせ例:
+#
+# elabftw:
+#   url: "https://your-elabftw.example.com"
+#   verify_ssl: false
+#
+# targets:
+#   # プロジェクト全体のドキュメントを 1 アイテムにまとめる
+#   - title: "プロジェクト概要"
+#     docs_dir: "docs/"
+#     pattern: "*.md"
+#     mode: merge
+#     entity: items
+#     id_file: ".elab-sync-ids/overview.id"
+#
+#   # 各実験記録を個別の実験ノートとして送る
+#   - docs_dir: "experiments/"
+#     pattern: "*.md"
+#     mode: each
+#     entity: experiments
+#     id_file: ".elab-sync-ids/experiments.id"
+#
+#   # 特定のファイルだけ送る
+#   - title: "HPO 実験まとめ"
+#     docs_dir: "docs/"
+#     pattern: "*HPO*.md"
+#     mode: merge
+#     entity: items
+#     id_file: ".elab-sync-ids/hpo.id"
+
+elabftw:
+  url: "https://your-elabftw.example.com"
+  verify_ssl: false
+
+targets:
+  - title: "My Documentation"
+    docs_dir: "docs/"
+    pattern: "*.md"
