@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 # ── 設定 ─────────────────────────────────────────────────
-TOOL_REPO = "https://github.com/Kosaku-Noba/elab-doc-sync.git"  # ← 社内リポジトリの URL に変更してください
+TOOL_REPO = "https://github.com/Kosaku-Noba/elab-doc-sync.git"
 TOOL_DIR = Path(".tool/elab-doc-sync")
 
 
