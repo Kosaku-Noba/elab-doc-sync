@@ -13,6 +13,7 @@ dependencies = [
 
 [project.scripts]
 elab-doc-sync = "elab_doc_sync.cli:main"
+esync = "elab_doc_sync.cli:main"
 
 [build-system]
 requires = ["hatchling"]
