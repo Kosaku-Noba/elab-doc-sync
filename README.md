@@ -1,6 +1,6 @@
 # elab-doc-sync
 
-Markdown ドキュメントを eLabFTW に同期する CLI ツール。
+Markdown ドキュメントを eLabFTW に同期する CLI ツール。`esync` エイリアスでも使えます。
 
 ## 特徴
 
@@ -8,6 +8,7 @@ Markdown ドキュメントを eLabFTW に同期する CLI ツール。
 - 画像の自動アップロード・URL 書き換え
 - 2つの同期モード: `merge`（全結合→1エンティティ）/ `each`（1ファイル=1エンティティ）
 - アイテム (`items`) と実験ノート (`experiments`) の両方に対応
+- eLabFTW からのプル（pull）・差分表示（diff）に対応
 - Windows / Linux 両対応
 
 ## セットアップ（初回のみ）
@@ -63,32 +64,93 @@ elabftw:
   verify_ssl: false
 ```
 
-## 使い方（毎回）
+## コマンド一覧
 
-```bash
-# uv の場合
-uv run elab-doc-sync            # 同期
-uv run elab-doc-sync --dry-run  # 同期前に確認
+| コマンド | 説明 |
+|---------|------|
+| `esync` | ローカル → eLabFTW に同期（push） |
+| `esync pull` | eLabFTW → ローカルに取得 |
+| `esync pull --id 42` | 指定 ID のエンティティを取得 |
+| `esync diff` | ローカルと eLabFTW の差分を表示 |
+| `esync status` | 同期状態を確認 |
+| `esync init` | 対話的に設定ファイルを作成 |
+| `esync update` | ツールを最新版に更新 |
+| `esync --dry-run` | 実行せずに同期内容を確認 |
+| `esync --force` | 変更がなくても強制同期 |
+| `esync -t "名前"` | 特定のターゲットだけ同期 |
 
-# pip の場合
-elab-doc-sync                   # 同期
-elab-doc-sync --dry-run         # 同期前に確認
+> **Note:** `esync` は `elab-doc-sync` のエイリアスです。どちらでも同じように使えます。
+> uv でインストールした場合は `uv run esync` のように実行してください。
+
+## 同期モード
+
+### merge（デフォルト）
+
+複数の md を結合して 1 エンティティに送信:
+
+```yaml
+targets:
+  - title: "プロジェクトドキュメント"
+    docs_dir: "docs/"
 ```
 
-## その他のコマンド
+### each
 
-```bash
-elab-doc-sync status     # 同期状態を確認
-elab-doc-sync --force    # 変更がなくても強制同期
-elab-doc-sync -t "名前"  # 特定のターゲットだけ同期
+各 md を個別のエンティティとして送信（タイトルはファイル名から自動取得）:
+
+```yaml
+targets:
+  - docs_dir: "experiments/"
+    mode: each
+    entity: experiments
 ```
 
-> **Note:** uv でインストールした場合は各コマンドの前に `uv run` を付けてください。
+### 組み合わせ
+
+```yaml
+targets:
+  - title: "プロジェクト概要"
+    docs_dir: "docs/"
+    mode: merge
+    entity: items
+
+  - docs_dir: "experiments/"
+    mode: each
+    entity: experiments
+```
+
+## 設定リファレンス
+
+| キー | 必須 | デフォルト | 説明 |
+|------|------|-----------|------|
+| `elabftw.url` | ✅ | — | eLabFTW の URL |
+| `elabftw.api_key` | ✅ | — | API キー（環境変数 `ELABFTW_API_KEY` が優先） |
+| `elabftw.verify_ssl` | — | `true` | SSL 検証 |
+| `targets[].title` | merge時✅ | — | エンティティのタイトル |
+| `targets[].docs_dir` | ✅ | — | Markdown のディレクトリ |
+| `targets[].pattern` | — | `*.md` | Glob パターン |
+| `targets[].mode` | — | `merge` | `merge` / `each` |
+| `targets[].entity` | — | `items` | `items` / `experiments` |
+| `targets[].id_file` | — | `.elab-sync-ids/default.id` | ID 保存先 |
+
+サンプル: [`.elab-sync.yaml.example`](.elab-sync.yaml.example)
 
 ## 困ったとき
 
 | メッセージ | やること |
 |-----------|---------|
 | `API キーが設定されていません` | 上の③をやる |
-| `設定ファイルが見つかりません` | `elab-doc-sync init` を実行 |
+| `設定ファイルが見つかりません` | `esync init` を実行 |
 | `ファイルがありません` | `docs/` に `.md` ファイルを置く |
+
+## 開発
+
+```bash
+git clone https://github.com/Kosaku-Noba/elab-doc-sync.git
+cd elab-doc-sync
+uv sync
+```
+
+## ライセンス
+
+MIT
