@@ -36,30 +36,53 @@ SSL 証明書を検証しますか？ [Y/n]: n
 ✅ 設定ファイルを作成しました: .elab-sync.yaml
 ```
 
-次に、eLabFTW の API キーを環境変数に設定してください:
+次に、eLabFTW の API キーを設定してください。以下のいずれかの方法で設定できます:
 
-Linux
+### 方法 1: `.elab-sync.yaml` に直接記載（最も簡単）
+
+`.elab-sync.yaml` の `elabftw` セクションに `api_key` を追加:
+
+```yaml
+elabftw:
+  url: "https://your-elabftw.example.com"
+  api_key: "your_api_key"
+  verify_ssl: false
+```
+
+> **⚠️ 注意:** yaml に API キーを書く場合、`.gitignore` に `.elab-sync.yaml` が含まれていることを確認してください（`init` で自動追加済み）。
+
+### 方法 2: 環境変数で設定（yaml より優先されます）
+
+#### Linux / macOS
 
 ```bash
 export ELABFTW_API_KEY="your_api_key"
 ```
 
-永続化するには ~/.bashrc (Linux) に追記してください:
+永続化するには `~/.bashrc` 等に追記してください:
 ```bash
 echo 'export ELABFTW_API_KEY="your_api_key"' >> ~/.bashrc
 ```
 
-Windows (PowerShell) 
+#### Windows (PowerShell)
 
-```PowerShell
-[System.Environment]::SetEnvironmentVariable("ELABFTW_API_KEY","your_api_key","User")
+現在のセッションのみ有効:
+```powershell
+$env:ELABFTW_API_KEY = "your_api_key"
+```
+
+永続化（ユーザー環境変数に保存、設定後 PowerShell を再起動）:
+```powershell
+[System.Environment]::SetEnvironmentVariable("ELABFTW_API_KEY", "your_api_key", "User")
 ```
 
 準備ができたら以下で同期を開始できます:
 ```bash
-elab-doc-sync --dry-run  （確認）
-elab-doc-sync            （実行）
+uv run elab-doc-sync --dry-run  （確認）
+uv run elab-doc-sync            （実行）
 ```
+
+> **Note:** `uv pip install` でインストールした場合、コマンドは `uv run elab-doc-sync` で実行してください。
 
 実行後のリポジトリ構成:
 ```
