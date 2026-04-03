@@ -23,8 +23,8 @@ uv run elab-doc-sync init
 
 eLabFTW の URL: #elabFTWのURLを入力
 SSL 証明書を検証しますか？ [Y/n]: n
-ドキュメントディレクトリ [docs/]: 
-ファイルパターン [*.md]: 
+Markdown ファイルを置くディレクトリ（空欄で docs/）: 
+同期する Markdown のファイルパターン（空欄で *.md）: 
 同期モード — merge: 全ファイルを1つに結合 / each: 1ファイル=1ノート [merge]: each
 送信先 — items: アイテム / experiments: 実験ノート [items]: items
 

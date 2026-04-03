@@ -148,8 +148,8 @@ def cmd_init(args):
     ssl_input = input("SSL 証明書を検証しますか？ [Y/n]: ").strip().lower()
     verify_ssl = ssl_input != "n"
 
-    docs_dir = input("ドキュメントディレクトリ [docs/]: ").strip() or "docs/"
-    pattern = input("ファイルパターン [*.md]: ").strip() or "*.md"
+    docs_dir = input("Markdown ファイルを置くディレクトリ（空欄で docs/）: ").strip() or "docs/"
+    pattern = input("同期する Markdown のファイルパターン（空欄で *.md）: ").strip() or "*.md"
 
     mode_input = input("同期モード — merge: 全ファイルを1つに結合 / each: 1ファイル=1ノート [merge]: ").strip().lower() or "merge"
     entity_input = input("送信先 — items: アイテム / experiments: 実験ノート [items]: ").strip().lower() or "items"
