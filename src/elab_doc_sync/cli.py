@@ -155,8 +155,6 @@ def cmd_pull(args):
                 filepath = docs_dir / filename
 
                 if not args.force and filepath.exists():
-                    # ファイルは上書きしないが、remote_hash は常に更新
-                    syncer._save_remote_hash(filename, body_html)
                     print(f"  [{title}] 既にローカルに存在（スキップ、--force で上書き）")
                     continue
 
@@ -202,8 +200,6 @@ def cmd_pull(args):
             filepath = docs_dir / filename
 
             if not args.force and filepath.exists():
-                # ファイルは上書きしないが、remote_hash は常に更新
-                syncer.save_remote_hash(body_html)
                 print(f"  [{target.title}] 既にローカルに存在（スキップ、--force で上書き）")
                 continue
 

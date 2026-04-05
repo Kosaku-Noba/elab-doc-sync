@@ -294,3 +294,33 @@ The new skipped-pull baseline update can suppress real conflict detection and ca
 ### Codex 所感
 
 >   When `pull --id` is used against an existing merge target, this stores the requested entity's `.remote_hash` and then `continue`s before `save_item_id(eid)` runs. Subsequent `sync()` calls still read the old `.id`, compare that entity's current body against the new hash, and raise a spurious conflict until the user forces another pull or sync. The `each` branch above has the same partial-state update with `mapping.json`.
+
+
+## 2026-04-05T21:28 [Kiro] Codex 指摘対応 (FR-11: スキップ時 remote_hash 更新を撤回)
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| cli.py cmd_pull() | スキップ時の remote_hash 更新を撤回。ファイルを実際に書き込んだ場合のみ remote_hash を保存する |
+
+### Kiro 所感
+
+- Codex の指摘通り、スキップ時に remote_hash だけ更新するとローカル編集がある場合に競合を見逃す。
+- remote_hash が存在しない場合（v0.1.x からのアップグレード）は `_check_remote_conflict()` が即 return するため、初回 push は常に成功する。2回目以降から競合検出が有効になる。これは許容範囲。
+- FR-11 / FR-13 完了。次は FR-12（Clone）。
+
+
+## 2026-04-05T21:30 [Codex] fix: スキップ時 remote_hash 更新を撤回（競合見逃し防止） に対するレビュー
+
+この変更で、既存ファイルをスキップする `pull` から `remote_hash` の再初期化経路がなくなり、競合検出の基準が欠けたままになるケースが復活しています。結果として後続の push で実際のリモート更新を見逃す、または false conflict を起こし得るため、このパッチは正しいとは言えません。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| スキップ pull でも安全な場合は `remote_hash` を再作成する | /home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py:202-204 | 高 |
+
+### Codex 所感
+
+>   この早期 `continue` により、既存ファイルを持つ checkout では `pull` が `*.remote_hash` を再生成できなくなります。特にローカルが未変更のケースでも同じなので、FR-11 導入前から使っている作業ツリーや、push 後に `リモートハッシュの保存に失敗` 警告が出た作業ツリーでは、`esync pull` を実行しても競合検出のベースラインが空/古いまま残ります。その後の `DocsSyncer._check_remote_conflict()` は `remote_hash_file.exists()==False` なら競合チェック自体を飛ばすため、次の push で新しいリモート更新を無警告で上書きしたり、逆に古いハッシュのまま false conflict を出したりします。`each` 側の同じスキップ経路も同様です。
