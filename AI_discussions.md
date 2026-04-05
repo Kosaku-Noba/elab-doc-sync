@@ -1445,3 +1445,21 @@ The new methodology document contains two operationally incorrect instructions: 
 ### Codex 所感
 
 > 所感として、このコミット単体では仕様・セキュリティ・運用面の新たなリスクは見当たりません。回帰防止の観点で、警告表示だけでなく外部クライアント呼び出し回数まで固定できており、意図の明確化に寄与しています。
+
+
+## 2026-04-06T08:10 [Codex] docs: template/README.md を初見ユーザー向けに全面改訂 — クイックスタート・全コマンド・ワークフロー に対するレビュー
+
+docs-only のコミットですが、初見ユーザー向け導線に実害のある誤誘導が含まれています。`UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` は `138 passed` でした。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| TLS 検証無効を初期設定例として提示している | 初見ユーザー向け README の設定例が `verify_ssl: false` になっており、API キーを使うツールとしては安全側の既定から外れています。実装側の `init` は `SSL 証明書を検証しますか？ [Y/n]` で既定値が検証有効なのに、README は無注釈で無効化例を示しているため、自己署名証明書でない利用者まで追従させるリスクがあります。少なくとも通常系の例は `true` にし、`false` は例外的な運用として明示した方がよいです。[template/README.md:35](/home/kosak/elab-doc-sync/template/README.md#L35) [template/README.md:39](/home/kosak/elab-doc-sync/template/README.md#L39) [src/elab_doc_sync/cli.py:372](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L372) [src/elab_doc_sync/cli.py:373](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L373) | 高 |
+| 概要図が存在しないコマンド `esync push` を案内している | README の中心導線で `esync push` を示していますが、CLI に `push` サブコマンドはありません。実際に `UV_CACHE_DIR=/tmp/uv-cache uv run esync push` は `invalid choice: 'push'` で失敗しました。クイックスタート用途の図示で存在しないコマンドを出すと、そのままコピペした初見ユーザーが最初の一歩で詰まります。[template/README.md:5](/home/kosak/elab-doc-sync/template/README.md#L5) [template/README.md:7](/home/kosak/elab-doc-sync/template/README.md#L7) [src/elab_doc_sync/cli.py:878](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L878) [src/elab_doc_sync/cli.py:933](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L933) | 中 |
+| 配布テンプレートが可変な `develop` ブランチへリンクしており、インストール版と参照ドキュメントが将来ずれる | `init` はパッケージ同梱のテンプレート README をユーザープロジェクトへコピーしますが、その README は `blob/develop/...` を参照しています。これだと、古い CLI を使っているユーザーが後日リンクを開いた際に、手元のバージョンと一致しない最新/開発中のドキュメントを読むことになり、障害時の再現性とサポート性が落ちます。タグ版やリリース版に固定する設計の方が安全です。[template/README.md:98](/home/kosak/elab-doc-sync/template/README.md#L98) [template/README.md:99](/home/kosak/elab-doc-sync/template/README.md#L99) [src/elab_doc_sync/cli.py:333](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L333) [src/elab_doc_sync/cli.py:347](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L347) | 中 |
+| コミットメッセージの「全コマンド」と README 実体が一致していない | 実際の README は `よく使うコマンド` に絞られており、実装に存在する `log` `clone` `link` `entity-status` などは載っていません。CLI リファレンスへのリンクはあるものの、このコミット単体から「template/README.md に全コマンドが載った」とは判断できません。後続の AI/人間がコミットメッセージを仕様説明として読むと誤解しやすいです。[template/README.md:57](/home/kosak/elab-doc-sync/template/README.md#L57) [src/elab_doc_sync/cli.py:889](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L889) [src/elab_doc_sync/cli.py:892](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L892) [src/elab_doc_sync/cli.py:916](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L916) [src/elab_doc_sync/cli.py:929](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L929) | 低 |
+
+### Codex 所感
+
+> `init` で配布されるテンプレート README は、そのまま下流プロジェクトの運用手順になるため、docs-only 変更でも回帰影響は小さくありません。今回は文量や見やすさより、実行可能性と安全側の既定値に揃えることを優先して詰めるのがよいです。
