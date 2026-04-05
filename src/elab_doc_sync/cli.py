@@ -26,6 +26,11 @@ def _normalize_entity(value: str) -> str:
     return _ENTITY_ALIASES.get(value, value)
 
 
+def _entity_label(entity_type: str) -> str:
+    """API の entity 種別をユーザー向け表示名に変換する。"""
+    return "実験ノート" if entity_type == "experiments" else "リソース"
+
+
 def _make_syncer(client, target, project_root):
     if target.mode == "each":
         return EachDocsSyncer(client, target, project_root)
@@ -584,7 +589,7 @@ def cmd_tag(args):
             continue
 
         for eid, etype in ids:
-            label = f"{etype} #{eid}"
+            label = f"{_entity_label(etype)} #{eid}"
             if args.tag_action == "list":
                 tags = client.get_tags(etype, eid)
                 tag_names = [t.get("tag", "?") for t in tags]
@@ -615,7 +620,7 @@ def cmd_metadata(args):
             continue
 
         for eid, etype in ids:
-            label = f"{etype} #{eid}"
+            label = f"{_entity_label(etype)} #{eid}"
             if args.meta_action == "get":
                 meta = client.get_metadata(etype, eid)
                 print(f"  {label}:")
@@ -759,12 +764,12 @@ def cmd_link(args):
         syncer._save_mapping(mapping)
         if body_html:
             syncer._save_remote_hash(args.file, body_html)
-        print(f"  ✅ {args.file} → {target.entity} #{args.entity_id} を紐付けました")
+        print(f"  ✅ {args.file} → {_entity_label(target.entity)} #{args.entity_id} を紐付けました")
     else:
         syncer.save_item_id(args.entity_id)
         if body_html:
             syncer.save_remote_hash(body_html)
-        print(f"  ✅ [{target.title}] → {target.entity} #{args.entity_id} を紐付けました")
+        print(f"  ✅ [{target.title}] → {_entity_label(target.entity)} #{args.entity_id} を紐付けました")
 
 
 def cmd_verify(args):
