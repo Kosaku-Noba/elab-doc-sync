@@ -634,11 +634,12 @@ def test_cmd_list_empty(MockClient, tmp_path, capsys):
 def test_cmd_link_merge(MockClient, tmp_path, capsys):
     cfg, docs = _write_config(tmp_path)
     (docs / "a.md").write_text("# A\n", encoding="utf-8")
+    client = MockClient.return_value
+    client.get_entity.return_value = {"id": 99, "body": "<p>hello</p>"}
     args = Namespace(config=str(cfg), target=None, force=False, entity_id=99, file=None)
     cmd_link(args)
     out = capsys.readouterr().out
     assert "99" in out
-    # ID ファイルが作成されている
     id_file = tmp_path / ".elab-sync-ids" / "default.id"
     assert id_file.exists()
     assert id_file.read_text().strip() == "99"
@@ -649,11 +650,12 @@ def test_cmd_link_merge(MockClient, tmp_path, capsys):
 def test_cmd_link_each(MockClient, tmp_path, capsys):
     cfg, docs = _write_config(tmp_path, mode="each")
     (docs / "a.md").write_text("# A\n", encoding="utf-8")
+    client = MockClient.return_value
+    client.get_entity.return_value = {"id": 55, "body": "<p>test</p>"}
     args = Namespace(config=str(cfg), target=None, force=False, entity_id=55, file="a.md")
     cmd_link(args)
     out = capsys.readouterr().out
     assert "55" in out
-    # mapping.json が作成されている
     mapping_file = tmp_path / ".elab-sync-ids" / "mapping.json"
     assert mapping_file.exists()
     mapping = json.loads(mapping_file.read_text())

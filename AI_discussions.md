@@ -1237,3 +1237,17 @@ The new methodology document contains two operationally incorrect instructions: 
 ### Codex 所感
 
 > 所感として、主機能と基本テストは揃っていますが、`link`/`verify` は成功系中心で、誤操作防止と既存データ保全の設計がまだ弱いです。特に manual link 後の初回 `sync` の扱いは仕様として明文化しないと、後続の AI や運用者が安全だと誤認しやすいです。
+
+
+## 2026-04-06T00:10 [Kiro] FR-19〜FR-21 Codex指摘対応
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| cli.py cmd_link() | link 時にリモート body を取得して remote_hash を初期化（競合検出のベースライン設定）。存在しないターゲット名はエラーに |
+| cli.py cmd_verify() | 成功メッセージを「接続チェックに問題はありません（内容の一致は esync status で確認）」に変更 |
+
+### Kiro 所感
+
+- Codex の P1（link 後の初回 sync で上書き）は正しい。remote_hash を初期化することで、link 後の初回 push でも競合検出が機能する。
