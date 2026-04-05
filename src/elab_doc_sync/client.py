@@ -160,6 +160,11 @@ class ELabFTWClient:
         except (json.JSONDecodeError, TypeError):
             return {}
 
+    def get_metadata_raw(self, entity_type: str, entity_id: int) -> str | None:
+        """メタデータの生の値を返す（パースせず）。"""
+        entity = self._req("GET", f"/api/v2/{entity_type}/{entity_id}").json()
+        return entity.get("metadata")
+
     def update_metadata(self, entity_type: str, entity_id: int, metadata: dict[str, Any]) -> None:
         self._req("PATCH", f"/api/v2/{entity_type}/{entity_id}",
                   json={"metadata": json.dumps(metadata)})
