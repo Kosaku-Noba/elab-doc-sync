@@ -537,6 +537,7 @@ HELP_EPILOG = """\
   elab-doc-sync metadata set k=v メタデータを設定
   elab-doc-sync entity-status show ステータスを表示
   elab-doc-sync entity-status set 1 ステータスを変更
+  elab-doc-sync whoami           現在のユーザー情報を表示
   elab-doc-sync init             対話的に設定ファイルを作成
   elab-doc-sync update           ツールを最新版に更新
 """
@@ -617,6 +618,21 @@ def cmd_metadata(args):
                 existing.update(pairs)
                 client.update_metadata(etype, eid, existing)
                 print(f"  {label}: メタデータを更新しました")
+
+
+def cmd_whoami(args):
+    """現在の API キーに紐づくユーザー情報を表示する。"""
+    config_path = Path(args.config)
+    config = load_config(config_path)
+    client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
+    user = client._req("GET", "/api/v2/users/me").json()
+    print(f"  ユーザー: {user.get('firstname', '')} {user.get('lastname', '')}")
+    print(f"  メール: {user.get('email', '不明')}")
+    print(f"  ユーザーID: {user.get('userid', '不明')}")
+    teams = user.get("teams", [])
+    if teams:
+        team_names = [t.get("name", "?") for t in teams]
+        print(f"  チーム: {', '.join(team_names)}")
 
 
 def cmd_entity_status(args):
@@ -709,6 +725,7 @@ def main():
     meta_set_p.add_argument("--id", type=int, default=None, help="エンティティ ID")
 
     estatus_parser = sub.add_parser("entity-status", help="エンティティのステータスを管理")
+    sub.add_parser("whoami", help="現在のユーザー情報を表示")
     estatus_sub = estatus_parser.add_subparsers(dest="status_action")
     estatus_sub.add_parser("show", help="現在のステータスを表示")
     estatus_set_p = estatus_sub.add_parser("set", help="ステータスを変更")
@@ -736,5 +753,7 @@ def main():
         cmd_metadata(args)
     elif args.command == "entity-status":
         cmd_entity_status(args)
+    elif args.command == "whoami":
+        cmd_whoami(args)
     else:
         cmd_sync(args)
