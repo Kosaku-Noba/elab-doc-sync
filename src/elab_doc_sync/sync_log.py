@@ -68,6 +68,6 @@ def format_log(entries: list[dict]) -> str:
         entity = e.get("entity", "?")
         files = e.get("files", [])
         file_str = f" ({len(files)}件)" if files else ""
-        entity_label = "実験ノート" if entity == "experiments" else "アイテム"
+        entity_label = "実験ノート" if entity == "experiments" else "リソース"
         lines.append(f"  {ts}  {action:<5} [{target}] {entity_label} #{eid}{file_str}")
     return "\n".join(lines)

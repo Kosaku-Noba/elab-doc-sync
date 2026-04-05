@@ -17,6 +17,14 @@ from . import sync_log
 
 DEFAULT_CONFIG = ".elab-sync.yaml"
 
+# eLabFTW の Web UI では items を「リソース」と表示するため、CLI でも resources を受け付ける
+_ENTITY_ALIASES = {"resources": "items", "resource": "items"}
+
+
+def _normalize_entity(value: str) -> str:
+    """CLI 入力の entity 値を API 用に正規化する。"""
+    return _ENTITY_ALIASES.get(value, value)
+
 
 def _make_syncer(client, target, project_root):
     if target.mode == "each":
@@ -37,7 +45,7 @@ def cmd_sync(args):
         syncer = _make_syncer(client, target, project_root)
 
         if args.dry_run:
-            entity_label = "実験ノート" if target.entity == "experiments" else "アイテム"
+            entity_label = "実験ノート" if target.entity == "experiments" else "リソース"
             if isinstance(syncer, EachDocsSyncer):
                 results = syncer.dry_run()
                 if not results:
@@ -83,7 +91,7 @@ def cmd_status(args):
     for target in config.targets:
         client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
         syncer = _make_syncer(client, target, project_root)
-        entity_label = "実験ノート" if target.entity == "experiments" else "アイテム"
+        entity_label = "実験ノート" if target.entity == "experiments" else "リソース"
 
         if isinstance(syncer, EachDocsSyncer):
             results = syncer.dry_run()
@@ -121,12 +129,12 @@ def cmd_pull(args):
 
         docs_dir = project_root / target.docs_dir
         docs_dir.mkdir(parents=True, exist_ok=True)
-        entity_label = "実験ノート" if target.entity == "experiments" else "アイテム"
+        entity_label = "実験ノート" if target.entity == "experiments" else "リソース"
         # --entity が指定されていれば上書き
-        entity_type = getattr(args, "entity", None) or target.entity
+        entity_type = _normalize_entity(getattr(args, "entity", None) or target.entity)
         get_fn = client.get_experiment if entity_type == "experiments" else client.get_item
         list_fn = client.list_experiments if entity_type == "experiments" else client.list_items
-        entity_label = "実験ノート" if entity_type == "experiments" else "アイテム"
+        entity_label = "実験ノート" if entity_type == "experiments" else "リソース"
 
         if target.mode == "each":
             syncer = EachDocsSyncer(client, target, project_root)
@@ -362,14 +370,15 @@ def cmd_init(args):
     pattern = input("同期する Markdown のファイルパターン（空欄で *.md）: ").strip() or "*.md"
 
     mode_input = input("同期モード — merge: 全ファイルを1つに結合 / each: 1ファイル=1ノート [merge]: ").strip().lower() or "merge"
-    entity_input = input("送信先 — items: アイテム / experiments: 実験ノート [items]: ").strip().lower() or "items"
+    entity_input = input("送信先 — items(resources): リソース / experiments: 実験ノート [items]: ").strip().lower() or "items"
+    entity_input = _normalize_entity(entity_input)
 
     target = {"docs_dir": docs_dir, "pattern": pattern, "mode": mode_input, "entity": entity_input}
 
     if mode_input == "merge":
         title = ""
         while not title:
-            title = input("eLabFTW アイテムのタイトル: ").strip()
+            title = input("eLabFTW リソースのタイトル: ").strip()
         target["title"] = title
     else:
         target["title"] = ""
@@ -447,7 +456,7 @@ def cmd_clone(args):
     )
     syncer = EachDocsSyncer(client, target, project_dir)
     mapping = {}
-    entity_label = "実験ノート" if entity == "experiments" else "アイテム"
+    entity_label = "実験ノート" if entity == "experiments" else "リソース"
     cloned = 0
 
     for eid in ids:
@@ -693,17 +702,17 @@ def cmd_new(args):
 
 
 def cmd_list(args):
-    """リモートのアイテム/実験ノート一覧を表示する。"""
+    """リモートのリソース/実験ノート一覧を表示する。"""
     config_path = Path(args.config)
     config = load_config(config_path)
     client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
-    entity_type = args.entity_type or "items"
+    entity_type = _normalize_entity(args.entity_type or "items")
     limit = args.limit or 20
     if entity_type == "items":
         entities = client._req("GET", "/api/v2/items", params={"limit": limit}).json()
     else:
         entities = client._req("GET", "/api/v2/experiments", params={"limit": limit}).json()
-    label = "実験ノート" if entity_type == "experiments" else "アイテム"
+    label = "実験ノート" if entity_type == "experiments" else "リソース"
     if not entities:
         print(f"  {label}がありません")
         return
@@ -868,8 +877,8 @@ def main():
 
     pull_parser = sub.add_parser("pull", help="eLabFTW からエンティティを取得してローカルに保存")
     pull_parser.add_argument("--id", type=int, default=None, help="取得するエンティティの ID")
-    pull_parser.add_argument("--entity", default=None, choices=["items", "experiments"],
-                             help="エンティティ種別（--id 使用時に設定ファイルの entity を上書き）")
+    pull_parser.add_argument("--entity", default=None, choices=["items", "experiments", "resources"],
+                             help="エンティティ種別（resources は items のエイリアス）")
 
     log_parser = sub.add_parser("log", help="同期ログを表示")
     log_parser.add_argument("--limit", "-l", type=int, default=20, help="表示件数（デフォルト: 20）")
@@ -878,7 +887,7 @@ def main():
     clone_parser.add_argument("--url", required=True, help="eLabFTW の URL")
     clone_parser.add_argument("--id", type=int, action="append", required=True, help="取得するエンティティ ID（複数指定可）")
     clone_parser.add_argument("--dir", default=None, help="プロジェクトディレクトリ名")
-    clone_parser.add_argument("--entity", default="items", choices=["items", "experiments"], help="エンティティ種別")
+    clone_parser.add_argument("--entity", default="items", choices=["items", "experiments", "resources"], help="エンティティ種別")
     clone_parser.add_argument("--no-verify", action="store_true", help="SSL 検証を無効化")
 
     tag_parser = sub.add_parser("tag", help="タグを管理")
@@ -907,8 +916,8 @@ def main():
     new_parser.add_argument("--title", default=None, help="ファイルのタイトル（省略時はテンプレート名）")
     new_parser.add_argument("--output", "-o", default=None, help="出力ファイルパス")
 
-    list_parser = sub.add_parser("list", help="リモートのアイテム/実験ノート一覧を表示")
-    list_parser.add_argument("--entity", dest="entity_type", default="items", choices=["items", "experiments"], help="エンティティ種別")
+    list_parser = sub.add_parser("list", help="リモートのリソース/実験ノート一覧を表示")
+    list_parser.add_argument("--entity", dest="entity_type", default="items", choices=["items", "experiments", "resources"], help="エンティティ種別")
     list_parser.add_argument("--limit", type=int, default=20, help="表示件数（デフォルト: 20）")
 
     link_parser = sub.add_parser("link", help="既存リモートエンティティとローカルを紐付け")

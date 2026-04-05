@@ -18,7 +18,7 @@
 | `esync metadata set k=v` | メタデータを設定 |
 | `esync entity-status show` | エンティティのステータスを表示 |
 | `esync entity-status set <ID>` | ステータスを変更 |
-| `esync list` | リモートのアイテム一覧を表示 |
+| `esync list` | リモートのリソース一覧を表示 |
 | `esync list --entity experiments` | 実験ノート一覧を表示 |
 | `esync link <ID>` | 既存リモートエンティティとローカルを紐付け |
 | `esync verify` | ローカルとリモートの整合性チェック |
@@ -92,8 +92,8 @@ esync status
 
 出力例:
 ```
-  [My Docs] 変更あり（アイテム #42）
-  [API Ref] 最新（アイテム #43）
+  [My Docs] 変更あり（リソース #42）
+  [API Ref] 最新（リソース #43）
 ```
 
 ### `esync init`
@@ -170,10 +170,10 @@ esync entity-status set 3 --id 42     # 特定エンティティのみ変更
 
 ### `esync list`
 
-リモートのアイテム/実験ノート一覧を表示する。
+リモートのリソース/実験ノート一覧を表示する。
 
 ```bash
-esync list                            # アイテム一覧（デフォルト 20 件）
+esync list                            # リソース一覧（デフォルト 20 件）
 esync list --entity experiments       # 実験ノート一覧
 esync list --limit 50                 # 件数指定
 ```

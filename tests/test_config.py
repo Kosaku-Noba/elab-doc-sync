@@ -115,3 +115,16 @@ def test_config_tags_default(tmp_path):
     p.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
     config = load_config(p)
     assert config.targets[0].tags == []
+
+
+# C-11: entity に resources を指定すると items に正規化される
+def test_config_entity_resources_alias(tmp_path):
+    from elab_doc_sync.config import load_config
+    data = {
+        "elabftw": {"url": "https://x.com", "api_key": "k"},
+        "targets": [{"title": "T", "docs_dir": "docs/", "entity": "resources"}],
+    }
+    p = tmp_path / ".elab-sync.yaml"
+    p.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    config = load_config(p)
+    assert config.targets[0].entity == "items"

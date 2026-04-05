@@ -159,7 +159,7 @@ class DocsSyncer:
             return False
 
         item_id = self.read_item_id()
-        entity_label = "実験ノート" if self.entity == "experiments" else "アイテム"
+        entity_label = "実験ノート" if self.entity == "experiments" else "リソース"
 
         if item_id is not None:
             try:
@@ -320,7 +320,7 @@ class EachDocsSyncer:
             )
 
         mapping = self._load_mapping()
-        entity_label = "実験ノート" if self.entity == "experiments" else "アイテム"
+        entity_label = "実験ノート" if self.entity == "experiments" else "リソース"
         updated = 0
 
         for f in md_files:
