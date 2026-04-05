@@ -13,6 +13,7 @@ import yaml
 from elab_doc_sync.cli import (
     cmd_sync, cmd_pull, cmd_clone, cmd_log, cmd_diff, cmd_status, cmd_init, cmd_update,
     cmd_tag, cmd_metadata, cmd_entity_status, cmd_whoami, cmd_new,
+    cmd_list, cmd_link, cmd_verify,
 )
 from elab_doc_sync.sync import ConflictError
 
@@ -573,3 +574,163 @@ def test_cmd_new_custom_output(MockClient, tmp_path, capsys):
     cmd_new(args)
     assert outfile.exists()
     assert "# Custom" in outfile.read_text(encoding="utf-8")
+
+
+# ── FR-19 list テスト ────────────────────────────────────
+
+
+# CLI-66: list items
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_list_items(MockClient, tmp_path, capsys):
+    cfg, _ = _write_config(tmp_path)
+    client = MockClient.return_value
+    client._req.return_value = MagicMock(
+        json=MagicMock(return_value=[
+            {"id": 1, "title": "Item A", "status_title": ""},
+            {"id": 2, "title": "Item B", "status_title": "Active"},
+        ])
+    )
+    args = Namespace(config=str(cfg), target=None, force=False, entity_type="items", limit=20)
+    cmd_list(args)
+    out = capsys.readouterr().out
+    assert "#1" in out
+    assert "Item A" in out
+    assert "Item B" in out
+    assert "Active" in out
+
+
+# CLI-67: list experiments
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_list_experiments(MockClient, tmp_path, capsys):
+    cfg, _ = _write_config(tmp_path)
+    client = MockClient.return_value
+    client._req.return_value = MagicMock(
+        json=MagicMock(return_value=[{"id": 10, "title": "Exp X"}])
+    )
+    args = Namespace(config=str(cfg), target=None, force=False, entity_type="experiments", limit=5)
+    cmd_list(args)
+    out = capsys.readouterr().out
+    assert "#10" in out
+    assert "Exp X" in out
+
+
+# CLI-68: list 空
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_list_empty(MockClient, tmp_path, capsys):
+    cfg, _ = _write_config(tmp_path)
+    client = MockClient.return_value
+    client._req.return_value = MagicMock(json=MagicMock(return_value=[]))
+    args = Namespace(config=str(cfg), target=None, force=False, entity_type="items", limit=20)
+    cmd_list(args)
+    out = capsys.readouterr().out
+    assert "ありません" in out
+
+
+# ── FR-20 link テスト ────────────────────────────────────
+
+
+# CLI-69: link merge モード
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_link_merge(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("# A\n", encoding="utf-8")
+    args = Namespace(config=str(cfg), target=None, force=False, entity_id=99, file=None)
+    cmd_link(args)
+    out = capsys.readouterr().out
+    assert "99" in out
+    # ID ファイルが作成されている
+    id_file = tmp_path / ".elab-sync-ids" / "default.id"
+    assert id_file.exists()
+    assert id_file.read_text().strip() == "99"
+
+
+# CLI-70: link each モード
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_link_each(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path, mode="each")
+    (docs / "a.md").write_text("# A\n", encoding="utf-8")
+    args = Namespace(config=str(cfg), target=None, force=False, entity_id=55, file="a.md")
+    cmd_link(args)
+    out = capsys.readouterr().out
+    assert "55" in out
+    # mapping.json が作成されている
+    mapping_file = tmp_path / ".elab-sync-ids" / "mapping.json"
+    assert mapping_file.exists()
+    mapping = json.loads(mapping_file.read_text())
+    assert mapping["a.md"] == 55
+
+
+# CLI-71: link each モードで --file なしはエラー
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_link_each_no_file(MockClient, tmp_path):
+    cfg, _ = _write_config(tmp_path, mode="each")
+    args = Namespace(config=str(cfg), target=None, force=False, entity_id=55, file=None)
+    with pytest.raises(SystemExit):
+        cmd_link(args)
+
+
+# ── FR-21 verify テスト ──────────────────────────────────
+
+
+# CLI-72: verify 正常（merge）
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_verify_merge_ok(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("# A\n", encoding="utf-8")
+    client = MockClient.return_value
+    client.get_entity.return_value = {"id": 42, "title": "T"}
+    id_dir = tmp_path / ".elab-sync-ids"
+    id_dir.mkdir()
+    (id_dir / "default.id").write_text("42", encoding="utf-8")
+    args = Namespace(config=str(cfg), target=None, force=False)
+    cmd_verify(args)
+    out = capsys.readouterr().out
+    assert "✓" in out
+    assert "問題はありません" in out
+
+
+# CLI-73: verify リモートアクセス失敗
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_verify_remote_fail(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("# A\n", encoding="utf-8")
+    client = MockClient.return_value
+    client.get_entity.side_effect = Exception("404")
+    id_dir = tmp_path / ".elab-sync-ids"
+    id_dir.mkdir()
+    (id_dir / "default.id").write_text("42", encoding="utf-8")
+    args = Namespace(config=str(cfg), target=None, force=False)
+    cmd_verify(args)
+    out = capsys.readouterr().out
+    assert "⚠" in out
+    assert "アクセスできません" in out
+
+
+# CLI-74: verify 未同期
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_verify_not_synced(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("# A\n", encoding="utf-8")
+    args = Namespace(config=str(cfg), target=None, force=False)
+    cmd_verify(args)
+    out = capsys.readouterr().out
+    assert "未同期" in out
+
+
+# CLI-75: verify each モード — ローカルファイル欠損
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_verify_each_missing_file(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path, mode="each")
+    client = MockClient.return_value
+    id_dir = tmp_path / ".elab-sync-ids"
+    id_dir.mkdir()
+    mapping = {"missing.md": 10, "exists.md": 20}
+    (id_dir / "mapping.json").write_text(json.dumps(mapping), encoding="utf-8")
+    (docs / "exists.md").write_text("# E\n", encoding="utf-8")
+    client.get_entity.return_value = {"id": 20}
+    args = Namespace(config=str(cfg), target=None, force=False)
+    cmd_verify(args)
+    out = capsys.readouterr().out
+    assert "missing.md" in out
+    assert "見つかりません" in out
+    assert "✓" in out  # exists.md は OK

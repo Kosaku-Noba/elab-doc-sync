@@ -80,6 +80,10 @@ elabftw:
 | `esync metadata set k=v` | メタデータを設定 |
 | `esync entity-status show` | エンティティのステータスを表示 |
 | `esync entity-status set <ID>` | ステータスを変更 |
+| `esync list` | リモートのアイテム一覧を表示 |
+| `esync list --entity experiments` | 実験ノート一覧を表示 |
+| `esync link <ID>` | 既存リモートエンティティとローカルを紐付け |
+| `esync verify` | ローカルとリモートの整合性チェック |
 | `esync init` | 対話的に設定ファイルを作成 |
 | `esync update` | ツールを最新版に更新 |
 | `esync --dry-run` | 実行せずに同期内容を確認 |
