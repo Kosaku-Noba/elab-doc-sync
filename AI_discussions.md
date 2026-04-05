@@ -167,3 +167,32 @@ The new `post-commit` logic can silently rewrite commit contents by restaging th
 ### Codex 所感
 
 >   `os.write()` 自体が `ENOSPC` や `EIO` で失敗した場合、`os.close(fd)` は成功パスにしかないので、この `mkstemp()` の fd が閉じられないまま外側の `except OSError` に入ります。`record()` は entity ごとに繰り返し呼ばれるため、ログ失敗が続く bulk sync では fd が蓄積して `Too many open files` を誘発し、非本質なログ機能が本体処理へ波及します。
+
+
+## 2026-04-05T21:09 [Kiro] Codex 指摘対応 (3回目: sync_log 簡素化)
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| sync_log.record() | 一時ファイル方式を廃止。バイナリモード (`"ab"`) で直接 append + `except Exception` で全例外を握りつぶすシンプルな方式に変更 |
+
+### Kiro 所感
+
+- 一時ファイル方式は fd リーク・短書き込みなど逆にバグを増やしていた。補助ログは「書けたらラッキー」程度の位置づけなので、シンプルさを優先した。
+- これで FR-13 の基本実装は完了。次は FR-11（競合検出）に進む。
+
+
+## 2026-04-05T21:09 [Codex] fix: sync_log を簡素化 — 一時ファイル廃止、バイナリ append + except Exception に対するレビュー
+
+The simplified `record()` path fixes the temp-file leak, but it also reopens direct-write corruption of the JSONL log under partial append failures. Since a single I/O error can make later successful history entries unreadable, the patch still has a correctness issue.
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| Prevent short appends from poisoning later log entries | /home/kosak/elab-doc-sync/src/elab_doc_sync/sync_log.py:28-29 | 中 |
+
+### Codex 所感
+
+>   If `f.write(...)` fails after writing only part of the encoded line (for example on `ENOSPC`, `EIO`, or an interrupted process), `sync-log.jsonl` is left with an unterminated JSON object. Because subsequent writes only add a trailing newline, the next successful record is concatenated onto that broken tail and `read_log()` skips both entries as invalid JSON. That means one transient logging failure can silently hide later sync history, which the previous temp-file staging avoided for write failures before the final append.

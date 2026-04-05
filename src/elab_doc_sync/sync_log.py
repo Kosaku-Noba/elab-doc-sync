@@ -1,8 +1,6 @@
 """Sync log: record and display push/pull history in JSONL format."""
 
 import json
-import os
-import tempfile
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -27,20 +25,9 @@ def record(log_path: Path, *, action: str, target: str, entity: str,
             "files": files or [],
         }
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        line = json.dumps(entry, ensure_ascii=False) + "\n"
-        # 一時ファイルに書いてから append で壊れた部分書き込みを防ぐ
-        fd, tmp = tempfile.mkstemp(dir=str(log_path.parent))
-        try:
-            os.write(fd, line.encode("utf-8"))
-            os.close(fd)
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(Path(tmp).read_text(encoding="utf-8"))
-        finally:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-    except OSError:
+        with open(log_path, "ab") as f:
+            f.write((json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8"))
+    except Exception:
         pass
 
 
