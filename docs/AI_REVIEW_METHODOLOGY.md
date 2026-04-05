@@ -62,6 +62,10 @@ codex --version
 
 # git hooks パスを設定
 git config core.hooksPath .githooks
+
+# テスト実行環境（Codex がレビュー時にテストを実行するために必要）
+UV_CACHE_DIR=/tmp/uv-cache uv sync
+UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q
 ```
 
 ### 3.2 ファイル構成

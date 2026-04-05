@@ -7,6 +7,14 @@
 - 未確定事項は推測で進めず、ユーザーに確認する
 - 機能実装のたびに、AI_discussions.md に状況を説明し、commit することでレビューを受ける
 
+## 開発環境・テスト実行
+
+- パッケージマネージャ: `uv`
+- Python: 3.12
+- テスト実行: `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q`
+- 依存インストール: `UV_CACHE_DIR=/tmp/uv-cache uv sync`
+- レビュー時は必ずテストを実行し、結果をレビューに含めること
+
 ## AI_discussions.md 記録テンプレート
 
 ### Kiro 用: 提案・更新内容の記録
