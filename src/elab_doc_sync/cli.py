@@ -847,19 +847,19 @@ def cmd_entity_status(args):
         for eid, etype in all_ids:
             entity = client.get_entity(etype, eid)
             status_name = entity.get("status_title") or entity.get("status", {}).get("title", "不明")
-            print(f"  {etype} #{eid}: {status_name}")
+            print(f"  {_entity_label(etype)} #{eid}: {status_name}")
     elif args.status_action == "set":
         if len(all_ids) > 1 and not getattr(args, "id", None):
             print(f"  対象: {len(all_ids)} 件のエンティティ")
             for eid, etype in all_ids:
-                print(f"    - {etype} #{eid}")
+                print(f"    - {_entity_label(etype)} #{eid}")
             answer = input("  全て変更しますか？ [y/N]: ").strip().lower()
             if answer != "y":
                 print("  中断しました")
                 return
         for eid, etype in all_ids:
             client.patch_entity(etype, eid, status=int(args.status_id))
-            print(f"  {etype} #{eid}: ステータスを変更しました")
+            print(f"  {_entity_label(etype)} #{eid}: ステータスを変更しました")
 
 
 def main():
