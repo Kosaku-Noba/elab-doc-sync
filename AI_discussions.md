@@ -1398,3 +1398,19 @@ The new methodology document contains two operationally incorrect instructions: 
 ### Codex 所感
 
 > 全件ダウンロードをやめる方向性自体は妥当で、テストも現状は安定しています。ただし今回の変更で `pull` の前提が「モード依存」「前回保存状態依存」へ寄ったので、無視する引数は CLI で弾くことと、再取得に必要な状態をどこまで永続化するかを明文化した方が後続の人間・AIの双方に読みやすいです。
+
+
+## 2026-04-06T08:02 [Codex] fix: pull Codex指摘対応 — merge複数ID警告 + 境界条件テスト追加 (CLI-15,16) に対するレビュー
+
+コミットメッセージと差分の大枠は整合しており、指定の `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` は `137 passed` でした。セキュリティ上の顕著な新規リスクはこの差分からは見当たりませんが、変更の中心である merge モード警告の回帰担保と、テスト仕様の追従には不足があります。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 変更点の主対象が自動テストで直接担保されていない | 実コードで変わったのは merge モードの複数 `--id` 警告追加です（[src/elab_doc_sync/cli.py#L198](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L198)）。一方、今回追加されたテストは each モードの「`--id` なし + mapping なし」と「複数 `--id`」のみです（[tests/test_cli.py#L165](/home/kosak/elab-doc-sync/tests/test_cli.py#L165), [tests/test_cli.py#L174](/home/kosak/elab-doc-sync/tests/test_cli.py#L174)）。このため、将来の変更で「merge モードで先頭 ID を使う」「警告を出す」「保存済み ID より CLI 指定が優先される」といった今回の意図が崩れても検知できません。コミットメッセージの `merge複数ID警告` を根拠にするなら、その経路を直接検証するテストが必要です。 | 中 |
+| テスト仕様ドキュメントが今回の追加ケースに追従しておらず、仕様と実装の対応が読み取りにくい | テストコードでは `CLI-15` / `CLI-16` が追加されていますが（[tests/test_cli.py#L165](/home/kosak/elab-doc-sync/tests/test_cli.py#L165)）、テスト仕様書は依然として `cmd_pull` を `CLI-10`〜`CLI-14` までしか列挙していません（[docs/11_TEST_SPEC.md#L157](/home/kosak/elab-doc-sync/docs/11_TEST_SPEC.md#L157)）。このプロジェクトは CLI ケース番号を仕様トレーサビリティに使っているように見えるため、後続の人間や AI が「そのケースは未定義なのか、単に記載漏れなのか」を判断しづらくなります。番号管理を契約として扱う前提なら、明示的な更新が必要です。 | 低 |
+
+### Codex 所感
+
+> テスト実行結果は良好ですが、このコミットの主眼である merge モードの回帰を直接保証していない点は残ります。仕様書とテストケース番号の同期を取ると、後続レビューや AI 支援開発での誤読リスクをかなり下げられます。

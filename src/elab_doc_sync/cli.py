@@ -196,7 +196,9 @@ def cmd_pull(args):
             eid = syncer.read_item_id()
 
             if args.id:
-                eid = args.id[0]  # merge モードでは最初の ID を使用
+                if len(args.id) > 1:
+                    print(f"  [{target.title}] ⚠ merge モードでは最初の ID のみ使用します（{args.id[0]}）")
+                eid = args.id[0]
 
             if eid is None:
                 print(f"  [{target.title}] 同期先の ID が不明です（--id で指定してください）")

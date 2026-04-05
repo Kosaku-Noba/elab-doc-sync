@@ -161,6 +161,29 @@ def test_pull_force_overwrite(MockClient, tmp_path):
 
 # ── cmd_clone (CLI-20 ~ CLI-26) ──────────────────────────
 
+
+# CLI-15: pull --id なし + mapping なし → エラーメッセージ
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_no_id_no_mapping(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path, mode="each")
+    cmd_pull(_ns(tmp_path, id=None, command="pull"))
+    out = capsys.readouterr().out
+    assert "--id を指定してください" in out
+
+
+# CLI-16: pull 複数 --id (each モード)
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_multiple_ids_each(MockClient, tmp_path):
+    cfg, docs = _write_config(tmp_path, mode="each")
+    MockClient.return_value.get_item.side_effect = [
+        {"id": 1, "title": "A", "body": "<p>a</p>"},
+        {"id": 2, "title": "B", "body": "<p>b</p>"},
+    ]
+    cmd_pull(_ns(tmp_path, id=[1, 2], command="pull"))
+    assert (docs / "A.md").exists()
+    assert (docs / "B.md").exists()
+
+
 def _clone_ns(tmp_path, **kw):
     defaults = {
         "url": "https://elab.example.com", "id": [1], "dir": str(tmp_path / "cloned"),
