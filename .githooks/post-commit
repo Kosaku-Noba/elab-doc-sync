@@ -1,0 +1,86 @@
+#!/bin/bash
+# post-commit hook: Codex CLI で直前のコミットを自動レビュー
+# レビュー結果を AI_discussions.md に追記し、amend する
+
+# 再帰防止
+[ -n "$CODEX_REVIEW_RUNNING" ] && exit 0
+export CODEX_REVIEW_RUNNING=1
+
+CODEX_CLI=$(command -v codex 2>/dev/null)
+[ -z "$CODEX_CLI" ] && exit 0
+
+# マージコミットはスキップ
+[ "$(git cat-file -p HEAD | grep -c '^parent')" -gt 1 ] && exit 0
+
+DISCUSSIONS_FILE="AI_discussions.md"
+[ ! -f "$DISCUSSIONS_FILE" ] && exit 0
+
+COMMIT_MSG=$(git log -1 --pretty=%s)
+TIMESTAMP=$(date +"%Y-%m-%dT%H:%M")
+DIFF=$(git diff HEAD~1 HEAD 2>/dev/null)
+
+[ -z "$DIFF" ] && exit 0
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "🔍 Codex レビュー実行中..."
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+PROMPT="以下の git diff をレビューしてください。
+指摘事項は必ず次の形式で出力してください（指摘がなければ「指摘事項なし」と書いてください）:
+
+- [P1] 重大な問題の説明
+- [P2] 中程度の問題の説明
+- [P3] 軽微な問題の説明
+
+最後に1行でサマリーを書いてください。
+
+\`\`\`diff
+${DIFF}
+\`\`\`"
+
+REVIEW_RESULT=$(echo "$PROMPT" | "$CODEX_CLI" --quiet 2>/dev/null)
+
+if [ $? -ne 0 ] || [ -z "$REVIEW_RESULT" ]; then
+  echo "⚠️  Codex レビューをスキップしました"
+  exit 0
+fi
+
+# findings をテーブル行に変換
+TABLE_ROWS=""
+while IFS= read -r line; do
+  PRIORITY=$(echo "$line" | sed -n 's/.*\[P\([0-9]\)\].*/\1/p')
+  TITLE=$(echo "$line" | sed 's/^- \[P[0-9]\] //')
+  case "$PRIORITY" in
+    1) PRIO_LABEL="高" ;;
+    2) PRIO_LABEL="中" ;;
+    *) PRIO_LABEL="低" ;;
+  esac
+  TABLE_ROWS="${TABLE_ROWS}| ${TITLE} | P${PRIORITY} | ${PRIO_LABEL} |
+"
+done < <(echo "$REVIEW_RESULT" | grep -E '^\- \[P[0-9]\]' | head -10)
+
+[ -z "$TABLE_ROWS" ] && TABLE_ROWS="| — | 指摘事項なし | — |
+"
+
+SUMMARY=$(echo "$REVIEW_RESULT" | tail -1)
+
+ENTRY="## ${TIMESTAMP} [Codex] 自動レビュー: ${COMMIT_MSG}
+
+### 指摘事項
+
+| 項目 | 優先度 | レベル |
+|---|---|---|
+${TABLE_ROWS}
+### 所感
+
+> ${SUMMARY:-特記事項なし。}"
+
+echo "$ENTRY"
+
+printf "\n\n%s\n" "$ENTRY" >> "$DISCUSSIONS_FILE"
+git add "$DISCUSSIONS_FILE"
+git commit --amend --no-edit --no-verify
+
+echo ""
+echo "✅ レビュー完了・AI_discussions.md に追記済み ($(git rev-parse --short HEAD))"
