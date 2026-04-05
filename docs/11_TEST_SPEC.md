@@ -1,5 +1,7 @@
 # テスト仕様書
 
+→ [要求仕様](10_REQUIREMENTS.md) | [プロジェクト概要](01_README.md)
+
 ## 1. 概要
 
 elab-doc-sync v0.2.0 の全機能に対するユニットテスト・統合テストの仕様。
@@ -51,6 +53,9 @@ eLabFTW API への通信は全て mock し、ファイルシステム操作は `
 | CL-11 | list_items / list_experiments | GET リクエストで一覧が返る |
 | CL-12 | delete_experiment | DELETE リクエストが送信される |
 | CL-13 | update_metadata | PATCH に metadata JSON が含まれる |
+| CL-14 | search_experiments | tags パラメータ付き GET が送信される |
+| CL-15 | append_body | 既存 body に追記される |
+| CL-16 | replace_body | body が置換される |
 
 ### 3.3 test_sync.py
 
@@ -89,7 +94,7 @@ eLabFTW API への通信は全て mock し、ファイルシステム操作は `
 | S-27 | 画像ファイルが存在しない | 警告が出力され、元の参照が維持される |
 | S-28 | docs_dir → project_root フォールバック | docs_dir になければ project_root から探す |
 
-#### 3.3.3 競合検出（FR-11）
+#### 3.3.4 競合検出（FR-11）
 
 | ID | テストケース | 検証内容 |
 |---|---|---|
@@ -99,7 +104,7 @@ eLabFTW API への通信は全て mock し、ファイルシステム操作は `
 | S-33 | force=True → 競合チェックスキップ | ConflictError が発生しない |
 | S-34 | sync 後に remote_hash が保存される | push 後に `_get_entity` で取得した body のハッシュが保存される |
 
-#### 3.3.4 EachDocsSyncer（each モード）
+#### 3.3.5 EachDocsSyncer（each モード）
 
 | ID | テストケース | 検証内容 |
 |---|---|---|
@@ -214,7 +219,7 @@ test = ["pytest>=7.0"]
 | カテゴリ | 件数 |
 |---|---|
 | config | 8 |
-| client | 13 |
+| client | 16 |
 | sync（ユーティリティ） | 3 |
 | sync（merge） | 13 |
 | sync（画像アップロード） | 4 |
@@ -227,4 +232,4 @@ test = ["pytest>=7.0"]
 | cli（log） | 2 |
 | cli（init/update） | 4 |
 | cli（diff/status） | 4 |
-| **合計** | **89** |
+| **合計** | **92** |
