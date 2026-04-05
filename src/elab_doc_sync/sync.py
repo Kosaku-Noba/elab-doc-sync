@@ -8,9 +8,15 @@ from pathlib import Path
 
 from .client import ELabFTWClient
 from .config import TargetConfig
+from . import sync_log
 
 IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 MD_EXTENSIONS = ["tables", "fenced_code", "codehilite", "toc", "nl2br"]
+
+
+class ConflictError(Exception):
+    """リモートが前回同期以降に変更されている。"""
+    pass
 
 
 def _compute_hash(body: str) -> str:
@@ -83,6 +89,14 @@ class DocsSyncer:
         self.hash_file.parent.mkdir(parents=True, exist_ok=True)
         self.hash_file.write_text(_compute_hash(body) + "\n")
 
+    @property
+    def remote_hash_file(self) -> Path:
+        return self.id_file.with_suffix(".remote_hash")
+
+    def save_remote_hash(self, remote_body: str) -> None:
+        self.remote_hash_file.parent.mkdir(parents=True, exist_ok=True)
+        self.remote_hash_file.write_text(_compute_hash(remote_body) + "\n")
+
     def read_item_id(self) -> int | None:
         if self.id_file.exists():
             text = self.id_file.read_text().strip()
@@ -123,6 +137,20 @@ class DocsSyncer:
             "item_id": self.read_item_id(),
         }
 
+    def _check_remote_conflict(self, item_id: int) -> None:
+        """前回同期時のリモートハッシュと現在のリモート body を比較。"""
+        if not self.remote_hash_file.exists():
+            return
+        saved_hash = self.remote_hash_file.read_text().strip()
+        remote_data = self._get_entity(item_id)
+        remote_body = remote_data.get("body", "") or ""
+        remote_hash = _compute_hash(remote_body)
+        if saved_hash != remote_hash:
+            raise ConflictError(
+                f"リモートが前回同期以降に変更されています（{self.entity} #{item_id}）\n"
+                "→ esync pull で先にリモート変更を取り込むか、--force で強制上書きしてください"
+            )
+
     def sync(self, force: bool = False) -> bool:
         raw_body = self.collect_docs()
 
@@ -131,7 +159,7 @@ class DocsSyncer:
             return False
 
         item_id = self.read_item_id()
-        entity_label = "実験ノート" if self.entity == "experiments" else "アイテム"
+        entity_label = "実験ノート" if self.entity == "experiments" else "リソース"
 
         if item_id is not None:
             try:
@@ -139,6 +167,9 @@ class DocsSyncer:
             except Exception:
                 print(f"  [{self.target.title}] {entity_label} #{item_id} が見つかりません。新規作成します")
                 item_id = None
+
+        if item_id is not None and not force:
+            self._check_remote_conflict(item_id)
 
         if item_id is None:
             item_id = self._create_entity(title=self.target.title)
@@ -149,8 +180,40 @@ class DocsSyncer:
         html = _md_to_html(body)
         self._update_entity(item_id, body=html, title=self.target.title)
         self.save_hash(raw_body)
+
+        # push 後のリモート body ハッシュを保存（競合検出用）
+        try:
+            remote_data = self._get_entity(item_id)
+            self.save_remote_hash(remote_data.get("body", "") or "")
+        except Exception as e:
+            print(f"  [{self.target.title}] ⚠ リモートハッシュの保存に失敗（次回の競合検出が不正確になる可能性があります）: {e}")
+
         print(f"  [{self.target.title}] {entity_label} #{item_id} を更新しました")
+
+        _sync_tags(self.client, self.entity, item_id, self.target.tags)
+
+        log_path = self.project_root / sync_log.DEFAULT_LOG_PATH
+        files = [f.name for f in self.collect_files()]
+        sync_log.record(log_path, action="push", target=self.target.title,
+                        entity=self.entity, entity_id=item_id, files=files)
+
         return True
+
+
+def _sync_tags(client: ELabFTWClient, entity_type: str, entity_id: int, desired_tags: list[str]) -> None:
+    """設定のタグをリモートに追記する（既存タグは外さない）。best-effort。"""
+    if not desired_tags:
+        return
+    try:
+        remote = client.get_tags(entity_type, entity_id)
+        remote_names = {t.get("tag") for t in remote}
+        for tag in desired_tags:
+            if tag not in remote_names:
+                client.add_tag(entity_type, entity_id, tag)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).debug("タグ同期失敗", exc_info=True)
+        print(f"    ⚠ タグ同期に失敗しました（本文の同期は成功しています）")
 
 
 class EachDocsSyncer:
@@ -189,6 +252,14 @@ class EachDocsSyncer:
         hp.parent.mkdir(parents=True, exist_ok=True)
         hp.write_text(_compute_hash(body) + "\n")
 
+    def _remote_hash_path(self, filename: str) -> Path:
+        return self.hash_dir / f"{filename}.remote_hash"
+
+    def _save_remote_hash(self, filename: str, remote_body: str) -> None:
+        hp = self._remote_hash_path(filename)
+        hp.parent.mkdir(parents=True, exist_ok=True)
+        hp.write_text(_compute_hash(remote_body) + "\n")
+
     def _get_entity(self, eid: int) -> dict:
         if self.entity == "experiments":
             return self.client.get_experiment(eid)
@@ -204,6 +275,21 @@ class EachDocsSyncer:
             self.client.update_experiment(eid, **fields)
         else:
             self.client.update_item(eid, **fields)
+
+    def _check_remote_conflict(self, filename: str, eid: int) -> None:
+        """前回同期時のリモートハッシュと現在のリモート body を比較。"""
+        hp = self._remote_hash_path(filename)
+        if not hp.exists():
+            return
+        saved_hash = hp.read_text().strip()
+        remote_data = self._get_entity(eid)
+        remote_body = remote_data.get("body", "") or ""
+        remote_hash = _compute_hash(remote_body)
+        if saved_hash != remote_hash:
+            raise ConflictError(
+                f"リモートが前回同期以降に変更されています（{self.entity} #{eid}: {filename}）\n"
+                "→ esync pull で先にリモート変更を取り込むか、--force で強制上書きしてください"
+            )
 
     def collect_files(self) -> list[Path]:
         return sorted(self.docs_dir.glob(self.target.pattern))
@@ -234,7 +320,7 @@ class EachDocsSyncer:
             )
 
         mapping = self._load_mapping()
-        entity_label = "実験ノート" if self.entity == "experiments" else "アイテム"
+        entity_label = "実験ノート" if self.entity == "experiments" else "リソース"
         updated = 0
 
         for f in md_files:
@@ -254,6 +340,9 @@ class EachDocsSyncer:
                     print(f"  [{title}] {entity_label} #{eid} が見つかりません。新規作成します")
                     eid = None
 
+            if eid is not None and not force:
+                self._check_remote_conflict(f.name, eid)
+
             if eid is None:
                 eid = self._create_entity(title=title)
                 mapping[f.name] = eid
@@ -264,7 +353,22 @@ class EachDocsSyncer:
             html = _md_to_html(body)
             self._update_entity(eid, body=html, title=title)
             self._save_hash(f.name, raw_body)
+
+            # push 後のリモート body ハッシュを保存（競合検出用）
+            try:
+                remote_data = self._get_entity(eid)
+                self._save_remote_hash(f.name, remote_data.get("body", "") or "")
+            except Exception as e:
+                print(f"  [{title}] ⚠ リモートハッシュの保存に失敗: {e}")
+
             print(f"  [{title}] {entity_label} #{eid} を更新しました")
+
+            _sync_tags(self.client, self.entity, eid, self.target.tags)
+
+            log_path = self.project_root / sync_log.DEFAULT_LOG_PATH
+            sync_log.record(log_path, action="push", target=title,
+                            entity=self.entity, entity_id=eid, files=[f.name])
+
             updated += 1
 
         return updated

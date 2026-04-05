@@ -1,40 +1,22 @@
 ## コミュニケーションスタイル
 
 - 日本語で会話する
+- AI_discussions.md に記載された最新の状況の詳細を確認し、考えられる論理的不備や実装上の問題について指摘する
 - 選択肢を提示する場合は `a. b. c.` の記号付きリストで簡潔に
 - ユーザーは記号だけで回答することがある（例: `a. b. c.`）。それで十分な回答として扱う
 - 不要な前置きや褒め言葉は省略し、直接本題に入る
 - 未確定事項は推測で進めず、ユーザーに確認する
-- 機能実装のたびに、AI_discussions.md に状況を説明し、commit することでレビューを受ける
 
 ## 開発環境・テスト実行
 
 - パッケージマネージャ: `uv`
 - Python: 3.12
-- テスト実行: `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q`
-- 依存インストール: `UV_CACHE_DIR=/tmp/uv-cache uv sync`
-- レビュー時は必ずテストを実行し、結果をレビューに含めること
+- テスト実行コマンド: `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q`
+- **レビュー時は必ずテストを実行し、結果をレビューに含めること**
+- テストが失敗した場合は、失敗内容を指摘事項に含めること
+- 依存のインストール: `UV_CACHE_DIR=/tmp/uv-cache uv sync` （初回のみ）
 
 ## AI_discussions.md 記録テンプレート
-
-### Kiro 用: 提案・更新内容の記録
-
-```md
-## YYYY-MM-DDTHH:MM [Kiro] 変更内容の要約
-
-変更または提案の概要を1〜3文で記載。
-
-### 変更点
-
-| 項目 | 内容 |
-|---|---|
-| 項目1 | 変更内容 |
-
-### Kiro 所感
-
-- 判断理由
-- 未解決論点
-```
 
 ### Codex 用: レビュー・意見の記録
 
@@ -57,7 +39,7 @@
 ### 運用ルール
 
 - タイムスタンプは `YYYY-MM-DDTHH:MM` 形式（JST）で統一
-- 見出しに必ず `[Kiro]` または `[Codex]` を含める
+- 見出しに必ず `[Codex]` を含める
 - 指摘は「誰が」「何を」「なぜ問題と見たか」が分かるように書く
 - 対応済みの指摘は、次のエントリで「どこをどう直したか」まで明記する
 - エントリは時系列順にファイル末尾へ追記する
@@ -67,7 +49,7 @@
 ### 仕組み
 
 - `.githooks/post-commit` が commit 後に自動実行される
-- `codex exec "<プロンプト>" --ephemeral -o <tmpfile>` で日本語レビューを取得（diff はプロンプトに埋め込み）
+- `codex exec review --commit HEAD --ephemeral -o <tmpfile>` でレビューを取得
 - レビュー結果を上記テンプレートに整形し、AI_discussions.md に追記して `git commit --amend` する
 - `.git/hooks/post-commit` は `.githooks/post-commit` のコピー。変更時は両方を同期すること
 
@@ -75,5 +57,5 @@
 
 - **再帰防止ガード必須**: `CODEX_REVIEW_RUNNING` 環境変数で再帰を防止する。`--no-verify` は `pre-commit` / `commit-msg` のみスキップし、`post-commit` は常に発火するため、ガードを外すと無限ループになる
 - **`codex --quiet` は存在しない**: 非インタラクティブ実行は `codex exec` サブコマンドを使う
-- **`--commit` は英語固定**: ビルトインの `codex exec review --commit` は英語で出力するため使用しない。自前プロンプトに diff を埋め込む方式を採用
+- **`--commit` とプロンプト引数は併用不可**: カスタムプロンプトを渡す場合は stdin（`-`）経由で渡す
 - Codex が利用不可・エラー時はレビューをスキップし、commit 自体は成功させる
