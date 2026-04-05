@@ -40,12 +40,13 @@ def _ns(tmp_path, **kw):
 
 # CLI-01
 @patch("elab_doc_sync.cli.ELabFTWClient")
-def test_sync_normal(MockClient, tmp_path):
+@patch("elab_doc_sync.cli.DocsSyncer")
+def test_sync_normal(MockSyncer, MockClient, tmp_path):
     cfg, docs = _write_config(tmp_path)
     (docs / "a.md").write_text("hello", encoding="utf-8")
-    MockClient.return_value.get_item.return_value = {"id": 1, "body": ""}
-    MockClient.return_value.create_item.return_value = 1
+    MockSyncer.return_value.sync.return_value = True
     cmd_sync(_ns(tmp_path))
+    MockSyncer.return_value.sync.assert_called_once_with(force=False)
 
 
 # CLI-02
@@ -59,12 +60,13 @@ def test_sync_dry_run(MockClient, tmp_path):
 
 # CLI-03
 @patch("elab_doc_sync.cli.ELabFTWClient")
-def test_sync_force(MockClient, tmp_path):
+@patch("elab_doc_sync.cli.DocsSyncer")
+def test_sync_force(MockSyncer, MockClient, tmp_path):
     cfg, docs = _write_config(tmp_path)
     (docs / "a.md").write_text("hello", encoding="utf-8")
-    MockClient.return_value.get_item.return_value = {"id": 1, "body": ""}
-    MockClient.return_value.create_item.return_value = 1
+    MockSyncer.return_value.sync.return_value = True
     cmd_sync(_ns(tmp_path, force=True))
+    MockSyncer.return_value.sync.assert_called_once_with(force=True)
 
 
 # CLI-04
@@ -98,19 +100,24 @@ def test_pull_each(MockClient, tmp_path):
     MockClient.return_value.get_item.return_value = {"id": 1, "title": "Doc1", "body": "<p>hi</p>"}
     cmd_pull(_ns(tmp_path, id=None, command="pull"))
     assert (docs / "Doc1.md").exists()
+    ids_dir = tmp_path / ".elab-sync-ids"
+    assert (ids_dir / "mapping.json").exists()
+    assert (ids_dir / "Doc1.md.hash").exists()
+    assert (ids_dir / "Doc1.md.remote_hash").exists()
 
 
 # CLI-11
 @patch("elab_doc_sync.cli.ELabFTWClient")
 def test_pull_merge(MockClient, tmp_path):
     cfg, docs = _write_config(tmp_path, mode="merge")
-    # write id file
     ids_dir = tmp_path / ".elab-sync-ids"
     ids_dir.mkdir(exist_ok=True)
     (ids_dir / "default.id").write_text("42\n")
     MockClient.return_value.get_item.return_value = {"id": 42, "title": "T", "body": "<p>content</p>"}
     cmd_pull(_ns(tmp_path, id=None, command="pull"))
     assert (docs / "T.md").exists()
+    assert (ids_dir / "default.hash").exists()
+    assert (ids_dir / "default.remote_hash").exists()
 
 
 # CLI-12
@@ -166,6 +173,7 @@ def test_clone_normal(MockClient, tmp_path, monkeypatch):
     assert (cloned / ".elab-sync.yaml").exists()
     assert (cloned / "docs" / "CloneDoc.md").exists()
     assert (cloned / ".gitignore").exists()
+    assert (cloned / ".elab-sync-ids" / "mapping.json").exists()
 
 
 # CLI-21

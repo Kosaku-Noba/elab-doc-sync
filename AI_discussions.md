@@ -813,3 +813,18 @@ The production code is unchanged, but several of the newly added CLI tests do no
 ### Codex 所感
 
 >   `CLI-42` currently re-checks the same config-file creation already covered by `CLI-40` and does not assert any of the template artifacts it is supposed to cover. When `_copy_template_files()` cannot find the packaged template directory, or regresses later, this test still passes, so CI gives false confidence that `init` created `.gitignore`, `README.md`, and `docs/`.
+
+
+## 2026-04-05T22:46 [Codex] test: CLI テストのアサーション強化 (Codex指摘対応) に対するレビュー
+
+変更はテストアサーションの追加に限定されており、追加された期待値は現行の `cmd_sync`、`cmd_pull`、`cmd_clone` の副作用と整合しています。作者に修正を勧めるべき不具合は見当たりませんでした。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 指摘事項なし | — | — |
+
+### Codex 所感
+
+> 特記事項なし。
