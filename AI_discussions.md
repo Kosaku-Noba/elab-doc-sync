@@ -733,3 +733,35 @@ This commit adds passing tests, but several of them do not validate the behavior
 ### Codex 所感
 
 >   CL-01 claims to verify the 'correct URL and headers' contract, but it never inspects the `headers` argument passed to `requests.request()`. If the `Authorization` header is dropped or the JSON header changes, this test still passes, leaving a core API-client invariant unprotected.
+
+
+## 2026-04-05T22:28 [Codex] md追加 に対するレビュー
+
+The runtime code is unchanged, but the new documentation introduces command examples and auth/config guidance that do not match the actual CLI behavior. Those user-facing inaccuracies are actionable correctness issues in this patch.
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| Fix subcommand examples that place global flags after the command | /home/kosak/elab-doc-sync/docs/05_CLI_REFERENCE.md:50-53 | 中 |
+| Clarify that `clone` does not honor the documented config flow | /home/kosak/elab-doc-sync/docs/05_CLI_REFERENCE.md:100-102 | 低 |
+
+### Codex 所感
+
+>   This section documents `clone` like the other commands, but `cmd_clone()` never reads `args.config` or `.elab-sync.yaml`; even `esync -c .elab-sync.yaml.example clone ...` exits with `環境変数 ELABFTW_API_KEY を設定してください`. For users who rely on the config-file API key path described elsewhere in this patch, `clone` will fail immediately unless this section explicitly requires `ELABFTW_API_KEY` (or the command is changed to honor `--config`).
+
+
+## 2026-04-05T22:34 [Codex] test: test_sync_log.py (L-01〜L-11) 11件 に対するレビュー
+
+The commit only adds tests and review notes, but two of the new tests do not reliably validate the behaviors they are meant to cover. That makes the added coverage misleading enough that the patch should not be considered fully correct.
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| Validate timestamp and entity in the L-10 formatting test | /home/kosak/elab-doc-sync/tests/test_sync_log.py:103-106 | 低 |
+| Make the best-effort failure case independent of chmod semantics | /home/kosak/elab-doc-sync/tests/test_sync_log.py:42-45 | 低 |
+
+### Codex 所感
+
+>   This case only exercises the error-handling path when `chmod(0o444)` actually prevents creating `log.jsonl`. On Windows, and in common root-in-container runs, that permission change may not block the write, so the test becomes another successful `record()` call and never verifies the `except Exception: pass` branch. A mocked `open()`/`write()` failure would make the intended coverage deterministic across environments.
