@@ -59,7 +59,7 @@
 ### 仕組み
 
 - `.githooks/post-commit` が commit 後に自動実行される
-- `codex exec review --commit HEAD --ephemeral -o <tmpfile>` でレビューを取得
+- `codex exec "<プロンプト>" --ephemeral -o <tmpfile>` で日本語レビューを取得（diff はプロンプトに埋め込み）
 - レビュー結果を上記テンプレートに整形し、AI_discussions.md に追記して `git commit --amend` する
 - `.git/hooks/post-commit` は `.githooks/post-commit` のコピー。変更時は両方を同期すること
 
@@ -67,5 +67,5 @@
 
 - **再帰防止ガード必須**: `CODEX_REVIEW_RUNNING` 環境変数で再帰を防止する。`--no-verify` は `pre-commit` / `commit-msg` のみスキップし、`post-commit` は常に発火するため、ガードを外すと無限ループになる
 - **`codex --quiet` は存在しない**: 非インタラクティブ実行は `codex exec` サブコマンドを使う
-- **`--commit` とプロンプト引数は併用不可**: カスタムプロンプトを渡す場合は stdin（`-`）経由で渡す
+- **`--commit` は英語固定**: ビルトインの `codex exec review --commit` は英語で出力するため使用しない。自前プロンプトに diff を埋め込む方式を採用
 - Codex が利用不可・エラー時はレビューをスキップし、commit 自体は成功させる

@@ -844,3 +844,35 @@ The new methodology document contains two operationally incorrect instructions: 
 ### Codex 所感
 
 >   This table says `git commit --no-verify` is the way to make a "reviewless" commit, but the note immediately below correctly states that `post-commit` still runs. Anyone following the table will still trigger the Codex review and amend step on documentation-only commits, so the documented escape hatch does not actually work.
+
+
+## 2026-04-05T22:56 [Kiro] Codex 指摘対応 (AI_REVIEW_METHODOLOGY: --no-verify + インデックス前提)
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| docs/AI_REVIEW_METHODOLOGY.md セクション4.3 | `--no-verify` をレビュースキップ手段として記載していた箇所を削除。`SKIP_CODEX_REVIEW=1` 環境変数ベースのスキップ方法に変更 |
+| docs/AI_REVIEW_METHODOLOGY.md セクション3.3 | 「インデックスは HEAD と一致している」という不正確な前提を修正。部分コミット等で一致しない場合がある旨を明記 |
+| docs/AI_REVIEW_METHODOLOGY.md セクション5 | 同上、既知の制限テーブルの記述も修正 |
+| .githooks/post-commit | `SKIP_CODEX_REVIEW` 環境変数ガードを追加。インデックス前提のコメントも修正 |
+
+### Kiro 所感
+
+- Codex の指摘2件とも正しい。`--no-verify` は `pre-commit`/`commit-msg` のみスキップし `post-commit` には効かないため、レビュースキップ手段として記載するのは誤り。
+- インデックスが HEAD と一致する前提も、部分コミット（`git add -p` 等）では成り立たない。
+
+
+## 2026-04-05T23:00 [Kiro] Codex レビュープロンプトを6観点の詳細版に差し替え
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| .githooks/post-commit | レビュープロンプトを簡易版から6観点（仕様・意図、セキュリティ、設計・保守性、AI可読性、回帰リスク、テスト・運用）の詳細版に差し替え。コミットメッセージも diff と共に渡すよう変更 |
+
+### Kiro 所感
+
+- ビルトイン `review --commit` の英語固定問題と、レビュー観点の浅さを同時に解決。
+- 出力形式は `- [P1] 項目 — 詳細` を維持しているため、既存のパーサーとの互換性あり。
+- 「AI可読性レビュー」観点は、AI エージェント間の相互レビューという本プロジェクトの特性に合致している。

@@ -11,7 +11,7 @@ Kiro CLI (開発エージェント)
   │ ② git commit
   ▼
 post-commit フック
-  │ ③ codex exec review --commit HEAD
+  │ ③ codex exec "<日本語レビュープロンプト+diff>"
   ▼
 Codex (レビューエージェント)
   │ ④ レビュー結果を AI_discussions.md に追記
@@ -40,7 +40,7 @@ Kiro CLI
 
 | 責務 | 詳細 |
 |---|---|
-| 差分レビュー | `codex exec review --commit HEAD` で直前コミットの diff を自動レビューする |
+| 差分レビュー | `codex exec "<プロンプト>" --ephemeral` で直前コミットの diff を日本語でレビューする |
 | 指摘記録 | レビュー結果を `[Codex]` テンプレートで AI_discussions.md に追記する |
 | 優先度付け | 指摘に P1（高）/ P2（中）/ P3（低）の優先度を付ける |
 
@@ -82,21 +82,23 @@ export CODEX_REVIEW_RUNNING=1
 # --no-verify は post-commit をスキップしないため、
 # 環境変数ガードが唯一の再帰防止手段
 
-# 2. Codex 実行
-codex exec review --commit HEAD --ephemeral -o "$TMPFILE"
+# 2. diff を取得し、日本語レビュープロンプトを組み立てて Codex 実行
+DIFF=$(git diff HEAD~1 HEAD)
+codex exec "日本語でレビューしてください。... $DIFF" --ephemeral -o "$TMPFILE"
 # --ephemeral: セッションファイルを残さない
 # -o: 最終メッセージをファイルに出力
-# --commit と位置引数プロンプトは併用不可
+# ビルトイン review --commit は英語固定のため、自前プロンプト方式を採用
 
 # 3. 結果の整形・追記
 # Codex の出力を AGENT.md のテンプレートに合わせて整形
 # AI_discussions.md に追記
 
 # 4. amend
+# 注意: post-commit 時点でインデックスが HEAD と一致しているとは限らない
+# （部分コミットや事前の git add がある場合）。
+# amend で元のコミット内容を壊さないよう、AI_discussions.md だけを追加する。
 git add AI_discussions.md
 git commit --amend --no-edit --no-verify
-# post-commit 時点でインデックスは HEAD と一致しているため、
-# AI_discussions.md だけ add すれば元のコミット内容は維持される
 ```
 
 ### 3.4 AGENT.md のテンプレート定義
@@ -136,24 +138,26 @@ Codex が矛盾する指摘を繰り返す場合（例: 「更新しろ」→「
 2. 現在の実装の妥当性を説明する
 3. 人間に最終判断を委ねる
 
-### 4.3 `--no-verify` の使い分け
+### 4.3 レビューのスキップ方法
+
+`--no-verify` は `pre-commit` / `commit-msg` のみスキップし、`post-commit` は常に発火する。そのため、レビューをスキップするには環境変数を使う。
 
 | 場面 | コマンド |
 |---|---|
 | 通常コミット（レビューあり） | `git commit -m "..."` |
-| レビュー不要（ドキュメントのみ等） | `git commit -m "..." --no-verify` |
+| レビュー不要（ドキュメントのみ等） | `SKIP_CODEX_REVIEW=1 git commit -m "..."` |
 | amend（フック内部） | `git commit --amend --no-edit --no-verify` |
 
-注意: `--no-verify` は `pre-commit` / `commit-msg` のみスキップする。`post-commit` は常に発火するため、再帰防止は環境変数ガードに依存する。
+post-commit フック側で `SKIP_CODEX_REVIEW` を確認し、セットされていれば `exit 0` する。`--no-verify` はレビュースキップの手段にはならない。
 
 ## 5. 既知の制限と対策
 
 | 制限 | 対策 |
 |---|---|
 | Codex の出力形式が不安定 | `grep -E '^\- \[P[0-9]\]'` でバレット行を抽出し、マッチしなければ「指摘事項なし」にフォールバック |
-| `--commit` とプロンプト引数の併用不可 | カスタムプロンプトが必要な場合は `codex exec` + stdin 経由で渡す |
+| Codex が英語で回答する | ビルトイン `review --commit` は英語固定のため、自前プロンプトに diff を埋め込み日本語出力を指示する |
 | Codex が利用不可（API エラー等） | フック内で `exit 0` し、commit 自体は成功させる |
-| amend で元のファイルが消える | post-commit 時点でインデックスは HEAD と一致しているため、`git add AI_discussions.md` だけで十分（`xargs git add` は不要） |
+| amend で元のファイルが消える | `git add AI_discussions.md` だけを追加する。部分コミット等でインデックスが HEAD と一致しない場合があるため、他のファイルを再ステージしないこと |
 | Codex が堂々巡りする | 人間が打ち切り判断。AI_discussions.md に理由を記録 |
 
 ## 6. 他プロジェクトへの導入手順
