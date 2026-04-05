@@ -51,3 +51,54 @@ The post-commit hook now calls `codex exec review`, but the result parser still 
 ### Codex 所感
 
 >   `codex exec review --commit HEAD` uses the built-in review prompt, which emits the structured JSON schema (`{"findings": ... , "overall_correctness": ...}`) rather than `- [P1] ...` bullet lines. With this `grep`/`sed` pipeline, a successful review will produce no matches, so `TABLE_ROWS` falls back to `指摘事項なし` even when Codex found real bugs, and the later overview/summary extraction reads raw JSON lines instead of prose. In other words, the new hook silently drops the review signal for every normal run unless this output is parsed as JSON first.
+
+
+## 2026-04-05T20:50 [Kiro] FR-13 同期ログ機能を実装
+
+push/pull の操作履歴を JSONL 形式で記録・表示する機能を追加した。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| sync_log.py 新規作成 | record() で JSONL 追記、read_log() で読み取り、format_log() で表示整形 |
+| sync.py | DocsSyncer.sync() / EachDocsSyncer.sync() に push ログ記録を追加 |
+| cli.py | `esync log` コマンド追加（--limit オプション付き）、pull 処理にログ記録を追加 |
+| __init__.py | sync_log をエクスポートに追加 |
+
+### Kiro 所感
+
+- ログファイルは `.elab-sync-ids/sync-log.jsonl` に保存。既存の ID/ハッシュ管理と同じディレクトリに統一した。
+- REQUIREMENTS.md にある `esync log --remote`（リモート履歴表示）は revisions API 依存のため、今回は未実装。FR-11（競合検出）と合わせて対応予定。
+- 次は FR-11（競合検出）に進む。
+
+
+## 2026-04-05T20:50 [Codex] feat: FR-13 同期ログ機能を実装 (esync log) に対するレビュー
+
+The commit only adds documentation to AI_discussions.md and does not modify executable code, tests, or runtime configuration. I did not find a correctness issue that would affect behavior or break existing functionality.
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 指摘事項なし | — | — |
+
+### Codex 所感
+
+> 特記事項なし。
+
+
+## 2026-04-05T20:51 [Codex] feat: FR-13 同期ログ機能を実装 (esync log) に対するレビュー
+
+The new logging feature adds failure modes where an auxiliary JSONL append can break or misreport successful push/pull operations, and the reader is not robust to malformed trailing entries. Those issues make the patch unsafe to consider fully correct.
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| Make log appends best-effort instead of aborting syncs | /home/kosak/elab-doc-sync/src/elab_doc_sync/sync_log.py:26-28 | 高 |
+| Collect the last N valid log entries, not the last N lines | /home/kosak/elab-doc-sync/src/elab_doc_sync/sync_log.py:35-39 | 中 |
+
+### Codex 所感
+
+>   `read_log()` slices `lines[-limit:]` before decoding JSON. If the tail of the JSONL file contains a truncated or otherwise invalid line (for example, from an interrupted append), `esync log -l 1` returns no entries even when older valid history exists, and larger limits can silently return fewer records than requested. Walking backward until `limit` valid objects are found avoids losing the visible history because of one bad trailing line.

@@ -13,6 +13,7 @@ from markdownify import markdownify as html_to_md
 from .client import ELabFTWClient
 from .config import load_config
 from .sync import DocsSyncer, EachDocsSyncer
+from . import sync_log
 
 DEFAULT_CONFIG = ".elab-sync.yaml"
 
@@ -166,6 +167,10 @@ def cmd_pull(args):
                 print(f"  [{title}] {entity_label} #{eid} → {filepath}")
                 pulled += 1
 
+                log_path = project_root / sync_log.DEFAULT_LOG_PATH
+                sync_log.record(log_path, action="pull", target=title,
+                                entity=target.entity, entity_id=eid, files=[filename])
+
         else:
             # merge モード: 1 エンティティ → 1 ファイル
             syncer = DocsSyncer(client, target, project_root)
@@ -202,6 +207,10 @@ def cmd_pull(args):
 
             print(f"  [{target.title}] {entity_label} #{eid} → {filepath}")
             pulled += 1
+
+            log_path = project_root / sync_log.DEFAULT_LOG_PATH
+            sync_log.record(log_path, action="pull", target=target.title,
+                            entity=target.entity, entity_id=eid, files=[filename])
 
     print(f"\n完了: {pulled} 件取得しました")
 
@@ -382,6 +391,15 @@ def cmd_init(args):
 REPO_URL = "git+https://github.com/Kosaku-Noba/elab-doc-sync.git"
 
 
+def cmd_log(args):
+    """同期ログを表示する。"""
+    config_path = Path(args.config)
+    project_root = config_path.parent or Path(".")
+    log_path = project_root / sync_log.DEFAULT_LOG_PATH
+    entries = sync_log.read_log(log_path, limit=args.limit)
+    print(sync_log.format_log(entries))
+
+
 def cmd_update(args):
     """ツール自体を最新版に更新する。"""
     import subprocess
@@ -434,6 +452,9 @@ def main():
     pull_parser = sub.add_parser("pull", help="eLabFTW からエンティティを取得してローカルに保存")
     pull_parser.add_argument("--id", type=int, default=None, help="取得するエンティティの ID")
 
+    log_parser = sub.add_parser("log", help="同期ログを表示")
+    log_parser.add_argument("--limit", "-l", type=int, default=20, help="表示件数（デフォルト: 20）")
+
     args = parser.parse_args()
     if args.command == "status":
         cmd_status(args)
@@ -445,5 +466,7 @@ def main():
         cmd_diff(args)
     elif args.command == "update":
         cmd_update(args)
+    elif args.command == "log":
+        cmd_log(args)
     else:
         cmd_sync(args)

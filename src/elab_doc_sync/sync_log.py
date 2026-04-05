@@ -1,0 +1,60 @@
+"""Sync log: record and display push/pull history in JSONL format."""
+
+import json
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+
+JST = timezone(timedelta(hours=9))
+DEFAULT_LOG_PATH = ".elab-sync-ids/sync-log.jsonl"
+
+
+def _now_iso() -> str:
+    return datetime.now(JST).strftime("%Y-%m-%dT%H:%M:%S%z")
+
+
+def record(log_path: Path, *, action: str, target: str, entity: str,
+           entity_id: int | None, files: list[str] | None = None) -> None:
+    """Append one log entry."""
+    entry = {
+        "timestamp": _now_iso(),
+        "action": action,
+        "target": target,
+        "entity": entity,
+        "entity_id": entity_id,
+        "files": files or [],
+    }
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def read_log(log_path: Path, limit: int = 20) -> list[dict]:
+    """Read last N entries from log file."""
+    if not log_path.exists():
+        return []
+    lines = log_path.read_text(encoding="utf-8").strip().splitlines()
+    entries = []
+    for line in lines[-limit:]:
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return entries
+
+
+def format_log(entries: list[dict]) -> str:
+    """Format log entries for display."""
+    if not entries:
+        return "同期ログはまだありません"
+    lines = []
+    for e in entries:
+        ts = e.get("timestamp", "?")
+        action = e.get("action", "?")
+        target = e.get("target", "?")
+        eid = e.get("entity_id", "?")
+        entity = e.get("entity", "?")
+        files = e.get("files", [])
+        file_str = f" ({len(files)}件)" if files else ""
+        entity_label = "実験ノート" if entity == "experiments" else "アイテム"
+        lines.append(f"  {ts}  {action:<5} [{target}] {entity_label} #{eid}{file_str}")
+    return "\n".join(lines)
