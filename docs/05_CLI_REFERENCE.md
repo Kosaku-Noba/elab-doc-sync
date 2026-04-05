@@ -62,16 +62,18 @@ esync --force            # 強制同期
 eLabFTW のエンティティをローカルに Markdown として保存する。
 
 ```bash
-esync pull               # 全ターゲットを取得
-esync pull --id 42       # 指定 ID を取得
-esync pull --force       # 既存ファイルを上書き
+esync pull --id 42                    # 指定 ID を取得
+esync pull --id 42 --id 43            # 複数 ID を取得
 esync pull --id 42 --entity experiments  # 実験ノートとして取得
+esync pull                            # 既存の同期済み ID を再取得（初回は --id 必須）
+esync pull --force                    # 既存ファイルを上書き
 ```
 
-- 取得するエンティティ種別は `.elab-sync.yaml` の `targets[].entity` に従う
-- `--entity` オプションで明示的に上書き可能（`--id` と併用時に有用）
-- each モード: mapping.json の ID → 全件取得の順で対象を決定
-- merge モード: 保存済み ID または `--id` で指定
+- 初回 pull には `--id` が必須（全件ダウンロードは行わない）
+- 2回目以降は mapping/ID ファイルから対象を自動決定
+- `--entity` で items/experiments を明示指定可能
+- each モード: 複数 `--id` で一括取得可能
+- merge モード: 最初の `--id` を使用
 
 ### `esync diff`
 
