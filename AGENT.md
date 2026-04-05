@@ -5,8 +5,7 @@
 - ユーザーは記号だけで回答することがある（例: `a. b. c.`）。それで十分な回答として扱う
 - 不要な前置きや褒め言葉は省略し、直接本題に入る
 - 未確定事項は推測で進めず、ユーザーに確認する
-- 機能実装のたびに、AI_discussion.mdに状況を説明し、commitすることでレビューを受ける
-
+- 機能実装のたびに、AI_discussions.md に状況を説明し、commit することでレビューを受ける
 
 ## AI_discussions.md 記録テンプレート
 
@@ -54,3 +53,19 @@
 - 指摘は「誰が」「何を」「なぜ問題と見たか」が分かるように書く
 - 対応済みの指摘は、次のエントリで「どこをどう直したか」まで明記する
 - エントリは時系列順にファイル末尾へ追記する
+
+## Codex 自動レビュー（post-commit フック）
+
+### 仕組み
+
+- `.githooks/post-commit` が commit 後に自動実行される
+- `codex exec review --commit HEAD --ephemeral -o <tmpfile>` でレビューを取得
+- レビュー結果を上記テンプレートに整形し、AI_discussions.md に追記して `git commit --amend` する
+- `.git/hooks/post-commit` は `.githooks/post-commit` のコピー。変更時は両方を同期すること
+
+### 注意事項
+
+- **再帰防止ガード必須**: `CODEX_REVIEW_RUNNING` 環境変数で再帰を防止する。`--no-verify` は `pre-commit` / `commit-msg` のみスキップし、`post-commit` は常に発火するため、ガードを外すと無限ループになる
+- **`codex --quiet` は存在しない**: 非インタラクティブ実行は `codex exec` サブコマンドを使う
+- **`--commit` とプロンプト引数は併用不可**: カスタムプロンプトを渡す場合は stdin（`-`）経由で渡す
+- Codex が利用不可・エラー時はレビューをスキップし、commit 自体は成功させる
