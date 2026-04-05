@@ -1094,3 +1094,39 @@ The new methodology document contains two operationally incorrect instructions: 
 - `whoami` は `GET /api/v2/users/me` を使用。API キーの有効性確認にも使える。
 - ロック機構は eLabFTW API にネイティブなロック機能がないため、今回は見送り。
 - 次は FR-18（テンプレート機能）に進む。
+
+
+## 2026-04-05T23:31 [Kiro] FR-18 テンプレート機能を実装
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| cli.py cmd_new() | `esync new --list` でテンプレート一覧表示、`esync new --template-id <ID>` でテンプレートから Markdown ファイルを生成 |
+| cli.py サブパーサー | `new` コマンドに `--list`, `--template-id`, `--title`, `--output` オプション |
+| 10_REQUIREMENTS.md | FR-18 を ✅ に更新 |
+
+### Kiro 所感
+
+- テンプレートは eLabFTW の `experiments_templates` API を使用。body を HTML → Markdown に変換してファイルに書き出す。
+- 出力先は `--output` で指定可能。省略時は最初のターゲットの docs_dir に配置。
+- v0.2.0 ロードマップの全機能（FR-14〜FR-18）のうち、FR-14（Watch）以外が全て実装完了。FR-14 は watchdog 依存が必要なため、別途検討。push する。
+
+
+## 2026-04-05T23:33 [Codex] feat: FR-17 whoami + FR-18 テンプレート機能 — esync whoami / esync new を追加 に対するレビュー
+
+主な懸念は `esync new` の出力先決定が既存 CLI の前提とずれており、プロジェクト外や誤ったターゲット配下にファイルを生成し得る点です。重大なセキュリティ問題はこの差分だけでは見当たりませんが、コミットメッセージとの対応とテストの不足により、意図確認が必要な変更が残っています。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 既定出力先が設定ファイル基準ではなく実行ディレクトリ基準になる | `cmd_new()` は設定を読んだ後も `project_root = config_path.parent` を使わず、既定の出力先を `Path(config.targets[0].docs_dir) / filename` で決めています（[cli.py](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L642), [cli.py](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L669)）。一方、既存の `pull` / `sync` は `project_root / target.docs_dir` を前提にしており（[cli.py](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L122), [sync.py](/home/kosak/elab-doc-sync/src/elab_doc_sync/sync.py#L63)）、`-c /path/to/project/.elab-sync.yaml` を別ディレクトリから実行した場合に生成ファイルだけプロジェクト外へ落ちます。コミットメッセージにない挙動変化で、後続の `status` / `sync` が新規ファイルを見つけられない回帰リスクがあります。 | 高 |
+| マルチターゲット前提と `--target` が無視される | CLI 全体は `--target` で対象ターゲットを絞る設計ですが（[cli.py](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L731), [cli.py](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L35)）、`cmd_new()` は常に `config.targets[0]` を使い、`args.target` を参照していません（[cli.py](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L668)）。複数ターゲットで `docs_dir` や `entity` を分けている構成では、生成先だけでなく後続同期先の種別やタグ付与まで静かにずれる可能性があります。意図的に「常に先頭ターゲット」なら明示的な確認が必要です。 | 中 |
+| 新規コマンドの重要分岐にテストがない | 現状 [tests/test_cli.py](/home/kosak/elab-doc-sync/tests/test_cli.py) には `cmd_new` / `cmd_whoami` のテストが見当たらず、今回増えた「テンプレート一覧」「ID未指定」「既存ファイル上書き」「出力先選択」「API失敗」の分岐が未検証です。今回のようなパス解決や引数仕様のずれはユニットテストがないと回帰しやすく、環境差分やマルチターゲット設定で本番利用時に初めて顕在化するリスクがあります。 | 中 |
+| コミットメッセージと提示差分の対応が取れていない | メッセージは `FR-17 whoami + FR-18 ... esync whoami / esync new を追加` ですが、提示差分で新規に入っているのは `new` と FR-18 の完了更新のみで、`whoami` 追加部分は確認できません。このコミットからは判断できないだけで差分抜粋が不足している可能性もありますが、そうでないなら変更意図の追跡性が落ちます。 | 低 |
+| 生成 Markdown の方針と上書き UX が既存実装と不揃い | `new` だけ `html_to_md(body_html)` を既定値で呼んでおり（[cli.py](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L662)）、既存の `pull` / `clone` が使う `heading_style="ATX"` と一致していません（[cli.py](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L152), [cli.py](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L197)）。また上書きエラーでは `--force` を案内しますが（[cli.py](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L673)）、定義は親パーサー側にあり（[cli.py](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L732)）、`esync new ... --force` という自然な書き方では受け付けられません。重大障害ではないものの、AI を含む将来の自動化で誤解を招きやすい構造です。 | 低 |
+
+### Codex 所感
+
+> 所感として、FR-18 の方向性自体は妥当ですが、現状の `new` は既存 CLI のパス解決・ターゲット選択の前提から外れており、静かな誤配置を起こしやすい実装です。なお、このレビューは提示 diff と周辺コード読解ベースであり、この環境では `pytest` 未導入のため実行確認まではしていません。

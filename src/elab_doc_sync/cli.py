@@ -538,6 +538,8 @@ HELP_EPILOG = """\
   elab-doc-sync entity-status show ステータスを表示
   elab-doc-sync entity-status set 1 ステータスを変更
   elab-doc-sync whoami           現在のユーザー情報を表示
+  elab-doc-sync new --list       テンプレート一覧を表示
+  elab-doc-sync new --template-id 1 テンプレートからファイル作成
   elab-doc-sync init             対話的に設定ファイルを作成
   elab-doc-sync update           ツールを最新版に更新
 """
@@ -635,6 +637,48 @@ def cmd_whoami(args):
         print(f"  チーム: {', '.join(team_names)}")
 
 
+def cmd_new(args):
+    """テンプレートから新規 Markdown ファイルを生成する。"""
+    config_path = Path(args.config)
+    config = load_config(config_path)
+    client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
+
+    if args.list_templates:
+        templates = client._req("GET", "/api/v2/experiments_templates").json()
+        if not templates:
+            print("  テンプレートがありません")
+            return
+        for t in templates:
+            print(f"  #{t.get('id', '?')}: {t.get('title', '無題')}")
+        return
+
+    if not args.template_id:
+        print("エラー: --template-id を指定してください（一覧は esync new --list で確認）", file=sys.stderr)
+        sys.exit(1)
+
+    template = client._req("GET", f"/api/v2/experiments_templates/{args.template_id}").json()
+    title = args.title or template.get("title", "untitled")
+    body_html = template.get("body", "") or ""
+    body_md = html_to_md(body_html).strip() if body_html else ""
+
+    filename = title.replace(" ", "_").replace("/", "_") + ".md"
+    # 出力先: 最初のターゲットの docs_dir、または --output
+    if args.output:
+        outpath = Path(args.output)
+    elif config.targets:
+        outpath = Path(config.targets[0].docs_dir) / filename
+    else:
+        outpath = Path(filename)
+
+    if outpath.exists() and not args.force:
+        print(f"エラー: {outpath} は既に存在します（--force で上書き）", file=sys.stderr)
+        sys.exit(1)
+
+    outpath.parent.mkdir(parents=True, exist_ok=True)
+    outpath.write_text(f"# {title}\n\n{body_md}\n", encoding="utf-8")
+    print(f"  ✅ {outpath} を作成しました（テンプレート #{args.template_id}: {template.get('title', '')}）")
+
+
 def cmd_entity_status(args):
     """エンティティのステータスを表示または変更する。"""
     config_path = Path(args.config)
@@ -726,6 +770,12 @@ def main():
 
     estatus_parser = sub.add_parser("entity-status", help="エンティティのステータスを管理")
     sub.add_parser("whoami", help="現在のユーザー情報を表示")
+
+    new_parser = sub.add_parser("new", help="テンプレートから新規ドキュメントを作成")
+    new_parser.add_argument("--list", dest="list_templates", action="store_true", help="テンプレート一覧を表示")
+    new_parser.add_argument("--template-id", type=int, default=None, help="テンプレート ID")
+    new_parser.add_argument("--title", default=None, help="ファイルのタイトル（省略時はテンプレート名）")
+    new_parser.add_argument("--output", "-o", default=None, help="出力ファイルパス")
     estatus_sub = estatus_parser.add_subparsers(dest="status_action")
     estatus_sub.add_parser("show", help="現在のステータスを表示")
     estatus_set_p = estatus_sub.add_parser("set", help="ステータスを変更")
@@ -755,5 +805,7 @@ def main():
         cmd_entity_status(args)
     elif args.command == "whoami":
         cmd_whoami(args)
+    elif args.command == "new":
+        cmd_new(args)
     else:
         cmd_sync(args)
