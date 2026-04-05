@@ -1,6 +1,8 @@
 """Sync log: record and display push/pull history in JSONL format."""
 
 import json
+import os
+import tempfile
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -25,8 +27,19 @@ def record(log_path: Path, *, action: str, target: str, entity: str,
             "files": files or [],
         }
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        line = json.dumps(entry, ensure_ascii=False) + "\n"
+        # 一時ファイルに書いてから append で壊れた部分書き込みを防ぐ
+        fd, tmp = tempfile.mkstemp(dir=str(log_path.parent))
+        try:
+            os.write(fd, line.encode("utf-8"))
+            os.close(fd)
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(Path(tmp).read_text(encoding="utf-8"))
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
     except OSError:
         pass
 
@@ -35,12 +48,16 @@ def read_log(log_path: Path, limit: int = 20) -> list[dict]:
     """Read last N valid entries from log file."""
     if not log_path.exists():
         return []
-    lines = log_path.read_text(encoding="utf-8").strip().splitlines()
+    try:
+        raw = log_path.read_bytes().decode("utf-8", errors="replace")
+    except OSError:
+        return []
+    lines = raw.strip().splitlines()
     entries = []
     for line in reversed(lines):
         try:
             entries.append(json.loads(line))
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError):
             continue
         if len(entries) >= limit:
             break
