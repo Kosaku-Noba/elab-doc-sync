@@ -14,6 +14,11 @@ IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 MD_EXTENSIONS = ["tables", "fenced_code", "codehilite", "toc", "nl2br"]
 
 
+class ConflictError(Exception):
+    """リモートが前回同期以降に変更されている。"""
+    pass
+
+
 def _compute_hash(body: str) -> str:
     return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
 
@@ -84,6 +89,14 @@ class DocsSyncer:
         self.hash_file.parent.mkdir(parents=True, exist_ok=True)
         self.hash_file.write_text(_compute_hash(body) + "\n")
 
+    @property
+    def remote_hash_file(self) -> Path:
+        return self.id_file.with_suffix(".remote_hash")
+
+    def save_remote_hash(self, remote_body: str) -> None:
+        self.remote_hash_file.parent.mkdir(parents=True, exist_ok=True)
+        self.remote_hash_file.write_text(_compute_hash(remote_body) + "\n")
+
     def read_item_id(self) -> int | None:
         if self.id_file.exists():
             text = self.id_file.read_text().strip()
@@ -124,6 +137,20 @@ class DocsSyncer:
             "item_id": self.read_item_id(),
         }
 
+    def _check_remote_conflict(self, item_id: int) -> None:
+        """前回同期時のリモートハッシュと現在のリモート body を比較。"""
+        if not self.remote_hash_file.exists():
+            return
+        saved_hash = self.remote_hash_file.read_text().strip()
+        remote_data = self._get_entity(item_id)
+        remote_body = remote_data.get("body", "") or ""
+        remote_hash = _compute_hash(remote_body)
+        if saved_hash != remote_hash:
+            raise ConflictError(
+                f"リモートが前回同期以降に変更されています（{self.entity} #{item_id}）\n"
+                "→ esync pull で先にリモート変更を取り込むか、--force で強制上書きしてください"
+            )
+
     def sync(self, force: bool = False) -> bool:
         raw_body = self.collect_docs()
 
@@ -141,6 +168,9 @@ class DocsSyncer:
                 print(f"  [{self.target.title}] {entity_label} #{item_id} が見つかりません。新規作成します")
                 item_id = None
 
+        if item_id is not None and not force:
+            self._check_remote_conflict(item_id)
+
         if item_id is None:
             item_id = self._create_entity(title=self.target.title)
             self.save_item_id(item_id)
@@ -150,6 +180,14 @@ class DocsSyncer:
         html = _md_to_html(body)
         self._update_entity(item_id, body=html, title=self.target.title)
         self.save_hash(raw_body)
+
+        # push 後のリモート body ハッシュを保存（競合検出用）
+        try:
+            remote_data = self._get_entity(item_id)
+            self.save_remote_hash(remote_data.get("body", "") or "")
+        except Exception:
+            pass
+
         print(f"  [{self.target.title}] {entity_label} #{item_id} を更新しました")
 
         log_path = self.project_root / sync_log.DEFAULT_LOG_PATH
@@ -196,6 +234,14 @@ class EachDocsSyncer:
         hp.parent.mkdir(parents=True, exist_ok=True)
         hp.write_text(_compute_hash(body) + "\n")
 
+    def _remote_hash_path(self, filename: str) -> Path:
+        return self.hash_dir / f"{filename}.remote_hash"
+
+    def _save_remote_hash(self, filename: str, remote_body: str) -> None:
+        hp = self._remote_hash_path(filename)
+        hp.parent.mkdir(parents=True, exist_ok=True)
+        hp.write_text(_compute_hash(remote_body) + "\n")
+
     def _get_entity(self, eid: int) -> dict:
         if self.entity == "experiments":
             return self.client.get_experiment(eid)
@@ -211,6 +257,21 @@ class EachDocsSyncer:
             self.client.update_experiment(eid, **fields)
         else:
             self.client.update_item(eid, **fields)
+
+    def _check_remote_conflict(self, filename: str, eid: int) -> None:
+        """前回同期時のリモートハッシュと現在のリモート body を比較。"""
+        hp = self._remote_hash_path(filename)
+        if not hp.exists():
+            return
+        saved_hash = hp.read_text().strip()
+        remote_data = self._get_entity(eid)
+        remote_body = remote_data.get("body", "") or ""
+        remote_hash = _compute_hash(remote_body)
+        if saved_hash != remote_hash:
+            raise ConflictError(
+                f"リモートが前回同期以降に変更されています（{self.entity} #{eid}: {filename}）\n"
+                "→ esync pull で先にリモート変更を取り込むか、--force で強制上書きしてください"
+            )
 
     def collect_files(self) -> list[Path]:
         return sorted(self.docs_dir.glob(self.target.pattern))
@@ -261,6 +322,9 @@ class EachDocsSyncer:
                     print(f"  [{title}] {entity_label} #{eid} が見つかりません。新規作成します")
                     eid = None
 
+            if eid is not None and not force:
+                self._check_remote_conflict(f.name, eid)
+
             if eid is None:
                 eid = self._create_entity(title=title)
                 mapping[f.name] = eid
@@ -271,6 +335,14 @@ class EachDocsSyncer:
             html = _md_to_html(body)
             self._update_entity(eid, body=html, title=title)
             self._save_hash(f.name, raw_body)
+
+            # push 後のリモート body ハッシュを保存（競合検出用）
+            try:
+                remote_data = self._get_entity(eid)
+                self._save_remote_hash(f.name, remote_data.get("body", "") or "")
+            except Exception:
+                pass
+
             print(f"  [{title}] {entity_label} #{eid} を更新しました")
 
             log_path = self.project_root / sync_log.DEFAULT_LOG_PATH

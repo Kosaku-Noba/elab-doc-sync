@@ -196,3 +196,40 @@ The simplified `record()` path fixes the temp-file leak, but it also reopens dir
 ### Codex 所感
 
 >   If `f.write(...)` fails after writing only part of the encoded line (for example on `ENOSPC`, `EIO`, or an interrupted process), `sync-log.jsonl` is left with an unterminated JSON object. Because subsequent writes only add a trailing newline, the next successful record is concatenated onto that broken tail and `read_log()` skips both entries as invalid JSON. That means one transient logging failure can silently hide later sync history, which the previous temp-file staging avoided for write failures before the final append.
+
+
+## 2026-04-05T21:12 [Kiro] FR-11 競合検出機能を実装
+
+push 前にリモートの body ハッシュを前回同期時のハッシュと比較し、リモートが変更されていたら push を中断する機能を追加した。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| ConflictError 例外 | sync.py に新規追加。競合検出時に raise する |
+| DocsSyncer._check_remote_conflict() | リモート body のハッシュと保存済みハッシュを比較 |
+| EachDocsSyncer._check_remote_conflict() | 同上（ファイル単位） |
+| DocsSyncer.sync() / EachDocsSyncer.sync() | force=False 時に競合チェックを実行 |
+| cli.py cmd_sync() | ConflictError をキャッチして警告表示 |
+
+### Kiro 所感
+
+- push 後にリモート body の HTML ハッシュを `.remote_hash` ファイルに保存し、次回 push 時にリモートの現在の body と比較する方式を採用。ローカル Markdown ハッシュとリモート HTML ハッシュの不一致問題を回避した。
+- `--force` で競合を無視して強制上書き可能。
+- 次は FR-12（Clone）に進む。
+
+
+## 2026-04-05T21:16 [Codex] feat: FR-11 競合検出機能を実装 (push前リモートハッシュ比較) に対するレビュー
+
+The new conflict-detection flow does not reliably maintain its remote baseline. In particular, pull-based setups never seed `.remote_hash`, and post-push refresh failures are silently ignored, which can either miss real conflicts or invent false ones later.
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| Pull-created targets never get a conflict baseline | /home/kosak/elab-doc-sync/src/elab_doc_sync/sync.py:184-187 | 高 |
+| Don't ignore failures while refreshing `.remote_hash` | /home/kosak/elab-doc-sync/src/elab_doc_sync/sync.py:185-189 | 中 |
+
+### Codex 所感
+
+>   If the PATCH succeeds but this follow-up `_get_entity()` fails transiently, the code still advances the local `.hash` and reports success while leaving the old (or missing) remote baseline in place. The next sync then either raises a false conflict against the user's own last push or skips conflict detection entirely, depending on whether a previous `.remote_hash` existed. The identical broad catch is present in `EachDocsSyncer` as well.
