@@ -147,14 +147,13 @@ def cmd_pull(args):
 
             if args.id:
                 # 指定 ID を pull
-                entities = {args.id}
+                entities = set(args.id)
             elif mapping:
-                # 既存 mapping の ID を pull
+                # 既存 mapping の ID を pull（再同期）
                 entities = set(mapping.values())
             else:
-                # mapping がない場合は全件取得
-                all_entities = list_fn()
-                entities = {e["id"] for e in all_entities}
+                print(f"  [{target.docs_dir}] --id を指定してください（初回 pull には ID が必要です）")
+                continue
 
             for eid in entities:
                 try:
@@ -197,7 +196,7 @@ def cmd_pull(args):
             eid = syncer.read_item_id()
 
             if args.id:
-                eid = args.id
+                eid = args.id[0]  # merge モードでは最初の ID を使用
 
             if eid is None:
                 print(f"  [{target.title}] 同期先の ID が不明です（--id で指定してください）")
@@ -881,7 +880,7 @@ def main():
     sub.add_parser("update", help="ツールを最新版に更新")
 
     pull_parser = sub.add_parser("pull", help="eLabFTW からエンティティを取得してローカルに保存")
-    pull_parser.add_argument("--id", type=int, default=None, help="取得するエンティティの ID")
+    pull_parser.add_argument("--id", type=int, action="append", default=None, help="取得するエンティティ ID（複数指定可）")
     pull_parser.add_argument("--entity", default=None, choices=["items", "experiments", "resources"],
                              help="エンティティ種別（resources は items のエイリアス）")
 

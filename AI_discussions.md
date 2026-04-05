@@ -1365,3 +1365,36 @@ The new methodology document contains two operationally incorrect instructions: 
 ### Codex 所感
 
 > 所感として、今回の差分は既存実装のユーザー向け表示仕様を明示的に保護する目的に沿っており、テスト追加コミットとして妥当です。将来の後続 AI も意図を読み取りやすい粒度です。
+
+
+## 2026-04-06T07:56 [Kiro] pull の全件ダウンロード廃止 + 複数 --id 対応
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| cli.py cmd_pull() | `--id` を `action="append"` で複数指定可能に。mapping/ID ファイルがない初回 pull では `--id` 必須。全件取得（`list_items`/`list_experiments`）を廃止 |
+| tests/test_cli.py | pull テストを新仕様に合わせて修正（id をリストに、全件取得テストを mapping ベースに変更） |
+| docs/05_CLI_REFERENCE.md | pull の説明を新仕様に更新 |
+| README.md | pull コマンド一覧を更新 |
+
+### Kiro 所感
+
+- 全件ダウンロードは意図しない大量取得の原因になるため廃止。初回は `--id` で明示的に指定し、2回目以降は mapping/ID ファイルから自動決定する。
+
+
+## 2026-04-06T07:59 [Codex] feat: pull の全件ダウンロード廃止 + 複数 --id 対応（初回は --id 必須） に対するレビュー
+
+コミットの主旨である「初回 `pull` での全件ダウンロード廃止」はコードに反映されていますが、`複数 --id 対応` はモードによって挙動が分かれており、説明とのズレが残っています。加えて、新しい「初回は `--id`、以後は mapping/ID から自動決定」という運用は、`--entity` 上書きと組み合わせたときの状態保持が不十分です。指定テスト `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` は `135 passed` でした。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| `merge` モードでは複数 `--id` が黙って捨てられる | `README` は `esync pull --id 42 --id 43` を一般形として案内していますが、実装は `merge` モードで `args.id[0]` しか使っておらず、2件目以降を無言で無視します。[README.md:74](/home/kosak/elab-doc-sync/README.md#L74) と [src/elab_doc_sync/cli.py:198](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L198) / [src/elab_doc_sync/cli.py:199](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L199) が不一致です。ユーザーは取得できたつもりで一部 ID を取りこぼすため、`merge` では複数指定を明示的にエラーにするか、機能説明を `each` 限定に寄せる方が安全です。 | 中 |
+| `--entity` 付き初回 `pull` の後は、自動再取得に必要な情報が保存されない | このコミットは「2回目以降は mapping/ID ファイルから対象を自動決定」と説明していますが、保存しているのは数値 ID だけで、どのエンティティ種別で取得したかは残していません。[docs/05_CLI_REFERENCE.md:73](/home/kosak/elab-doc-sync/docs/05_CLI_REFERENCE.md#L73)、[src/elab_doc_sync/cli.py:139](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L139)、[src/elab_doc_sync/cli.py:179](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L179)、[src/elab_doc_sync/sync.py:231](/home/kosak/elab-doc-sync/src/elab_doc_sync/sync.py#L231)。そのため、初回に `--entity experiments` で取得し、次回はオプションなしで `pull` すると `target.entity` 側の API を叩きます。ID 空間が種別間でどうなっているかはこのコミットからは判断できませんが、少なくとも作者に明示的な確認が必要です。 | 中 |
+| 新仕様の境界条件を固定するテストが不足している | 既存テストの更新で happy path は通っていますが、今回の仕様変更の核である「初回 `pull` で `--id` なしは失敗すること」と「`merge` モードで複数 `--id` をどう扱うか」は回帰テスト化されていません。[tests/test_cli.py:98](/home/kosak/elab-doc-sync/tests/test_cli.py#L98)、[tests/test_cli.py:111](/home/kosak/elab-doc-sync/tests/test_cli.py#L111)。ここが未固定のままだと、将来の修正で全件取得が戻る、または複数 ID の黙殺仕様が変わっても気づきにくいです。 | 低 |
+
+### Codex 所感
+
+> 全件ダウンロードをやめる方向性自体は妥当で、テストも現状は安定しています。ただし今回の変更で `pull` の前提が「モード依存」「前回保存状態依存」へ寄ったので、無視する引数は CLI で弾くことと、再取得に必要な状態をどこまで永続化するかを明文化した方が後続の人間・AIの双方に読みやすいです。

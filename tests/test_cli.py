@@ -33,7 +33,7 @@ def _write_config(tmp_path, mode="merge", entity="items"):
 
 
 def _ns(tmp_path, **kw):
-    defaults = {"config": str(tmp_path / ".elab-sync.yaml"), "target": None, "force": False, "dry_run": False}
+    defaults = {"config": str(tmp_path / ".elab-sync.yaml"), "target": None, "force": False, "dry_run": False, "entity": None}
     defaults.update(kw)
     return Namespace(**defaults)
 
@@ -98,9 +98,8 @@ def test_sync_conflict_error(MockSyncer, MockClient, tmp_path, capsys):
 @patch("elab_doc_sync.cli.ELabFTWClient")
 def test_pull_each(MockClient, tmp_path):
     cfg, docs = _write_config(tmp_path, mode="each")
-    MockClient.return_value.list_items.return_value = [{"id": 1}]
     MockClient.return_value.get_item.return_value = {"id": 1, "title": "Doc1", "body": "<p>hi</p>"}
-    cmd_pull(_ns(tmp_path, id=None, command="pull"))
+    cmd_pull(_ns(tmp_path, id=[1], command="pull"))
     assert (docs / "Doc1.md").exists()
     ids_dir = tmp_path / ".elab-sync-ids"
     assert (ids_dir / "mapping.json").exists()
@@ -127,7 +126,7 @@ def test_pull_merge(MockClient, tmp_path):
 def test_pull_specific_id(MockClient, tmp_path):
     cfg, docs = _write_config(tmp_path, mode="each")
     MockClient.return_value.get_item.return_value = {"id": 99, "title": "Specific", "body": "<p>x</p>"}
-    cmd_pull(_ns(tmp_path, id=99, command="pull"))
+    cmd_pull(_ns(tmp_path, id=[99], command="pull"))
     assert (docs / "Specific.md").exists()
 
 
@@ -136,7 +135,10 @@ def test_pull_specific_id(MockClient, tmp_path):
 def test_pull_skip_existing(MockClient, tmp_path):
     cfg, docs = _write_config(tmp_path, mode="each")
     (docs / "Doc1.md").write_text("original", encoding="utf-8")
-    MockClient.return_value.list_items.return_value = [{"id": 1}]
+    ids_dir = tmp_path / ".elab-sync-ids"
+    ids_dir.mkdir(exist_ok=True)
+    import json as _json
+    (ids_dir / "mapping.json").write_text(_json.dumps({"Doc1.md": 1}))
     MockClient.return_value.get_item.return_value = {"id": 1, "title": "Doc1", "body": "<p>new</p>"}
     cmd_pull(_ns(tmp_path, id=None, command="pull"))
     assert (docs / "Doc1.md").read_text(encoding="utf-8") == "original"
@@ -147,7 +149,10 @@ def test_pull_skip_existing(MockClient, tmp_path):
 def test_pull_force_overwrite(MockClient, tmp_path):
     cfg, docs = _write_config(tmp_path, mode="each")
     (docs / "Doc1.md").write_text("original", encoding="utf-8")
-    MockClient.return_value.list_items.return_value = [{"id": 1}]
+    ids_dir = tmp_path / ".elab-sync-ids"
+    ids_dir.mkdir(exist_ok=True)
+    import json as _json
+    (ids_dir / "mapping.json").write_text(_json.dumps({"Doc1.md": 1}))
     MockClient.return_value.get_item.return_value = {"id": 1, "title": "Doc1", "body": "<p>new</p>"}
     cmd_pull(_ns(tmp_path, id=None, command="pull", force=True))
     content = (docs / "Doc1.md").read_text(encoding="utf-8")
