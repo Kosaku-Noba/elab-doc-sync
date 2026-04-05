@@ -1028,3 +1028,37 @@ The new methodology document contains two operationally incorrect instructions: 
 - Codex の P1（metadata 上書き）は eLabFTW の metadata フィールドが JSON object か null であるという前提に基づいた設計判断。docstring で明文化した。
 - タグ同期失敗の診断性は debug ログで対応。通常ユーザーには汎用メッセージのみ表示し、開発者は `logging.basicConfig(level=logging.DEBUG)` で詳細を確認できる。
 - これ以上の堂々巡りを避け、FR-15 を完了とする。push する。
+
+
+## 2026-04-05T23:25 [Kiro] FR-16 ステータス管理を実装
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| client.py | 汎用 `get_entity()` / `patch_entity()` メソッドを追加 |
+| cli.py | `esync entity-status show` でステータス表示、`esync entity-status set <ID>` でステータス変更 |
+| README.md | コマンド一覧に entity-status を追加 |
+| 10_REQUIREMENTS.md | FR-16 を ✅ に更新 |
+
+### Kiro 所感
+
+- eLabFTW のステータスは ID で管理されるため、`set` にはステータス ID を指定する。ステータス名の一覧表示は eLabFTW のチーム設定に依存するため、今回は ID 指定のみ。
+- `esync status` は既に同期状態確認に使われているため、`esync entity-status` という名前にした。
+
+
+## 2026-04-05T23:28 [Codex] feat: FR-16 ステータス管理 — esync entity-status show/set を追加 に対するレビュー
+
+コミットメッセージどおり `entity-status show/set` の追加自体は差分と一致しています。  
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 仕様・運用影響の未記載な一括更新 | `set` はエンティティ ID を受け取らず、`_get_entity_ids()` が返す対象すべてに同じステータスを適用します。`each` モードでは同期済み全エンティティが更新対象になりうるため、`esync entity-status set 1` が単一変更ではなく一括 publish/draft 変更として作用しますが、その挙動はコミットメッセージや README からは読み取りにくいです。外部状態を書き換える操作としては事故コストが高く、少なくとも「対象は全同期済みエンティティ」である旨の明示、`--id` 相当の単体指定、または確認プロンプトの要否について作者に明示的な確認が必要です。[src/elab_doc_sync/cli.py#L633](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L633) [src/elab_doc_sync/cli.py#L645](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L645) [src/elab_doc_sync/cli.py#L701](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L701) [README.md#L81](/home/kosak/elab-doc-sync/README.md#L81) | 高 |
+| FR-16 完了判定と実装粒度のずれ | 要求は「draft / published ワークフロー」ですが、CLI から分かるのは現在の表示名だけで、設定に必要な `status_id` の候補や現在の ID は取得できません。つまり、この CLI 単独ではワークフローを完結できず、チーム設定画面など外部知識が前提になります。これを許容仕様とするなら問題ありませんが、その前提は要求・README 上で明文化されておらず、「FR-16 完了」とする妥当性はこのコミットからは判断できません。加えて `set <ID>` の `<ID>` は他コマンドの entity ID と見分けがつきにくく、将来の AI/人手運用で誤解を招きやすいです。[docs/10_REQUIREMENTS.md#L38](/home/kosak/elab-doc-sync/docs/10_REQUIREMENTS.md#L38) [src/elab_doc_sync/cli.py#L642](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L642) [README.md#L82](/home/kosak/elab-doc-sync/README.md#L82) | 中 |
+| テスト・参照文書の追随不足 | 新しい書き込み系コマンドと汎用 client API を追加したのに、CLI テストは依然 `CLI-53` までで新ケースがなく、テスト仕様書の件数も更新されていません。少なくとも「merge/each での対象決定」「無効な `status_id` / API 失敗時の表示」「`show` のレスポンス形差異」「一括更新が意図どおりか」は自動テストで担保したいです。さらに CLI/API リファレンスも未更新なので、将来の保守や AI 支援時に README と正本ドキュメントが食い違います。[tests/test_cli.py#L1](/home/kosak/elab-doc-sync/tests/test_cli.py#L1) [tests/test_client.py#L1](/home/kosak/elab-doc-sync/tests/test_client.py#L1) [docs/11_TEST_SPEC.md#L183](/home/kosak/elab-doc-sync/docs/11_TEST_SPEC.md#L183) [docs/05_CLI_REFERENCE.md#L5](/home/kosak/elab-doc-sync/docs/05_CLI_REFERENCE.md#L5) [docs/06_API_REFERENCE.md#L70](/home/kosak/elab-doc-sync/docs/06_API_REFERENCE.md#L70) | 中 |
+
+### Codex 所感
+
+> 所感として、実装量は小さい一方で、外部状態を書き換える CLI としては対象範囲・識別子・検証の明示が足りません。単体操作か一括操作か、CLI 単独で完結すべきかの前提を固めれば、この機能はかなりレビューしやすくなります。
