@@ -110,3 +110,23 @@ def test_format_log_normal(tmp_path):
 def test_format_log_empty():
     output = format_log([])
     assert "まだありません" in output
+
+
+# L-12: user フィールド付きログ記録
+def test_record_with_user(tmp_path):
+    from elab_doc_sync import sync_log
+    log_path = tmp_path / "log.jsonl"
+    sync_log.record(log_path, action="push", target="T", entity="items", entity_id=1, user="taro@example.com")
+    entries = sync_log.read_log(log_path)
+    assert len(entries) == 1
+    assert entries[0]["user"] == "taro@example.com"
+
+
+# L-13: user フィールドなし（後方互換）
+def test_record_without_user(tmp_path):
+    from elab_doc_sync import sync_log
+    log_path = tmp_path / "log.jsonl"
+    sync_log.record(log_path, action="push", target="T", entity="items", entity_id=1)
+    entries = sync_log.read_log(log_path)
+    assert len(entries) == 1
+    assert "user" not in entries[0]

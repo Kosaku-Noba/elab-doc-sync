@@ -552,7 +552,7 @@ def _get_entity_ids(client, syncer, target, args_id=None):
     if target.mode == "each":
         mapping = syncer._load_mapping()
         return [(eid, target.entity) for eid in mapping.values()] if mapping else []
-    eid = syncer.load_item_id()
+    eid = syncer.read_item_id()
     return [(eid, target.entity)] if eid else []
 
 
