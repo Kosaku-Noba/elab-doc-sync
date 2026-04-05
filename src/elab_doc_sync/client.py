@@ -92,6 +92,16 @@ class ELabFTWClient:
 
     # ── uploads ──────────────────────────────────────────────
 
+    def get_entity(self, entity_type: str, entity_id: int) -> dict:
+        """汎用エンティティ取得。"""
+        return self._req("GET", f"/api/v2/{entity_type}/{entity_id}").json()
+
+    def patch_entity(self, entity_type: str, entity_id: int, **fields) -> None:
+        """汎用エンティティ更新。"""
+        self._req("PATCH", f"/api/v2/{entity_type}/{entity_id}", json=fields)
+
+    # ── uploads ──────────────────────────────────────────────
+
     def upload_file(self, entity_type: str, entity_id: int, filepath: str, comment: str = "") -> dict:
         """Upload file. entity_type is 'items' or 'experiments'."""
         url = f"/api/v2/{entity_type}/{entity_id}/uploads"

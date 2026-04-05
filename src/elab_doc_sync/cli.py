@@ -535,6 +535,8 @@ HELP_EPILOG = """\
   elab-doc-sync tag remove "タグ" タグを外す
   elab-doc-sync metadata get     メタデータを表示
   elab-doc-sync metadata set k=v メタデータを設定
+  elab-doc-sync entity-status show ステータスを表示
+  elab-doc-sync entity-status set 1 ステータスを変更
   elab-doc-sync init             対話的に設定ファイルを作成
   elab-doc-sync update           ツールを最新版に更新
 """
@@ -617,6 +619,33 @@ def cmd_metadata(args):
                 print(f"  {label}: メタデータを更新しました")
 
 
+def cmd_entity_status(args):
+    """エンティティのステータスを表示または変更する。"""
+    config_path = Path(args.config)
+    project_root = config_path.parent or Path(".")
+    config = load_config(config_path)
+    client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
+
+    for target in config.targets:
+        if args.target and target.title != args.target:
+            continue
+        syncer = _make_syncer(client, target, project_root)
+        ids = _get_entity_ids(client, syncer, target)
+        if not ids:
+            print(f"  [{target.title or target.docs_dir}] 同期済みエンティティなし")
+            continue
+
+        for eid, etype in ids:
+            label = f"{etype} #{eid}"
+            if args.status_action == "show":
+                entity = client.get_entity(etype, eid)
+                status_name = entity.get("status_title") or entity.get("status", {}).get("title", "不明")
+                print(f"  {label}: {status_name}")
+            elif args.status_action == "set":
+                client.patch_entity(etype, eid, status=int(args.status_id))
+                print(f"  {label}: ステータスを ID={args.status_id} に変更しました")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog=Path(sys.argv[0]).stem if Path(sys.argv[0]).stem in ("esync", "elab-doc-sync") else "elab-doc-sync",
@@ -665,6 +694,12 @@ def main():
     meta_set_p.add_argument("keyvalues", nargs="+", help="key=value ペア")
     meta_set_p.add_argument("--id", type=int, default=None, help="エンティティ ID")
 
+    estatus_parser = sub.add_parser("entity-status", help="エンティティのステータスを管理")
+    estatus_sub = estatus_parser.add_subparsers(dest="status_action")
+    estatus_sub.add_parser("show", help="現在のステータスを表示")
+    estatus_set_p = estatus_sub.add_parser("set", help="ステータスを変更")
+    estatus_set_p.add_argument("status_id", help="ステータス ID")
+
     args = parser.parse_args()
     if args.command == "status":
         cmd_status(args)
@@ -684,5 +719,7 @@ def main():
         cmd_tag(args)
     elif args.command == "metadata":
         cmd_metadata(args)
+    elif args.command == "entity-status":
+        cmd_entity_status(args)
     else:
         cmd_sync(args)

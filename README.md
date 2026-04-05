@@ -78,6 +78,8 @@ elabftw:
 | `esync tag remove "タグ"` | タグを外す |
 | `esync metadata get` | メタデータを表示 |
 | `esync metadata set k=v` | メタデータを設定 |
+| `esync entity-status show` | エンティティのステータスを表示 |
+| `esync entity-status set <ID>` | ステータスを変更 |
 | `esync init` | 対話的に設定ファイルを作成 |
 | `esync update` | ツールを最新版に更新 |
 | `esync --dry-run` | 実行せずに同期内容を確認 |
