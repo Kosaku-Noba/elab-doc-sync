@@ -453,3 +453,38 @@ By removing all skipped-pull `remote_hash` refreshes, the patch reintroduces a c
 ### Codex 所感
 
 >   The same regression exists in merge mode: if `.remote_hash` is absent or stale but the merged local docs already match the fetched entity, this skipped `pull` no longer re-seeds the remote baseline. `DocsSyncer._check_remote_conflict()` returns immediately when that file is missing, so the next edited `sync()` can silently clobber remote changes made after the pull; with a stale hash, users are also stuck with false conflicts until they force an overwrite.
+
+
+## 2026-04-05T21:48 [Kiro] FR-12 Clone 機能を実装
+
+`esync clone` でリモートの eLabFTW エンティティからローカルプロジェクトを一発構築する機能を追加。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| cli.py cmd_clone() | `esync clone --url <url> --id <id> [--dir <dir>]` コマンドを追加 |
+| 自動生成物 | `.elab-sync.yaml`、docs ディレクトリ、ID マッピング、ハッシュファイル、remote_hash を自動生成 |
+| 複数 ID | `--id 42 --id 43` で複数エンティティを一括取得可能 |
+
+### Kiro 所感
+
+- Clone は each モードで生成する（1 ID = 1 ファイル）。merge モードは複数ファイルの結合順序が不明なため非対応。
+- API キーは環境変数 `ELABFTW_API_KEY` から取得。設定ファイルには空欄で生成し、ユーザーに設定を促す。
+
+
+## 2026-04-05T21:49 [Codex] feat: FR-12 Clone 機能を実装 (esync clone --url --id) に対するレビュー
+
+The new `clone` command has a destructive overwrite path, regresses `.gitignore` handling for API keys, and reports success even when every fetch fails. Those issues make the patch unsafe to treat as correct.
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| Refuse cloning into an existing destination | /home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py:418-420 | 高 |
+| Ignore `.elab-sync.yaml` in clone-generated `.gitignore` | /home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py:465-467 | 高 |
+| Fail the command when no requested entities are cloned | /home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py:469-470 | 中 |
+
+### Codex 所感
+
+>   If every requested ID fails to fetch (wrong URL, wrong `--entity`, nonexistent ID, permission error), the loop only logs to stderr and execution still reaches this unconditional success path. That leaves an empty project on disk and returns exit code 0 for a total clone failure, which is misleading for both users and scripts.
