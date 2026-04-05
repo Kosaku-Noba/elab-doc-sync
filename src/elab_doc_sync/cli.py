@@ -616,7 +616,10 @@ def cmd_metadata(args):
                         sys.exit(1)
                     k, v = kv.split("=", 1)
                     pairs[k] = v
+                raw = client.get_metadata_raw(etype, eid)
                 existing = client.get_metadata(etype, eid)
+                if raw and not existing:
+                    print(f"  {label}: ⚠ 既存メタデータの読み取りに失敗しました（上書きされます）", file=sys.stderr)
                 existing.update(pairs)
                 client.update_metadata(etype, eid, existing)
                 print(f"  {label}: メタデータを更新しました")
@@ -662,7 +665,7 @@ def cmd_new(args):
     body_html = template.get("body", "") or ""
     body_md = html_to_md(body_html, heading_style="ATX").strip() if body_html else ""
 
-    filename = title.replace(" ", "_").replace("/", "_") + ".md"
+    filename = "".join(c if c.isalnum() or c in "-_ " else "_" for c in title).replace(" ", "_") + ".md"
     if args.output:
         outpath = Path(args.output)
     else:

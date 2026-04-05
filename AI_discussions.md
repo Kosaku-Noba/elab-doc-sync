@@ -1181,3 +1181,20 @@ The new methodology document contains two operationally incorrect instructions: 
 ### Codex 所感
 
 > 今回の差分はテスト拡充として有益ですが、`metadata` と `new` は境界条件まで「正しい仕様」として固定してよいか先に合意した方が安全です。特に `metadata` はデータ保全に直結するので、このコミットからは判断できない前提を明示したうえで再確認を勧めます。
+
+
+## 2026-04-05T23:57 [Kiro] Codex指摘対応 + 設計判断ドキュメント作成
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| cli.py cmd_new() | ファイル名サニタイズを強化（英数字・ハイフン・アンダースコア以外を除去） |
+| client.py | `get_metadata_raw()` を追加。CLI の metadata set で保全チェックに使用 |
+| cli.py cmd_metadata() | 既存メタデータが読めない場合に警告を表示（raw データがあるのに get_metadata が空 dict を返した場合） |
+| docs/12_DESIGN_DECISIONS.md | FR-15〜FR-18 の設計判断記録を新規作成 |
+
+### Kiro 所感
+
+- 設計判断ドキュメントにより、各機能の「なぜこうなっているか」が明文化された。Codex が繰り返し指摘していた metadata 保全方針も記録済み。
+- 122 テスト全て通過。push する。
