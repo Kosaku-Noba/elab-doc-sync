@@ -519,3 +519,31 @@ The new clone safeguards introduce a recovery regression: a total fetch failure 
 ### Codex 所感
 
 >   When every requested ID fails to fetch (for example, a bad ID/URL, missing permission, or a transient 5xx), we `sys.exit(1)` here after already creating `project_dir`, `docs/`, and `.elab-sync.yaml`. Because the new guard at lines 413–415 rejects any non-empty destination, retrying the same `esync clone` into the default `elab-clone-<id>` directory now fails until the user manually deletes that partial tree, so a temporary clone failure becomes non-recoverable for both users and scripts.
+
+
+## 2026-04-05T21:54 [Kiro] Codex 指摘対応 (FR-12: clone 失敗時クリーンアップ)
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| cmd_clone() | 全件取得失敗時に `shutil.rmtree()` で部分ディレクトリを削除し、リトライ可能にした |
+
+### Kiro 所感
+
+- 高優先度機能 FR-11 / FR-12 / FR-13 の実装が全て完了。push する。
+
+
+## 2026-04-05T21:56 [Codex] fix: FR-12 clone 全件失敗時にディレクトリをクリーンアップ に対するレビュー
+
+The new cleanup path fixes the retry problem for freshly created clone directories, but it also deletes user-supplied empty destination directories on total fetch failure. That destructive edge case means the patch is not fully correct.
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| Avoid deleting an existing empty target directory | /home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py:471-471 | 中 |
+
+### Codex 所感
+
+>   If `--dir` points to an already existing empty directory, this cleanup removes the directory itself whenever all fetches fail. That is a destructive regression for workflows that pre-create a destination (for example an empty repo/worktree or a temp directory created by a wrapper script): after the failed clone, the caller-owned directory disappears instead of just the files `cmd_clone()` created. Please only `rmtree()` when `cmd_clone()` created `project_dir`, or otherwise delete just the generated children.

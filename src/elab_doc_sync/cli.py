@@ -467,6 +467,8 @@ def cmd_clone(args):
         print(f"  [{title}] {entity_label} #{eid} → {filepath}")
 
     if cloned == 0:
+        # 部分的に作成されたディレクトリをクリーンアップ
+        shutil.rmtree(project_dir, ignore_errors=True)
         print("\nエラー: エンティティを1件も取得できませんでした", file=sys.stderr)
         sys.exit(1)
 
