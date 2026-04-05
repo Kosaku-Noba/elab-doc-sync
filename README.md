@@ -71,6 +71,7 @@ elabftw:
 | `esync` | ローカル → eLabFTW に同期（push） |
 | `esync pull` | eLabFTW → ローカルに取得 |
 | `esync pull --id 42` | 指定 ID のエンティティを取得 |
+| `esync pull --id 42 --entity experiments` | 実験ノートとして取得 |
 | `esync diff` | ローカルと eLabFTW の差分を表示 |
 | `esync status` | 同期状態を確認 |
 | `esync tag list` | リモートのタグ一覧を表示 |
