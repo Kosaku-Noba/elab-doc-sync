@@ -357,3 +357,34 @@ The new skipped-pull remote-hash refresh regresses conflict detection in both sy
 ### Codex 所感
 
 >   With an existing merge target, `pull --id 42` on an unchanged checkout updates `.remote_hash` for item 42 inside this branch but never reaches `save_item_id(42)` below. Future `sync()` calls still read the previous `.id`, compare that old entity's current body against item 42's hash, and can fail with a false conflict until the user forces another pull or fixes the id file manually.
+
+
+## 2026-04-05T21:36 [Kiro] FR-11 確定: スキップ時の remote_hash 更新を完全撤回
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| cli.py cmd_pull() | スキップ時の remote_hash 更新ロジックを全て削除。remote_hash は実際にデータを同期した時点（pull 成功 / push 成功）でのみ保存する |
+
+### Kiro 所感
+
+- スキップ時に remote_hash を触ると、どのパターンでも競合検出を壊す。「同期した時点でのみベースラインを設定」が正しい原則。
+- v0.1.x からのアップグレード時は remote_hash が存在しないため、初回 push で競合チェックがスキップされる。これは「初回は信頼する」という合理的なデフォルト。
+- FR-11 / FR-13 完了。FR-12（Clone）に進む。
+
+
+## 2026-04-05T21:38 [Codex] fix: FR-11 確定 — スキップ時 remote_hash 更新を完全撤回 に対するレビュー
+
+Removing all skipped-pull baseline refreshes breaks conflict detection recovery for existing checkouts that lack a current `.remote_hash`. In both sync modes, a no-op `pull` can no longer re-establish the remote baseline, so later pushes may overwrite newer remote edits without warning.
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| Recreate the `each` remote baseline before skipping a matched file | /home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py:157-159 | 高 |
+| Rebuild the merge-mode remote baseline on no-op pulls | /home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py:202-204 | 高 |
+
+### Codex 所感
+
+>   This unconditional skip reintroduces the same hole for merge targets: if `.remote_hash` is absent/stale on an existing checkout, `esync pull` can no longer repair it even when the fetched body already matches `collect_docs()`. After that, `DocsSyncer._check_remote_conflict()` returns early on the next edited push, so any remote update that happened after the pull is silently overwritten. The merge skip path needs to refresh the baseline when the local merged docs are already in sync with the pulled entity, rather than always `continue`ing here.
