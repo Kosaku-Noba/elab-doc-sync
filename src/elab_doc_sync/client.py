@@ -113,13 +113,29 @@ class ELabFTWClient:
 
     # ── tags ─────────────────────────────────────────────────
 
+    def get_tags(self, entity_type: str, entity_id: int) -> list[dict]:
+        return self._req("GET", f"/api/v2/{entity_type}/{entity_id}/tags").json()
+
     def add_tag(self, entity_type: str, entity_id: int, tag: str) -> None:
         self._req("POST", f"/api/v2/{entity_type}/{entity_id}/tags", json={"tag": tag})
 
     def remove_tag(self, entity_type: str, entity_id: int, tag_id: int) -> None:
         self._req("DELETE", f"/api/v2/{entity_type}/{entity_id}/tags/{tag_id}")
 
+    def remove_tag_by_name(self, entity_type: str, entity_id: int, tag_name: str) -> bool:
+        for tag in self.get_tags(entity_type, entity_id):
+            if tag.get("tag") == tag_name:
+                self._req("PATCH", f"/api/v2/{entity_type}/{entity_id}/tags/{tag['id']}",
+                          json={"action": "unreference"})
+                return True
+        return False
+
     # ── metadata ─────────────────────────────────────────────
+
+    def get_metadata(self, entity_type: str, entity_id: int) -> dict:
+        entity = self._req("GET", f"/api/v2/{entity_type}/{entity_id}").json()
+        raw = entity.get("metadata") or "{}"
+        return json.loads(raw) if isinstance(raw, str) else raw
 
     def update_metadata(self, entity_type: str, entity_id: int, metadata: dict[str, Any]) -> None:
         self._req("PATCH", f"/api/v2/{entity_type}/{entity_id}",

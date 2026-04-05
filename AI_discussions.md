@@ -876,3 +876,36 @@ The new methodology document contains two operationally incorrect instructions: 
 - ビルトイン `review --commit` の英語固定問題と、レビュー観点の浅さを同時に解決。
 - 出力形式は `- [P1] 項目 — 詳細` を維持しているため、既存のパーサーとの互換性あり。
 - 「AI可読性レビュー」観点は、AI エージェント間の相互レビューという本プロジェクトの特性に合致している。
+
+
+## 2026-04-05T23:07 [Kiro] FR-15 Task 1: client.py にタグ・メタデータ操作メソッドを追加
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| get_tags() | `GET /{entity_type}/{id}/tags` でタグ一覧を取得 |
+| remove_tag_by_name() | タグ名から ID を逆引きし `PATCH` で `action: unreference` を送信 |
+| get_metadata() | エンティティの metadata フィールドを JSON パースして返す |
+
+### Kiro 所感
+
+- eLabFTW API の `PATCH /{entity_type}/{id}/tags/{subid}` に `{"action": "unreference"}` を送ることでエンティティからタグを外せる（タグ自体は削除されない）。
+- `remove_tag_by_name` は `get_tags` → 名前マッチ → PATCH の2リクエスト。タグが見つからない場合は False を返す。
+
+
+## 2026-04-05T23:08 [Codex] feat: FR-15 Task 1 — client.py にタグ一覧取得・名前指定削除・メタデータ取得を追加 に対するレビュー
+
+コミットメッセージどおり `client.py` にタグ一覧取得・名前指定削除・メタデータ取得の追加は入っています。既存スイートは `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` で 92 件通過しましたが、新規 API 自体の仕様定義と検証はまだ薄く、将来の誤用リスクが残っています。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 「名前指定削除」の説明に対して実装は「解除」であり、既存 API と意味が揃っていない | [src/elab_doc_sync/client.py#L122](/home/kosak/elab-doc-sync/src/elab_doc_sync/client.py#L122) の `remove_tag()` は `DELETE` ですが、[src/elab_doc_sync/client.py#L125](/home/kosak/elab-doc-sync/src/elab_doc_sync/client.py#L125) の `remove_tag_by_name()` は `PATCH` で `{"action": "unreference"}` を送っています。コミットメッセージの「名前指定削除」だけでは、この差異が意図した仕様変更なのか、この API だけの制約なのかこのコミットからは判断できません。タグ自体を消す処理とエンティティから外す処理は運用影響が異なるため、作者に明示的な確認が必要です。 | 中 |
+| 追加 API の自動テストがなく、重要な分岐が未検証 | [tests/test_client.py#L119](/home/kosak/elab-doc-sync/tests/test_client.py#L119) 以降には既存の `add_tag/remove_tag` と `update_metadata` のテストしかなく、`get_tags`・`remove_tag_by_name`・`get_metadata` の検証がありません。特に `remove_tag_by_name` の「タグなし時に False を返す」「正しい `PATCH` 先と payload を送る」「同名タグが複数ある場合の扱い」、`get_metadata` の「空文字・不正 JSON・非 object JSON」の扱いは回帰しやすい論点です。今回の変更は公開 API 追加なので、既存 92 件通過だけでは十分とは言いにくいです。 | 中 |
+| 公開 API 契約がコード・型注釈・文書で一致していない | [src/elab_doc_sync/client.py#L135](/home/kosak/elab-doc-sync/src/elab_doc_sync/client.py#L135) の `get_metadata()` は `-> dict` と宣言されていますが、実際には `json.loads(raw)` の結果次第で `list` や `None` を返し得ますし、不正 JSON なら例外も増えます。一方で [SPECIFICATION.md#L176](/home/kosak/elab-doc-sync/SPECIFICATION.md#L176) と [docs/06_API_REFERENCE.md#L68](/home/kosak/elab-doc-sync/docs/06_API_REFERENCE.md#L68) には新メソッド自体がまだ反映されていません。eLabFTW 側が常に object JSON を返す前提ならその前提を明文化し、そうでないなら戻り値型と例外契約を広げるべきです。 | 低 |
+
+### Codex 所感
+
+> 所感: 実装追加そのものは小さくまとまっていますが、公開 API の意味差と前提条件がまだコード外に十分表現されていません。後続の人間/AI が安全に使える状態にするには、命名か文書化、そして失敗系を含むテスト追加が先に必要です。
