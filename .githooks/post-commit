@@ -82,8 +82,8 @@ echo "$ENTRY"
 printf "\n\n%s\n" "$ENTRY" >> "$DISCUSSIONS_FILE"
 
 # amend 時に元のコミット内容を維持するため、
-# 元コミットの全ファイルを再ステージしてから AI_discussions.md を追加
-git diff HEAD~1 HEAD --name-only | xargs -r git add
+# post-commit 時点ではインデックスは既に HEAD と一致しているので
+# AI_discussions.md だけを追加すれば十分
 git add "$DISCUSSIONS_FILE"
 git commit --amend --no-edit --no-verify
 
