@@ -980,3 +980,35 @@ The new methodology document contains two operationally incorrect instructions: 
 ### Codex 所感
 
 > 安全側に倒す意図は読み取れますが、「警告して続行」の2箇所は仕様と運用の約束をもう一段はっきりさせないと、後続の人間や AI が誤読しやすい状態です。特に `metadata` の上書き継続は、単なる UX 改善ではなくデータ保持方針の変更として扱うのが妥当です。
+
+
+## 2026-04-05T23:19 [Kiro] FR-15 Codex指摘対応 (2回目: metadata責務分離 + タグ例外安全化)
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| cli.py cmd_metadata() | `client._req()` 直接呼び出しを削除。`get_metadata()` に一本化し責務分離を修正 |
+| sync.py _sync_tags() | 例外メッセージから生の例外文字列を除去（API 応答情報の露出防止） |
+
+### Kiro 所感
+
+- metadata set は `get_metadata()` が空 dict を返す場合、新しい pairs のみで上書きされる。これは eLabFTW 側のメタデータが空の場合の正常動作と同じなので許容範囲。
+- FR-15 の実装は完了。push する。
+
+
+## 2026-04-05T23:21 [Codex] fix: FR-15 Codex指摘対応(2) — metadata責務分離修正 + タグ例外安全化 に対するレビュー
+
+責務分離の方向性自体は妥当ですが、このコミットは `metadata set` のデータ保持方針とタグ同期失敗時の観測性にまだリスクを残しています。既存テスト 92 件は通過しましたが、今回の変更点を直接固定するテストは確認できませんでした。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| `metadata set` が依然として破壊的上書きになり得るうえ、今回の差分で警告も消えています | [src/elab_doc_sync/client.py:136](/home/kosak/elab-doc-sync/src/elab_doc_sync/client.py#L136) の `get_metadata()` は不正 JSON・非 `dict`・falsy 値をすべて `{}` に正規化し、[src/elab_doc_sync/cli.py:614](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L614) ではその結果に `pairs` を `update()` して全体 PATCH します。これにより既存 metadata が読めないケースでも `pairs` のみで静かに再保存され、前回差分にあった警告出力まで今回削除されています。コミットメッセージの「metadata責務分離修正」だけでは読み取れない実質的な挙動変更であり、既存データを保持できない場合でも継続してよいのかは作者に明示的な確認が必要です。 | 高 |
+| タグ同期失敗時の診断性が不足し、運用で原因追跡しにくくなっています | [src/elab_doc_sync/sync.py:203](/home/kosak/elab-doc-sync/src/elab_doc_sync/sync.py#L203) は全例外を握って汎用メッセージだけを出すようになりましたが、[src/elab_doc_sync/sync_log.py:15](/home/kosak/elab-doc-sync/src/elab_doc_sync/sync_log.py#L15) の同期ログにはタグ同期失敗の情報が残りません。生の例外文字列を出さない判断はセキュリティ上理解できますが、現状は認可不足・通信断・タグ値不正を区別できず、本番で「本文だけ成功、タグだけ未反映」の原因を追えません。タグが検索や運用フローで重要かはこのコミットからは判断できないため、最低限の匿名化済み診断情報を残すかは明示的な確認が必要です。 | 中 |
+| 今回の仕様境界を固定する回帰テストが不足しています | [tests/test_client.py:148](/home/kosak/elab-doc-sync/tests/test_client.py#L148) では `update_metadata()` のシリアライズしか検証しておらず、`get_metadata()` の「異常時は `{}` を返す」契約や、`metadata set` が unreadable metadata をどう扱うかを固定するテストがありません。[tests/test_cli.py](/home/kosak/elab-doc-sync/tests/test_cli.py) に metadata コマンドのケースはなく、[tests/test_sync.py](/home/kosak/elab-doc-sync/tests/test_sync.py) にも `_sync_tags()` の例外時挙動を確認するケースがありません。今回のコミットはまさにその境界条件を変更しているため、未検証のままだと将来の修正でデータ消失再発や例外情報の再露出を招きやすいです。 | 中 |
+
+### Codex 所感
+
+> 所感: `client` に責務を寄せる方針自体は一貫していますが、その中心になる `get_metadata()` の失敗時契約が曖昧なままなので、仕様・AI可読性の両面でまだ不安定です。FR-15 を完了扱いにする前に、metadata 異常系の方針とタグ失敗時の観測性を仕様として固定したほうが安全です。

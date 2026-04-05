@@ -210,8 +210,8 @@ def _sync_tags(client: ELabFTWClient, entity_type: str, entity_id: int, desired_
         for tag in desired_tags:
             if tag not in remote_names:
                 client.add_tag(entity_type, entity_id, tag)
-    except Exception as e:
-        print(f"    ⚠ タグ同期に失敗しました（本文の同期は成功しています）: {e}")
+    except Exception:
+        print(f"    ⚠ タグ同期に失敗しました（本文の同期は成功しています）")
 
 
 class EachDocsSyncer:
