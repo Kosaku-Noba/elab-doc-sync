@@ -1,6 +1,6 @@
 [project]
 name = "elab-doc-sync"
-version = "0.1.0"
+version = "0.2.0"
 description = "Sync Markdown docs to eLabFTW items with image upload and diff-based updates"
 requires-python = ">=3.10"
 dependencies = [
