@@ -263,3 +263,34 @@ The new pull-time remote-hash persistence does not run for already-pulled files,
 ### Codex 所感
 
 >   Because the new `_save_remote_hash(...)` calls in `cmd_pull()` are only reached after the `filepath.exists()` early-`continue`, running `esync pull` on a checkout that already has the Markdown file still will not create `.remote_hash`. That is the normal upgrade path for repositories pulled before FR-11, so conflict detection remains disabled (or stale) in both the `each` branch here and the `merge` branch below unless users discover they must add `--force`.
+
+
+## 2026-04-05T21:24 [Kiro] Codex 指摘対応 (FR-11: pull スキップ時も remote_hash 更新)
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| cli.py cmd_pull() each モード | ファイル既存でスキップする場合でも `_save_remote_hash()` を実行 |
+| cli.py cmd_pull() merge モード | 同上、`save_remote_hash()` を実行 |
+
+### Kiro 所感
+
+- これで既存プロジェクトのアップグレード時にも `esync pull` だけで競合検出のベースラインが設定される。
+- FR-11 / FR-13 の実装が安定したので、次は FR-12（Clone）に進む。
+
+
+## 2026-04-05T21:26 [Codex] fix: pull スキップ時も remote_hash を更新（既存プロジェクト対応） に対するレビュー
+
+The new skipped-pull baseline update can suppress real conflict detection and can also poison the stored baseline when `pull --id` targets a different entity than the one currently tracked. Both issues affect supported workflows and can block or misdirect later syncs.
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| Avoid clobbering the conflict baseline on skipped pulls | /home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py:157-159 | 高 |
+| Keep the tracked entity ID in sync with skipped `pull --id` | /home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py:204-206 | 中 |
+
+### Codex 所感
+
+>   When `pull --id` is used against an existing merge target, this stores the requested entity's `.remote_hash` and then `continue`s before `save_item_id(eid)` runs. Subsequent `sync()` calls still read the old `.id`, compare that entity's current body against the new hash, and raise a spurious conflict until the user forces another pull or sync. The `each` branch above has the same partial-state update with `mapping.json`.
