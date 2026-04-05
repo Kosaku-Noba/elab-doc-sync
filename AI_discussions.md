@@ -1130,3 +1130,17 @@ The new methodology document contains two operationally incorrect instructions: 
 ### Codex 所感
 
 > 所感として、FR-18 の方向性自体は妥当ですが、現状の `new` は既存 CLI のパス解決・ターゲット選択の前提から外れており、静かな誤配置を起こしやすい実装です。なお、このレビューは提示 diff と周辺コード読解ベースであり、この環境では `pytest` 未導入のため実行確認まではしていません。
+
+
+## 2026-04-05T23:34 [Kiro] FR-18 Codex指摘対応 — new コマンドのパス解決修正
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| cli.py cmd_new() | 出力先を `project_root / target.docs_dir` 基準に修正。`--target` 対応。`heading_style="ATX"` を pull/clone と統一 |
+
+### Kiro 所感
+
+- Codex の P1（パス解決の不一致）は正しい。`-c` で別ディレクトリから実行した場合にファイルがプロジェクト外に落ちるバグだった。
+- v0.2.0 ロードマップの FR-15〜FR-18 が全て実装完了（FR-14 Watch は watchdog 依存のため別途）。push する。
