@@ -640,6 +640,7 @@ def cmd_whoami(args):
 def cmd_new(args):
     """テンプレートから新規 Markdown ファイルを生成する。"""
     config_path = Path(args.config)
+    project_root = config_path.parent or Path(".")
     config = load_config(config_path)
     client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
 
@@ -659,16 +660,22 @@ def cmd_new(args):
     template = client._req("GET", f"/api/v2/experiments_templates/{args.template_id}").json()
     title = args.title or template.get("title", "untitled")
     body_html = template.get("body", "") or ""
-    body_md = html_to_md(body_html).strip() if body_html else ""
+    body_md = html_to_md(body_html, heading_style="ATX").strip() if body_html else ""
 
     filename = title.replace(" ", "_").replace("/", "_") + ".md"
-    # 出力先: 最初のターゲットの docs_dir、または --output
     if args.output:
         outpath = Path(args.output)
-    elif config.targets:
-        outpath = Path(config.targets[0].docs_dir) / filename
     else:
-        outpath = Path(filename)
+        # --target で指定されたターゲット、なければ最初のターゲットの docs_dir
+        target = None
+        if args.target:
+            target = next((t for t in config.targets if t.title == args.target), None)
+        if not target and config.targets:
+            target = config.targets[0]
+        if target:
+            outpath = project_root / target.docs_dir / filename
+        else:
+            outpath = project_root / filename
 
     if outpath.exists() and not args.force:
         print(f"エラー: {outpath} は既に存在します（--force で上書き）", file=sys.stderr)
