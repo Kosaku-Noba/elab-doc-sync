@@ -2,9 +2,9 @@
 # post-commit hook: Codex CLI で直前のコミットを自動レビュー
 # レビュー結果を AI_discussions.md に追記し、amend する
 
-# 再帰防止
-[ -n "$CODEX_REVIEW_RUNNING" ] && exit 0
-export CODEX_REVIEW_RUNNING=1
+# 再帰防止は無効化（ループ許容）
+# [ -n "$CODEX_REVIEW_RUNNING" ] && exit 0
+# export CODEX_REVIEW_RUNNING=1
 
 CODEX_CLI=$(command -v codex 2>/dev/null)
 [ -z "$CODEX_CLI" ] && exit 0
