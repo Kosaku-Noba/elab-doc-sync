@@ -626,24 +626,38 @@ def cmd_entity_status(args):
     config = load_config(config_path)
     client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
 
+    all_ids = []
     for target in config.targets:
         if args.target and target.title != args.target:
             continue
         syncer = _make_syncer(client, target, project_root)
-        ids = _get_entity_ids(client, syncer, target)
+        target_id = getattr(args, "id", None)
+        ids = _get_entity_ids(client, syncer, target, target_id)
         if not ids:
             print(f"  [{target.title or target.docs_dir}] 同期済みエンティティなし")
             continue
+        all_ids.extend(ids)
 
-        for eid, etype in ids:
-            label = f"{etype} #{eid}"
-            if args.status_action == "show":
-                entity = client.get_entity(etype, eid)
-                status_name = entity.get("status_title") or entity.get("status", {}).get("title", "不明")
-                print(f"  {label}: {status_name}")
-            elif args.status_action == "set":
-                client.patch_entity(etype, eid, status=int(args.status_id))
-                print(f"  {label}: ステータスを ID={args.status_id} に変更しました")
+    if not all_ids:
+        return
+
+    if args.status_action == "show":
+        for eid, etype in all_ids:
+            entity = client.get_entity(etype, eid)
+            status_name = entity.get("status_title") or entity.get("status", {}).get("title", "不明")
+            print(f"  {etype} #{eid}: {status_name}")
+    elif args.status_action == "set":
+        if len(all_ids) > 1 and not getattr(args, "id", None):
+            print(f"  対象: {len(all_ids)} 件のエンティティ")
+            for eid, etype in all_ids:
+                print(f"    - {etype} #{eid}")
+            answer = input("  全て変更しますか？ [y/N]: ").strip().lower()
+            if answer != "y":
+                print("  中断しました")
+                return
+        for eid, etype in all_ids:
+            client.patch_entity(etype, eid, status=int(args.status_id))
+            print(f"  {etype} #{eid}: ステータスを変更しました")
 
 
 def main():
@@ -699,6 +713,7 @@ def main():
     estatus_sub.add_parser("show", help="現在のステータスを表示")
     estatus_set_p = estatus_sub.add_parser("set", help="ステータスを変更")
     estatus_set_p.add_argument("status_id", help="ステータス ID")
+    estatus_set_p.add_argument("--id", type=int, default=None, help="対象エンティティ ID（省略時は全同期済みエンティティ）")
 
     args = parser.parse_args()
     if args.command == "status":
