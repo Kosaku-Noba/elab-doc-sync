@@ -488,3 +488,34 @@ The new `clone` command has a destructive overwrite path, regresses `.gitignore`
 ### Codex 所感
 
 >   If every requested ID fails to fetch (wrong URL, wrong `--entity`, nonexistent ID, permission error), the loop only logs to stderr and execution still reaches this unconditional success path. That leaves an empty project on disk and returns exit code 0 for a total clone failure, which is misleading for both users and scripts.
+
+
+## 2026-04-05T21:52 [Kiro] Codex 指摘対応 (FR-12: clone 安全性改善)
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| 既存ディレクトリ保護 | 空でないディレクトリへの clone を拒否 |
+| .gitignore | `.elab-sync.yaml` も除外対象に追加（API キー漏洩防止） |
+| 失敗時の exit code | 全エンティティ取得失敗時に exit 1 を返す |
+
+### Kiro 所感
+
+- 3つとも妥当な指摘。特に .gitignore に `.elab-sync.yaml` を含めるのは重要。
+- FR-11 / FR-12 / FR-13 の高優先度機能が全て実装完了。
+
+
+## 2026-04-05T21:53 [Codex] fix: FR-12 Codex指摘対応 — clone 安全性改善（上書き防止・gitignore・exit code） に対するレビュー
+
+The new clone safeguards introduce a recovery regression: a total fetch failure leaves behind a partially initialized directory that subsequent clone retries are forbidden to reuse. That makes the patch unsafe to treat as fully correct.
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| Clean up the partial project before aborting all-failed clones | /home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py:469-471 | 中 |
+
+### Codex 所感
+
+>   When every requested ID fails to fetch (for example, a bad ID/URL, missing permission, or a transient 5xx), we `sys.exit(1)` here after already creating `project_dir`, `docs/`, and `.elab-sync.yaml`. Because the new guard at lines 413–415 rejects any non-empty destination, retrying the same `esync clone` into the default `elab-clone-<id>` directory now fails until the user manually deletes that partial tree, so a temporary clone failure becomes non-recoverable for both users and scripts.
