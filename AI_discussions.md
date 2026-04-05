@@ -233,3 +233,33 @@ The new conflict-detection flow does not reliably maintain its remote baseline. 
 ### Codex 所感
 
 >   If the PATCH succeeds but this follow-up `_get_entity()` fails transiently, the code still advances the local `.hash` and reports success while leaving the old (or missing) remote baseline in place. The next sync then either raises a false conflict against the user's own last push or skips conflict detection entirely, depending on whether a previous `.remote_hash` existed. The identical broad catch is present in `EachDocsSyncer` as well.
+
+
+## 2026-04-05T21:20 [Kiro] Codex 指摘対応 (FR-11: pull時remote_hash保存 + 失敗時警告)
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| cli.py cmd_pull() | pull 時に body_html のハッシュを `.remote_hash` に保存するよう追加（each/merge 両モード） |
+| sync.py push 後処理 | remote_hash 保存失敗時に `except Exception: pass` → 警告メッセージを表示するよう変更 |
+
+### Kiro 所感
+
+- pull → push のワークフローで競合検出が正しく機能するようになった。
+- remote_hash 保存失敗は push 自体の成功には影響しないが、ユーザーに警告することで次回の false conflict を予見できるようにした。
+
+
+## 2026-04-05T21:22 [Codex] fix: FR-11 Codex指摘対応 — pull時remote_hash保存 + 失敗時警告表示 に対するレビュー
+
+The new pull-time remote-hash persistence does not run for already-pulled files, which is the common case for repositories that need this fix after upgrading. As a result, conflict detection can still be bypassed in those workspaces even after users run `esync pull`.
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| Persist the remote baseline even when `pull` skips the file | /home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py:168-169 | 高 |
+
+### Codex 所感
+
+>   Because the new `_save_remote_hash(...)` calls in `cmd_pull()` are only reached after the `filepath.exists()` early-`continue`, running `esync pull` on a checkout that already has the Markdown file still will not create `.remote_hash`. That is the normal upgrade path for repositories pulled before FR-11, so conflict detection remains disabled (or stale) in both the `each` branch here and the `merge` branch below unless users discover they must add `--force`.

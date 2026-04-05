@@ -165,6 +165,8 @@ def cmd_pull(args):
                 syncer._save_mapping(mapping)
                 # hash を保存して次回 push 時に差分なしと判定されるようにする
                 syncer._save_hash(filename, body_md)
+                # リモート body のハッシュを保存（競合検出用）
+                syncer._save_remote_hash(filename, body_html)
 
                 print(f"  [{title}] {entity_label} #{eid} → {filepath}")
                 pulled += 1
@@ -206,6 +208,8 @@ def cmd_pull(args):
             # ID とハッシュを保存
             syncer.save_item_id(eid)
             syncer.save_hash(body_md)
+            # リモート body のハッシュを保存（競合検出用）
+            syncer.save_remote_hash(body_html)
 
             print(f"  [{target.title}] {entity_label} #{eid} → {filepath}")
             pulled += 1
