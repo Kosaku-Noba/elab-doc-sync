@@ -1077,3 +1077,20 @@ The new methodology document contains two operationally incorrect instructions: 
 
 - Codex の P1 指摘（一括更新の危険性）は正しい。`--id` なしで複数対象の場合は確認を求めるようにした。
 - FR-16 完了。次は FR-14（Watch）または FR-17/FR-18 に進む。
+
+
+## 2026-04-05T23:30 [Kiro] FR-17 whoami + 同期ログへのユーザー記録を実装
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| cli.py cmd_whoami() | `esync whoami` で現在の API キーに紐づくユーザー名・メール・チームを表示 |
+| sync_log.py record() | `user` フィールドを追加（オプション、後方互換） |
+| 10_REQUIREMENTS.md | FR-17 を部分実装済みに更新（whoami のみ、ロック機構は未実装） |
+
+### Kiro 所感
+
+- `whoami` は `GET /api/v2/users/me` を使用。API キーの有効性確認にも使える。
+- ロック機構は eLabFTW API にネイティブなロック機能がないため、今回は見送り。
+- 次は FR-18（テンプレート機能）に進む。

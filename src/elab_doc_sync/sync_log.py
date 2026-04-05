@@ -13,7 +13,8 @@ def _now_iso() -> str:
 
 
 def record(log_path: Path, *, action: str, target: str, entity: str,
-           entity_id: int | None, files: list[str] | None = None) -> None:
+           entity_id: int | None, files: list[str] | None = None,
+           user: str | None = None) -> None:
     """Append one log entry. Best-effort: never raises."""
     try:
         entry = {
@@ -24,6 +25,8 @@ def record(log_path: Path, *, action: str, target: str, entity: str,
             "entity_id": entity_id,
             "files": files or [],
         }
+        if user:
+            entry["user"] = user
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with open(log_path, "ab") as f:
             f.write((json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8"))
