@@ -944,3 +944,39 @@ The new methodology document contains two operationally incorrect instructions: 
 ### Codex 所感
 
 > 所感: 実装追加自体は限定的ですが、公開契約と運用意味はかなり広がっています。現状は「動く」より先に「どこまでを仕様として約束するか」を文書と失敗系テストで固定しないと、後続の修正や AI 支援で破壊的変更を招きやすい状態です。
+
+
+## 2026-04-05T23:14 [Kiro] FR-15 Codex指摘対応 + Task 5 ドキュメント更新
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| sync.py _sync_tags() | Codex P1 対応: タグ同期を「追記のみ」に変更（既存タグを外さない）。best-effort 化（失敗時は警告のみ） |
+| cli.py cmd_metadata() | Codex P2 対応: 既存メタデータが読めない場合に警告を表示してから上書き |
+| README.md | コマンド一覧にタグ・メタデータを追加。設定リファレンスに `tags` を追加 |
+| 10_REQUIREMENTS.md | FR-15 を ✅ に更新 |
+| .elab-sync.yaml.example | タグ設定例を追加 |
+
+### Kiro 所感
+
+- Codex の P1 指摘（タグの完全置換が破壊的）は正しい。「追記のみ」がデフォルトの安全な動作。タグを外したい場合は `esync tag remove` を使う運用とする。
+- FR-15 の全タスクが完了。push する。
+
+
+## 2026-04-05T23:18 [Codex] fix: FR-15 Codex指摘対応 + docs更新 — タグ追記のみ化・metadata警告・README/REQUIREMENTS更新 に対するレビュー
+
+タグ同期を「追記のみ」に寄せた点はコミットメッセージと概ね整合していますが、`metadata` 側は「警告を出す」以上の挙動変更を含んでおり、失敗時の扱いも運用上はやや見えにくくなっています。FR-15 完了の妥当性そのものは、既存の CLI 実装とテスト全体を見ないとこの差分だけでは断定できません。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 仕様・意図不一致の可能性 | [src/elab_doc_sync/cli.py](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L611) では、既存 `metadata` が読めない場合に「警告してから上書き」に変わっています。コミットメッセージの `metadata警告` から受ける印象より実際の変更は大きく、壊れた JSON・旧形式・外部更新済みデータがある環境では、既存メタデータを保持せず `pairs` のみで再保存してしまうため、静かなデータ消失を起こし得ます。これは「警告追加」ではなく「読めない場合は破壊的に継続する」仕様変更なので、明示的な確認が必要です。 | 高 |
+| 運用・セキュリティ上の失敗検知が弱い | [src/elab_doc_sync/sync.py](/home/kosak/elab-doc-sync/src/elab_doc_sync/sync.py#L201) ではタグ同期失敗を `Exception` で握りつぶし、本文同期成功として続行します。best-effort 化自体は意図に沿っていますが、403/認可不足・5xx・タグ名制約違反でも終了コードが成功のままだと、タグ前提の検索や運用フローが静かに崩れる可能性があります。加えて生の例外文字列をそのまま出しているため、`ELabFTWClient` 側の例外メッセージ設計次第では API 応答由来の情報が露出しないか明示的な確認が必要です。 | 中 |
+| 設計上の責務分離が崩れている | [src/elab_doc_sync/cli.py](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L611) で `client._req()` を直接叩きつつ、別分岐では `client.get_metadata()` も使っており、CLI がクライアント内部実装と API 生レスポンス形式の両方に依存しています。`metadata` の解釈規則が二重化されるため、今後 API 形式や `ELabFTWClient` の責務を変えたときに片方だけ更新されるリスクが高く、将来の AI 支援修正でも「どちらが正しい経路か」を誤解しやすい構造です。 | 中 |
+| 失敗系のテスト追加が見当たらない | この差分では、上記の新しい失敗系挙動を固定するテストが確認できません。[src/elab_doc_sync/cli.py](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L611) の「非 dict / 壊れた JSON / 既存値あり」の各ケースと、[src/elab_doc_sync/sync.py](/home/kosak/elab-doc-sync/src/elab_doc_sync/sync.py#L201) の「タグ取得失敗 / 追加失敗 / 認可失敗でも本文同期は継続」の扱いを明文化しないと、後続の修正で安全側・利便側のどちらを優先する仕様なのか再解釈されやすいです。 | 低 |
+
+### Codex 所感
+
+> 安全側に倒す意図は読み取れますが、「警告して続行」の2箇所は仕様と運用の約束をもう一段はっきりさせないと、後続の人間や AI が誤読しやすい状態です。特に `metadata` の上書き継続は、単なる UX 改善ではなくデータ保持方針の変更として扱うのが妥当です。
