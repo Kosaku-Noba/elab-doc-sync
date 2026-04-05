@@ -1414,3 +1414,19 @@ The new methodology document contains two operationally incorrect instructions: 
 ### Codex 所感
 
 > テスト実行結果は良好ですが、このコミットの主眼である merge モードの回帰を直接保証していない点は残ります。仕様書とテストケース番号の同期を取ると、後続レビューや AI 支援開発での誤読リスクをかなり下げられます。
+
+
+## 2026-04-06T08:04 [Codex] test: merge複数ID警告の回帰テスト追加 (CLI-17) — Codex P2 対応 に対するレビュー
+
+このコミットは「merge モードで複数 `--id` を渡したときに警告し、先頭だけ使う」という既存実装の回帰防止を意図したものですが、現状の追加テストだけではその核心挙動を十分に固定できていません。`UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` は `138 passed` でした。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 「先頭の ID のみ使用」の回帰テストとしては検証が弱い | 追加テスト [tests/test_cli.py:189](/home/kosak/elab-doc-sync/tests/test_cli.py#L189) は警告文の出力とファイル生成しか見ておらず、実装の要点である `args.id[0]` の採用 ([src/elab_doc_sync/cli.py:198](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L198), [src/elab_doc_sync/cli.py:201](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L201)) を直接固定していません。`get_item` が 1 回だけ `10` で呼ばれたことを見ていないため、将来「末尾 ID を使う」「複数回取得する」「警告だけ出して別 ID を使う」といった仕様逸脱でもこのテストは通ります。コミットメッセージの説明どおりに保証したいなら、`assert_called_once_with(10)` などで呼び出しを明示的に縛るべきです。 | 中 |
+| このテストが固定しようとしている仕様が公開ドキュメント上でまだ一意ではない | README は [README.md:74](/home/kosak/elab-doc-sync/README.md#L74) で `esync pull --id 42 --id 43` を一般的な「複数 ID を一括取得」と説明していますが、CLI リファレンスは [docs/05_CLI_REFERENCE.md:75](/home/kosak/elab-doc-sync/docs/05_CLI_REFERENCE.md#L75), [docs/05_CLI_REFERENCE.md:76](/home/kosak/elab-doc-sync/docs/05_CLI_REFERENCE.md#L76) で `each` 限定かつ `merge` では最初の ID だけ使うと書いています。どちらが正式仕様かはこのコミットからは判断できませんが、回帰テストだけ先に追加すると後続の人間・AIの双方が README とテストのどちらを信じるべきか迷います。加えてテスト仕様表も [docs/11_TEST_SPEC.md:157](/home/kosak/elab-doc-sync/docs/11_TEST_SPEC.md#L157) から [docs/11_TEST_SPEC.md:161](/home/kosak/elab-doc-sync/docs/11_TEST_SPEC.md#L161) までで CLI-14 までしか記載がなく、CLI-17 の意図が追跡しづらい状態です。 | 低 |
+
+### Codex 所感
+
+> 所感: 差分は小さくテスト全体も健全ですが、回帰テストは「何を壊してはいけないか」を機械的に固定できて初めて価値が出るため、呼び出し引数まで含めた検証と仕様文書の整合を取っておく方が安全です。
