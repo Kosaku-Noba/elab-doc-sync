@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .client import ELabFTWClient
 from .config import TargetConfig
+from . import sync_log
 
 IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 MD_EXTENSIONS = ["tables", "fenced_code", "codehilite", "toc", "nl2br"]
@@ -150,6 +151,12 @@ class DocsSyncer:
         self._update_entity(item_id, body=html, title=self.target.title)
         self.save_hash(raw_body)
         print(f"  [{self.target.title}] {entity_label} #{item_id} を更新しました")
+
+        log_path = self.project_root / sync_log.DEFAULT_LOG_PATH
+        files = [f.name for f in self.collect_files()]
+        sync_log.record(log_path, action="push", target=self.target.title,
+                        entity=self.entity, entity_id=item_id, files=files)
+
         return True
 
 
@@ -265,6 +272,11 @@ class EachDocsSyncer:
             self._update_entity(eid, body=html, title=title)
             self._save_hash(f.name, raw_body)
             print(f"  [{title}] {entity_label} #{eid} を更新しました")
+
+            log_path = self.project_root / sync_log.DEFAULT_LOG_PATH
+            sync_log.record(log_path, action="push", target=title,
+                            entity=self.entity, entity_id=eid, files=[f.name])
+
             updated += 1
 
         return updated
