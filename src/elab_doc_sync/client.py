@@ -122,7 +122,8 @@ class ELabFTWClient:
     def remove_tag(self, entity_type: str, entity_id: int, tag_id: int) -> None:
         self._req("DELETE", f"/api/v2/{entity_type}/{entity_id}/tags/{tag_id}")
 
-    def remove_tag_by_name(self, entity_type: str, entity_id: int, tag_name: str) -> bool:
+    def untag_by_name(self, entity_type: str, entity_id: int, tag_name: str) -> bool:
+        """エンティティからタグを外す（タグ自体は削除しない）。"""
         for tag in self.get_tags(entity_type, entity_id):
             if tag.get("tag") == tag_name:
                 self._req("PATCH", f"/api/v2/{entity_type}/{entity_id}/tags/{tag['id']}",
@@ -133,9 +134,16 @@ class ELabFTWClient:
     # ── metadata ─────────────────────────────────────────────
 
     def get_metadata(self, entity_type: str, entity_id: int) -> dict:
+        """エンティティのメタデータを dict で返す。パース失敗時は空 dict。"""
         entity = self._req("GET", f"/api/v2/{entity_type}/{entity_id}").json()
-        raw = entity.get("metadata") or "{}"
-        return json.loads(raw) if isinstance(raw, str) else raw
+        raw = entity.get("metadata")
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw) if isinstance(raw, str) else raw
+            return parsed if isinstance(parsed, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
 
     def update_metadata(self, entity_type: str, entity_id: int, metadata: dict[str, Any]) -> None:
         self._req("PATCH", f"/api/v2/{entity_type}/{entity_id}",

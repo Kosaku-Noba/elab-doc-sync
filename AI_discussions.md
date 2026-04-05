@@ -909,3 +909,38 @@ The new methodology document contains two operationally incorrect instructions: 
 ### Codex 所感
 
 > 所感: 実装追加そのものは小さくまとまっていますが、公開 API の意味差と前提条件がまだコード外に十分表現されていません。後続の人間/AI が安全に使える状態にするには、命名か文書化、そして失敗系を含むテスト追加が先に必要です。
+
+
+## 2026-04-05T23:09 [Kiro] FR-15 Task 1 Codex指摘対応 + Task 2-4 実装
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| client.py | Codex P2 対応: `remove_tag_by_name` → `untag_by_name` にリネーム（「削除」ではなく「解除」であることを明確化）。`get_metadata` の型安全性を強化（不正 JSON 時に空 dict を返す） |
+| cli.py | `esync tag list/add/remove` サブコマンドを追加。`esync metadata get/set` サブコマンドを追加。`_get_entity_ids` ヘルパーで merge/each 両モードのエンティティ ID を取得 |
+| config.py | `TargetConfig` に `tags: list[str]` フィールドを追加。`load_config` で YAML の `tags` を読み込み |
+| sync.py | `_sync_tags()` ヘルパーを追加。push 成功後にリモートのタグを設定の `tags` に合わせる（差分のみ add/untag） |
+
+### Kiro 所感
+
+- Codex の P2 指摘（命名の不一致）は妥当。`untag_by_name` の方が「エンティティからタグを外す」という動作を正確に表現している。
+- タグ同期は `desired_tags` が空の場合は何もしない（既存タグを消さない）。YAML に `tags` を書いた場合のみ同期が発動する。
+
+
+## 2026-04-05T23:13 [Codex] feat: FR-15 Task 2-4 — esync tag/metadata CLI + YAML tags 自動同期 + Codex指摘対応 に対するレビュー
+
+既存テストは `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` で 92 passed でしたが、今回の変更は公開 CLI / 設定 / リモート状態同期の意味を広げており、仕様と運用の観点で未整理なリスクが残っています。特に `tags` の同期方針と `metadata set` の異常系は、このコミットだけでは安全側の意図が読み切れません。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| `tags:` を書いたターゲットが「追記」ではなく「リモートタグの完全置換」になっているが、その破壊的挙動が公開契約として明示されていない | push 成功後に [_sync_tags](/home/kosak/elab-doc-sync/src/elab_doc_sync/sync.py#L203) が現在のリモートタグ集合を `desired_tags` に合わせ、未列挙タグをすべて `untag` します。呼び出しは merge/each の通常 push 経路に直結しており、[merge 側](/home/kosak/elab-doc-sync/src/elab_doc_sync/sync.py#L193) と [each 側](/home/kosak/elab-doc-sync/src/elab_doc_sync/sync.py#L364) のどちらでも発生します。コミットメッセージの「YAML tags 自動同期」からこの強い意味まで読み取れるかは微妙で、README や設定例にも説明がありません。運用上は手動付与タグや他システム由来タグを次回 push で静かに外すため、これが仕様なら明示的な確認が必要ですし、仕様でないなら `replace_remote_tags` のような別 opt-in に分けるべきです。 | 高 |
+| タグ同期失敗時に本文だけ成功した半端状態が残り、通常運用では自己修復しない | 本文更新後に [save_hash](/home/kosak/elab-doc-sync/src/elab_doc_sync/sync.py#L182) / [save_remote_hash](/home/kosak/elab-doc-sync/src/elab_doc_sync/sync.py#L186) を先に保存し、その後でタグ同期を実行しています。each でも同じ順序です（[_save_hash](/home/kosak/elab-doc-sync/src/elab_doc_sync/sync.py#L353) の後に [_sync_tags](/home/kosak/elab-doc-sync/src/elab_doc_sync/sync.py#L364)）。このためタグ API の一部だけ失敗すると、コマンド全体はエラー扱いでもローカル差分判定上は「同期済み」になり、次回通常 push では本文差分がないのでタグ再同期が走りません。障害時の収束性として弱く、`--force` か本文変更がない限りドリフトが残る設計です。 | 中 |
+| `metadata set` が異常系を握りつぶして全 metadata を再送するため、既存 metadata を静かに壊す可能性がある | [get_metadata](/home/kosak/elab-doc-sync/src/elab_doc_sync/client.py#L136) は不正 JSON・非 object JSON・falsy 値をすべて `{}` に正規化します。その結果、[cmd_metadata](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L606) の `set` は `existing.update(pairs)` 後に metadata 全体を上書き PATCH するため、既存 entity に壊れた JSON や list 型 metadata が入っていた場合でも警告なく置換します。型安全化自体は理解できますが、CLI 追加と組み合わさると「読めなかったものを消して書き直す」挙動になるため、ここは fail-closed にするのか、`--force` 相当の明示 opt-in を要求するのか、作者に明示的な確認が必要です。 | 中 |
+| 公開面が増えたのに、仕様書・サンプル設定・テスト計画が追随しておらず、後続の人間/AI が契約を誤読しやすい | 新しい `tags` 設定は [config.py](/home/kosak/elab-doc-sync/src/elab_doc_sync/config.py#L18) で読み込まれ、CLI の `tag` / `metadata` は [cli.py](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L554) 以降に追加されていますが、README のコマンド一覧と設定表は [README.md](/home/kosak/elab-doc-sync/README.md#L67) 以降で未更新、サンプル設定も [.elab-sync.yaml.example](/home/kosak/elab-doc-sync/.elab-sync.yaml.example#L58) に `tags` がなく、API 仕様も [SPECIFICATION.md](/home/kosak/elab-doc-sync/SPECIFICATION.md#L174) と [docs/06_API_REFERENCE.md](/home/kosak/elab-doc-sync/docs/06_API_REFERENCE.md#L68) に新メソッドが載っていません。テスト計画も [docs/11_TEST_SPEC.md](/home/kosak/elab-doc-sync/docs/11_TEST_SPEC.md#L39) で旧ケースのままで、実テストも [tests/test_client.py](/home/kosak/elab-doc-sync/tests/test_client.py#L119)・[tests/test_cli.py](/home/kosak/elab-doc-sync/tests/test_cli.py#L13)・[tests/test_sync.py](/home/kosak/elab-doc-sync/tests/test_sync.py#L144) に今回機能の直接検証がありません。コード自体より「何が仕様か」を外部化できていない点が、AI 可読性と保守性の観点で大きいです。 | 低 |
+
+### Codex 所感
+
+> 所感: 実装追加自体は限定的ですが、公開契約と運用意味はかなり広がっています。現状は「動く」より先に「どこまでを仕様として約束するか」を文書と失敗系テストで固定しないと、後続の修正や AI 支援で破壊的変更を招きやすい状態です。

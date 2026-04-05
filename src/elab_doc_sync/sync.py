@@ -190,12 +190,28 @@ class DocsSyncer:
 
         print(f"  [{self.target.title}] {entity_label} #{item_id} を更新しました")
 
+        _sync_tags(self.client, self.entity, item_id, self.target.tags)
+
         log_path = self.project_root / sync_log.DEFAULT_LOG_PATH
         files = [f.name for f in self.collect_files()]
         sync_log.record(log_path, action="push", target=self.target.title,
                         entity=self.entity, entity_id=item_id, files=files)
 
         return True
+
+
+def _sync_tags(client: ELabFTWClient, entity_type: str, entity_id: int, desired_tags: list[str]) -> None:
+    """リモートのタグを desired_tags に合わせる（差分のみ add/remove）。"""
+    if not desired_tags:
+        return
+    remote = client.get_tags(entity_type, entity_id)
+    remote_names = {t.get("tag") for t in remote}
+    for tag in desired_tags:
+        if tag not in remote_names:
+            client.add_tag(entity_type, entity_id, tag)
+    for t in remote:
+        if t.get("tag") not in desired_tags:
+            client.untag_by_name(entity_type, entity_id, t["tag"])
 
 
 class EachDocsSyncer:
@@ -344,6 +360,8 @@ class EachDocsSyncer:
                 print(f"  [{title}] ⚠ リモートハッシュの保存に失敗: {e}")
 
             print(f"  [{title}] {entity_label} #{eid} を更新しました")
+
+            _sync_tags(self.client, self.entity, eid, self.target.tags)
 
             log_path = self.project_root / sync_log.DEFAULT_LOG_PATH
             sync_log.record(log_path, action="push", target=title,
