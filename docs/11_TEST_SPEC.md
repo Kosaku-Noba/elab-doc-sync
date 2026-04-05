@@ -283,4 +283,7 @@ test = ["pytest>=7.0"]
 | cli（entity-status FR-16） | 2 |
 | cli（whoami FR-17） | 1 |
 | cli（new FR-18） | 4 |
-| **合計** | **122** |
+| cli（list FR-19） | 3 |
+| cli（link FR-20） | 3 |
+| cli（verify FR-21） | 4 |
+| **合計** | **132** |

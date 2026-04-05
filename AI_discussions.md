@@ -1198,3 +1198,42 @@ The new methodology document contains two operationally incorrect instructions: 
 
 - 設計判断ドキュメントにより、各機能の「なぜこうなっているか」が明文化された。Codex が繰り返し指摘していた metadata 保全方針も記録済み。
 - 122 テスト全て通過。push する。
+
+
+## 2026-04-06T00:04 [Kiro] FR-19〜FR-21 実装 + テスト (122→132ケース)
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| cli.py cmd_list() | `esync list [--entity experiments] [--limit N]` でリモート一覧表示 |
+| cli.py cmd_link() | `esync link <ID> [--file name.md]` で手動紐付け（merge/each 両対応） |
+| cli.py cmd_verify() | `esync verify` でローカル/リモートの整合性チェック（merge/each 両対応） |
+| test_cli.py | CLI-66〜CLI-75: list(items/experiments/空), link(merge/each/エラー), verify(正常/失敗/未同期/ファイル欠損) |
+| 10_REQUIREMENTS.md | FR-19〜FR-21 を追加 |
+| 11_TEST_SPEC.md | 132 ケースに更新 |
+| 12_DESIGN_DECISIONS.md | FR-19〜FR-21 の設計判断を追記 |
+
+### Kiro 所感
+
+- `esync list` は clone や pull --id の前に「何があるか」を確認するための機能。
+- `esync link` は既存プロジェクトとリモートを接続する際に clone を使わずに済む。
+- `esync verify` は同期状態の健全性を確認する運用ツール。
+
+
+## 2026-04-06T00:08 [Codex] feat: FR-19 list + FR-20 link + FR-21 verify — 新コマンド3種 + テスト10件追加 (132ケース) に対するレビュー
+
+コミットメッセージどおり `list` / `link` / `verify` の 3 コマンドと 10 件のテストは追加されており、指定の `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` も `132 passed` でした。 一方で、FR-20/FR-21 は既存データ保全と運用上の期待値に関わる未解決リスクが残っています。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 手動紐付け後の最初の `sync` が、既存リモートを保護せずに上書きし得ます。`link` は merge/each ともに ID または mapping だけを書き込み、競合検出に必要な `remote_hash` を初期化していません ([src/elab_doc_sync/cli.py:735](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L735), [src/elab_doc_sync/cli.py:740](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L740))。そのため次回 `sync` ではローカル hash 不在で「変更あり」と判定され、`remote_hash` 不在なので競合検出も素通りして更新に進みます ([src/elab_doc_sync/sync.py:243](/home/kosak/elab-doc-sync/src/elab_doc_sync/sync.py#L243), [src/elab_doc_sync/sync.py:282](/home/kosak/elab-doc-sync/src/elab_doc_sync/sync.py#L282), [src/elab_doc_sync/sync.py:343](/home/kosak/elab-doc-sync/src/elab_doc_sync/sync.py#L343))。ローカルを正として初回 push で上書きするのが仕様なら問題ありませんが、このコミットからは判断できず、README の「既存リモートエンティティとローカルを紐付け」という説明だけでは破壊的挙動を読み取りにくいです。 | — | 高 |
+| `link` のターゲット選択が危険です。`--target` 未指定時だけでなく、存在しないターゲット名を指定した場合も静かに `config.targets[0]` にフォールバックして state を更新します ([src/elab_doc_sync/cli.py:723](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L723), [src/elab_doc_sync/cli.py:727](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L727))。他コマンドは未知ターゲットでは実質何もしない実装なので ([src/elab_doc_sync/cli.py:35](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L35), [src/elab_doc_sync/cli.py:566](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L566))、ここだけ typo や multi-target 構成で誤った紐付けを静かに作るのは回帰リスクが高いです。追加テストもこの境界条件をカバーしていません ([tests/test_cli.py:632](/home/kosak/elab-doc-sync/tests/test_cli.py#L632))。 | — | 高 |
+| `verify` の実装範囲が、ユーザー向け説明よりかなり狭いです。README とコミットメッセージは「ローカルとリモートの整合性チェック」と読めますが ([README.md:86](/home/kosak/elab-doc-sync/README.md#L86))、実装は ID/mapping の存在と GET 成功しか見ておらず、merge モードではローカル docs が空でも成功扱いになります ([src/elab_doc_sync/cli.py:744](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L744), [src/elab_doc_sync/cli.py:776](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L776))。設計文書には「内容の一致は検証しない」とありますが ([docs/12_DESIGN_DECISIONS.md:133](/home/kosak/elab-doc-sync/docs/12_DESIGN_DECISIONS.md#L133))、CLI の成功メッセージは `整合性に問題はありません` なので、運用者や後続 AI が保証範囲を誤解しやすいです。 | — | 中 |
+| `verify` は例外詳細を捨ててしまうため、障害調査性が不足しています。`get_entity()` の失敗をすべて `アクセスできません` に正規化しており、ID 不整合・権限不足・API キー失効・SSL/ネットワーク障害を区別できません ([src/elab_doc_sync/cli.py:769](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L769), [src/elab_doc_sync/cli.py:781](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L781))。FR-21 を「同期状態の健全性を確認する運用ツール」と位置付けるなら、少なくとも stderr への詳細出力や分類されたメッセージが必要です。現状の追加テストも正常系と単純失敗系に限られ、診断性は検証されていません ([tests/test_cli.py:675](/home/kosak/elab-doc-sync/tests/test_cli.py#L675))。 | — | 中 |
+
+### Codex 所感
+
+> 所感として、主機能と基本テストは揃っていますが、`link`/`verify` は成功系中心で、誤操作防止と既存データ保全の設計がまだ弱いです。特に manual link 後の初回 `sync` の扱いは仕様として明文化しないと、後続の AI や運用者が安全だと誤認しやすいです。

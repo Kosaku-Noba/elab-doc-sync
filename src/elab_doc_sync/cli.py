@@ -689,6 +689,107 @@ def cmd_new(args):
     print(f"  ✅ {outpath} を作成しました（テンプレート #{args.template_id}: {template.get('title', '')}）")
 
 
+def cmd_list(args):
+    """リモートのアイテム/実験ノート一覧を表示する。"""
+    config_path = Path(args.config)
+    config = load_config(config_path)
+    client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
+    entity_type = args.entity_type or "items"
+    limit = args.limit or 20
+    if entity_type == "items":
+        entities = client._req("GET", "/api/v2/items", params={"limit": limit}).json()
+    else:
+        entities = client._req("GET", "/api/v2/experiments", params={"limit": limit}).json()
+    label = "実験ノート" if entity_type == "experiments" else "アイテム"
+    if not entities:
+        print(f"  {label}がありません")
+        return
+    for e in entities:
+        title = e.get("title", "無題")
+        eid = e.get("id", "?")
+        status = e.get("status_title", "")
+        suffix = f" [{status}]" if status else ""
+        print(f"  #{eid}: {title}{suffix}")
+    print(f"\n  {label} {len(entities)} 件表示（--limit で件数変更可）")
+
+
+def cmd_link(args):
+    """既存リモートエンティティとローカルファイルを手動で紐付ける。"""
+    config_path = Path(args.config)
+    project_root = config_path.parent or Path(".")
+    config = load_config(config_path)
+    client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
+
+    target = None
+    if args.target:
+        target = next((t for t in config.targets if t.title == args.target), None)
+    if not target:
+        target = config.targets[0]
+
+    syncer = _make_syncer(client, target, project_root)
+
+    if target.mode == "each":
+        if not args.file:
+            print("エラー: each モードでは --file を指定してください", file=sys.stderr)
+            sys.exit(1)
+        mapping = syncer._load_mapping() or {}
+        mapping[args.file] = args.entity_id
+        syncer._save_mapping(mapping)
+        print(f"  ✅ {args.file} → {target.entity} #{args.entity_id} を紐付けました")
+    else:
+        syncer.save_item_id(args.entity_id)
+        print(f"  ✅ [{target.title}] → {target.entity} #{args.entity_id} を紐付けました")
+
+
+def cmd_verify(args):
+    """ローカルとリモートの整合性をチェックする。"""
+    config_path = Path(args.config)
+    project_root = config_path.parent or Path(".")
+    config = load_config(config_path)
+    client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
+    issues = 0
+
+    for target in config.targets:
+        if args.target and target.title != args.target:
+            continue
+        syncer = _make_syncer(client, target, project_root)
+
+        if target.mode == "each":
+            mapping = syncer._load_mapping() or {}
+            if not mapping:
+                print(f"  [{target.docs_dir}] マッピングなし（未同期）")
+                continue
+            for filename, eid in mapping.items():
+                filepath = project_root / target.docs_dir / filename
+                if not filepath.exists():
+                    print(f"  ⚠ {filename}: ローカルファイルが見つかりません（リモート #{eid}）")
+                    issues += 1
+                else:
+                    try:
+                        client.get_entity(target.entity, eid)
+                    except Exception:
+                        print(f"  ⚠ {filename}: リモート #{eid} にアクセスできません")
+                        issues += 1
+                    else:
+                        print(f"  ✓ {filename} ↔ #{eid}")
+        else:
+            eid = syncer.read_item_id()
+            if not eid:
+                print(f"  [{target.title}] 未同期")
+                continue
+            try:
+                client.get_entity(target.entity, eid)
+                print(f"  ✓ [{target.title}] ↔ #{eid}")
+            except Exception:
+                print(f"  ⚠ [{target.title}]: リモート #{eid} にアクセスできません")
+                issues += 1
+
+    if issues:
+        print(f"\n  {issues} 件の問題が見つかりました")
+    else:
+        print(f"\n  ✅ 整合性に問題はありません")
+
+
 def cmd_entity_status(args):
     """エンティティのステータスを表示または変更する。"""
     config_path = Path(args.config)
@@ -786,6 +887,17 @@ def main():
     new_parser.add_argument("--template-id", type=int, default=None, help="テンプレート ID")
     new_parser.add_argument("--title", default=None, help="ファイルのタイトル（省略時はテンプレート名）")
     new_parser.add_argument("--output", "-o", default=None, help="出力ファイルパス")
+
+    list_parser = sub.add_parser("list", help="リモートのアイテム/実験ノート一覧を表示")
+    list_parser.add_argument("--entity", dest="entity_type", default="items", choices=["items", "experiments"], help="エンティティ種別")
+    list_parser.add_argument("--limit", type=int, default=20, help="表示件数（デフォルト: 20）")
+
+    link_parser = sub.add_parser("link", help="既存リモートエンティティとローカルを紐付け")
+    link_parser.add_argument("entity_id", type=int, help="リモートエンティティ ID")
+    link_parser.add_argument("--file", default=None, help="紐付けるローカルファイル名（each モード時）")
+
+    sub.add_parser("verify", help="ローカルとリモートの整合性チェック")
+
     estatus_sub = estatus_parser.add_subparsers(dest="status_action")
     estatus_sub.add_parser("show", help="現在のステータスを表示")
     estatus_set_p = estatus_sub.add_parser("set", help="ステータスを変更")
@@ -817,5 +929,11 @@ def main():
         cmd_whoami(args)
     elif args.command == "new":
         cmd_new(args)
+    elif args.command == "list":
+        cmd_list(args)
+    elif args.command == "link":
+        cmd_link(args)
+    elif args.command == "verify":
+        cmd_verify(args)
     else:
         cmd_sync(args)
