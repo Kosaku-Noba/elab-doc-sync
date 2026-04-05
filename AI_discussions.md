@@ -547,3 +547,31 @@ The new cleanup path fixes the retry problem for freshly created clone directori
 ### Codex 所感
 
 >   If `--dir` points to an already existing empty directory, this cleanup removes the directory itself whenever all fetches fail. That is a destructive regression for workflows that pre-create a destination (for example an empty repo/worktree or a temp directory created by a wrapper script): after the failed clone, the caller-owned directory disappears instead of just the files `cmd_clone()` created. Please only `rmtree()` when `cmd_clone()` created `project_dir`, or otherwise delete just the generated children.
+
+
+## 2026-04-05T21:58 [Kiro] Codex 指摘対応 (FR-12: 既存空ディレクトリ保護)
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| cmd_clone() | `dir_created` フラグで clone が作成したディレクトリかを追跡。全件失敗時、clone が作成した場合のみ rmtree、既存ディレクトリの場合は生成ファイルのみ削除 |
+
+### Kiro 所感
+
+- 高優先度機能 FR-11 / FR-12 / FR-13 全て完了。push する。
+
+
+## 2026-04-05T21:58 [Codex] fix: FR-12 既存空ディレクトリを保護（clone 失敗時のクリーンアップ改善） に対するレビュー
+
+変更差分を確認した限り、既存の空ディレクトリを保持しつつ clone 失敗時の生成物だけを片付ける意図どおりに動作しており、新たな不具合は見当たりませんでした。既存動作を壊すような blocking issue は確認できません。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 指摘事項なし | — | — |
+
+### Codex 所感
+
+> 特記事項なし。
