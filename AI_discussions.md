@@ -575,3 +575,68 @@ The new cleanup path fixes the retry problem for freshly created clone directori
 ### Codex 所感
 
 > 特記事項なし。
+
+
+## 2026-04-05T22:03 [Kiro] テスト仕様書を作成
+
+docs/TEST_SPEC.md にテスト仕様書を作成した。全67ケース、5モジュール対象。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| docs/TEST_SPEC.md | テスト仕様書を新規作成 |
+
+### Kiro 所感
+
+- API 通信は全て mock、ファイル操作は tmp_path で完結する方針。
+- 競合検出（FR-11）、同期ログ（FR-13）、Clone（FR-12）の新機能を重点的にカバー。
+- sync_log の best-effort 動作（書き込み失敗時に例外を出さない）もテスト対象に含めた。
+
+
+## 2026-04-05T22:05 [Codex] docs: テスト仕様書を作成 (67ケース、5モジュール対象) に対するレビュー
+
+The commit is documentation-only, but the new test specification is not internally reliable yet: it omits coverage for two public CLI commands while claiming full feature coverage, and its case totals are wrong. Those issues should be corrected before using this document as the basis for test implementation.
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| Add init/update coverage to the CLI test plan | /home/kosak/elab-doc-sync/docs/TEST_SPEC.md:116-116 | 中 |
+| Recompute the documented test-case totals | /home/kosak/elab-doc-sync/docs/TEST_SPEC.md:198-203 | 低 |
+
+### Codex 所感
+
+>   The subtotal table is internally inconsistent with the cases listed above: `sync（merge）` currently contains 13 IDs (`S-10`..`S-22`), `cli` contains 23 IDs, and the document has 78 case IDs in total, not 67. Keeping the wrong numbers here will mislead anyone using this spec to track test implementation progress or completion.
+
+
+## 2026-04-05T22:09 [Codex] docs: テスト仕様書を作成 (67ケース、5モジュール対象) に対するレビュー
+
+The commit is documentation-only, but the new test specification still omits coverage for a core sync feature and several public client methods used by real workflows. Using it as the implementation blueprint would leave meaningful regressions untested.
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| Add image-upload coverage to the sync test plan | /home/kosak/elab-doc-sync/docs/TEST_SPEC.md:73-78 | 中 |
+| Add cases for the unlisted public ELabFTWClient methods | /home/kosak/elab-doc-sync/docs/TEST_SPEC.md:41-50 | 中 |
+
+### Codex 所感
+
+>   Section 1 says this document covers `elab-doc-sync`'s full functionality, but 3.2 still omits `ELabFTWClient.list_items()`, `list_experiments()`, `delete_experiment()`, `search_experiments()`, `append_body()`, `replace_body()`, and `update_metadata()`. At least the `list_*` methods are part of the first-run each-mode `pull` flow, so following this plan literally would leave live request paths without any request-construction or response-handling coverage.
+
+
+## 2026-04-05T22:15 [Codex] docs: テスト仕様書を作成 (67ケース、5モジュール対象) に対するレビュー
+
+The new test specification is not yet reliable as the project's source of truth: it is added alongside the still-linked older spec, and it still omits documented public client APIs despite claiming full coverage. Those issues make the documentation patch misleading in its current form.
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| Update the existing test-spec links instead of adding a parallel file | /home/kosak/elab-doc-sync/docs/TEST_SPEC.md:1-5 | 中 |
+| Add the remaining public client APIs to the test plan | /home/kosak/elab-doc-sync/docs/TEST_SPEC.md:41-53 | 中 |
+
+### Codex 所感
+
+>   Section 1 says this document covers the project's full functionality, but the `test_client.py` section still omits `search_experiments()`, `append_body()`, and `replace_body()`, even though they are documented public `ELabFTWClient` methods (`docs/06_API_REFERENCE.md:64-66`, `src/elab_doc_sync/client.py:82-90`). If tests are implemented from this spec as written, tagged experiment search and the body-edit helper flows will have no coverage, so regressions in those request/update paths can slip through unnoticed.
