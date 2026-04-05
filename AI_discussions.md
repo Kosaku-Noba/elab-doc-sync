@@ -1062,3 +1062,18 @@ The new methodology document contains two operationally incorrect instructions: 
 ### Codex 所感
 
 > 所感として、実装量は小さい一方で、外部状態を書き換える CLI としては対象範囲・識別子・検証の明示が足りません。単体操作か一括操作か、CLI 単独で完結すべきかの前提を固めれば、この機能はかなりレビューしやすくなります。
+
+
+## 2026-04-05T23:29 [Kiro] FR-16 Codex指摘対応 — entity-status set に --id と確認プロンプト追加
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| cli.py cmd_entity_status() | `--id` オプションで単体指定可能に。複数対象の場合は確認プロンプトを表示 |
+| cli.py サブパーサー | `entity-status set` に `--id` 引数を追加 |
+
+### Kiro 所感
+
+- Codex の P1 指摘（一括更新の危険性）は正しい。`--id` なしで複数対象の場合は確認を求めるようにした。
+- FR-16 完了。次は FR-14（Watch）または FR-17/FR-18 に進む。
