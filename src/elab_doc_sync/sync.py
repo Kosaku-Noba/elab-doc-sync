@@ -185,8 +185,8 @@ class DocsSyncer:
         try:
             remote_data = self._get_entity(item_id)
             self.save_remote_hash(remote_data.get("body", "") or "")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  [{self.target.title}] ⚠ リモートハッシュの保存に失敗（次回の競合検出が不正確になる可能性があります）: {e}")
 
         print(f"  [{self.target.title}] {entity_label} #{item_id} を更新しました")
 
@@ -340,8 +340,8 @@ class EachDocsSyncer:
             try:
                 remote_data = self._get_entity(eid)
                 self._save_remote_hash(f.name, remote_data.get("body", "") or "")
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"  [{title}] ⚠ リモートハッシュの保存に失敗: {e}")
 
             print(f"  [{title}] {entity_label} #{eid} を更新しました")
 
