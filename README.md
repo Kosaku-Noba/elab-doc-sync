@@ -61,7 +61,7 @@ eLabFTW → ユーザー設定 → API Keys でキーを作成し、`.elab-sync.
 elabftw:
   url: "https://your-elabftw.example.com"
   api_key: "ここにキーを貼る"
-  verify_ssl: false
+  verify_ssl: true   # 自己署名証明書の場合のみ false に変更
 ```
 
 ## コマンド一覧
