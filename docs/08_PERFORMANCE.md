@@ -19,11 +19,11 @@
 
 | 操作 | メソッド | パス |
 |---|---|---|
-| アイテム一覧 | GET | `/api/v2/items` |
-| アイテム取得 | GET | `/api/v2/items/{id}` |
-| アイテム作成 | POST | `/api/v2/items` |
-| アイテム更新 | PATCH | `/api/v2/items/{id}` |
-| アイテム削除 | DELETE | `/api/v2/items/{id}` |
+| リソース一覧 | GET | `/api/v2/items` |
+| リソース取得 | GET | `/api/v2/items/{id}` |
+| リソース作成 | POST | `/api/v2/items` |
+| リソース更新 | PATCH | `/api/v2/items/{id}` |
+| リソース削除 | DELETE | `/api/v2/items/{id}` |
 | 実験一覧 | GET | `/api/v2/experiments` |
 | 実験取得 | GET | `/api/v2/experiments/{id}` |
 | 実験作成 | POST | `/api/v2/experiments` |
