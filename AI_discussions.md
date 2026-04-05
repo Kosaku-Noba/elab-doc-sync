@@ -716,3 +716,20 @@ The patch only adds config tests and adjusts the CI commands to select the matri
 ### Codex 所感
 
 > 特記事項なし。
+
+
+## 2026-04-05T22:31 [Codex] test: test_client.py (CL-01〜CL-16) 16件 に対するレビュー
+
+This commit adds passing tests, but several of them do not validate the behaviors they claim to cover. As written, regressions in SSL verification, HTTP error typing, and request headers could still pass CI.
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| Assert `verify=False` on the outbound request | /home/kosak/elab-doc-sync/tests/test_client.py:114-116 | 中 |
+| Expect `requests.HTTPError` instead of any exception | /home/kosak/elab-doc-sync/tests/test_client.py:105-110 | 中 |
+| Assert the auth headers in the `get_item` test | /home/kosak/elab-doc-sync/tests/test_client.py:26-30 | 低 |
+
+### Codex 所感
+
+>   CL-01 claims to verify the 'correct URL and headers' contract, but it never inspects the `headers` argument passed to `requests.request()`. If the `Authorization` header is dropped or the JSON header changes, this test still passes, leaving a core API-client invariant unprotected.
