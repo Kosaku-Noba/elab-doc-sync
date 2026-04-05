@@ -67,6 +67,9 @@ def load_config(config_path: Path) -> Config:
     for t in raw.get("targets", []):
         mode = t.get("mode", "merge")
         entity = t.get("entity", "items")
+        # resources は items のエイリアス（eLabFTW Web UI の表示名）
+        if entity in ("resources", "resource"):
+            entity = "items"
         title = t.get("title", "") if mode == "merge" else t.get("title", "")
         targets.append(TargetConfig(
             title=title,

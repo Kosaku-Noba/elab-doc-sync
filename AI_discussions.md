@@ -1268,3 +1268,39 @@ The new methodology document contains two operationally incorrect instructions: 
 ### Kiro 所感
 
 - 全ドキュメントをコードと突き合わせ、抜け漏れを修正した。特に CLI リファレンスと API リファレンスの乖離が大きかった。
+
+
+## 2026-04-06T07:28 [Kiro] items → リソース表示統一 + resources エイリアス対応
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| cli.py | 全ての「アイテム」表示を「リソース」に変更（eLabFTW Web UI の表示名に合わせた） |
+| cli.py | `--entity` オプションで `resources` を `items` のエイリアスとして受け付け |
+| cli.py | `_normalize_entity()` 関数を追加（resources → items の正規化） |
+| config.py | YAML の `entity: resources` を `items` に正規化 |
+| ドキュメント | README/CLI リファレンス/設定仕様/トラブルシューティングの「アイテム」→「リソース」 |
+| test_config.py | C-11: resources エイリアスのテスト追加 |
+
+### Kiro 所感
+
+- eLabFTW の API は `items` だが、Web UI では「リソース」と表示される。ユーザーの混乱を防ぐため、CLI の表示は「リソース」に統一し、API 引数は `items` のまま維持。
+- `resources` は `items` の完全なエイリアスとして扱う。設定ファイル・CLI 引数・init プロンプトの全てで受け付ける。
+
+
+## 2026-04-06T07:32 [Codex] feat: items→リソース表示統一 + resources エイリアス対応 (CLI/config/docs) に対するレビュー
+
+コミットの主目的である表示文言の「リソース」化と `resources` alias 追加は差分どおりで、指定テスト `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` も `133 passed` でした。 ただし、「用語統一」と「alias 対応」をうたうコミットとしては、ドキュメント整合性・受理値の一貫性・テスト網羅に未解消のズレがあります。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 仕様説明としての「docs 更新」が実際の更新範囲と一致していません | トップレベル README では `entity: resources` を許容する説明に変わっていますが、内部ドキュメントには旧表現が残っています。たとえば [README.md:150](/home/kosak/elab-doc-sync/README.md#L150) は `items(resources)` を示す一方、[docs/01_README.md:12](/home/kosak/elab-doc-sync/docs/01_README.md#L12) はまだ「アイテム」、[docs/04_CONFIGURATION.md:35](/home/kosak/elab-doc-sync/docs/04_CONFIGURATION.md#L35) は `items / experiments` のみです。さらに init の実際のプロンプト [src/elab_doc_sync/cli.py:373](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L373) と README の例 [README.md:46](/home/kosak/elab-doc-sync/README.md#L46) も一致していません。ユーザーと後続 AI が「どこで `resources` が使えるのか」を誤認しやすく、このコミットメッセージの意図説明より実態が狭い点は明示した方がよいです。 | 中 |
+| alias の受理仕様が入力経路ごとに揃っておらず、将来の保守で誤解を招きやすい構造です | CLI 側の alias テーブルは `resource` と `resources` の両方を受け入れる実装になっており [src/elab_doc_sync/cli.py:21](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L21)、設定ロード側も同様です [src/elab_doc_sync/config.py:71](/home/kosak/elab-doc-sync/src/elab_doc_sync/config.py#L71)。一方で argparse の `choices` は `resources` のみで、`pull`/`clone`/`list` の `--entity resource` は受け付けません [src/elab_doc_sync/cli.py:880](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L880) [src/elab_doc_sync/cli.py:890](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L890) [src/elab_doc_sync/cli.py:920](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L920)。コミットメッセージ上は `resources` alias 対応ですが、実装上は未文書の `resource` も一部経路だけ通るため、仕様として明示的な確認が必要です。少なくとも alias 定義は一箇所に寄せないと、今後も経路ごとの受理値が静かに乖離します。 | 中 |
+| 追加仕様の中心である CLI alias 経路がテストされていません | 今回追加された自動テストは設定ファイルの `resources -> items` 正規化だけです [tests/test_config.py:120](/home/kosak/elab-doc-sync/tests/test_config.py#L120)。一方で、実際に変更された `cmd_pull` 系 [tests/test_cli.py:98](/home/kosak/elab-doc-sync/tests/test_cli.py#L98)、`cmd_clone` 系 [tests/test_cli.py:168](/home/kosak/elab-doc-sync/tests/test_cli.py#L168)、`cmd_list` 系 [tests/test_cli.py:584](/home/kosak/elab-doc-sync/tests/test_cli.py#L584) には `resources` 入力のケースがありません。現時点でも `resource/resources` の受理差が残っているので、少なくとも `--entity resources` で items API に落ちること、`init` が `items` に正規化して書き出すことを確認するテストは必要です。 | 低 |
+
+### Codex 所感
+
+> コード差分自体は小さく、既存テストも通っていますが、このコミットの価値は「用語統一」と「alias の一貫性」にあるため、そこにズレが残ると運用時と将来の AI 支援開発時の両方で誤解の種になります。上記 3 点を揃えれば、コミット意図はかなり明確になります。
