@@ -723,10 +723,20 @@ def cmd_link(args):
     target = None
     if args.target:
         target = next((t for t in config.targets if t.title == args.target), None)
+        if not target:
+            print(f"エラー: ターゲット '{args.target}' が見つかりません", file=sys.stderr)
+            sys.exit(1)
     if not target:
         target = config.targets[0]
 
     syncer = _make_syncer(client, target, project_root)
+
+    # リモートの body を取得して remote_hash を初期化（競合検出のベースライン）
+    try:
+        entity = client.get_entity(target.entity, args.entity_id)
+        body_html = entity.get("body", "") or ""
+    except Exception:
+        body_html = ""
 
     if target.mode == "each":
         if not args.file:
@@ -735,9 +745,13 @@ def cmd_link(args):
         mapping = syncer._load_mapping() or {}
         mapping[args.file] = args.entity_id
         syncer._save_mapping(mapping)
+        if body_html:
+            syncer._save_remote_hash(args.file, body_html)
         print(f"  ✅ {args.file} → {target.entity} #{args.entity_id} を紐付けました")
     else:
         syncer.save_item_id(args.entity_id)
+        if body_html:
+            syncer.save_remote_hash(body_html)
         print(f"  ✅ [{target.title}] → {target.entity} #{args.entity_id} を紐付けました")
 
 
@@ -787,7 +801,7 @@ def cmd_verify(args):
     if issues:
         print(f"\n  {issues} 件の問題が見つかりました")
     else:
-        print(f"\n  ✅ 整合性に問題はありません")
+        print(f"\n  ✅ 接続チェックに問題はありません（内容の一致は esync status で確認）")
 
 
 def cmd_entity_status(args):
