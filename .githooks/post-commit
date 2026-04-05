@@ -2,9 +2,9 @@
 # post-commit hook: Codex CLI で直前のコミットを自動レビュー
 # レビュー結果を AI_discussions.md に追記し、amend する
 
-# 再帰防止は無効化（ループ許容）
-# [ -n "$CODEX_REVIEW_RUNNING" ] && exit 0
-# export CODEX_REVIEW_RUNNING=1
+# 再帰防止
+[ -n "$CODEX_REVIEW_RUNNING" ] && exit 0
+export CODEX_REVIEW_RUNNING=1
 
 CODEX_CLI=$(command -v codex 2>/dev/null)
 [ -z "$CODEX_CLI" ] && exit 0
@@ -17,62 +17,63 @@ DISCUSSIONS_FILE="AI_discussions.md"
 
 COMMIT_MSG=$(git log -1 --pretty=%s)
 TIMESTAMP=$(date +"%Y-%m-%dT%H:%M")
-DIFF=$(git diff HEAD~1 HEAD 2>/dev/null)
-
-[ -z "$DIFF" ] && exit 0
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "🔍 Codex レビュー実行中..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-PROMPT="以下の git diff をレビューしてください。
-指摘事項は必ず次の形式で出力してください（指摘がなければ「指摘事項なし」と書いてください）:
+TMPFILE=$(mktemp)
+"$CODEX_CLI" exec review --commit HEAD --ephemeral -o "$TMPFILE" 2>/dev/null
+CODEX_EXIT=$?
+REVIEW_RESULT=$(cat "$TMPFILE" 2>/dev/null)
+rm -f "$TMPFILE"
 
-- [P1] 重大な問題の説明
-- [P2] 中程度の問題の説明
-- [P3] 軽微な問題の説明
-
-最後に1行でサマリーを書いてください。
-
-\`\`\`diff
-${DIFF}
-\`\`\`"
-
-REVIEW_RESULT=$(echo "$PROMPT" | "$CODEX_CLI" --quiet 2>/dev/null)
-
-if [ $? -ne 0 ] || [ -z "$REVIEW_RESULT" ]; then
+if [ "$CODEX_EXIT" -ne 0 ] || [ -z "$REVIEW_RESULT" ]; then
   echo "⚠️  Codex レビューをスキップしました"
   exit 0
 fi
 
-# findings をテーブル行に変換
+# findings をテーブル行に変換（AGENT.md テンプレート準拠）
 TABLE_ROWS=""
 while IFS= read -r line; do
   PRIORITY=$(echo "$line" | sed -n 's/.*\[P\([0-9]\)\].*/\1/p')
-  TITLE=$(echo "$line" | sed 's/^- \[P[0-9]\] //')
+  ITEM=$(echo "$line" | sed 's/^- \[P[0-9]\] //' | sed 's/ — .*//')
+  DETAIL=$(echo "$line" | sed -n 's/.*— //p')
   case "$PRIORITY" in
     1) PRIO_LABEL="高" ;;
     2) PRIO_LABEL="中" ;;
     *) PRIO_LABEL="低" ;;
   esac
-  TABLE_ROWS="${TABLE_ROWS}| ${TITLE} | P${PRIORITY} | ${PRIO_LABEL} |
+  if [ -n "$DETAIL" ]; then
+    TABLE_ROWS="${TABLE_ROWS}| ${ITEM} | ${DETAIL} | ${PRIO_LABEL} |
 "
+  else
+    TABLE_ROWS="${TABLE_ROWS}| ${ITEM} | — | ${PRIO_LABEL} |
+"
+  fi
 done < <(echo "$REVIEW_RESULT" | grep -E '^\- \[P[0-9]\]' | head -10)
 
-[ -z "$TABLE_ROWS" ] && TABLE_ROWS="| — | 指摘事項なし | — |
+[ -z "$TABLE_ROWS" ] && TABLE_ROWS="| 指摘事項なし | — | — |
 "
 
-SUMMARY=$(echo "$REVIEW_RESULT" | tail -1)
+# 概要: [P*] 行以外の最初の非空行
+OVERVIEW=$(echo "$REVIEW_RESULT" | sed '/^$/d' | grep -v '^\- \[P[0-9]\]' | head -1)
+# 所感: [P*] 行以外の最後の非空行
+SUMMARY=$(echo "$REVIEW_RESULT" | sed '/^$/d' | grep -v '^\- \[P[0-9]\]' | tail -1)
+# 概要と所感が同じなら所感はデフォルト
+[ "$OVERVIEW" = "$SUMMARY" ] && SUMMARY=""
 
-ENTRY="## ${TIMESTAMP} [Codex] 自動レビュー: ${COMMIT_MSG}
+ENTRY="## ${TIMESTAMP} [Codex] ${COMMIT_MSG} に対するレビュー
 
-### 指摘事項
+${OVERVIEW:-レビュー結果。}
 
-| 項目 | 優先度 | レベル |
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
 |---|---|---|
 ${TABLE_ROWS}
-### 所感
+### Codex 所感
 
 > ${SUMMARY:-特記事項なし。}"
 
