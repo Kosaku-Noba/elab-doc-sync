@@ -182,3 +182,80 @@ def test_replace_body(mock_req, client):
     mock_req.return_value = _mock_response()
     client.replace_body(1, "<p>replaced</p>")
     assert mock_req.call_args[1]["json"] == {"body": "<p>replaced</p>"}
+
+
+# ── FR-15/16/17 新メソッドのテスト ──────────────────────────
+
+
+# CL-17: get_tags
+@patch("elab_doc_sync.client.requests.request")
+def test_get_tags(mock_req, client):
+    mock_req.return_value = _mock_response([{"id": 1, "tag": "alpha"}, {"id": 2, "tag": "beta"}])
+    tags = client.get_tags("items", 42)
+    assert len(tags) == 2
+    assert tags[0]["tag"] == "alpha"
+    assert "/items/42/tags" in mock_req.call_args[0][1]
+
+
+# CL-18: untag_by_name — タグが見つかる場合
+@patch("elab_doc_sync.client.requests.request")
+def test_untag_by_name_found(mock_req, client):
+    get_resp = _mock_response([{"id": 5, "tag": "remove-me"}, {"id": 6, "tag": "keep"}])
+    patch_resp = _mock_response()
+    mock_req.side_effect = [get_resp, patch_resp]
+    result = client.untag_by_name("items", 1, "remove-me")
+    assert result is True
+    assert mock_req.call_args[1]["json"] == {"action": "unreference"}
+    assert "/tags/5" in mock_req.call_args[0][1]
+
+
+# CL-19: untag_by_name — タグが見つからない場合
+@patch("elab_doc_sync.client.requests.request")
+def test_untag_by_name_not_found(mock_req, client):
+    mock_req.return_value = _mock_response([{"id": 1, "tag": "other"}])
+    result = client.untag_by_name("items", 1, "nonexistent")
+    assert result is False
+
+
+# CL-20: get_metadata — 正常な JSON object
+@patch("elab_doc_sync.client.requests.request")
+def test_get_metadata_normal(mock_req, client):
+    mock_req.return_value = _mock_response({"id": 1, "metadata": '{"key": "val"}'})
+    meta = client.get_metadata("items", 1)
+    assert meta == {"key": "val"}
+
+
+# CL-21: get_metadata — null/空
+@patch("elab_doc_sync.client.requests.request")
+def test_get_metadata_null(mock_req, client):
+    mock_req.return_value = _mock_response({"id": 1, "metadata": None})
+    assert client.get_metadata("items", 1) == {}
+
+
+# CL-22: get_metadata — 不正 JSON
+@patch("elab_doc_sync.client.requests.request")
+def test_get_metadata_invalid_json(mock_req, client):
+    mock_req.return_value = _mock_response({"id": 1, "metadata": "not-json{"})
+    assert client.get_metadata("items", 1) == {}
+
+
+# CL-23: get_metadata — list 型（非 dict）
+@patch("elab_doc_sync.client.requests.request")
+def test_get_metadata_list_type(mock_req, client):
+    mock_req.return_value = _mock_response({"id": 1, "metadata": '[1, 2]'})
+    assert client.get_metadata("items", 1) == {}
+
+
+# CL-24: get_entity / patch_entity
+@patch("elab_doc_sync.client.requests.request")
+def test_get_entity(mock_req, client):
+    mock_req.return_value = _mock_response({"id": 1, "status_title": "Running"})
+    entity = client.get_entity("experiments", 1)
+    assert entity["status_title"] == "Running"
+
+
+@patch("elab_doc_sync.client.requests.request")
+def test_patch_entity(mock_req, client):
+    mock_req.return_value = _mock_response()
+    client.patch_entity("experiments", 1, status=2)
+    assert mock_req.call_args[1]["json"] == {"status": 2}

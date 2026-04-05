@@ -56,6 +56,14 @@ eLabFTW API への通信は全て mock し、ファイルシステム操作は `
 | CL-14 | search_experiments | tags パラメータ付き GET が送信される |
 | CL-15 | append_body | 既存 body に追記される |
 | CL-16 | replace_body | body が置換される |
+| CL-17 | get_tags | タグ一覧が取得される |
+| CL-18 | untag_by_name（タグあり） | PATCH unreference が送信される |
+| CL-19 | untag_by_name（タグなし） | False が返る |
+| CL-20 | get_metadata（正常） | JSON object が返る |
+| CL-21 | get_metadata（null） | 空 dict が返る |
+| CL-22 | get_metadata（不正 JSON） | 空 dict が返る |
+| CL-23 | get_metadata（list 型） | 空 dict が返る |
+| CL-24 | get_entity / patch_entity | 汎用 GET/PATCH が動作する |
 
 ### 3.3 test_sync.py
 
@@ -189,6 +197,43 @@ eLabFTW API への通信は全て mock し、ファイルシステム操作は `
 | CLI-52 | status 変更あり | 「変更あり」が表示される |
 | CLI-53 | status 最新 | 「最新」が表示される |
 
+#### 3.5.7 cmd_tag（FR-15）
+
+| ID | テストケース | 検証内容 |
+|---|---|---|
+| CLI-54 | tag list | リモートのタグ名が表示される |
+| CLI-55 | tag add | `add_tag` が正しい引数で呼ばれる |
+| CLI-56 | tag remove | `untag_by_name` が正しい引数で呼ばれる |
+
+#### 3.5.8 cmd_metadata（FR-15）
+
+| ID | テストケース | 検証内容 |
+|---|---|---|
+| CLI-57 | metadata get | メタデータが JSON で表示される |
+| CLI-58 | metadata set | 既存メタデータにマージされて `update_metadata` が呼ばれる |
+
+#### 3.5.9 cmd_entity_status（FR-16）
+
+| ID | テストケース | 検証内容 |
+|---|---|---|
+| CLI-59 | entity-status show | ステータス名が表示される |
+| CLI-60 | entity-status set --id | `patch_entity` が正しい引数で呼ばれる |
+
+#### 3.5.10 cmd_whoami（FR-17）
+
+| ID | テストケース | 検証内容 |
+|---|---|---|
+| CLI-61 | whoami | ユーザー名・メール・チームが表示される |
+
+#### 3.5.11 cmd_new（FR-18）
+
+| ID | テストケース | 検証内容 |
+|---|---|---|
+| CLI-62 | new --list | テンプレート一覧が表示される |
+| CLI-63 | new --template-id | Markdown ファイルが生成される |
+| CLI-64 | new 既存ファイルエラー | SystemExit が発生する |
+| CLI-65 | new --output | 指定パスにファイルが生成される |
+
 ## 4. テスト環境・方針
 
 ### 4.1 依存パッケージ
@@ -218,18 +263,24 @@ test = ["pytest>=7.0"]
 
 | カテゴリ | 件数 |
 |---|---|
-| config | 8 |
-| client | 16 |
+| config | 10 |
+| client | 24 |
 | sync（ユーティリティ） | 3 |
 | sync（merge） | 13 |
 | sync（画像アップロード） | 4 |
 | sync（競合検出） | 5 |
 | sync（each） | 5 |
-| sync_log | 11 |
+| sync（タグ同期 FR-15） | 5 |
+| sync_log | 13 |
 | cli（sync） | 5 |
 | cli（pull） | 5 |
 | cli（clone） | 7 |
 | cli（log） | 2 |
 | cli（init/update） | 4 |
 | cli（diff/status） | 4 |
-| **合計** | **92** |
+| cli（tag FR-15） | 3 |
+| cli（metadata FR-15） | 2 |
+| cli（entity-status FR-16） | 2 |
+| cli（whoami FR-17） | 1 |
+| cli（new FR-18） | 4 |
+| **合計** | **122** |

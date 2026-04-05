@@ -1144,3 +1144,40 @@ The new methodology document contains two operationally incorrect instructions: 
 
 - Codex の P1（パス解決の不一致）は正しい。`-c` で別ディレクトリから実行した場合にファイルがプロジェクト外に落ちるバグだった。
 - v0.2.0 ロードマップの FR-15〜FR-18 が全て実装完了（FR-14 Watch は watchdog 依存のため別途）。push する。
+
+
+## 2026-04-05T23:52 [Kiro] FR-15〜FR-18 テスト追加 (92 → 122 ケース)
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| test_client.py | CL-17〜CL-24: get_tags, untag_by_name, get_metadata（正常/null/不正JSON/list型）, get_entity, patch_entity |
+| test_sync.py | S-45〜S-49: _sync_tags（追加/no-op/空リスト/既存タグ保持/best-effort） |
+| test_cli.py | CLI-54〜CLI-65: tag list/add/remove, metadata get/set, entity-status show/set, whoami, new --list/--template-id/既存エラー/--output |
+| test_sync_log.py | L-12〜L-13: user フィールド付き/なしのログ記録 |
+| test_config.py | C-09〜C-10: tags フィールドの読み込み/デフォルト |
+| docs/11_TEST_SPEC.md | テスト仕様書を更新（122 ケース） |
+| cli.py | バグ修正: `load_item_id` → `read_item_id`（テストで発見） |
+
+### Kiro 所感
+
+- テスト追加により `_get_entity_ids` のバグ（`load_item_id` → `read_item_id`）を発見・修正。テストの価値を実証。
+- `get_metadata` の異常系（null/不正JSON/list型）を全てテストでカバー。Codex が指摘していた仕様境界を固定した。
+
+
+## 2026-04-05T23:56 [Codex] test: FR-15〜FR-18 テスト追加 (92→122ケース) + _get_entity_ids バグ修正 に対するレビュー
+
+コミットメッセージと差分の大枠は整合していますが、「テスト追加」の名目で既存挙動を仕様として固定してしまっている点が見えます。なお、この環境では `pytest` が未導入で、実行確認はせず差分と周辺実装から判断しました。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| `metadata set` のデータ保全方針を危険側で仕様化している | [tests/test_client.py#L228](/home/kosak/elab-doc-sync/tests/test_client.py#L228) と [docs/11_TEST_SPEC.md#L62](/home/kosak/elab-doc-sync/docs/11_TEST_SPEC.md#L62) で、`metadata` が `null` / 不正 JSON / `list` のときに `{}` を返すことを正解として固定しています。一方で [src/elab_doc_sync/cli.py#L611](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L611) の `metadata set` は `existing = client.get_metadata(...); existing.update(...); client.update_metadata(...)` でそのまま上書きするため、eLabFTW 側の仕様変更・破損データ・一時的不整合時にも「読めなかった既存 metadata を空として消す」契約になります。コミットメッセージは単なるテスト追加に見えますが、実質的にはデータ消失を許容する仕様化なので、作者に明示的な確認が必要です。 | 高 |
+| `new` のファイル名境界が FR-18 完了としては未検証 | [src/elab_doc_sync/cli.py#L665](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L665) はテンプレートタイトルから `/` しか除去せずにファイル名を作っていますが、[README.md#L12](/home/kosak/elab-doc-sync/README.md#L12) では Windows 対応を掲げています。Windows では `\` や `..`、予約名がそのまま効きうるため、リモートテンプレートタイトル由来で想定外の場所に書き込む、または作成に失敗するリスクがあります。今回の FR-18 テスト [tests/test_cli.py#L530](/home/kosak/elab-doc-sync/tests/test_cli.py#L530) と [tests/test_cli.py#L563](/home/kosak/elab-doc-sync/tests/test_cli.py#L563) は正常系のみで、この信頼境界の確認が抜けています。 | 中 |
+| FR-17/18 のテストが private API 依存を強めており、将来の保守で公開契約が読み取りにくい | [tests/test_cli.py#L493](/home/kosak/elab-doc-sync/tests/test_cli.py#L493) と [tests/test_cli.py#L516](/home/kosak/elab-doc-sync/tests/test_cli.py#L516) は `ELabFTWClient._req` を直接モックしており、[src/elab_doc_sync/cli.py#L630](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L630) と [src/elab_doc_sync/cli.py#L648](/home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py#L648) の内部実装詳細をそのまま固定しています。現状コードとは一致しますが、将来 client 側に公開メソッドを切り出すとテストが transport 詳細で壊れやすく、AI 支援開発でも「どこが仕様でどこが内部実装か」を誤解しやすい構造です。 | 低 |
+
+### Codex 所感
+
+> 今回の差分はテスト拡充として有益ですが、`metadata` と `new` は境界条件まで「正しい仕様」として固定してよいか先に合意した方が安全です。特に `metadata` はデータ保全に直結するので、このコミットからは判断できない前提を明示したうえで再確認を勧めます。

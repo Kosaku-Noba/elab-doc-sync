@@ -89,3 +89,29 @@ def test_each_experiments(tmp_path):
     cfg = load_config(_write_config(tmp_path, data))
     assert cfg.targets[0].mode == "each"
     assert cfg.targets[0].entity == "experiments"
+
+
+# C-09: tags フィールドの読み込み
+def test_config_tags(tmp_path):
+    from elab_doc_sync.config import load_config
+    data = {
+        "elabftw": {"url": "https://x.com", "api_key": "k"},
+        "targets": [{"title": "T", "docs_dir": "docs/", "tags": ["alpha", "beta"]}],
+    }
+    p = tmp_path / ".elab-sync.yaml"
+    p.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    config = load_config(p)
+    assert config.targets[0].tags == ["alpha", "beta"]
+
+
+# C-10: tags フィールド省略時はデフォルト空リスト
+def test_config_tags_default(tmp_path):
+    from elab_doc_sync.config import load_config
+    data = {
+        "elabftw": {"url": "https://x.com", "api_key": "k"},
+        "targets": [{"title": "T", "docs_dir": "docs/"}],
+    }
+    p = tmp_path / ".elab-sync.yaml"
+    p.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    config = load_config(p)
+    assert config.targets[0].tags == []

@@ -315,3 +315,48 @@ def test_each_remote_hash_saved(tmp_path, mock_client):
     hp = syncer._remote_hash_path("a.md")
     assert hp.exists()
     assert hp.read_text().strip() == _compute_hash("<p>A</p>")
+
+
+# ── FR-15 タグ同期テスト ─────────────────────────────────
+
+from elab_doc_sync.sync import _sync_tags
+
+
+# S-45: タグ同期 — 新規タグを追加
+def test_sync_tags_adds_missing():
+    client = MagicMock()
+    client.get_tags.return_value = [{"id": 1, "tag": "existing"}]
+    _sync_tags(client, "items", 42, ["existing", "new-tag"])
+    client.add_tag.assert_called_once_with("items", 42, "new-tag")
+
+
+# S-46: タグ同期 — 全て既存なら何もしない
+def test_sync_tags_no_op():
+    client = MagicMock()
+    client.get_tags.return_value = [{"id": 1, "tag": "a"}, {"id": 2, "tag": "b"}]
+    _sync_tags(client, "items", 42, ["a", "b"])
+    client.add_tag.assert_not_called()
+
+
+# S-47: タグ同期 — 空リストなら何もしない
+def test_sync_tags_empty():
+    client = MagicMock()
+    _sync_tags(client, "items", 42, [])
+    client.get_tags.assert_not_called()
+
+
+# S-48: タグ同期 — 既存タグを外さない（追記のみ）
+def test_sync_tags_does_not_remove():
+    client = MagicMock()
+    client.get_tags.return_value = [{"id": 1, "tag": "extra"}, {"id": 2, "tag": "wanted"}]
+    _sync_tags(client, "items", 42, ["wanted"])
+    client.untag_by_name.assert_not_called()
+
+
+# S-49: タグ同期 — API 失敗時は例外を握りつぶす
+def test_sync_tags_best_effort(capsys):
+    client = MagicMock()
+    client.get_tags.side_effect = Exception("API error")
+    _sync_tags(client, "items", 42, ["tag1"])
+    captured = capsys.readouterr()
+    assert "タグ同期に失敗" in captured.out
