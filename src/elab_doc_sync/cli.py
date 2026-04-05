@@ -530,12 +530,91 @@ HELP_EPILOG = """\
   elab-doc-sync pull --id 42     指定 ID のエンティティを取得
   elab-doc-sync diff             ローカルと eLabFTW の差分を表示
   elab-doc-sync status           同期状態を確認
+  elab-doc-sync tag list         リモートのタグ一覧を表示
+  elab-doc-sync tag add "タグ"   タグを追加
+  elab-doc-sync tag remove "タグ" タグを外す
+  elab-doc-sync metadata get     メタデータを表示
+  elab-doc-sync metadata set k=v メタデータを設定
   elab-doc-sync init             対話的に設定ファイルを作成
   elab-doc-sync update           ツールを最新版に更新
-  elab-doc-sync --dry-run        実行せずに同期内容を確認
-  elab-doc-sync --force          変更がなくても強制同期
-  elab-doc-sync -t "名前"        特定のターゲットだけ同期
 """
+
+
+def _get_entity_ids(client, syncer, target, args_id=None):
+    """ターゲットに紐づくエンティティ ID のリストを返す。"""
+    if args_id:
+        return [(args_id, target.entity)]
+    if target.mode == "each":
+        mapping = syncer._load_mapping()
+        return [(eid, target.entity) for eid in mapping.values()] if mapping else []
+    eid = syncer.load_item_id()
+    return [(eid, target.entity)] if eid else []
+
+
+def cmd_tag(args):
+    config_path = Path(args.config)
+    project_root = config_path.parent or Path(".")
+    config = load_config(config_path)
+    client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
+
+    for target in config.targets:
+        if args.target and target.title != args.target:
+            continue
+        syncer = _make_syncer(client, target, project_root)
+        ids = _get_entity_ids(client, syncer, target, getattr(args, "id", None))
+        if not ids:
+            print(f"  [{target.title or target.docs_dir}] 同期済みエンティティなし")
+            continue
+
+        for eid, etype in ids:
+            label = f"{etype} #{eid}"
+            if args.tag_action == "list":
+                tags = client.get_tags(etype, eid)
+                tag_names = [t.get("tag", "?") for t in tags]
+                print(f"  {label}: {', '.join(tag_names) if tag_names else '(タグなし)'}")
+            elif args.tag_action == "add":
+                client.add_tag(etype, eid, args.tag_name)
+                print(f"  {label}: タグ「{args.tag_name}」を追加しました")
+            elif args.tag_action == "remove":
+                if client.untag_by_name(etype, eid, args.tag_name):
+                    print(f"  {label}: タグ「{args.tag_name}」を外しました")
+                else:
+                    print(f"  {label}: タグ「{args.tag_name}」が見つかりません")
+
+
+def cmd_metadata(args):
+    config_path = Path(args.config)
+    project_root = config_path.parent or Path(".")
+    config = load_config(config_path)
+    client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
+
+    for target in config.targets:
+        if args.target and target.title != args.target:
+            continue
+        syncer = _make_syncer(client, target, project_root)
+        ids = _get_entity_ids(client, syncer, target, getattr(args, "id", None))
+        if not ids:
+            print(f"  [{target.title or target.docs_dir}] 同期済みエンティティなし")
+            continue
+
+        for eid, etype in ids:
+            label = f"{etype} #{eid}"
+            if args.meta_action == "get":
+                meta = client.get_metadata(etype, eid)
+                print(f"  {label}:")
+                print(f"    {json.dumps(meta, ensure_ascii=False, indent=2)}")
+            elif args.meta_action == "set":
+                pairs = {}
+                for kv in args.keyvalues:
+                    if "=" not in kv:
+                        print(f"エラー: '{kv}' は key=value 形式ではありません", file=sys.stderr)
+                        sys.exit(1)
+                    k, v = kv.split("=", 1)
+                    pairs[k] = v
+                existing = client.get_metadata(etype, eid)
+                existing.update(pairs)
+                client.update_metadata(etype, eid, existing)
+                print(f"  {label}: メタデータを更新しました")
 
 
 def main():
@@ -569,6 +648,23 @@ def main():
     clone_parser.add_argument("--entity", default="items", choices=["items", "experiments"], help="エンティティ種別")
     clone_parser.add_argument("--no-verify", action="store_true", help="SSL 検証を無効化")
 
+    tag_parser = sub.add_parser("tag", help="タグを管理")
+    tag_sub = tag_parser.add_subparsers(dest="tag_action")
+    tag_sub.add_parser("list", help="タグ一覧を表示")
+    tag_add_p = tag_sub.add_parser("add", help="タグを追加")
+    tag_add_p.add_argument("tag_name", help="追加するタグ名")
+    tag_add_p.add_argument("--id", type=int, default=None, help="エンティティ ID")
+    tag_rm_p = tag_sub.add_parser("remove", help="タグを外す")
+    tag_rm_p.add_argument("tag_name", help="外すタグ名")
+    tag_rm_p.add_argument("--id", type=int, default=None, help="エンティティ ID")
+
+    meta_parser = sub.add_parser("metadata", help="メタデータを管理")
+    meta_sub = meta_parser.add_subparsers(dest="meta_action")
+    meta_sub.add_parser("get", help="メタデータを表示")
+    meta_set_p = meta_sub.add_parser("set", help="メタデータを設定")
+    meta_set_p.add_argument("keyvalues", nargs="+", help="key=value ペア")
+    meta_set_p.add_argument("--id", type=int, default=None, help="エンティティ ID")
+
     args = parser.parse_args()
     if args.command == "status":
         cmd_status(args)
@@ -584,5 +680,9 @@ def main():
         cmd_log(args)
     elif args.command == "clone":
         cmd_clone(args)
+    elif args.command == "tag":
+        cmd_tag(args)
+    elif args.command == "metadata":
+        cmd_metadata(args)
     else:
         cmd_sync(args)

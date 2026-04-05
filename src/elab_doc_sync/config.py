@@ -15,6 +15,11 @@ class TargetConfig:
     pattern: str = "*.md"
     mode: str = "merge"       # "merge" (全結合→1エンティティ) or "each" (1ファイル=1エンティティ)
     entity: str = "items"     # "items" or "experiments"
+    tags: list[str] = None    # push 時に自動設定するタグ
+
+    def __post_init__(self):
+        if self.tags is None:
+            self.tags = []
 
 
 @dataclass
@@ -70,6 +75,7 @@ def load_config(config_path: Path) -> Config:
             pattern=t.get("pattern", "*.md"),
             mode=mode,
             entity=entity,
+            tags=t.get("tags", []),
         ))
 
     if not targets:
