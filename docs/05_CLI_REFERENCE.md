@@ -11,6 +11,20 @@
 | `esync pull --id 42` | 指定 ID のエンティティを取得 |
 | `esync diff` | ローカルと eLabFTW の差分を表示 |
 | `esync status` | 同期状態を確認 |
+| `esync tag list` | リモートのタグ一覧を表示 |
+| `esync tag add "タグ"` | タグを追加 |
+| `esync tag remove "タグ"` | タグを外す |
+| `esync metadata get` | メタデータを表示 |
+| `esync metadata set k=v` | メタデータを設定 |
+| `esync entity-status show` | エンティティのステータスを表示 |
+| `esync entity-status set <ID>` | ステータスを変更 |
+| `esync list` | リモートのアイテム一覧を表示 |
+| `esync list --entity experiments` | 実験ノート一覧を表示 |
+| `esync link <ID>` | 既存リモートエンティティとローカルを紐付け |
+| `esync verify` | ローカルとリモートの整合性チェック |
+| `esync whoami` | 現在のユーザー情報を表示 |
+| `esync new --list` | テンプレート一覧を表示 |
+| `esync new --template-id <ID>` | テンプレートからファイル作成 |
 | `esync init` | 対話的に設定ファイルを作成 |
 | `esync update` | ツールを最新版に更新 |
 | `esync log` | 同期ログを表示 |
@@ -118,3 +132,93 @@ esync clone --url https://elab.example.com --id 42 --entity experiments --no-ver
 ### `esync update`
 
 ツール自体を最新版に更新する。`uv` → `pip` の順で自動検出。
+
+### `esync tag`
+
+エンティティのタグを管理する。
+
+```bash
+esync tag list                # 全ターゲットのタグ一覧
+esync tag add "実験"          # タグを追加
+esync tag remove "古いタグ"   # タグを外す（エンティティから解除、タグ自体は削除しない）
+esync tag add "実験" --id 42  # 特定エンティティに追加
+```
+
+### `esync metadata`
+
+エンティティのメタデータ（extra fields）を管理する。
+
+```bash
+esync metadata get                    # メタデータを JSON で表示
+esync metadata set project=ABC ver=2  # key=value ペアで設定（既存にマージ）
+```
+
+### `esync entity-status`
+
+エンティティのステータス（draft/running/published 等）を管理する。
+
+```bash
+esync entity-status show              # 現在のステータスを表示
+esync entity-status set 3             # ステータス ID を指定して変更
+esync entity-status set 3 --id 42     # 特定エンティティのみ変更
+```
+
+複数エンティティが対象の場合は確認プロンプトが表示される。
+
+### `esync list`
+
+リモートのアイテム/実験ノート一覧を表示する。
+
+```bash
+esync list                            # アイテム一覧（デフォルト 20 件）
+esync list --entity experiments       # 実験ノート一覧
+esync list --limit 50                 # 件数指定
+```
+
+### `esync link`
+
+既存のリモートエンティティとローカルプロジェクトを手動で紐付ける。
+
+```bash
+esync link 42                         # merge モード: ターゲットと ID を紐付け
+esync link 42 --file exp1.md          # each モード: ファイルと ID を紐付け
+esync link 42 -t "実験記録"           # 特定ターゲットに紐付け
+```
+
+紐付け時にリモートの body を取得し、競合検出のベースライン（remote_hash）を初期化する。
+
+### `esync verify`
+
+ローカルとリモートの接続状態を検証する。
+
+```bash
+esync verify                          # 全ターゲット
+esync verify -t "名前"               # 特定ターゲット
+```
+
+検証内容: ID/mapping の存在、リモートへのアクセス可否。内容の一致は `esync status` で確認。
+
+### `esync whoami`
+
+現在の API キーに紐づくユーザー情報を表示する。
+
+```bash
+esync whoami
+```
+
+### `esync new`
+
+eLabFTW のテンプレートから新規 Markdown ファイルを生成する。
+
+```bash
+esync new --list                      # テンプレート一覧
+esync new --template-id 1             # テンプレートからファイル生成
+esync new --template-id 1 --title "実験A" --output exp_a.md
+```
+
+| オプション | 説明 |
+|---|---|
+| `--list` | テンプレート一覧を表示 |
+| `--template-id` | テンプレート ID |
+| `--title` | ファイルタイトル（省略時はテンプレート名） |
+| `--output` / `-o` | 出力ファイルパス |

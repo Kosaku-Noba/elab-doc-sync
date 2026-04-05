@@ -1251,3 +1251,20 @@ The new methodology document contains two operationally incorrect instructions: 
 ### Kiro 所感
 
 - Codex の P1（link 後の初回 sync で上書き）は正しい。remote_hash を初期化することで、link 後の初回 push でも競合検出が機能する。
+
+
+## 2026-04-06T00:45 [Kiro] ドキュメント全面改訂 — 全コマンド・全メソッドの抜け漏れ修正
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| docs/05_CLI_REFERENCE.md | tag/metadata/entity-status/list/link/verify/whoami/new の全コマンド詳細を追加 |
+| docs/06_API_REFERENCE.md | get_tags/untag_by_name/get_metadata/get_metadata_raw/get_entity/patch_entity/_sync_tags を追加。TargetConfig に tags。sync_log.record に user。cli.py に全新コマンド |
+| docs/04_CONFIGURATION.md | tags フィールドを追加 |
+| SPECIFICATION.md | ELabFTWClient に新メソッド9件追加。TargetConfig に mode/entity/tags を追加 |
+| README.md | log/clone/whoami/new を追加 |
+
+### Kiro 所感
+
+- 全ドキュメントをコードと突き合わせ、抜け漏れを修正した。特に CLI リファレンスと API リファレンスの乖離が大きかった。

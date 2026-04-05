@@ -188,8 +188,14 @@ ELabFTWClient(base_url: str, api_key: str, verify_ssl: bool = True)
 | `replace_body(exp_id, body)` | `None` | 実験の body を置換 |
 | `upload_file(entity_type, entity_id, filepath, comment)` | `dict` | ファイルアップロード |
 | `add_tag(entity_type, entity_id, tag)` | `None` | タグ追加 |
-| `remove_tag(entity_type, entity_id, tag_id)` | `None` | タグ削除 |
+| `remove_tag(entity_type, entity_id, tag_id)` | `None` | タグ削除（ID 指定） |
 | `update_metadata(entity_type, entity_id, metadata)` | `None` | メタデータ更新 |
+| `get_tags(entity_type, entity_id)` | `list[dict]` | タグ一覧取得 |
+| `untag_by_name(entity_type, entity_id, tag_name)` | `bool` | タグ名指定で解除 |
+| `get_metadata(entity_type, entity_id)` | `dict` | メタデータ取得（パース失敗時は空 dict） |
+| `get_metadata_raw(entity_type, entity_id)` | `str \| None` | メタデータの生の値 |
+| `get_entity(entity_type, entity_id)` | `dict` | 汎用エンティティ取得 |
+| `patch_entity(entity_type, entity_id, **fields)` | `None` | 汎用エンティティ更新 |
 
 #### エラーハンドリング
 
@@ -258,6 +264,9 @@ class TargetConfig:
     docs_dir: str
     id_file: str
     pattern: str = "*.md"
+    mode: str = "merge"   # "merge" / "each"
+    entity: str = "items" # "items" / "experiments"
+    tags: list[str] = []  # push 時に自動追加するタグ
 
 @dataclass
 class Config:

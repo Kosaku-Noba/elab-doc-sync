@@ -26,6 +26,7 @@ class TargetConfig:
     pattern: str = "*.md"
     mode: str = "merge"   # "merge" / "each"
     entity: str = "items" # "items" / "experiments"
+    tags: list[str] = []  # push 時に自動追加するタグ（追記のみ）
 ```
 
 ### `load_config(config_path: Path) -> Config`
@@ -70,9 +71,20 @@ ELabFTWClient(base_url: str, api_key: str, verify_ssl: bool = True)
 | メソッド | 戻り値 | 説明 |
 |---|---|---|
 | `upload_file(entity_type, entity_id, filepath, comment="")` | `dict` | ファイルアップロード。`{"id", "filename", "url"}` を返す |
+| `get_tags(entity_type, entity_id)` | `list[dict]` | タグ一覧取得 |
 | `add_tag(entity_type, entity_id, tag)` | `None` | タグ追加 |
-| `remove_tag(entity_type, entity_id, tag_id)` | `None` | タグ削除 |
+| `remove_tag(entity_type, entity_id, tag_id)` | `None` | タグ削除（ID 指定） |
+| `untag_by_name(entity_type, entity_id, tag_name)` | `bool` | タグ名指定でエンティティから解除。見つからない場合 False |
+| `get_metadata(entity_type, entity_id)` | `dict` | メタデータを dict で取得。パース失敗時は空 dict |
+| `get_metadata_raw(entity_type, entity_id)` | `str \| None` | メタデータの生の値を返す |
 | `update_metadata(entity_type, entity_id, metadata)` | `None` | メタデータ更新 |
+
+### 汎用エンティティ操作
+
+| メソッド | 戻り値 | 説明 |
+|---|---|---|
+| `get_entity(entity_type, entity_id)` | `dict` | 汎用エンティティ取得 |
+| `patch_entity(entity_type, entity_id, **fields)` | `None` | 汎用エンティティ更新 |
 
 ### 内部メソッド
 
@@ -95,6 +107,7 @@ ELabFTWClient(base_url: str, api_key: str, verify_ssl: bool = True)
 | `_count_local_images(body: str) -> int` | ローカル画像参照の数を返す |
 | `_md_to_html(text: str) -> str` | Markdown → HTML 変換 |
 | `_rewrite_images(body, entity, entity_id, client, docs_dir, project_root) -> str` | ローカル画像をアップロードし URL を書き換え |
+| `_sync_tags(client, entity_type, entity_id, desired_tags)` | 設定のタグをリモートに追記（追記のみ、best-effort） |
 
 ### `ConflictError`
 
@@ -106,7 +119,7 @@ ELabFTWClient(base_url: str, api_key: str, verify_ssl: bool = True)
 
 | 関数 | 説明 |
 |---|---|
-| `record(log_path, *, action, target, entity, entity_id, files)` | ログエントリを JSONL に追記。例外を送出しない |
+| `record(log_path, *, action, target, entity, entity_id, files, user=None)` | ログエントリを JSONL に追記。例外を送出しない |
 | `read_log(log_path, limit=20) -> list[dict]` | 直近 N 件のログを読み込み |
 | `format_log(entries) -> str` | ログエントリを表示用文字列に整形 |
 
@@ -121,7 +134,8 @@ ELabFTWClient(base_url: str, api_key: str, verify_ssl: bool = True)
   "target": "My Docs",
   "entity": "items",
   "entity_id": 42,
-  "files": ["doc1.md", "doc2.md"]
+  "files": ["doc1.md", "doc2.md"],
+  "user": "taro@example.com"
 }
 ```
 
@@ -142,7 +156,16 @@ CLI エントリポイント。`argparse` でコマンドを定義。
 | `cmd_clone(args)` | リモートからプロジェクト構築 |
 | `cmd_log(args)` | 同期ログ表示 |
 | `cmd_update(args)` | ツール更新 |
+| `cmd_tag(args)` | タグ管理（list/add/remove） |
+| `cmd_metadata(args)` | メタデータ管理（get/set） |
+| `cmd_entity_status(args)` | ステータス管理（show/set） |
+| `cmd_list(args)` | リモート一覧表示 |
+| `cmd_link(args)` | 手動紐付け |
+| `cmd_verify(args)` | 整合性チェック |
+| `cmd_whoami(args)` | ユーザー情報表示 |
+| `cmd_new(args)` | テンプレートからファイル生成 |
 | `_make_syncer(client, target, project_root)` | モードに応じた Syncer インスタンスを生成 |
+| `_get_entity_ids(client, syncer, target, args_id)` | ターゲットに紐づくエンティティ ID リストを返す |
 | `_show_diff(title, local_text, remote_text)` | unified diff を表示 |
 | `_template_dir()` | テンプレートディレクトリのパスを返す |
 | `_copy_template_files(docs_dir)` | テンプレートファイルをコピー |
