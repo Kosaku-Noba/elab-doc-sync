@@ -765,3 +765,18 @@ The commit only adds tests and review notes, but two of the new tests do not rel
 ### Codex 所感
 
 >   This case only exercises the error-handling path when `chmod(0o444)` actually prevents creating `log.jsonl`. On Windows, and in common root-in-container runs, that permission change may not block the write, so the test becomes another successful `record()` call and never verifies the `except Exception: pass` branch. A mocked `open()`/`write()` failure would make the intended coverage deterministic across environments.
+
+
+## 2026-04-05T22:38 [Codex] test: test_sync.py (S-01〜S-44) 30件 に対するレビュー
+
+The commit only adds `tests/test_sync.py`, and the new tests are consistent with the current `sync.py` behavior. The full test suite passes in the project virtualenv, so I did not find any blocking issues introduced by this patch.
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 指摘事項なし | — | — |
+
+### Codex 所感
+
+> 特記事項なし。
