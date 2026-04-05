@@ -701,3 +701,18 @@ The new CI workflow is not reliable as committed: it currently fails uncondition
 ### Codex 所感
 
 >   `uv python install` only downloads the interpreter; it does not make the later `uv sync`/`uv run` steps use that version. On runners that already have another compatible Python available, the `3.10` matrix leg can still build and run the environment under that other interpreter because neither step passes `--python` (or `UV_PYTHON`). That means the workflow can silently miss 3.10-specific regressions while appearing to test both versions.
+
+
+## 2026-04-05T22:28 [Codex] test: test_config.py (C-01〜C-08) 8件 + CI修正 に対するレビュー
+
+The patch only adds config tests and adjusts the CI commands to select the matrix Python explicitly. I did not identify any discrete correctness issues in those changes, and the new tests pass in the existing local 3.12 environment.
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 指摘事項なし | — | — |
+
+### Codex 所感
+
+> 特記事項なし。
