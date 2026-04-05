@@ -394,6 +394,83 @@ def cmd_init(args):
     )
 
 
+def cmd_clone(args):
+    """リモートの eLabFTW エンティティからローカルプロジェクトを構築する。"""
+    import os as _os
+
+    url = args.url.rstrip("/")
+    api_key = _os.environ.get("ELABFTW_API_KEY", "").strip()
+    if not api_key:
+        print("エラー: 環境変数 ELABFTW_API_KEY を設定してください", file=sys.stderr)
+        sys.exit(1)
+
+    entity = args.entity
+    ids = args.id
+    project_dir = Path(args.dir or f"elab-clone-{ids[0]}")
+    docs_dir = "docs/"
+
+    print(f"=== esync clone: {url} ===\n")
+
+    client = ELabFTWClient(url, api_key, verify_ssl=not args.no_verify)
+    get_fn = client.get_experiment if entity == "experiments" else client.get_item
+
+    # プロジェクトディレクトリ作成
+    project_dir.mkdir(parents=True, exist_ok=True)
+    docs_path = project_dir / docs_dir
+    docs_path.mkdir(parents=True, exist_ok=True)
+
+    # .elab-sync.yaml 生成
+    config_data = {
+        "elabftw": {"url": url, "api_key": "", "verify_ssl": not args.no_verify},
+        "targets": [{"docs_dir": docs_dir, "pattern": "*.md", "mode": "each", "entity": entity, "title": ""}],
+    }
+    config_path = project_dir / ".elab-sync.yaml"
+    with open(config_path, "w") as f:
+        yaml.dump(config_data, f, default_flow_style=False, allow_unicode=True)
+    print(f"  {config_path} を作成しました")
+
+    # エンティティ取得・保存
+    target = __import__("elab_doc_sync.config", fromlist=["TargetConfig"]).TargetConfig(
+        title="", docs_dir=docs_dir, id_file=".elab-sync-ids/default.id",
+        pattern="*.md", mode="each", entity=entity,
+    )
+    syncer = EachDocsSyncer(client, target, project_dir)
+    mapping = {}
+    entity_label = "実験ノート" if entity == "experiments" else "アイテム"
+
+    for eid in ids:
+        try:
+            data = get_fn(eid)
+        except Exception as e:
+            print(f"  {entity_label} #{eid} の取得に失敗: {e}", file=sys.stderr)
+            continue
+
+        title = data.get("title", f"untitled_{eid}")
+        body_html = data.get("body", "") or ""
+        body_md = html_to_md(body_html, heading_style="ATX").strip()
+
+        filename = f"{title}.md"
+        filepath = docs_path / filename
+        filepath.write_text(body_md + "\n", encoding="utf-8")
+
+        mapping[filename] = eid
+        syncer._save_hash(filename, body_md)
+        syncer._save_remote_hash(filename, body_html)
+
+        print(f"  [{title}] {entity_label} #{eid} → {filepath}")
+
+    syncer._save_mapping(mapping)
+
+    # .gitignore
+    gitignore = project_dir / ".gitignore"
+    if not gitignore.exists():
+        gitignore.write_text(".elab-sync-ids/\n")
+
+    print(f"\n✅ プロジェクトを作成しました: {project_dir}/")
+    print(f"   API キーを設定してください: {config_path} の elabftw.api_key")
+    print(f"   または環境変数: export ELABFTW_API_KEY=\"your_key\"")
+
+
 REPO_URL = "git+https://github.com/Kosaku-Noba/elab-doc-sync.git"
 
 
@@ -461,6 +538,13 @@ def main():
     log_parser = sub.add_parser("log", help="同期ログを表示")
     log_parser.add_argument("--limit", "-l", type=int, default=20, help="表示件数（デフォルト: 20）")
 
+    clone_parser = sub.add_parser("clone", help="eLabFTW からプロジェクトを構築")
+    clone_parser.add_argument("--url", required=True, help="eLabFTW の URL")
+    clone_parser.add_argument("--id", type=int, action="append", required=True, help="取得するエンティティ ID（複数指定可）")
+    clone_parser.add_argument("--dir", default=None, help="プロジェクトディレクトリ名")
+    clone_parser.add_argument("--entity", default="items", choices=["items", "experiments"], help="エンティティ種別")
+    clone_parser.add_argument("--no-verify", action="store_true", help="SSL 検証を無効化")
+
     args = parser.parse_args()
     if args.command == "status":
         cmd_status(args)
@@ -474,5 +558,7 @@ def main():
         cmd_update(args)
     elif args.command == "log":
         cmd_log(args)
+    elif args.command == "clone":
+        cmd_clone(args)
     else:
         cmd_sync(args)
