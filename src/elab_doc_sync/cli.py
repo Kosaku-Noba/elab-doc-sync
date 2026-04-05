@@ -12,7 +12,7 @@ from markdownify import markdownify as html_to_md
 
 from .client import ELabFTWClient
 from .config import load_config
-from .sync import DocsSyncer, EachDocsSyncer
+from .sync import DocsSyncer, EachDocsSyncer, ConflictError
 from . import sync_log
 
 DEFAULT_CONFIG = ".elab-sync.yaml"
@@ -65,6 +65,8 @@ def cmd_sync(args):
             else:
                 if syncer.sync(force=args.force):
                     updated += 1
+        except ConflictError as e:
+            print(f"  ⚠ 競合検出: {e}", file=sys.stderr)
         except Exception as e:
             label = target.title or f"each: {target.docs_dir}"
             print(f"  [{label}] エラー: {e}", file=sys.stderr)
