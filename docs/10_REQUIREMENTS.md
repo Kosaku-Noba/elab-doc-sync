@@ -8,7 +8,7 @@
 |---|---|---|
 | FR-01 | Push 同期（差分検知、`--force`、`--dry-run`、`-t`） | ✅ |
 | FR-02 | 同期モード（merge / each） | ✅ |
-| FR-03 | エンティティ種別（items / experiments） | ✅ |
+| FR-03 | エンティティ種別（items(resources) / experiments） | ✅ |
 | FR-04 | 画像の自動アップロード・URL 書き換え | ✅ |
 | FR-05 | Pull（eLabFTW → ローカル、`--id`、`--force`） | ✅ |
 | FR-06 | Diff（unified diff 形式） | ✅ |
