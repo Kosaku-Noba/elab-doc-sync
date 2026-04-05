@@ -39,6 +39,9 @@
 #     mode: merge
 #     entity: items
 #     id_file: ".elab-sync-ids/overview.id"
+#     tags:                      # push 時に自動追加するタグ（追記のみ）
+#       - "プロジェクトA"
+#       - "2026Q2"
 #
 #   # 各実験記録を個別の実験ノートとして送る
 #   - docs_dir: "experiments/"

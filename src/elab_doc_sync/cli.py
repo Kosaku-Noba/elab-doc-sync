@@ -611,9 +611,22 @@ def cmd_metadata(args):
                         sys.exit(1)
                     k, v = kv.split("=", 1)
                     pairs[k] = v
-                existing = client.get_metadata(etype, eid)
-                existing.update(pairs)
-                client.update_metadata(etype, eid, existing)
+                # 既存メタデータの取得を試み、読めない場合は警告
+                entity_data = client._req("GET", f"/api/v2/{etype}/{eid}").json()
+                raw_meta = entity_data.get("metadata")
+                if raw_meta and not isinstance(raw_meta, dict):
+                    try:
+                        parsed = json.loads(raw_meta) if isinstance(raw_meta, str) else raw_meta
+                        if not isinstance(parsed, dict):
+                            print(f"  {label}: ⚠ 既存メタデータが dict ではありません。上書きします", file=sys.stderr)
+                            parsed = {}
+                    except (json.JSONDecodeError, TypeError):
+                        print(f"  {label}: ⚠ 既存メタデータの読み取りに失敗。上書きします", file=sys.stderr)
+                        parsed = {}
+                else:
+                    parsed = client.get_metadata(etype, eid)
+                parsed.update(pairs)
+                client.update_metadata(etype, eid, parsed)
                 print(f"  {label}: メタデータを更新しました")
 
 

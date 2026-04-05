@@ -201,17 +201,17 @@ class DocsSyncer:
 
 
 def _sync_tags(client: ELabFTWClient, entity_type: str, entity_id: int, desired_tags: list[str]) -> None:
-    """リモートのタグを desired_tags に合わせる（差分のみ add/remove）。"""
+    """設定のタグをリモートに追記する（既存タグは外さない）。best-effort。"""
     if not desired_tags:
         return
-    remote = client.get_tags(entity_type, entity_id)
-    remote_names = {t.get("tag") for t in remote}
-    for tag in desired_tags:
-        if tag not in remote_names:
-            client.add_tag(entity_type, entity_id, tag)
-    for t in remote:
-        if t.get("tag") not in desired_tags:
-            client.untag_by_name(entity_type, entity_id, t["tag"])
+    try:
+        remote = client.get_tags(entity_type, entity_id)
+        remote_names = {t.get("tag") for t in remote}
+        for tag in desired_tags:
+            if tag not in remote_names:
+                client.add_tag(entity_type, entity_id, tag)
+    except Exception as e:
+        print(f"    ⚠ タグ同期に失敗しました（本文の同期は成功しています）: {e}")
 
 
 class EachDocsSyncer:

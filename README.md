@@ -73,6 +73,11 @@ elabftw:
 | `esync pull --id 42` | 指定 ID のエンティティを取得 |
 | `esync diff` | ローカルと eLabFTW の差分を表示 |
 | `esync status` | 同期状態を確認 |
+| `esync tag list` | リモートのタグ一覧を表示 |
+| `esync tag add "タグ"` | タグを追加 |
+| `esync tag remove "タグ"` | タグを外す |
+| `esync metadata get` | メタデータを表示 |
+| `esync metadata set k=v` | メタデータを設定 |
 | `esync init` | 対話的に設定ファイルを作成 |
 | `esync update` | ツールを最新版に更新 |
 | `esync --dry-run` | 実行せずに同期内容を確認 |
@@ -132,6 +137,7 @@ targets:
 | `targets[].mode` | — | `merge` | `merge` / `each` |
 | `targets[].entity` | — | `items` | `items` / `experiments` |
 | `targets[].id_file` | — | `.elab-sync-ids/default.id` | ID 保存先 |
+| `targets[].tags` | — | `[]` | push 時に自動追加するタグ（追記のみ、既存タグは外さない） |
 
 サンプル: [`.elab-sync.yaml.example`](.elab-sync.yaml.example)
 
