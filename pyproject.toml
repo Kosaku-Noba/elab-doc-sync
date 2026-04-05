@@ -11,6 +11,9 @@ dependencies = [
     "urllib3>=2.0",
 ]
 
+[project.optional-dependencies]
+test = ["pytest>=7.0"]
+
 [project.scripts]
 elab-doc-sync = "elab_doc_sync.cli:main"
 esync = "elab_doc_sync.cli:main"

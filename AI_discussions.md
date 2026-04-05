@@ -670,3 +670,34 @@ The HEAD commit is documentation-only, and the updated test-spec file path, adde
 ### Codex 所感
 
 > 特記事項なし。
+
+
+## 2026-04-05T22:24 [Kiro] テスト基盤を構築
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| pyproject.toml | `[project.optional-dependencies] test = ["pytest>=7.0"]` を追加 |
+| .github/workflows/test.yml | GitHub Actions で Python 3.10/3.12 の自動テストを実行 |
+| tests/conftest.py | 共通フィクスチャ（mock_client, merge_target, each_target, docs_dir, sample_config_path） |
+
+### Kiro 所感
+
+- これ以降、各テストファイルを1つずつ作成してコミットしていく。
+
+
+## 2026-04-05T22:24 [Codex] test: テスト基盤を構築 (pytest, GitHub Actions, conftest) に対するレビュー
+
+The new CI workflow is not reliable as committed: it currently fails unconditionally because there are no collected tests yet, and its Python matrix is not actually enforced. Those issues make the patch incorrect even though the added fixtures themselves are harmless.
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| Do not make the workflow fail before any tests exist | /home/kosak/elab-doc-sync/.github/workflows/test.yml:20-20 | 高 |
+| Pin uv to the matrix Python version | /home/kosak/elab-doc-sync/.github/workflows/test.yml:18-20 | 中 |
+
+### Codex 所感
+
+>   `uv python install` only downloads the interpreter; it does not make the later `uv sync`/`uv run` steps use that version. On runners that already have another compatible Python available, the `3.10` matrix leg can still build and run the environment under that other interpreter because neither step passes `--python` (or `UV_PYTHON`). That means the workflow can silently miss 3.10-specific regressions while appearing to test both versions.
