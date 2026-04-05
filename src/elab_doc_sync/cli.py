@@ -409,6 +409,11 @@ def cmd_clone(args):
     project_dir = Path(args.dir or f"elab-clone-{ids[0]}")
     docs_dir = "docs/"
 
+    # 既存ディレクトリへの上書き防止
+    if project_dir.exists() and any(project_dir.iterdir()):
+        print(f"エラー: {project_dir} は既に存在し、空ではありません", file=sys.stderr)
+        sys.exit(1)
+
     print(f"=== esync clone: {url} ===\n")
 
     client = ELabFTWClient(url, api_key, verify_ssl=not args.no_verify)
@@ -437,6 +442,7 @@ def cmd_clone(args):
     syncer = EachDocsSyncer(client, target, project_dir)
     mapping = {}
     entity_label = "実験ノート" if entity == "experiments" else "アイテム"
+    cloned = 0
 
     for eid in ids:
         try:
@@ -456,19 +462,25 @@ def cmd_clone(args):
         mapping[filename] = eid
         syncer._save_hash(filename, body_md)
         syncer._save_remote_hash(filename, body_html)
+        cloned += 1
 
         print(f"  [{title}] {entity_label} #{eid} → {filepath}")
 
+    if cloned == 0:
+        print("\nエラー: エンティティを1件も取得できませんでした", file=sys.stderr)
+        sys.exit(1)
+
     syncer._save_mapping(mapping)
 
-    # .gitignore
+    # .gitignore（API キーを含む設定ファイルも除外）
     gitignore = project_dir / ".gitignore"
     if not gitignore.exists():
-        gitignore.write_text(".elab-sync-ids/\n")
+        gitignore.write_text(".elab-sync-ids/\n.elab-sync.yaml\n")
 
-    print(f"\n✅ プロジェクトを作成しました: {project_dir}/")
-    print(f"   API キーを設定してください: {config_path} の elabftw.api_key")
-    print(f"   または環境変数: export ELABFTW_API_KEY=\"your_key\"")
+    print(f"\n✅ プロジェクトを作成しました: {project_dir}/ ({cloned} 件)")
+    print(f"   API キーを設定してください:")
+    print(f"     環境変数: export ELABFTW_API_KEY=\"your_key\"")
+    print(f"     または {config_path} の elabftw.api_key に記入")
 
 
 REPO_URL = "git+https://github.com/Kosaku-Noba/elab-doc-sync.git"
