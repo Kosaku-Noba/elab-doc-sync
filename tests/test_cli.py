@@ -184,6 +184,17 @@ def test_pull_multiple_ids_each(MockClient, tmp_path):
     assert (docs / "B.md").exists()
 
 
+# CLI-17: pull merge モードで複数 --id → 警告 + 先頭のみ使用
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_merge_multiple_ids_warning(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path, mode="merge")
+    MockClient.return_value.get_item.return_value = {"id": 10, "title": "T", "body": "<p>x</p>"}
+    cmd_pull(_ns(tmp_path, id=[10, 20], command="pull"))
+    out = capsys.readouterr().out
+    assert "最初の ID のみ使用" in out
+    assert (docs / "T.md").exists()
+
+
 def _clone_ns(tmp_path, **kw):
     defaults = {
         "url": "https://elab.example.com", "id": [1], "dir": str(tmp_path / "cloned"),
