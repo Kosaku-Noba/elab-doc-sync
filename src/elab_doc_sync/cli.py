@@ -410,9 +410,12 @@ def cmd_clone(args):
     docs_dir = "docs/"
 
     # 既存ディレクトリへの上書き防止
+    dir_created = False
     if project_dir.exists() and any(project_dir.iterdir()):
         print(f"エラー: {project_dir} は既に存在し、空ではありません", file=sys.stderr)
         sys.exit(1)
+    if not project_dir.exists():
+        dir_created = True
 
     print(f"=== esync clone: {url} ===\n")
 
@@ -467,8 +470,15 @@ def cmd_clone(args):
         print(f"  [{title}] {entity_label} #{eid} → {filepath}")
 
     if cloned == 0:
-        # 部分的に作成されたディレクトリをクリーンアップ
-        shutil.rmtree(project_dir, ignore_errors=True)
+        # clone が作成したディレクトリのみ削除（既存ディレクトリは残す）
+        if dir_created:
+            shutil.rmtree(project_dir, ignore_errors=True)
+        else:
+            # clone が生成したファイルだけ削除
+            for p in [config_path, project_dir / ".gitignore"]:
+                p.unlink(missing_ok=True)
+            shutil.rmtree(docs_path, ignore_errors=True)
+            shutil.rmtree(project_dir / ".elab-sync-ids", ignore_errors=True)
         print("\nエラー: エンティティを1件も取得できませんでした", file=sys.stderr)
         sys.exit(1)
 
