@@ -14,31 +14,37 @@ def _now_iso() -> str:
 
 def record(log_path: Path, *, action: str, target: str, entity: str,
            entity_id: int | None, files: list[str] | None = None) -> None:
-    """Append one log entry."""
-    entry = {
-        "timestamp": _now_iso(),
-        "action": action,
-        "target": target,
-        "entity": entity,
-        "entity_id": entity_id,
-        "files": files or [],
-    }
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(log_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    """Append one log entry. Best-effort: never raises."""
+    try:
+        entry = {
+            "timestamp": _now_iso(),
+            "action": action,
+            "target": target,
+            "entity": entity,
+            "entity_id": entity_id,
+            "files": files or [],
+        }
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
 
 
 def read_log(log_path: Path, limit: int = 20) -> list[dict]:
-    """Read last N entries from log file."""
+    """Read last N valid entries from log file."""
     if not log_path.exists():
         return []
     lines = log_path.read_text(encoding="utf-8").strip().splitlines()
     entries = []
-    for line in lines[-limit:]:
+    for line in reversed(lines):
         try:
             entries.append(json.loads(line))
         except json.JSONDecodeError:
             continue
+        if len(entries) >= limit:
+            break
+    entries.reverse()
     return entries
 
 
