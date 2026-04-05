@@ -388,3 +388,36 @@ Removing all skipped-pull baseline refreshes breaks conflict detection recovery 
 ### Codex 所感
 
 >   This unconditional skip reintroduces the same hole for merge targets: if `.remote_hash` is absent/stale on an existing checkout, `esync pull` can no longer repair it even when the fetched body already matches `collect_docs()`. After that, `DocsSyncer._check_remote_conflict()` returns early on the next edited push, so any remote update that happened after the pull is silently overwritten. The merge skip path needs to refresh the baseline when the local merged docs are already in sync with the pulled entity, rather than always `continue`ing here.
+
+
+## 2026-04-05T21:40 [Kiro] FR-11 最終修正: ローカル=リモート一致時のみ remote_hash 更新
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| cli.py cmd_pull() each | スキップ時、ローカルファイル内容と pull した body_md が一致する場合のみ remote_hash を更新 |
+| cli.py cmd_pull() merge | スキップ時、collect_docs() の結合結果と pull した body の Markdown 変換が一致する場合のみ更新 |
+
+### Kiro 所感
+
+- 「ローカル = リモート」の場合は安全に remote_hash を再設定できる（競合は存在しない）
+- 「ローカル ≠ リモート」の場合は remote_hash を触らない（次回 push で競合検出が発火する）
+- これで Codex の両方の指摘（「更新するな」「更新しろ」）を統合的に解決できた。
+
+
+## 2026-04-05T21:40 [Codex] fix: FR-11 ローカル=リモート一致時のみ remote_hash 更新 に対するレビュー
+
+The new skipped-pull recovery logic still fails for many unchanged documents because it compares the wrong representation, and it can now write a baseline for one entity while leaving the tracked ID/mapping pointing at another. Those regressions make the patch unsafe for normal pull/sync recovery workflows.
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| Compare pushed HTML, not markdownified pull output | /home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py:159-160 | 高 |
+| Persist the new merge target ID before baseline refresh | /home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py:211-212 | 中 |
+| Update mapping before refreshing an each-mode baseline | /home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py:160-161 | 中 |
+
+### Codex 所感
+
+>   This new baseline write can also leave `mapping.json` inconsistent in `each` mode. If `pull --id` is used on a file whose name/content already exist locally but the filename is still mapped to another entity, the code updates `<filename>.remote_hash` here and skips the mapping update below. The next `sync()` then checks the old entity against the new baseline and reports a spurious conflict.

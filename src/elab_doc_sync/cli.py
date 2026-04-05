@@ -155,6 +155,10 @@ def cmd_pull(args):
                 filepath = docs_dir / filename
 
                 if not args.force and filepath.exists():
+                    # ローカルとリモートが一致している場合のみ remote_hash を更新
+                    local_content = filepath.read_text(encoding="utf-8").strip()
+                    if local_content == body_md:
+                        syncer._save_remote_hash(filename, body_html)
                     print(f"  [{title}] 既にローカルに存在（スキップ、--force で上書き）")
                     continue
 
@@ -200,6 +204,14 @@ def cmd_pull(args):
             filepath = docs_dir / filename
 
             if not args.force and filepath.exists():
+                # ローカル結合結果とリモートが一致している場合のみ remote_hash を更新
+                try:
+                    local_body = syncer.collect_docs()
+                    remote_md = html_to_md(body_html, heading_style="ATX").strip()
+                    if local_body == remote_md:
+                        syncer.save_remote_hash(body_html)
+                except Exception:
+                    pass
                 print(f"  [{target.title}] 既にローカルに存在（スキップ、--force で上書き）")
                 continue
 
