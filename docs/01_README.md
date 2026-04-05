@@ -9,7 +9,7 @@
 - SHA-256 差分検知で変更があるファイルだけ更新
 - 画像の自動アップロード・URL 書き換え
 - 2 つの同期モード: `merge`（全結合→1エンティティ）/ `each`（1ファイル=1エンティティ）
-- アイテム (`items`) と実験ノート (`experiments`) の両方に対応
+- リソース (`items`) と実験ノート (`experiments`) の両方に対応
 - Pull（eLabFTW → ローカル）・差分表示（diff）に対応
 - Windows / Linux 両対応
 - `elab-doc-sync` と `esync` の 2 つのコマンド名で実行可能

@@ -32,7 +32,7 @@ targets:
 | `targets[].docs_dir` | ✅ | — | Markdown ファイルのディレクトリ |
 | `targets[].pattern` | — | `*.md` | Glob パターン |
 | `targets[].mode` | — | `merge` | `merge` / `each` |
-| `targets[].entity` | — | `items` | `items` / `experiments` |
+| `targets[].entity` | — | `items` | `items`(`resources`) / `experiments` |
 | `targets[].id_file` | — | `.elab-sync-ids/default.id` | ID 保存先パス |
 | `targets[].tags` | — | `[]` | push 時に自動追加するタグ（追記のみ、既存タグは外さない） |
 
