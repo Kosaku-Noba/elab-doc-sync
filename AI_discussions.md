@@ -102,3 +102,36 @@ The new logging feature adds failure modes where an auxiliary JSONL append can b
 ### Codex 所感
 
 >   `read_log()` slices `lines[-limit:]` before decoding JSON. If the tail of the JSONL file contains a truncated or otherwise invalid line (for example, from an interrupted append), `esync log -l 1` returns no entries even when older valid history exists, and larger limits can silently return fewer records than requested. Walking backward until `limit` valid objects are found avoids losing the visible history because of one bad trailing line.
+
+
+## 2026-04-05T20:52 [Kiro] Codex レビュー指摘への対応 (FR-13 + post-commit)
+
+Codex レビューの指摘2件と、post-commit フックの amend バグを修正した。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| sync_log.record() | try/except で OSError を握りつぶし、ログ書き込み失敗が sync を中断しないようにした |
+| sync_log.read_log() | 末尾から逆順に有効な JSON 行を limit 件収集する方式に変更 |
+| post-commit フック | amend 前に元コミットの変更ファイルを再ステージし、ソースファイルが落ちるバグを修正 |
+
+### Kiro 所感
+
+- post-commit の amend バグは、`git add` が AI_discussions.md だけをステージした状態で amend していたのが原因。元コミットの diff から変更ファイルを再 add することで解決。
+
+
+## 2026-04-05T20:57 [Codex] fix: Codex指摘対応 — sync_log best-effort化 + post-commit amend バグ修正 に対するレビュー
+
+The new `post-commit` logic can silently rewrite commit contents by restaging the worktree, which is a correctness regression for partial commits and cached removals. The best-effort log append also still allows a partial UTF-8 write to poison the log file and break `esync log` under I/O failure.
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| Preserve the existing index when amending the review entry | /home/kosak/elab-doc-sync/.githooks/post-commit:86-86 | 高 |
+| Avoid leaving an undecodable tail after a failed log append | /home/kosak/elab-doc-sync/src/elab_doc_sync/sync_log.py:28-30 | 中 |
+
+### Codex 所感
+
+>   If `f.write(...)` raises after writing only part of a UTF-8 line (for example on `ENOSPC` while `target` or `files` contains non-ASCII text), this `except OSError` hides the failure and leaves a truncated byte sequence in `sync-log.jsonl`. `read_log()` still uses `read_text(encoding="utf-8")`, so the next `esync log` can fail with `UnicodeDecodeError` before the per-line JSON recovery runs.
