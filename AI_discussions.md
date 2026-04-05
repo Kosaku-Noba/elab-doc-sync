@@ -640,3 +640,33 @@ The new test specification is not yet reliable as the project's source of truth:
 ### Codex 所感
 
 >   Section 1 says this document covers the project's full functionality, but the `test_client.py` section still omits `search_experiments()`, `append_body()`, and `replace_body()`, even though they are documented public `ELabFTWClient` methods (`docs/06_API_REFERENCE.md:64-66`, `src/elab_doc_sync/client.py:82-90`). If tests are implemented from this spec as written, tagged experiment search and the body-edit helper flows will have no coverage, so regressions in those request/update paths can slip through unnoticed.
+
+
+## 2026-04-05T22:18 [Kiro] テスト仕様書を改定（Codex 指摘対応）
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| docs/TEST_SPEC.md | 重複ファイルを削除 |
+| docs/11_TEST_SPEC.md | 正規のテスト仕様書を更新。画像アップロード (S-25〜S-28)、client 未カバーメソッド (CL-11〜CL-16)、init/update (CLI-40〜CLI-43) を追加。合計 92 ケース |
+
+### Kiro 所感
+
+- Codex の指摘通り、`docs/11_TEST_SPEC.md` が正規のファイルだった。番号付きドキュメント体系を見落としていた。
+- `search_experiments`, `append_body`, `replace_body`, `list_items`, `list_experiments` 等の client メソッドもカバー対象に追加。
+
+
+## 2026-04-05T22:20 [Codex] docs: テスト仕様書を 11_TEST_SPEC.md に統合・改定 (92ケース) に対するレビュー
+
+The HEAD commit is documentation-only, and the updated test-spec file path, added client coverage entries, and recomputed case totals are internally consistent with the current codebase. I did not find a discrete, actionable correctness issue introduced by this patch.
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 指摘事項なし | — | — |
+
+### Codex 所感
+
+> 特記事項なし。
