@@ -828,3 +828,19 @@ The production code is unchanged, but several of the newly added CLI tests do no
 ### Codex 所感
 
 > 特記事項なし。
+
+
+## 2026-04-05T22:54 [Codex] add AI_REVIEW_METHODOLOGY に対するレビュー
+
+The new methodology document contains two operationally incorrect instructions: it recommends `--no-verify` as a review bypass even though `post-commit` still executes, and it claims the index always matches `HEAD` before the amend step. Following the document as written can produce unexpected reviews and accidentally amend unrelated staged files into the previous commit.
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| Stop assuming the index matches HEAD in `post-commit` | /home/kosak/elab-doc-sync/docs/AI_REVIEW_METHODOLOGY.md:156-156 | 高 |
+| Remove `--no-verify` as the documented way to skip review | /home/kosak/elab-doc-sync/docs/AI_REVIEW_METHODOLOGY.md:144-147 | 中 |
+
+### Codex 所感
+
+>   This table says `git commit --no-verify` is the way to make a "reviewless" commit, but the note immediately below correctly states that `post-commit` still runs. Anyone following the table will still trigger the Codex review and amend step on documentation-only commits, so the documented escape hatch does not actually work.
