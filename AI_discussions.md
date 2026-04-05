@@ -421,3 +421,35 @@ The new skipped-pull recovery logic still fails for many unchanged documents bec
 ### Codex 所感
 
 >   This new baseline write can also leave `mapping.json` inconsistent in `each` mode. If `pull --id` is used on a file whose name/content already exist locally but the filename is still mapped to another entity, the code updates `<filename>.remote_hash` here and skips the mapping update below. The next `sync()` then checks the old entity against the new baseline and reports a spurious conflict.
+
+
+## 2026-04-05T21:42 [Kiro] FR-11 確定版: スキップ時 remote_hash ロジック全削除
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| cli.py cmd_pull() | スキップ時の remote_hash 更新ロジックを全て削除。元のシンプルな動作に戻した |
+
+### Kiro 所感
+
+- Markdown の round-trip 問題（`markdown()` → `markdownify()` で完全一致しない）があるため、スキップ時の内容比較は信頼できない。
+- remote_hash は「実際にデータを同期した時点」でのみ設定する原則を確定。
+- v0.1.x からのアップグレード時は `esync pull --force` で remote_hash を初期化する運用とする。
+- これ以上の堂々巡りを避け、FR-12（Clone）に進む。
+
+
+## 2026-04-05T21:46 [Codex] fix: FR-11 確定版 — スキップ時 remote_hash ロジック全削除、シンプル化 に対するレビュー
+
+By removing all skipped-pull `remote_hash` refreshes, the patch reintroduces a conflict-detection hole for existing checkouts whose remote baseline is missing or stale. In both sync modes, a no-op `pull` can no longer repair that state, which can lead to missed conflicts or persistent false conflicts later.
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| Restore each-mode baseline on skipped pulls | /home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py:157-159 | 高 |
+| Restore merge-mode baseline on skipped pulls | /home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py:202-204 | 高 |
+
+### Codex 所感
+
+>   The same regression exists in merge mode: if `.remote_hash` is absent or stale but the merged local docs already match the fetched entity, this skipped `pull` no longer re-seeds the remote baseline. `DocsSyncer._check_remote_conflict()` returns immediately when that file is missing, so the next edited `sync()` can silently clobber remote changes made after the pull; with a stale hash, users are also stuck with false conflicts until they force an overwrite.
