@@ -1335,3 +1335,18 @@ The new methodology document contains two operationally incorrect instructions: 
 ### Codex 所感
 
 > 所感として、用語統一の方向性と `_entity_label()` 導入自体は妥当ですが、このコミット単体では「統一完了」とはまだ言い切れません。コミットメッセージ、実装、出力テストの3点を揃えると、後続の人間レビューと AI 支援のどちらでも誤解が減ります。
+
+
+## 2026-04-06T07:51 [Codex] fix: entity-status の表示も _entity_label() に統一（Codex P2 残り修正） に対するレビュー
+
+コミットメッセージと差分の整合性は取れており、`entity-status` の表示文言を API 上の `items` / `experiments` ではなく `_entity_label()` 経由のユーザー向け表記へ統一する変更に見えます。指定のテスト `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` は通過し、既存機能の広い範囲で回帰は検出されませんでした。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| テストが今回の仕様変更を実質的に検証していない | 変更点は CLI 出力文字列の統一そのものですが、[`tests/test_cli.py:462`](/home/kosak/elab-doc-sync/tests/test_cli.py#L462) は `Running` を含むことしか見ておらず、[`tests/test_cli.py:478`](/home/kosak/elab-doc-sync/tests/test_cli.py#L478) も `patch_entity()` の呼び出ししか確認していません。現状でもテストは通りますが、今回の目的である「`entity-status` の表示も `_entity_label()` に統一」が将来再び崩れても検知できません。少なくとも `show` / `set` の出力に `リソース` または `実験ノート` が含まれることを押さえる回帰テストが必要です。 | 中 |
+
+### Codex 所感
+
+> 今回の差分からは、コミットメッセージに書かれていない挙動変更やセキュリティ上の新たな懸念は読み取れませんでした。レビュー観点では主な論点はテスト不足で、仕様意図の固定ができればこの変更は比較的安全に見えます。
