@@ -6,6 +6,9 @@
 [ -n "$CODEX_REVIEW_RUNNING" ] && exit 0
 export CODEX_REVIEW_RUNNING=1
 
+# ユーザーによるレビュースキップ
+[ -n "$SKIP_CODEX_REVIEW" ] && exit 0
+
 CODEX_CLI=$(command -v codex 2>/dev/null)
 [ -z "$CODEX_CLI" ] && exit 0
 
@@ -17,68 +20,212 @@ DISCUSSIONS_FILE="AI_discussions.md"
 
 COMMIT_MSG=$(git log -1 --pretty=%s)
 TIMESTAMP=$(date +"%Y-%m-%dT%H:%M")
-DIFF=$(git diff HEAD~1 HEAD 2>/dev/null)
-
-[ -z "$DIFF" ] && exit 0
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "🔍 Codex レビュー実行中..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-PROMPT="以下の git diff をレビューしてください。
-指摘事項は必ず次の形式で出力してください（指摘がなければ「指摘事項なし」と書いてください）:
+TMPFILE=$(mktemp)
+PROMPT_FILE=$(mktemp)
 
-- [P1] 重大な問題の説明
-- [P2] 中程度の問題の説明
-- [P3] 軽微な問題の説明
+DIFF_CONTENT=$(git diff HEAD~1 HEAD 2>/dev/null)
+[ -z "$DIFF_CONTENT" ] && { rm -f "$TMPFILE" "$PROMPT_FILE"; echo "⚠️  差分なし、スキップ"; exit 0; }
 
-最後に1行でサマリーを書いてください。
+cat > "$PROMPT_FILE" <<'REVIEW_PROMPT'
+## 役割
 
-\`\`\`diff
-${DIFF}
-\`\`\`"
+あなたは経験豊富なソフトウェアエンジニアとしてコミットをレビューします。
+このレビューは、実行済みの機械レビュー（ロジックバグや差分起因の不具合検出）を**補完する目的**のものです。
 
-REVIEW_RESULT=$(echo "$PROMPT" | "$CODEX_CLI" --quiet 2>/dev/null)
+単純な構文エラーや明白なロジックバグの指摘は目的ではありません。
+**仕様・意図、セキュリティ、設計、テスト・運用**の観点に集中してください。
 
-if [ $? -ne 0 ] || [ -z "$REVIEW_RESULT" ]; then
+---
+
+## 前提
+
+以下の情報を必ず確認してください。
+
+* コミットメッセージ
+* 変更内容（コード差分）
+* テスト結果（以下のコマンドで実行すること）:
+  `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q`
+  テストが失敗した場合は、失敗内容を指摘事項に含めてください。
+
+情報が不足している、または判断が難しい場合は、
+**「判断不能」「前提が必要」**であることを明示してください。
+
+---
+
+## レビュー観点
+
+### 1. 仕様・意図確認用レビュー
+
+以下を確認してください。
+
+* 実際の変更内容は **コミットメッセージの説明通りか**
+* コミットメッセージに書かれていない **挙動変更や影響** が含まれていないか
+* 変更は **仕様・プロダクト観点で妥当** か
+
+不一致がある場合は、コミットメッセージの内容とコードが実際に行っていることを対比して指摘してください。
+
+### 2. セキュリティレビュー
+
+以下の観点で確認してください。
+
+* 入力値の扱い（検証・サニタイズ・信頼境界）
+* 権限・認可チェックの有無
+* 機密情報や個人情報がログやエラーメッセージに出ないか
+* 境界条件（想定外のサイズ・形式・状態）
+
+**脆弱性の成立を証明する必要はありません。**
+一般にリスクが高い、または確認が必要な点があれば「作者に明示的な確認が必要」として指摘してください。
+
+### 3. 設計・保守性レビュー
+
+以下を確認してください。
+
+* 責務分離が適切か
+* 新しい依存関係や結合度が過剰になっていないか
+* 将来の変更時に影響範囲が広がりすぎないか
+* 周辺コードの設計方針と一貫しているか
+
+スタイルの細かい指摘は不要ですが、**将来の変更容易性に影響する点** は積極的に指摘してください。
+
+### 4. AI可読性レビュー（将来のAI支援開発を前提とした観点）
+
+以下の観点で確認してください。
+
+* 変数名・関数名・引数名から **意図が一意に推測できるか**
+* boolean やフラグ系の値が **誤解されやすい形** になっていないか
+* 条件分岐や状態遷移が **自然言語で説明しやすい構造** になっているか
+* 暗黙の前提や文脈依存（呼び出し順・副作用）が多くないか
+* 将来 AI による修正・生成・レビュー時に **誤解や破壊的変更を招きやすい箇所** がないか
+
+人間にとって妥当でも、**AI が誤った推論をしやすい構造・命名・抽象化** があれば指摘してください。
+
+### 5. 既存機能への影響・回帰リスクレビュー
+
+以下の観点で確認してください。
+
+* 今回の変更が **既存の機能・挙動に影響を与える可能性** はないか
+* 明示的に変更していないが、暗黙的に変わる振る舞いはないか（例：デフォルト値、分岐条件、エラー処理、初期化順）
+* 既存の利用箇所・呼び出し元との **前提のズレ** が生じていないか
+* 過去の仕様・実装に依存していたコードが **静かに壊れる可能性** はないか
+
+影響がある／ありそうな場合は、どの機能・ユースケースに影響するか、それが仕様上許容される変更か非意図的な副作用かを明示してください。
+判断に必要な情報が不足している場合は、**「影響範囲は判断不能」** と明示してください。
+
+### 6. テスト・運用レビュー
+
+以下を確認してください。
+
+* 変更内容は十分にテストされているか
+* 重要な分岐・失敗ケースが未検証ではないか
+* 障害時に調査可能なログ・エラー・メトリクスがあるか
+* 本番で問題が起きた場合に原因を追えるか
+
+テストが不足している場合は、どのような観点のテストが必要か、テストが無いことによるリスクを説明してください（実装方法の詳細は不要）。
+
+---
+
+## 出力形式
+
+以下の構成で出力してください（順序厳守）。
+**必ず日本語で回答すること。**
+
+出力の先頭行にレビュー全体の概要を1〜3文で書いてください。
+
+指摘がある場合は `- [P1] 項目 — 詳細` の形式で列挙してください（P1=高, P2=中, P3=低）。
+指摘がない場合は「指摘事項なし」とだけ書いてください。
+
+出力の最終行に所感を1〜3文で書いてください。
+
+---
+
+## トーン・制約
+
+* このレビューは **他の AI エージェントが後続で読むこと** を前提とする
+* 中立・事実ベース・建設的に書くこと
+* 明確な根拠が無い限り断定しないこと
+* 以下の表現を積極的に使ってよい
+  * 「このコミットからは判断できない」
+  * 「明示的な確認が必要」
+* レビューの目的は **リスクと不明点の可視化** であり、不必要に開発を止めることではない
+
+---
+
+## 対象コミット
+REVIEW_PROMPT
+
+echo "" >> "$PROMPT_FILE"
+echo "### コミットメッセージ" >> "$PROMPT_FILE"
+echo "$COMMIT_MSG" >> "$PROMPT_FILE"
+echo "" >> "$PROMPT_FILE"
+echo "### diff" >> "$PROMPT_FILE"
+echo "$DIFF_CONTENT" >> "$PROMPT_FILE"
+
+"$CODEX_CLI" exec "$(cat "$PROMPT_FILE")" --ephemeral -o "$TMPFILE" 2>/dev/null
+CODEX_EXIT=$?
+REVIEW_RESULT=$(cat "$TMPFILE" 2>/dev/null)
+rm -f "$TMPFILE" "$PROMPT_FILE"
+
+if [ "$CODEX_EXIT" -ne 0 ] || [ -z "$REVIEW_RESULT" ]; then
   echo "⚠️  Codex レビューをスキップしました"
   exit 0
 fi
 
-# findings をテーブル行に変換
+# findings をテーブル行に変換（AGENT.md テンプレート準拠）
 TABLE_ROWS=""
 while IFS= read -r line; do
   PRIORITY=$(echo "$line" | sed -n 's/.*\[P\([0-9]\)\].*/\1/p')
-  TITLE=$(echo "$line" | sed 's/^- \[P[0-9]\] //')
+  ITEM=$(echo "$line" | sed 's/^- \[P[0-9]\] //' | sed 's/ — .*//')
+  DETAIL=$(echo "$line" | sed -n 's/.*— //p')
   case "$PRIORITY" in
     1) PRIO_LABEL="高" ;;
     2) PRIO_LABEL="中" ;;
     *) PRIO_LABEL="低" ;;
   esac
-  TABLE_ROWS="${TABLE_ROWS}| ${TITLE} | P${PRIORITY} | ${PRIO_LABEL} |
+  if [ -n "$DETAIL" ]; then
+    TABLE_ROWS="${TABLE_ROWS}| ${ITEM} | ${DETAIL} | ${PRIO_LABEL} |
 "
+  else
+    TABLE_ROWS="${TABLE_ROWS}| ${ITEM} | — | ${PRIO_LABEL} |
+"
+  fi
 done < <(echo "$REVIEW_RESULT" | grep -E '^\- \[P[0-9]\]' | head -10)
 
-[ -z "$TABLE_ROWS" ] && TABLE_ROWS="| — | 指摘事項なし | — |
+[ -z "$TABLE_ROWS" ] && TABLE_ROWS="| 指摘事項なし | — | — |
 "
 
-SUMMARY=$(echo "$REVIEW_RESULT" | tail -1)
+# 概要: [P*] 行以外の最初の非空行
+OVERVIEW=$(echo "$REVIEW_RESULT" | sed '/^$/d' | grep -v '^\- \[P[0-9]\]' | head -1)
+# 所感: [P*] 行以外の最後の非空行
+SUMMARY=$(echo "$REVIEW_RESULT" | sed '/^$/d' | grep -v '^\- \[P[0-9]\]' | tail -1)
+# 概要と所感が同じなら所感はデフォルト
+[ "$OVERVIEW" = "$SUMMARY" ] && SUMMARY=""
 
-ENTRY="## ${TIMESTAMP} [Codex] 自動レビュー: ${COMMIT_MSG}
+ENTRY="## ${TIMESTAMP} [Codex] ${COMMIT_MSG} に対するレビュー
 
-### 指摘事項
+${OVERVIEW:-レビュー結果。}
 
-| 項目 | 優先度 | レベル |
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
 |---|---|---|
 ${TABLE_ROWS}
-### 所感
+### Codex 所感
 
 > ${SUMMARY:-特記事項なし。}"
 
 echo "$ENTRY"
 
 printf "\n\n%s\n" "$ENTRY" >> "$DISCUSSIONS_FILE"
+
+# amend: AI_discussions.md だけを追加する
+# 注意: post-commit 時点でインデックスが HEAD と一致しているとは限らない
+# （部分コミット等）ため、他のファイルを再ステージしないこと
 git add "$DISCUSSIONS_FILE"
 git commit --amend --no-edit --no-verify
 

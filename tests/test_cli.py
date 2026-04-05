@@ -1,0 +1,816 @@
+"""Tests for cli.py (CLI-01 ~ CLI-53)."""
+
+import json
+import os
+import sys
+from argparse import Namespace
+from pathlib import Path
+from unittest.mock import MagicMock, patch, call
+
+import pytest
+import yaml
+
+from elab_doc_sync.cli import (
+    cmd_sync, cmd_pull, cmd_clone, cmd_log, cmd_diff, cmd_status, cmd_init, cmd_update,
+    cmd_tag, cmd_metadata, cmd_entity_status, cmd_whoami, cmd_new,
+    cmd_list, cmd_link, cmd_verify,
+)
+from elab_doc_sync.sync import ConflictError
+
+
+# ── helpers ──────────────────────────────────────────────
+
+def _write_config(tmp_path, mode="merge", entity="items"):
+    data = {
+        "elabftw": {"url": "https://elab.example.com", "api_key": "key", "verify_ssl": False},
+        "targets": [{"title": "T", "docs_dir": "docs/", "pattern": "*.md", "mode": mode, "entity": entity}],
+    }
+    p = tmp_path / ".elab-sync.yaml"
+    p.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    docs = tmp_path / "docs"
+    docs.mkdir(exist_ok=True)
+    return p, docs
+
+
+def _ns(tmp_path, **kw):
+    defaults = {"config": str(tmp_path / ".elab-sync.yaml"), "target": None, "force": False, "dry_run": False, "entity": None}
+    defaults.update(kw)
+    return Namespace(**defaults)
+
+
+# ── cmd_sync (CLI-01 ~ CLI-05) ───────────────────────────
+
+# CLI-01
+@patch("elab_doc_sync.cli.ELabFTWClient")
+@patch("elab_doc_sync.cli.DocsSyncer")
+def test_sync_normal(MockSyncer, MockClient, tmp_path):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("hello", encoding="utf-8")
+    MockSyncer.return_value.sync.return_value = True
+    cmd_sync(_ns(tmp_path))
+    MockSyncer.return_value.sync.assert_called_once_with(force=False)
+
+
+# CLI-02
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_sync_dry_run(MockClient, tmp_path):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("hello", encoding="utf-8")
+    cmd_sync(_ns(tmp_path, dry_run=True))
+    MockClient.return_value.update_item.assert_not_called()
+
+
+# CLI-03
+@patch("elab_doc_sync.cli.ELabFTWClient")
+@patch("elab_doc_sync.cli.DocsSyncer")
+def test_sync_force(MockSyncer, MockClient, tmp_path):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("hello", encoding="utf-8")
+    MockSyncer.return_value.sync.return_value = True
+    cmd_sync(_ns(tmp_path, force=True))
+    MockSyncer.return_value.sync.assert_called_once_with(force=True)
+
+
+# CLI-04
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_sync_target_filter(MockClient, tmp_path):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("hello", encoding="utf-8")
+    cmd_sync(_ns(tmp_path, target="nonexistent"))
+    MockClient.return_value.create_item.assert_not_called()
+
+
+# CLI-05
+@patch("elab_doc_sync.cli.ELabFTWClient")
+@patch("elab_doc_sync.cli.DocsSyncer")
+def test_sync_conflict_error(MockSyncer, MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("hello", encoding="utf-8")
+    MockSyncer.return_value.sync.side_effect = ConflictError("conflict!")
+    cmd_sync(_ns(tmp_path))
+    captured = capsys.readouterr()
+    assert "競合検出" in captured.err
+
+
+# ── cmd_pull (CLI-10 ~ CLI-14) ───────────────────────────
+
+# CLI-10
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_each(MockClient, tmp_path):
+    cfg, docs = _write_config(tmp_path, mode="each")
+    MockClient.return_value.get_item.return_value = {"id": 1, "title": "Doc1", "body": "<p>hi</p>"}
+    cmd_pull(_ns(tmp_path, id=[1], command="pull"))
+    assert (docs / "Doc1.md").exists()
+    ids_dir = tmp_path / ".elab-sync-ids"
+    assert (ids_dir / "mapping.json").exists()
+    assert (ids_dir / "Doc1.md.hash").exists()
+    assert (ids_dir / "Doc1.md.remote_hash").exists()
+
+
+# CLI-11
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_merge(MockClient, tmp_path):
+    cfg, docs = _write_config(tmp_path, mode="merge")
+    ids_dir = tmp_path / ".elab-sync-ids"
+    ids_dir.mkdir(exist_ok=True)
+    (ids_dir / "default.id").write_text("42\n")
+    MockClient.return_value.get_item.return_value = {"id": 42, "title": "T", "body": "<p>content</p>"}
+    cmd_pull(_ns(tmp_path, id=None, command="pull"))
+    assert (docs / "T.md").exists()
+    assert (ids_dir / "default.hash").exists()
+    assert (ids_dir / "default.remote_hash").exists()
+
+
+# CLI-12
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_specific_id(MockClient, tmp_path):
+    cfg, docs = _write_config(tmp_path, mode="each")
+    MockClient.return_value.get_item.return_value = {"id": 99, "title": "Specific", "body": "<p>x</p>"}
+    cmd_pull(_ns(tmp_path, id=[99], command="pull"))
+    assert (docs / "Specific.md").exists()
+
+
+# CLI-13
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_skip_existing(MockClient, tmp_path):
+    cfg, docs = _write_config(tmp_path, mode="each")
+    (docs / "Doc1.md").write_text("original", encoding="utf-8")
+    ids_dir = tmp_path / ".elab-sync-ids"
+    ids_dir.mkdir(exist_ok=True)
+    import json as _json
+    (ids_dir / "mapping.json").write_text(_json.dumps({"Doc1.md": 1}))
+    MockClient.return_value.get_item.return_value = {"id": 1, "title": "Doc1", "body": "<p>new</p>"}
+    cmd_pull(_ns(tmp_path, id=None, command="pull"))
+    assert (docs / "Doc1.md").read_text(encoding="utf-8") == "original"
+
+
+# CLI-14
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_force_overwrite(MockClient, tmp_path):
+    cfg, docs = _write_config(tmp_path, mode="each")
+    (docs / "Doc1.md").write_text("original", encoding="utf-8")
+    ids_dir = tmp_path / ".elab-sync-ids"
+    ids_dir.mkdir(exist_ok=True)
+    import json as _json
+    (ids_dir / "mapping.json").write_text(_json.dumps({"Doc1.md": 1}))
+    MockClient.return_value.get_item.return_value = {"id": 1, "title": "Doc1", "body": "<p>new</p>"}
+    cmd_pull(_ns(tmp_path, id=None, command="pull", force=True))
+    content = (docs / "Doc1.md").read_text(encoding="utf-8")
+    assert "original" not in content
+
+
+# ── cmd_clone (CLI-20 ~ CLI-26) ──────────────────────────
+
+
+# CLI-15: pull --id なし + mapping なし → エラーメッセージ
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_no_id_no_mapping(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path, mode="each")
+    cmd_pull(_ns(tmp_path, id=None, command="pull"))
+    out = capsys.readouterr().out
+    assert "--id を指定してください" in out
+
+
+# CLI-16: pull 複数 --id (each モード)
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_multiple_ids_each(MockClient, tmp_path):
+    cfg, docs = _write_config(tmp_path, mode="each")
+    MockClient.return_value.get_item.side_effect = [
+        {"id": 1, "title": "A", "body": "<p>a</p>"},
+        {"id": 2, "title": "B", "body": "<p>b</p>"},
+    ]
+    cmd_pull(_ns(tmp_path, id=[1, 2], command="pull"))
+    assert (docs / "A.md").exists()
+    assert (docs / "B.md").exists()
+
+
+# CLI-17: pull merge モードで複数 --id → 警告 + 先頭のみ使用
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_merge_multiple_ids_warning(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path, mode="merge")
+    client = MockClient.return_value
+    client.get_item.return_value = {"id": 10, "title": "T", "body": "<p>x</p>"}
+    cmd_pull(_ns(tmp_path, id=[10, 20], command="pull"))
+    out = capsys.readouterr().out
+    assert "最初の ID のみ使用" in out
+    assert (docs / "T.md").exists()
+    client.get_item.assert_called_once_with(10)
+
+
+def _clone_ns(tmp_path, **kw):
+    defaults = {
+        "url": "https://elab.example.com", "id": [1], "dir": str(tmp_path / "cloned"),
+        "entity": "items", "no_verify": True, "config": str(tmp_path / ".elab-sync.yaml"),
+    }
+    defaults.update(kw)
+    return Namespace(**defaults)
+
+
+# CLI-20
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_clone_normal(MockClient, tmp_path, monkeypatch):
+    monkeypatch.setenv("ELABFTW_API_KEY", "test-key")
+    MockClient.return_value.get_item.return_value = {"id": 1, "title": "CloneDoc", "body": "<p>hi</p>"}
+    cmd_clone(_clone_ns(tmp_path))
+    cloned = tmp_path / "cloned"
+    assert (cloned / ".elab-sync.yaml").exists()
+    assert (cloned / "docs" / "CloneDoc.md").exists()
+    assert (cloned / ".gitignore").exists()
+    assert (cloned / ".elab-sync-ids" / "mapping.json").exists()
+
+
+# CLI-21
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_clone_multiple_ids(MockClient, tmp_path, monkeypatch):
+    monkeypatch.setenv("ELABFTW_API_KEY", "test-key")
+    MockClient.return_value.get_item.side_effect = [
+        {"id": 1, "title": "A", "body": "<p>a</p>"},
+        {"id": 2, "title": "B", "body": "<p>b</p>"},
+    ]
+    cmd_clone(_clone_ns(tmp_path, id=[1, 2]))
+    cloned = tmp_path / "cloned"
+    assert (cloned / "docs" / "A.md").exists()
+    assert (cloned / "docs" / "B.md").exists()
+
+
+# CLI-22
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_clone_existing_nonempty_dir(MockClient, tmp_path, monkeypatch):
+    monkeypatch.setenv("ELABFTW_API_KEY", "test-key")
+    dest = tmp_path / "cloned"
+    dest.mkdir()
+    (dest / "file.txt").write_text("x")
+    with pytest.raises(SystemExit):
+        cmd_clone(_clone_ns(tmp_path))
+
+
+# CLI-23
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_clone_all_fail_cleanup(MockClient, tmp_path, monkeypatch):
+    monkeypatch.setenv("ELABFTW_API_KEY", "test-key")
+    MockClient.return_value.get_item.side_effect = Exception("fail")
+    with pytest.raises(SystemExit):
+        cmd_clone(_clone_ns(tmp_path))
+    assert not (tmp_path / "cloned").exists()
+
+
+# CLI-24
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_clone_all_fail_existing_empty_dir(MockClient, tmp_path, monkeypatch):
+    monkeypatch.setenv("ELABFTW_API_KEY", "test-key")
+    dest = tmp_path / "cloned"
+    dest.mkdir()
+    MockClient.return_value.get_item.side_effect = Exception("fail")
+    with pytest.raises(SystemExit):
+        cmd_clone(_clone_ns(tmp_path))
+    assert dest.exists()  # dir itself preserved
+
+
+# CLI-25
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_clone_gitignore_content(MockClient, tmp_path, monkeypatch):
+    monkeypatch.setenv("ELABFTW_API_KEY", "test-key")
+    MockClient.return_value.get_item.return_value = {"id": 1, "title": "X", "body": ""}
+    cmd_clone(_clone_ns(tmp_path))
+    gi = (tmp_path / "cloned" / ".gitignore").read_text()
+    assert ".elab-sync-ids/" in gi
+    assert ".elab-sync.yaml" in gi
+
+
+# CLI-26
+def test_clone_no_api_key(tmp_path, monkeypatch):
+    monkeypatch.delenv("ELABFTW_API_KEY", raising=False)
+    with pytest.raises(SystemExit):
+        cmd_clone(_clone_ns(tmp_path))
+
+
+# ── cmd_log (CLI-30 ~ CLI-31) ────────────────────────────
+
+# CLI-30
+def test_log_display(tmp_path, capsys):
+    from elab_doc_sync import sync_log
+    log_path = tmp_path / ".elab-sync-ids" / "sync-log.jsonl"
+    sync_log.record(log_path, action="push", target="T", entity="items", entity_id=1)
+    cfg, _ = _write_config(tmp_path)
+    cmd_log(Namespace(config=str(cfg), limit=20))
+    out = capsys.readouterr().out
+    assert "push" in out
+
+
+# CLI-31
+def test_log_limit(tmp_path, capsys):
+    from elab_doc_sync import sync_log
+    log_path = tmp_path / ".elab-sync-ids" / "sync-log.jsonl"
+    for i in range(5):
+        sync_log.record(log_path, action="push", target=f"T{i}", entity="items", entity_id=i)
+    cfg, _ = _write_config(tmp_path)
+    cmd_log(Namespace(config=str(cfg), limit=2))
+    out = capsys.readouterr().out
+    lines = [l for l in out.strip().splitlines() if l.strip()]
+    assert len(lines) == 2
+
+
+# ── cmd_init / cmd_update (CLI-40 ~ CLI-43) ──────────────
+
+# CLI-40
+def test_init_creates_config(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    inputs = iter(["https://elab.example.com", "n", "", "", "merge", "items", "TestTitle"])
+    monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+    cfg_path = tmp_path / ".elab-sync.yaml"
+    cmd_init(Namespace(config=str(cfg_path)))
+    assert cfg_path.exists()
+
+
+# CLI-41
+def test_init_existing_abort(tmp_path, monkeypatch):
+    cfg_path = tmp_path / ".elab-sync.yaml"
+    cfg_path.write_text("existing")
+    monkeypatch.setattr("builtins.input", lambda _: "n")
+    cmd_init(Namespace(config=str(cfg_path)))
+    assert cfg_path.read_text() == "existing"
+
+
+# CLI-42
+def test_init_template_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    inputs = iter(["https://elab.example.com", "n", "docs/", "", "each", "items"])
+    monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+    cmd_init(Namespace(config=str(tmp_path / ".elab-sync.yaml")))
+    # init creates config; template expansion depends on package template dir
+    assert (tmp_path / ".elab-sync.yaml").exists()
+
+
+# CLI-43
+@patch("subprocess.run")
+def test_update(mock_run, tmp_path):
+    mock_run.return_value = MagicMock(returncode=0)
+    cmd_update(Namespace())
+    mock_run.assert_called_once()
+
+
+# ── cmd_diff / cmd_status (CLI-50 ~ CLI-53) ──────────────
+
+# CLI-50
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_diff_has_diff(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("local content", encoding="utf-8")
+    ids_dir = tmp_path / ".elab-sync-ids"
+    ids_dir.mkdir(exist_ok=True)
+    (ids_dir / "default.id").write_text("1\n")
+    MockClient.return_value.get_item.return_value = {"id": 1, "body": "<p>remote content</p>"}
+    cmd_diff(_ns(tmp_path))
+    out = capsys.readouterr().out
+    assert "---" in out or "+++" in out or "@@" in out
+
+
+# CLI-51
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_diff_no_diff(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("same", encoding="utf-8")
+    ids_dir = tmp_path / ".elab-sync-ids"
+    ids_dir.mkdir(exist_ok=True)
+    (ids_dir / "default.id").write_text("1\n")
+    from markdownify import markdownify as html_to_md
+    MockClient.return_value.get_item.return_value = {"id": 1, "body": "<p>same</p>"}
+    cmd_diff(_ns(tmp_path))
+    out = capsys.readouterr().out
+    assert "差分なし" in out or "最新" in out
+
+
+# CLI-52
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_status_changed(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("content", encoding="utf-8")
+    cmd_status(_ns(tmp_path))
+    out = capsys.readouterr().out
+    assert "変更あり" in out
+
+
+# CLI-53
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_status_up_to_date(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("content", encoding="utf-8")
+    # save hash to make it "up to date"
+    from elab_doc_sync.sync import DocsSyncer, _compute_hash
+    from elab_doc_sync.config import TargetConfig
+    target = TargetConfig(title="T", docs_dir="docs/", id_file=str(tmp_path / ".elab-sync-ids" / "default.id"))
+    syncer = DocsSyncer(MockClient.return_value, target, tmp_path)
+    syncer.save_hash("content")
+    syncer.save_item_id(1)
+    cmd_status(_ns(tmp_path))
+    out = capsys.readouterr().out
+    assert "最新" in out
+
+
+# ── FR-15 tag コマンドテスト ─────────────────────────────
+
+
+# CLI-54: tag list
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_tag_list(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("# A\n", encoding="utf-8")
+    client = MockClient.return_value
+    client.get_tags.return_value = [{"id": 1, "tag": "alpha"}, {"id": 2, "tag": "beta"}]
+    # merge mode: need an ID file
+    id_dir = tmp_path / ".elab-sync-ids"
+    id_dir.mkdir()
+    (id_dir / "default.id").write_text("42", encoding="utf-8")
+    args = Namespace(config=str(cfg), target=None, force=False, tag_action="list")
+    cmd_tag(args)
+    out = capsys.readouterr().out
+    assert "alpha" in out
+    assert "beta" in out
+
+
+# CLI-55: tag add
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_tag_add(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("# A\n", encoding="utf-8")
+    client = MockClient.return_value
+    id_dir = tmp_path / ".elab-sync-ids"
+    id_dir.mkdir()
+    (id_dir / "default.id").write_text("42", encoding="utf-8")
+    args = Namespace(config=str(cfg), target=None, force=False, tag_action="add", tag_name="newtag", id=None)
+    cmd_tag(args)
+    client.add_tag.assert_called_once_with("items", 42, "newtag")
+
+
+# CLI-56: tag remove
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_tag_remove(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("# A\n", encoding="utf-8")
+    client = MockClient.return_value
+    client.untag_by_name.return_value = True
+    id_dir = tmp_path / ".elab-sync-ids"
+    id_dir.mkdir()
+    (id_dir / "default.id").write_text("42", encoding="utf-8")
+    args = Namespace(config=str(cfg), target=None, force=False, tag_action="remove", tag_name="old", id=None)
+    cmd_tag(args)
+    client.untag_by_name.assert_called_once_with("items", 42, "old")
+
+
+# ── FR-15 metadata コマンドテスト ────────────────────────
+
+
+# CLI-57: metadata get
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_metadata_get(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("# A\n", encoding="utf-8")
+    client = MockClient.return_value
+    client.get_metadata.return_value = {"project": "X", "version": "1"}
+    id_dir = tmp_path / ".elab-sync-ids"
+    id_dir.mkdir()
+    (id_dir / "default.id").write_text("42", encoding="utf-8")
+    args = Namespace(config=str(cfg), target=None, force=False, meta_action="get", id=None)
+    cmd_metadata(args)
+    out = capsys.readouterr().out
+    assert "project" in out
+    assert "X" in out
+
+
+# CLI-58: metadata set
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_metadata_set(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("# A\n", encoding="utf-8")
+    client = MockClient.return_value
+    client.get_metadata.return_value = {"old": "val"}
+    id_dir = tmp_path / ".elab-sync-ids"
+    id_dir.mkdir()
+    (id_dir / "default.id").write_text("42", encoding="utf-8")
+    args = Namespace(config=str(cfg), target=None, force=False, meta_action="set", keyvalues=["new=data"], id=None)
+    cmd_metadata(args)
+    client.update_metadata.assert_called_once()
+    call_meta = client.update_metadata.call_args[0][2]
+    assert call_meta["old"] == "val"
+    assert call_meta["new"] == "data"
+
+
+# ── FR-16 entity-status コマンドテスト ───────────────────
+
+
+# CLI-59: entity-status show
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_entity_status_show(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("# A\n", encoding="utf-8")
+    client = MockClient.return_value
+    client.get_entity.return_value = {"id": 42, "status_title": "Running"}
+    id_dir = tmp_path / ".elab-sync-ids"
+    id_dir.mkdir()
+    (id_dir / "default.id").write_text("42", encoding="utf-8")
+    args = Namespace(config=str(cfg), target=None, force=False, status_action="show", id=None)
+    cmd_entity_status(args)
+    out = capsys.readouterr().out
+    assert "Running" in out
+
+
+# CLI-60: entity-status set
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_entity_status_set_single(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("# A\n", encoding="utf-8")
+    client = MockClient.return_value
+    id_dir = tmp_path / ".elab-sync-ids"
+    id_dir.mkdir()
+    (id_dir / "default.id").write_text("42", encoding="utf-8")
+    args = Namespace(config=str(cfg), target=None, force=False, status_action="set", status_id="3", id=42)
+    cmd_entity_status(args)
+    client.patch_entity.assert_called_once_with("items", 42, status=3)
+
+
+# ── FR-17 whoami テスト ──────────────────────────────────
+
+
+# CLI-61: whoami
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_whoami(MockClient, tmp_path, capsys):
+    cfg, _ = _write_config(tmp_path)
+    client = MockClient.return_value
+    client._req.return_value = MagicMock(
+        json=MagicMock(return_value={
+            "firstname": "太郎", "lastname": "田中",
+            "email": "taro@example.com", "userid": 1,
+            "teams": [{"name": "Lab A"}],
+        })
+    )
+    args = Namespace(config=str(cfg), target=None, force=False)
+    cmd_whoami(args)
+    out = capsys.readouterr().out
+    assert "太郎" in out
+    assert "taro@example.com" in out
+    assert "Lab A" in out
+
+
+# ── FR-18 new テスト ─────────────────────────────────────
+
+
+# CLI-62: new --list
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_new_list(MockClient, tmp_path, capsys):
+    cfg, _ = _write_config(tmp_path)
+    client = MockClient.return_value
+    client._req.return_value = MagicMock(
+        json=MagicMock(return_value=[{"id": 1, "title": "Protocol A"}, {"id": 2, "title": "Protocol B"}])
+    )
+    args = Namespace(config=str(cfg), target=None, force=False, list_templates=True, template_id=None, title=None, output=None)
+    cmd_new(args)
+    out = capsys.readouterr().out
+    assert "Protocol A" in out
+    assert "Protocol B" in out
+
+
+# CLI-63: new --template-id でファイル生成
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_new_create_file(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    client = MockClient.return_value
+    client._req.return_value = MagicMock(
+        json=MagicMock(return_value={"id": 1, "title": "My Template", "body": "<h2>Section</h2><p>Content</p>"})
+    )
+    args = Namespace(config=str(cfg), target=None, force=False, list_templates=False, template_id=1, title=None, output=None)
+    cmd_new(args)
+    out = capsys.readouterr().out
+    assert "✅" in out
+    generated = tmp_path / "docs" / "My_Template.md"
+    assert generated.exists()
+    content = generated.read_text(encoding="utf-8")
+    assert "# My Template" in content
+    assert "Section" in content
+
+
+# CLI-64: new — 既存ファイルがある場合はエラー
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_new_existing_file_error(MockClient, tmp_path):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "Existing.md").write_text("old", encoding="utf-8")
+    client = MockClient.return_value
+    client._req.return_value = MagicMock(
+        json=MagicMock(return_value={"id": 1, "title": "Existing", "body": ""})
+    )
+    args = Namespace(config=str(cfg), target=None, force=False, list_templates=False, template_id=1, title=None, output=None)
+    with pytest.raises(SystemExit):
+        cmd_new(args)
+
+
+# CLI-65: new --output で出力先指定
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_new_custom_output(MockClient, tmp_path, capsys):
+    cfg, _ = _write_config(tmp_path)
+    client = MockClient.return_value
+    client._req.return_value = MagicMock(
+        json=MagicMock(return_value={"id": 1, "title": "T", "body": "<p>body</p>"})
+    )
+    outfile = tmp_path / "custom" / "out.md"
+    args = Namespace(config=str(cfg), target=None, force=False, list_templates=False, template_id=1, title="Custom", output=str(outfile))
+    cmd_new(args)
+    assert outfile.exists()
+    assert "# Custom" in outfile.read_text(encoding="utf-8")
+
+
+# ── FR-19 list テスト ────────────────────────────────────
+
+
+# CLI-66: list items
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_list_items(MockClient, tmp_path, capsys):
+    cfg, _ = _write_config(tmp_path)
+    client = MockClient.return_value
+    client._req.return_value = MagicMock(
+        json=MagicMock(return_value=[
+            {"id": 1, "title": "Item A", "status_title": ""},
+            {"id": 2, "title": "Item B", "status_title": "Active"},
+        ])
+    )
+    args = Namespace(config=str(cfg), target=None, force=False, entity_type="items", limit=20)
+    cmd_list(args)
+    out = capsys.readouterr().out
+    assert "#1" in out
+    assert "Item A" in out
+    assert "Item B" in out
+    assert "Active" in out
+
+
+# CLI-67: list experiments
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_list_experiments(MockClient, tmp_path, capsys):
+    cfg, _ = _write_config(tmp_path)
+    client = MockClient.return_value
+    client._req.return_value = MagicMock(
+        json=MagicMock(return_value=[{"id": 10, "title": "Exp X"}])
+    )
+    args = Namespace(config=str(cfg), target=None, force=False, entity_type="experiments", limit=5)
+    cmd_list(args)
+    out = capsys.readouterr().out
+    assert "#10" in out
+    assert "Exp X" in out
+
+
+# CLI-68: list 空
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_list_empty(MockClient, tmp_path, capsys):
+    cfg, _ = _write_config(tmp_path)
+    client = MockClient.return_value
+    client._req.return_value = MagicMock(json=MagicMock(return_value=[]))
+    args = Namespace(config=str(cfg), target=None, force=False, entity_type="items", limit=20)
+    cmd_list(args)
+    out = capsys.readouterr().out
+    assert "ありません" in out
+
+
+# ── FR-20 link テスト ────────────────────────────────────
+
+
+# CLI-69: link merge モード
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_link_merge(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("# A\n", encoding="utf-8")
+    client = MockClient.return_value
+    client.get_entity.return_value = {"id": 99, "body": "<p>hello</p>"}
+    args = Namespace(config=str(cfg), target=None, force=False, entity_id=99, file=None)
+    cmd_link(args)
+    out = capsys.readouterr().out
+    assert "99" in out
+    id_file = tmp_path / ".elab-sync-ids" / "default.id"
+    assert id_file.exists()
+    assert id_file.read_text().strip() == "99"
+
+
+# CLI-70: link each モード
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_link_each(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path, mode="each")
+    (docs / "a.md").write_text("# A\n", encoding="utf-8")
+    client = MockClient.return_value
+    client.get_entity.return_value = {"id": 55, "body": "<p>test</p>"}
+    args = Namespace(config=str(cfg), target=None, force=False, entity_id=55, file="a.md")
+    cmd_link(args)
+    out = capsys.readouterr().out
+    assert "55" in out
+    mapping_file = tmp_path / ".elab-sync-ids" / "mapping.json"
+    assert mapping_file.exists()
+    mapping = json.loads(mapping_file.read_text())
+    assert mapping["a.md"] == 55
+
+
+# CLI-71: link each モードで --file なしはエラー
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_link_each_no_file(MockClient, tmp_path):
+    cfg, _ = _write_config(tmp_path, mode="each")
+    args = Namespace(config=str(cfg), target=None, force=False, entity_id=55, file=None)
+    with pytest.raises(SystemExit):
+        cmd_link(args)
+
+
+# ── FR-21 verify テスト ──────────────────────────────────
+
+
+# CLI-72: verify 正常（merge）
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_verify_merge_ok(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("# A\n", encoding="utf-8")
+    client = MockClient.return_value
+    client.get_entity.return_value = {"id": 42, "title": "T"}
+    id_dir = tmp_path / ".elab-sync-ids"
+    id_dir.mkdir()
+    (id_dir / "default.id").write_text("42", encoding="utf-8")
+    args = Namespace(config=str(cfg), target=None, force=False)
+    cmd_verify(args)
+    out = capsys.readouterr().out
+    assert "✓" in out
+    assert "問題はありません" in out
+
+
+# CLI-73: verify リモートアクセス失敗
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_verify_remote_fail(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("# A\n", encoding="utf-8")
+    client = MockClient.return_value
+    client.get_entity.side_effect = Exception("404")
+    id_dir = tmp_path / ".elab-sync-ids"
+    id_dir.mkdir()
+    (id_dir / "default.id").write_text("42", encoding="utf-8")
+    args = Namespace(config=str(cfg), target=None, force=False)
+    cmd_verify(args)
+    out = capsys.readouterr().out
+    assert "⚠" in out
+    assert "アクセスできません" in out
+
+
+# CLI-74: verify 未同期
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_verify_not_synced(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("# A\n", encoding="utf-8")
+    args = Namespace(config=str(cfg), target=None, force=False)
+    cmd_verify(args)
+    out = capsys.readouterr().out
+    assert "未同期" in out
+
+
+# CLI-75: verify each モード — ローカルファイル欠損
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_verify_each_missing_file(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path, mode="each")
+    client = MockClient.return_value
+    id_dir = tmp_path / ".elab-sync-ids"
+    id_dir.mkdir()
+    mapping = {"missing.md": 10, "exists.md": 20}
+    (id_dir / "mapping.json").write_text(json.dumps(mapping), encoding="utf-8")
+    (docs / "exists.md").write_text("# E\n", encoding="utf-8")
+    client.get_entity.return_value = {"id": 20}
+    args = Namespace(config=str(cfg), target=None, force=False)
+    cmd_verify(args)
+    out = capsys.readouterr().out
+    assert "missing.md" in out
+    assert "見つかりません" in out
+    assert "✓" in out  # exists.md は OK
+
+
+# ── 表示ラベル統一の回帰テスト ───────────────────────────
+
+
+# CLI-76: tag list の出力に「リソース」が含まれる
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_tag_list_shows_resource_label(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("# A\n", encoding="utf-8")
+    client = MockClient.return_value
+    client.get_tags.return_value = [{"id": 1, "tag": "t"}]
+    id_dir = tmp_path / ".elab-sync-ids"
+    id_dir.mkdir()
+    (id_dir / "default.id").write_text("1", encoding="utf-8")
+    args = Namespace(config=str(cfg), target=None, force=False, tag_action="list")
+    cmd_tag(args)
+    out = capsys.readouterr().out
+    assert "リソース" in out
+    assert "items" not in out
+
+
+# CLI-77: entity-status show の出力に「リソース」が含まれる
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_entity_status_shows_resource_label(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("# A\n", encoding="utf-8")
+    client = MockClient.return_value
+    client.get_entity.return_value = {"id": 1, "status_title": "Running"}
+    id_dir = tmp_path / ".elab-sync-ids"
+    id_dir.mkdir()
+    (id_dir / "default.id").write_text("1", encoding="utf-8")
+    args = Namespace(config=str(cfg), target=None, force=False, status_action="show", id=None)
+    cmd_entity_status(args)
+    out = capsys.readouterr().out
+    assert "リソース" in out
+    assert "items" not in out
