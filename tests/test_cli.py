@@ -736,3 +736,40 @@ def test_cmd_verify_each_missing_file(MockClient, tmp_path, capsys):
     assert "missing.md" in out
     assert "見つかりません" in out
     assert "✓" in out  # exists.md は OK
+
+
+# ── 表示ラベル統一の回帰テスト ───────────────────────────
+
+
+# CLI-76: tag list の出力に「リソース」が含まれる
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_tag_list_shows_resource_label(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("# A\n", encoding="utf-8")
+    client = MockClient.return_value
+    client.get_tags.return_value = [{"id": 1, "tag": "t"}]
+    id_dir = tmp_path / ".elab-sync-ids"
+    id_dir.mkdir()
+    (id_dir / "default.id").write_text("1", encoding="utf-8")
+    args = Namespace(config=str(cfg), target=None, force=False, tag_action="list")
+    cmd_tag(args)
+    out = capsys.readouterr().out
+    assert "リソース" in out
+    assert "items" not in out
+
+
+# CLI-77: entity-status show の出力に「リソース」が含まれる
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_entity_status_shows_resource_label(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("# A\n", encoding="utf-8")
+    client = MockClient.return_value
+    client.get_entity.return_value = {"id": 1, "status_title": "Running"}
+    id_dir = tmp_path / ".elab-sync-ids"
+    id_dir.mkdir()
+    (id_dir / "default.id").write_text("1", encoding="utf-8")
+    args = Namespace(config=str(cfg), target=None, force=False, status_action="show", id=None)
+    cmd_entity_status(args)
+    out = capsys.readouterr().out
+    assert "リソース" in out
+    assert "items" not in out
