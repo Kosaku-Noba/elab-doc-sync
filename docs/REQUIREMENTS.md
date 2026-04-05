@@ -148,3 +148,69 @@
 | `*.id` | eLabFTW エンティティ ID（整数、1行） |
 | `*.hash` | SHA-256 先頭 16 文字（差分検知用） |
 | `mapping.json` | each モードのファイル名 → エンティティ ID マッピング |
+| `.elab-sync-ids/sync-log.jsonl` | 同期履歴（JSONL 形式） |
+
+---
+
+## 9. 拡張機能要求（v0.2.0 ロードマップ）
+
+### FR-11: 競合検出・解決
+
+- push 前にリモートの body ハッシュを取得し、前回同期時のハッシュと比較する。
+- リモートが変更されていた場合、push を中断し警告を表示する。
+- `--force` で強制上書き、`--pull-first` でリモート変更を先に取り込むオプションを提供する。
+- 将来的に 3-way diff（ローカル変更 / リモート変更 / 共通祖先）による自動マージを検討する。
+
+### FR-12: Clone（リモートからプロジェクト構築）
+
+- `esync clone --url <elabftw-url> --id <entity-id> [--dir <dir>]` で、リモートのエンティティからローカルプロジェクトを一発構築する。
+- `.elab-sync.yaml`、ディレクトリ構造、ID マッピングを自動生成する。
+- 複数 ID 指定（`--id 42 --id 43`）で複数エンティティを一括取得できる。
+
+### FR-13: 同期ログ
+
+- `esync log` で同期履歴を表示する。
+- 各同期操作（push / pull）のタイムスタンプ、対象ファイル、エンティティ ID、操作種別を `.elab-sync-ids/sync-log.jsonl` に記録する。
+- eLabFTW の revisions API を活用し、リモート側の変更履歴も `esync log --remote` で表示する。
+
+### FR-14: Watch（ファイル監視・自動同期）
+
+- `esync watch` でファイル変更を監視し、変更検出時に自動 push する。
+- デバウンス間隔（デフォルト 5 秒）を `--interval` で設定可能とする。
+- watchdog ライブラリを使用し、Linux / Windows 両対応とする。
+
+### FR-15: タグ・メタデータ管理
+
+- `esync tag add <tag>` / `esync tag remove <tag>` / `esync tag list` でタグを CLI から操作する。
+- `esync meta set <key> <value>` / `esync meta get <key>` でメタデータを読み書きする。
+- `.elab-sync.yaml` の `targets[].tags` でデフォルトタグを定義し、同期時に自動付与する。
+
+### FR-16: ステータス管理
+
+- タグまたはメタデータで `draft` / `published` のステータスを管理する。
+- `esync publish` で draft → published に昇格する。
+- `esync unpublish` で published → draft に戻す。
+
+### FR-17: マルチユーザー対応
+
+- `esync whoami` で現在の API キーに紐づくユーザー情報を表示する。
+- 同期ログにユーザー名を記録する。
+- 将来的にロック機構（編集中エンティティの排他制御）を検討する。
+
+### FR-18: テンプレート機能
+
+- `esync new <type> --template <name>` でテンプレートから新規ドキュメントを生成する。
+- ローカルテンプレート（`templates/` ディレクトリ）と eLabFTW 側テンプレートの両方に対応する。
+
+## 10. 拡張機能の優先度
+
+| 優先度 | 機能 | 理由 |
+|---|---|---|
+| 高 | FR-11 競合検出 | データ消失防止。同期ツールとしての信頼性の根幹 |
+| 高 | FR-12 Clone | 初回セットアップ体験を GitHub clone 並みにする |
+| 高 | FR-13 同期ログ | 操作の追跡可能性。運用上必須 |
+| 中 | FR-14 Watch | 同期の自動化。研究者の負担軽減 |
+| 中 | FR-15 タグ・メタデータ | eLabFTW の整理機能をローカルから活用 |
+| 中 | FR-16 ステータス管理 | draft/published ワークフロー |
+| 低 | FR-17 マルチユーザー | チーム利用時に必要。まず個人利用を固める |
+| 低 | FR-18 テンプレート | 利便性向上だが後回し可 |
