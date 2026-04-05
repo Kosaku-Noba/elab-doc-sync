@@ -324,3 +324,36 @@ The new skipped-pull baseline update can suppress real conflict detection and ca
 ### Codex 所感
 
 >   この早期 `continue` により、既存ファイルを持つ checkout では `pull` が `*.remote_hash` を再生成できなくなります。特にローカルが未変更のケースでも同じなので、FR-11 導入前から使っている作業ツリーや、push 後に `リモートハッシュの保存に失敗` 警告が出た作業ツリーでは、`esync pull` を実行しても競合検出のベースラインが空/古いまま残ります。その後の `DocsSyncer._check_remote_conflict()` は `remote_hash_file.exists()==False` なら競合チェック自体を飛ばすため、次の push で新しいリモート更新を無警告で上書きしたり、逆に古いハッシュのまま false conflict を出したりします。`each` 側の同じスキップ経路も同様です。
+
+
+## 2026-04-05T21:32 [Kiro] FR-11 最終調整: スキップ時の remote_hash 条件付き更新
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| cli.py cmd_pull() | スキップ時、ローカルが前回同期から未変更の場合のみ remote_hash を更新。ローカルに編集がある場合は remote_hash を触らない（競合検出を維持） |
+
+### Kiro 所感
+
+- 「スキップ時に更新する/しない」の二択ではなく、ローカル変更の有無で分岐するのが正解だった。
+- ローカル未変更 → remote_hash 更新（ベースライン再設定）
+- ローカル変更あり → remote_hash 据え置き（次回 push で競合検出）
+
+
+## 2026-04-05T21:34 [Codex] fix: FR-11 スキップ時 remote_hash をローカル未変更時のみ更新 に対するレビュー
+
+The new skipped-pull remote-hash refresh regresses conflict detection in both sync modes, and the `--id` path still writes baseline state without updating the tracked entity identifier. These are functional bugs in normal pull/sync workflows, so the patch should not be considered correct.
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| Don't advance `each` remote_hash when the file is skipped | /home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py:157-160 | 高 |
+| Preserve the old merge baseline when `pull` skips overwrite | /home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py:205-210 | 高 |
+| Update `mapping.json` before refreshing an `each` baseline | /home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py:157-160 | 中 |
+| Save the new merge target ID before persisting its baseline | /home/kosak/elab-doc-sync/src/elab_doc_sync/cli.py:205-210 | 中 |
+
+### Codex 所感
+
+>   With an existing merge target, `pull --id 42` on an unchanged checkout updates `.remote_hash` for item 42 inside this branch but never reaches `save_item_id(42)` below. Future `sync()` calls still read the previous `.id`, compare that old entity's current body against item 42's hash, and can fail with a false conflict until the user forces another pull or fixes the id file manually.

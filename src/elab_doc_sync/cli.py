@@ -155,6 +155,9 @@ def cmd_pull(args):
                 filepath = docs_dir / filename
 
                 if not args.force and filepath.exists():
+                    # ローカルが未変更なら remote_hash を更新（競合検出ベースライン）
+                    if not syncer._has_changed(filename, filepath.read_text(encoding="utf-8").strip()):
+                        syncer._save_remote_hash(filename, body_html)
                     print(f"  [{title}] 既にローカルに存在（スキップ、--force で上書き）")
                     continue
 
@@ -200,6 +203,13 @@ def cmd_pull(args):
             filepath = docs_dir / filename
 
             if not args.force and filepath.exists():
+                # ローカルが未変更なら remote_hash を更新（競合検出ベースライン）
+                try:
+                    local_body = syncer.collect_docs()
+                    if not syncer.has_changed(local_body):
+                        syncer.save_remote_hash(body_html)
+                except Exception:
+                    pass
                 print(f"  [{target.title}] 既にローカルに存在（スキップ、--force で上書き）")
                 continue
 
