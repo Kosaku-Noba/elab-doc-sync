@@ -134,7 +134,12 @@ class ELabFTWClient:
     # ── metadata ─────────────────────────────────────────────
 
     def get_metadata(self, entity_type: str, entity_id: int) -> dict:
-        """エンティティのメタデータを dict で返す。パース失敗時は空 dict。"""
+        """エンティティのメタデータを dict で返す。
+
+        eLabFTW の metadata フィールドは JSON object 文字列または null。
+        パース失敗・非 dict・falsy 値の場合は空 dict を返す（データ消失ではなく、
+        eLabFTW 側にメタデータが未設定の状態と同等）。
+        """
         entity = self._req("GET", f"/api/v2/{entity_type}/{entity_id}").json()
         raw = entity.get("metadata")
         if not raw:

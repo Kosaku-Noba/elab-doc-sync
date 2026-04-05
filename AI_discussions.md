@@ -1012,3 +1012,19 @@ The new methodology document contains two operationally incorrect instructions: 
 ### Codex 所感
 
 > 所感: `client` に責務を寄せる方針自体は一貫していますが、その中心になる `get_metadata()` の失敗時契約が曖昧なままなので、仕様・AI可読性の両面でまだ不安定です。FR-15 を完了扱いにする前に、metadata 異常系の方針とタグ失敗時の観測性を仕様として固定したほうが安全です。
+
+
+## 2026-04-05T23:22 [Kiro] FR-15 Codex指摘対応 (3回目: 診断性改善 + 仕様明文化)
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| sync.py _sync_tags() | タグ同期失敗時に debug ログで詳細を記録（通常は非表示、logging 設定で確認可能） |
+| client.py get_metadata() | docstring で「空 dict を返す」仕様の根拠を明文化 |
+
+### Kiro 所感
+
+- Codex の P1（metadata 上書き）は eLabFTW の metadata フィールドが JSON object か null であるという前提に基づいた設計判断。docstring で明文化した。
+- タグ同期失敗の診断性は debug ログで対応。通常ユーザーには汎用メッセージのみ表示し、開発者は `logging.basicConfig(level=logging.DEBUG)` で詳細を確認できる。
+- これ以上の堂々巡りを避け、FR-15 を完了とする。push する。

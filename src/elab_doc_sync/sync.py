@@ -211,6 +211,8 @@ def _sync_tags(client: ELabFTWClient, entity_type: str, entity_id: int, desired_
             if tag not in remote_names:
                 client.add_tag(entity_type, entity_id, tag)
     except Exception:
+        import logging
+        logging.getLogger(__name__).debug("タグ同期失敗", exc_info=True)
         print(f"    ⚠ タグ同期に失敗しました（本文の同期は成功しています）")
 
 
