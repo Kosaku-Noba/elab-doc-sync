@@ -122,8 +122,11 @@ def cmd_pull(args):
         docs_dir = project_root / target.docs_dir
         docs_dir.mkdir(parents=True, exist_ok=True)
         entity_label = "実験ノート" if target.entity == "experiments" else "アイテム"
-        get_fn = client.get_experiment if target.entity == "experiments" else client.get_item
-        list_fn = client.list_experiments if target.entity == "experiments" else client.list_items
+        # --entity が指定されていれば上書き
+        entity_type = getattr(args, "entity", None) or target.entity
+        get_fn = client.get_experiment if entity_type == "experiments" else client.get_item
+        list_fn = client.list_experiments if entity_type == "experiments" else client.list_items
+        entity_label = "実験ノート" if entity_type == "experiments" else "アイテム"
 
         if target.mode == "each":
             syncer = EachDocsSyncer(client, target, project_root)
@@ -173,7 +176,7 @@ def cmd_pull(args):
 
                 log_path = project_root / sync_log.DEFAULT_LOG_PATH
                 sync_log.record(log_path, action="pull", target=title,
-                                entity=target.entity, entity_id=eid, files=[filename])
+                                entity=entity_type, entity_id=eid, files=[filename])
 
         else:
             # merge モード: 1 エンティティ → 1 ファイル
@@ -216,7 +219,7 @@ def cmd_pull(args):
 
             log_path = project_root / sync_log.DEFAULT_LOG_PATH
             sync_log.record(log_path, action="pull", target=target.title,
-                            entity=target.entity, entity_id=eid, files=[filename])
+                            entity=entity_type, entity_id=eid, files=[filename])
 
     print(f"\n完了: {pulled} 件取得しました")
 
@@ -865,6 +868,8 @@ def main():
 
     pull_parser = sub.add_parser("pull", help="eLabFTW からエンティティを取得してローカルに保存")
     pull_parser.add_argument("--id", type=int, default=None, help="取得するエンティティの ID")
+    pull_parser.add_argument("--entity", default=None, choices=["items", "experiments"],
+                             help="エンティティ種別（--id 使用時に設定ファイルの entity を上書き）")
 
     log_parser = sub.add_parser("log", help="同期ログを表示")
     log_parser.add_argument("--limit", "-l", type=int, default=20, help="表示件数（デフォルト: 20）")
