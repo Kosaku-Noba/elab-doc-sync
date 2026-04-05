@@ -86,6 +86,11 @@ elabftw:
 | `esync verify` | ローカルとリモートの整合性チェック |
 | `esync init` | 対話的に設定ファイルを作成 |
 | `esync update` | ツールを最新版に更新 |
+| `esync log` | 同期ログを表示 |
+| `esync clone` | eLabFTW からプロジェクトを構築 |
+| `esync whoami` | 現在のユーザー情報を表示 |
+| `esync new --list` | テンプレート一覧を表示 |
+| `esync new --template-id <ID>` | テンプレートからファイル作成 |
 | `esync --dry-run` | 実行せずに同期内容を確認 |
 | `esync --force` | 変更がなくても強制同期 |
 | `esync -t "名前"` | 特定のターゲットだけ同期 |
