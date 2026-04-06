@@ -357,4 +357,5 @@ def test_download_images_passes_upload_fields(tmp_path):
     _download_images(body, "items", 42, client, tmp_path)
     client.download_upload.assert_called_once_with(
         long_name="hash123.png", real_name="photo.png", storage=2,
+        entity_type="items", entity_id=42, upload_id=10,
     )

@@ -129,23 +129,38 @@ class ELabFTWClient:
         """エンティティの添付ファイル一覧を返す。"""
         return self._req("GET", f"/api/v2/{entity_type}/{entity_id}/uploads").json()
 
-    def download_upload(self, *, long_name: str, real_name: str, storage: int | str) -> bytes:
+    def download_upload(self, *, long_name: str, real_name: str, storage: int | str,
+                        entity_type: str = "", entity_id: int = 0, upload_id: int = 0) -> bytes:
         """添付ファイル（画像含む全種別）のバイナリを返す。
 
         内部メソッド: このリポジトリ内でのみ使用。外部公開 API ではない。
 
-        eLabFTW API v2 の /uploads/{id}?format=binary は一部環境で
-        JSON メタデータを返すため、/app/download.php 経由でダウンロードする。
+        API v2 エンドポイント（entity_type/entity_id/upload_id 指定時）で
+        Accept: application/octet-stream + format=binary の両方を指定して取得を試みる。
         参照: https://doc.elabftw.net/api/v2/#/uploads/readUpload
 
         Args:
             long_name: list_uploads で取得できるハッシュ化ファイル名
-            real_name: 元のファイル名（表示用、ダウンロード時のファイル名に使われる）
+            real_name: 元のファイル名（表示用）
             storage: ストレージ ID（list_uploads の storage フィールド、int または str）
+            entity_type: items / experiments（API v2 経由で取得する場合に必要）
+            entity_id: エンティティ ID
+            upload_id: アップロード ID
 
         成否判定は HTTP ステータスコードのみで行う（raise_for_status）。
         コンテンツ妥当性（ファイル形式・サイズ等）の担保は呼び出し側の責務。
         """
+        if entity_type and entity_id and upload_id:
+            resp = self._req(
+                "GET", f"/api/v2/{entity_type}/{entity_id}/uploads/{upload_id}",
+                headers={**self._auth_headers, "Accept": "application/octet-stream"},
+                params={"format": "binary"},
+            )
+            # API がバイナリを返したか確認（JSON メタデータは通常 < 2KB）
+            ct = resp.headers.get("Content-Type", "")
+            if "application/json" not in ct:
+                return resp.content
+        # フォールバック: /app/download.php 経由
         from urllib.parse import urlencode
         params = urlencode({"f": long_name, "name": real_name, "storage": storage})
         resp = self._req("GET", f"/app/download.php?{params}",
