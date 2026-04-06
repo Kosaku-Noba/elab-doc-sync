@@ -129,7 +129,7 @@ class ELabFTWClient:
         """エンティティの添付ファイル一覧を返す。"""
         return self._req("GET", f"/api/v2/{entity_type}/{entity_id}/uploads").json()
 
-    def download_upload(self, long_name: str, real_name: str, storage: int | str) -> bytes:
+    def download_upload(self, *, long_name: str, real_name: str, storage: int | str) -> bytes:
         """添付ファイル（画像含む全種別）のバイナリを返す。
 
         eLabFTW API v2 の /uploads/{id}?format=binary は一部環境で
