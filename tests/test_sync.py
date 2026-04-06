@@ -665,3 +665,18 @@ def test_download_images_rejects_subpath(tmp_path):
     # subpath 付きはマッチしないので元の URL がそのまま残る
     assert "/uploads/100/extra" in result
     client.download_upload.assert_not_called()
+
+
+# S-68: UPLOAD_ID_RE boundary tests (query, fragment, bare, trailing slash, subpath)
+def test_upload_id_re_boundaries():
+    from elab_doc_sync.sync import UPLOAD_ID_RE
+    # 許容例
+    assert UPLOAD_ID_RE.search("/uploads/100").group(1) == "100"
+    assert UPLOAD_ID_RE.search("/uploads/100/").group(1) == "100"
+    assert UPLOAD_ID_RE.search("/uploads/100?x=1").group(1) == "100"
+    assert UPLOAD_ID_RE.search("/uploads/100#frag").group(1) == "100"
+    assert UPLOAD_ID_RE.search("/api/v2/items/1/uploads/200").group(1) == "200"
+    assert UPLOAD_ID_RE.search("https://other.example/uploads/300").group(1) == "300"
+    # 拒否例
+    assert UPLOAD_ID_RE.search("/uploads/100/extra") is None
+    assert UPLOAD_ID_RE.search("/uploads/abc") is None
