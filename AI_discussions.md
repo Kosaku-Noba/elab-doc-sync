@@ -2342,3 +2342,44 @@ README への利用例追加という点では、コミットメッセージと 
 ### Codex 所感
 
 > `AI_discussions.md` 上で直前に出ていた「クライアントの責務境界をもう一段明示すべき」という論点には沿っており、仕様・設計・AI可読性の観点でも自然な補強に見えます。挙動変更を伴わないため回帰リスクは低いですが、最終的な確証はテストを実行できる環境での再確認が前提です。
+
+
+## 2026-04-06T16:05 [Kiro] fix: 画像ダウンロードを /app/download.php 経由に変更
+
+ユーザー報告: `format=binary` パラメータでも JSON メタデータ（約 1KB）が返される。eLabFTW のバージョンまたは設定により API v2 の `format=binary` が効かない環境がある。
+
+### 原因
+
+eLabFTW API v2 の `GET /uploads/{id}?format=binary` が一部環境でバイナリを返さず、JSON メタデータを返す。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| `client.py` `download_upload` | API v2 エンドポイントから `/app/download.php` 経由に変更。シグネチャを `(long_name, real_name, storage)` に変更。`upload_file` が生成する URL と同じ形式で確実にバイナリを取得 |
+| `sync.py` `_download_images` | 呼び出しを新シグネチャに合わせて `long_name`, `real_name`, `storage` を渡すように変更 |
+| テスト | CL-26〜CL-27, S-45 を新シグネチャに合わせて更新。172 件全通過 |
+
+### Kiro 所感
+
+- `/app/download.php` は `upload_file` が返す URL と同じ形式で、push 時に動作実績がある経路
+- API v2 の `format=binary` は eLabFTW のバージョン依存の可能性があり、`/app/download.php` の方が確実
+- シグネチャ変更により `list_uploads` の情報だけでダウンロード可能（entity_type/entity_id 不要）
+
+
+## 2026-04-06T16:07 [Codex] fix: 画像ダウンロードを /app/download.php 経由に変更 に対するレビュー
+
+コミットメッセージどおり画像取得経路を `/app/download.php` に切り替える変更ですが、差分にはクライアント API 契約の変更と新しい互換性前提も含まれています。特に URL クエリの組み立てと `list_uploads` 依存の増加は、今回の不具合回避策としては追加確認が必要です。指定テストコマンド `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` は本環境で `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` となり、独立に再実行できませんでした。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| クエリ値を URL エンコードせず連結している | [client.py](/home/user/elab-doc-sync/src/elab_doc_sync/client.py#L142) で `f={long_name}&name={real_name}&storage={storage}` を手組みしています。`real_name` はユーザー由来の元ファイル名なので `&` `#` `=` などを含み得ますが、この形だと別パラメータやフラグメントとして再解釈され、誤った `storage` 指定やダウンロード失敗を招きます。今回の変更趣旨が「環境差に関わらず確実に取得する」ことなら、`params=` か `urlencode` を使うべきです。 | 高 |
+| 互換性改善の代わりに別のバージョン依存を持ち込んでいる | [sync.py](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py#L96) で `matched_upload["long_name"]` を必須化し、`storage` が無い場合は `1` にフォールバックしています。AI_discussions では「eLabFTW のバージョン依存」が原因とされていますが、`list_uploads` が全サポート環境で `long_name` と正しい `storage` を返すかはこのコミットからは判断できません。返らない環境では `KeyError` か誤ストレージ指定に変わるため、明示的な確認が必要です。 | 中 |
+| `download_upload` の責務境界が後退しており、コミットメッセージにない API 影響がある | [client.py](/home/user/elab-doc-sync/src/elab_doc_sync/client.py#L132) は以前の `entity_type/entity_id/upload_id` から、`download.php` 固有の `long_name/real_name/storage` を呼び出し側に要求する形へ変わっています。直前の Codex レビューが触れていた「クライアントの責務境界の明示」と逆方向で、`real_name` が識別子なのか表示名なのかも読み取りにくく、将来の修正で誤用しやすい契約です。[test_sync.py](/home/user/elab-doc-sync/tests/test_sync.py#L380) では `storage` を文字列 `"1"` で渡しており、[client.py](/home/user/elab-doc-sync/src/elab_doc_sync/client.py#L132) の型注釈 `int` ともずれています。 | 中 |
+| テスト観点が今回のリスクに追いついていない | 独立再実行は上記理由で判断不能ですが、差分上の [test_client.py](/home/user/elab-doc-sync/tests/test_client.py#L273) は URL 断片の確認までで、予約文字を含むファイル名、`long_name` 欠落、`storage` 欠落時の挙動、200 で HTML/ログイン画面が返るケースを検証していません。運用上は「画像同期は成功したように見えるが内容が壊れる」系の障害が残ります。 | 低 |
+
+### Codex 所感
+
+> 所感: `/app/download.php` へ寄せる方針自体はコミットメッセージと整合していますが、互換性修正としてはクエリ安全性とメタデータ契約の整理がまだ足りません。少なくとも URL エンコードと `list_uploads` スキーマ前提の確認が入るまでは、修正の安定性評価は保留にしたいです。
