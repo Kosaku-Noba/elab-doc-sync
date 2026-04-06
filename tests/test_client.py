@@ -295,3 +295,16 @@ def test_download_upload_raises_on_http_error(mock_req, client):
     mock_req.return_value = resp
     with pytest.raises(HTTPError):
         client.download_upload("abc.png", "img.png", 1)
+
+
+# CL-28: download_upload URL-encodes special characters in real_name
+@patch("elab_doc_sync.client.requests.request")
+def test_download_upload_encodes_special_chars(mock_req, client):
+    resp = MagicMock()
+    resp.raise_for_status.return_value = None
+    resp.content = b"data"
+    mock_req.return_value = resp
+    client.download_upload("abc.png", "file&name=evil#.png", 1)
+    url = mock_req.call_args[0][1]
+    assert "file%26name%3Devil%23.png" in url
+    assert "&name=evil" not in url  # not split into separate param
