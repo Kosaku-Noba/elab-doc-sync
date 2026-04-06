@@ -631,29 +631,41 @@ def cmd_tag(args):
     config = load_config(config_path)
     client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
 
+    # --id と --entity が指定されたら直接操作
+    direct_id = getattr(args, "id", None)
+    direct_entity = getattr(args, "entity", None)
+    if direct_id and direct_entity:
+        entity_type = _normalize_entity(direct_entity)
+        _tag_action(client, args, entity_type, direct_id)
+        return
+
     for target in config.targets:
         if args.target and target.title != args.target:
             continue
         syncer = _make_syncer(client, target, project_root)
-        ids = _get_entity_ids(client, syncer, target, getattr(args, "id", None))
+        ids = _get_entity_ids(client, syncer, target, direct_id)
         if not ids:
             print(f"  [{target.title or target.docs_dir}] 同期済みエンティティなし")
             continue
 
         for eid, etype in ids:
-            label = f"{_entity_label(etype)} #{eid}"
-            if args.tag_action == "list":
-                tags = client.get_tags(etype, eid)
-                tag_names = [t.get("tag", "?") for t in tags]
-                print(f"  {label}: {', '.join(tag_names) if tag_names else '(タグなし)'}")
-            elif args.tag_action == "add":
-                client.add_tag(etype, eid, args.tag_name)
-                print(f"  {label}: タグ「{args.tag_name}」を追加しました")
-            elif args.tag_action == "remove":
-                if client.untag_by_name(etype, eid, args.tag_name):
-                    print(f"  {label}: タグ「{args.tag_name}」を外しました")
-                else:
-                    print(f"  {label}: タグ「{args.tag_name}」が見つかりません")
+            _tag_action(client, args, etype, eid)
+
+
+def _tag_action(client, args, entity_type, entity_id):
+    label = f"{_entity_label(entity_type)} #{entity_id}"
+    if args.tag_action == "list":
+        tags = client.get_tags(entity_type, entity_id)
+        tag_names = [t.get("tag", "?") for t in tags]
+        print(f"  {label}: {', '.join(tag_names) if tag_names else '(タグなし)'}")
+    elif args.tag_action == "add":
+        client.add_tag(entity_type, entity_id, args.tag_name)
+        print(f"  {label}: タグ「{args.tag_name}」を追加しました")
+    elif args.tag_action == "remove":
+        if client.untag_by_name(entity_type, entity_id, args.tag_name):
+            print(f"  {label}: タグ「{args.tag_name}」を外しました")
+        else:
+            print(f"  {label}: タグ「{args.tag_name}」が見つかりません")
 
 
 def cmd_metadata(args):
@@ -949,13 +961,17 @@ def main():
 
     tag_parser = sub.add_parser("tag", help="タグを管理")
     tag_sub = tag_parser.add_subparsers(dest="tag_action")
-    tag_sub.add_parser("list", help="タグ一覧を表示")
+    tag_list_p = tag_sub.add_parser("list", help="タグ一覧を表示")
+    tag_list_p.add_argument("--id", type=int, default=None, help="エンティティ ID")
+    tag_list_p.add_argument("--entity", default=None, help="items / experiments")
     tag_add_p = tag_sub.add_parser("add", help="タグを追加")
     tag_add_p.add_argument("tag_name", help="追加するタグ名")
     tag_add_p.add_argument("--id", type=int, default=None, help="エンティティ ID")
+    tag_add_p.add_argument("--entity", default=None, help="items / experiments")
     tag_rm_p = tag_sub.add_parser("remove", help="タグを外す")
     tag_rm_p.add_argument("tag_name", help="外すタグ名")
     tag_rm_p.add_argument("--id", type=int, default=None, help="エンティティ ID")
+    tag_rm_p.add_argument("--entity", default=None, help="items / experiments")
 
     meta_parser = sub.add_parser("metadata", help="メタデータを管理")
     meta_sub = meta_parser.add_subparsers(dest="meta_action")

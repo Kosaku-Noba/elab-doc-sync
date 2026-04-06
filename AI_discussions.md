@@ -2073,3 +2073,20 @@ README への利用例追加という点では、コミットメッセージと 
 ### Codex 所感
 
 > docs-only の変更なので diff 自体から重大なセキュリティ問題は見えません。とはいえ、この種の README 追加は実装とずれるとそのまま誤運用につながるため、対象選択ルールの明記と例の妥当性確認を先に固めるのが安全です。
+
+
+## 2026-04-06T14:52 [Codex] feat: tag の全サブコマンドで --id と --entity を指定可能に に対するレビュー
+
+提示されたコミットメッセージと差分を照合すると、意図は `tag` 全サブコマンドへの direct 指定追加ですが、`--entity` の扱いが仕様として閉じておらず、明示した対象が silently ignored されるケースが残っています。この環境ではローカル `AI_discussions.md` と `pytest` をシェル実行で直接確認できず、確認できたのは公開版履歴のみで、本コミット相当の直前レビューは判断不能です。指定の `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` も `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` で実行不能でした。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| `--entity` 単独指定が無視され、意図しないエンティティにタグ操作しうる | [src/elab_doc_sync/cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py#L634) の `cmd_tag()` は `if direct_id and direct_entity` のときしか direct 経路に入らず、それ以外の経路では `direct_entity` を参照していません。したがって `esync tag remove old --entity experiments` のような呼び出しでも、実際には同期済み target 群から解決された `etype` 全体に対して `_tag_action()` が走ります。コミットメッセージや [README.md](/home/user/elab-doc-sync/README.md#L159) の説明は「`--entity` を指定できる」と読めるのに、実装は `--id` と対でない限り無視するため不一致があり、特に `remove` では誤ったリモート対象のタグ削除につながります。 | 高 |
+| `tag` の `--entity` だけ入力検証がなく、既存 CLI の設計と不整合 | [src/elab_doc_sync/cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py#L964) で追加した `tag list/add/remove` の `--entity` は自由文字列ですが、同じ CLI の `pull` や `list` は `choices` で `items / experiments / resources` に閉じています。今回の実装では `_normalize_entity()` が未知値をそのまま通し、`_entity_label()` は未知値でも「リソース」と表示するので、typo や不正入力が遅延失敗し、しかも誤解されやすいです。信頼境界の閉じ方がコマンドごとに揺れており、作者に明示的な確認が必要です。 | 中 |
+| 追加テストが新仕様の危険分岐を固定していない | [tests/test_cli.py](/home/user/elab-doc-sync/tests/test_cli.py#L567) 付近で追加されているのは `add` と `list` の happy path だけで、最も破壊的な `remove --id --entity`、`--entity` 単独指定、無効な `--entity` のケースがありません。今回の差分はロジック本体より「オプション解釈の仕様」が本質なので、この分岐が未検証のままだと将来の修正や AI 支援変更で同じ取り違えを再導入しやすいです。 | 中 |
+
+### Codex 所感
+
+> 所感: 変更の方向性自体は妥当ですが、今回先に固定すべきなのは「`--entity` をフィルタとして許可するのか、`--id` とセットでのみ受け付けるのか」という仕様です。そこをエラー仕様と回帰テストで閉じれば、この機能はかなり安全になります。
