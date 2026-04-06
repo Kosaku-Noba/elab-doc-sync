@@ -3,6 +3,8 @@
 import hashlib
 import json
 import re
+import shutil
+import tempfile
 import markdown
 from pathlib import Path
 
@@ -32,8 +34,30 @@ def _md_to_html(text: str) -> str:
 
 
 def _image_local_name(entity: str, entity_id: int, real_name: str) -> str:
-    """画像のローカルファイル名を生成する（命名規則の一元管理）。"""
+    """画像のローカルファイル名を生成する（命名規則の一元管理）。
+
+    形式: {entity}_{entity_id}_{real_name}
+    逆変換は _parse_image_local_name で行う。
+    """
     return f"{entity}_{entity_id}_{real_name}"
+
+
+# entity 種別のプレフィックス一覧（_image_local_name と一致させること）
+_ENTITY_PREFIXES = ("items_", "experiments_")
+
+
+def _parse_image_local_name(filename: str) -> str | None:
+    """_image_local_name で生成されたファイル名から real_name を復元する。
+
+    形式に合致しない場合は None を返す。
+    """
+    for prefix in _ENTITY_PREFIXES:
+        if filename.startswith(prefix):
+            rest = filename[len(prefix):]
+            idx = rest.find("_")
+            if idx != -1 and rest[:idx].isdigit():
+                return rest[idx + 1:]
+    return None
 
 
 def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path) -> str:
@@ -41,7 +65,7 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
     try:
         uploads = client.list_uploads(entity, entity_id)
     except Exception as e:
-        print(f"    ⚠ 添付ファイル一覧の取得に失敗（画像のローカル化をスキップ）: {e}")
+        print(f"    ⚠ 添付ファイル一覧の取得に失敗（{entity} #{entity_id}、画像のローカル化をスキップ）: {e}")
         return body
     upload_map = {}
     for u in uploads:
@@ -79,7 +103,7 @@ def _normalize_remote_image_urls(body: str, entity: str, entity_id: int, client:
     try:
         uploads = client.list_uploads(entity, entity_id)
     except Exception as e:
-        print(f"    ⚠ 添付ファイル一覧の取得に失敗（画像 URL の正規化をスキップ）: {e}")
+        print(f"    ⚠ 添付ファイル一覧の取得に失敗（{entity} #{entity_id}、画像 URL の正規化をスキップ）: {e}")
         return body
     upload_map = {}
     for u in uploads:
@@ -98,21 +122,6 @@ def _normalize_remote_image_urls(body: str, entity: str, entity_id: int, client:
         return m.group(0)
 
     return IMAGE_RE.sub(replace_match, body)
-
-
-def _strip_image_prefix(filename: str) -> str:
-    """ローカル画像名からプレフィックス（entity_id_）を除去して real_name を復元する。
-
-    例: "items_42_photo.png" → "photo.png", "photo.png" → "photo.png"
-    """
-    for prefix in ("items_", "experiments_"):
-        if filename.startswith(prefix):
-            rest = filename[len(prefix):]
-            # 次の _ までが entity_id
-            idx = rest.find("_")
-            if idx != -1 and rest[:idx].isdigit():
-                return rest[idx + 1:]
-    return filename
 
 
 def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path) -> str:
@@ -142,15 +151,23 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
             print(f"    ⚠ 画像が見つかりません: {src}")
             return m.group(0)
         # ローカル名からプレフィックスを除去して real_name と照合
-        real_name = _strip_image_prefix(img_path.name)
+        real_name = _parse_image_local_name(img_path.name) or img_path.name
         # 既存 upload に同名かつ同サイズのファイルがあれば再利用
         # NOTE: 同名・同サイズ・別内容のケースは再利用される（ハッシュ比較はコスト回避のため省略）
         ex = existing.get(real_name)
         if ex and ex["size"] and img_path.stat().st_size == ex["size"]:
             print(f"    ✓ {real_name}（既存アップロードを再利用）")
             return f"![{alt}]({ex['url']})"
+        # real_name でアップロード（プレフィックス付きファイル名がリモートに残らないようにする）
+        if real_name != img_path.name:
+            tmp_dir = Path(tempfile.mkdtemp())
+            tmp_file = tmp_dir / real_name
+            shutil.copy2(img_path, tmp_file)
+            upload_path = str(tmp_file)
+        else:
+            upload_path = str(img_path)
         print(f"    画像をアップロード中: {real_name}")
-        result = client.upload_file(entity, entity_id, str(img_path))
+        result = client.upload_file(entity, entity_id, upload_path)
         if result.get("url"):
             print(f"    ✓ {real_name}")
             return f"![{alt}]({result['url']})"
