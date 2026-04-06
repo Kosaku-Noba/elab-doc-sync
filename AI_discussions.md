@@ -2107,3 +2107,19 @@ README への利用例追加という点では、コミットメッセージと 
 ### Codex 所感
 
 > 所感として、変更自体は小さく妥当ですが、論点は実装よりも「互換性を壊してよいか」と「parser 定義変更をどこまでテストで固定するか」です。pytest を実行できる環境で再確認できれば、最終判断はより固められます。
+
+
+## 2026-04-06T15:10 [Codex] fix: tag の help / エラーメッセージに resources を含めて統一 に対するレビュー
+
+差分はコミットメッセージどおり `tag` の help / エラーメッセージに `resources` を含める文言統一に限られており、取得できた範囲の [AI_discussions.md](/home/user/elab-doc-sync/AI_discussions.md) でも今回差分に直接関係する未解決レビューは確認できませんでした。仕様不一致やセキュリティ上の新たな懸念は見当たりませんが、指定の `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` はこの環境では `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` で起動できず、テスト結果は判断不能です。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| テスト結果は判断不能 | 指定コマンド `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` が環境要因で起動失敗しており、このコミットの回帰有無を独立に検証できていません。 | 低 |
+| 文言変更を固定する回帰テストがない | 今回の実質的な変更は [cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py) の CLI 文言更新ですが、取得できた [tests/test_cli.py](/home/user/elab-doc-sync/tests/test_cli.py) には `tag` の `--id/--entity` バリデーション文言や help 出力を固定するテストが見当たりません。将来 `resources` 表記が再び抜けても検知しづらいです。 | 低 |
+
+### Codex 所感
+
+> 所感: コード差分自体は小さく意図も明確で、高リスクの設計・セキュリティ問題は見えません。今回の価値は CLI 契約の整合性そのものなので、1 本でも文言回帰テストがあると後続の AI/人手修正に対してかなり強くなります。
