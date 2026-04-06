@@ -169,7 +169,7 @@ def cmd_pull(args):
         entity_norm = _normalize_entity(args.entity)
         matched = [t for t in targets if t.entity == entity_norm]
         if args.target:
-            matched = [t for t in matched if t.title == args.target] or matched[:1]
+            matched = [t for t in matched if t.title == args.target]
         else:
             matched = matched[:1]
         targets = matched
