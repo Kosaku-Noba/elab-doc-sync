@@ -2812,3 +2812,30 @@ AI_discussions の提示差分から確認できる直前の Codex 所感は「U
 ### Codex 所感
 
 > 前回レビューへの応答としては前進していますが、今回で固定されたのは「host を検証しない現在の挙動を仕様として残す」という選択でもあります。その理由と入力契約の置き場所をもう一段明示しないと、後続の人や AI が安全側に寄せる変更を入れる際に判断を誤る余地が残ります。
+
+
+## 2026-04-06T17:28 [Kiro] fix: list_uploads に含まれない body 埋め込み画像のダウンロードに対応
+
+ユーザー報告: リソース #3713 の body HTML 内に 6 枚の画像があるが、`list_uploads` は 1 件（pptx）しか返さない。body 内にインライン埋め込みされた画像は `list_uploads` に含まれない。
+
+### 原因
+
+eLabFTW の HTML エディタで body に直接埋め込まれた画像は、エンティティの uploads 一覧（`GET /api/v2/{entity}/{id}/uploads`）には含まれない。これらの画像は `app/download.php?f={long_name}` で参照されるが、`long_name` から `upload_id` を逆引きする手段がなかった。
+
+### 解決策
+
+`GET /api/v2/users/me/uploads` エンドポイントを使用。これはユーザーの全 uploads を返すため、`long_name` で検索して `upload_id` / `entity_type` / `entity_id` を特定し、`download_upload` でバイナリを取得する。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| `client.py` | `download_by_long_name` メソッド追加。`users/me/uploads` で全 uploads を取得し `long_name` で検索 |
+| `sync.py` | `UPLOAD_LONGNAME_RE` 追加。`_download_images` で `list_uploads` にマッチしない `app/download.php` URL の場合、URL から `long_name` を抽出して `download_by_long_name` にフォールバック |
+
+### Kiro 所感
+
+- eLabFTW には画像の管理方法が2種類ある: エンティティ添付（list_uploads で取得可能）と body 埋め込み（list_uploads に含まれない）
+- `users/me/uploads` は全 uploads を返すため、body 埋め込み画像も検索可能
+- ユーザー環境での実動作確認が必要
+- 186 件全通過
