@@ -163,6 +163,23 @@ class ELabFTWClient:
             )
         return resp.content
 
+    def download_by_long_name(self, long_name: str) -> bytes:
+        """long_name を使って添付ファイルのバイナリを取得する。
+
+        内部メソッド。list_uploads に含まれない body 埋め込み画像用。
+        GET /api/v2/users/me/uploads で自分の全 uploads を取得し、
+        long_name が一致する upload を特定してからダウンロードする。
+        """
+        resp = self._req("GET", "/api/v2/users/me/uploads")
+        for u in resp.json():
+            if u.get("long_name") == long_name:
+                etype = u.get("type") or u.get("page") or "items"
+                eid = u.get("entity_id") or u.get("item_id") or 0
+                return self.download_upload(
+                    entity_type=etype, entity_id=eid, upload_id=u["id"],
+                )
+        raise RuntimeError(f"upload が見つかりません: {long_name[:60]}")
+
     # ── tags ─────────────────────────────────────────────────
 
     def get_tags(self, entity_type: str, entity_id: int) -> list[dict]:
