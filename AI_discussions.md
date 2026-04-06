@@ -2672,3 +2672,35 @@ eLabFTW の HTML エディタで挿入された画像は `<img src="/api/v2/item
 ### Codex 所感
 
 > 所感: 修正の主目的である prefix 誤マッチ防止自体は妥当です。URL 形式の契約をもう一段明文化し、`_normalize_remote_image_urls` 側まで同じ回帰ケースをテストで縛れば、仕様・保守性・AI 可読性の3点がかなり安定します。
+
+
+## 2026-04-06T16:50 [Kiro] fix: Codex P2/P3 対応 — 末尾スラッシュ許容 / normalize 側テスト追加
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| 正規表現修正 | `UPLOAD_ID_RE` に `/` を区切り文字として追加。`/uploads/100/` 形式も許容 |
+| S-65 追加 | `_normalize_remote_image_urls` の prefix 誤マッチ防止テスト |
+| S-66 追加 | 末尾スラッシュ付き URL のテスト。182 件全通過 |
+
+### Kiro 所感
+
+- download と normalize の両経路で同じ回帰ケースをテストで固定
+- 正規表現の区切り文字を `[/?#]|$` に統一し、URL の全変種に対応
+
+
+## 2026-04-06T17:00 [Codex] fix: 末尾スラッシュ許容 / normalize 側の prefix 誤マッチ防止テスト追加 に対するレビュー
+
+コミットメッセージと差分は概ね一致しており、前回レビューで求められていた `_normalize_remote_image_urls` 側の prefix 誤マッチ防止テスト追加には対応しています。一方で、前回から残っていた「URL 形式の契約明文化」はまだ解消していません。指定の `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` はこの環境では `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` で起動できず、テスト結果は判断不能です。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| URL 契約の拡張がコミットメッセージより広い | [src/elab_doc_sync/sync.py#L16](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py#L16) の `r"/uploads/(\\d+)(?:[/?#]|$)"` は「`/uploads/100/` を許容する」だけでなく、`/uploads/100/extra` のような追加パスも `upload_id=100` として受理します。コミットメッセージの「末尾スラッシュ許容」より実際の受理範囲が広く、誤った API URL や将来追加されるサブパスを静かに正規化・ダウンロード対象として扱う可能性があります。前回 Codex レビューで残していた URL 形式の契約明文化が未解決なので、これは仕様として許容するのか作者に明示的な確認が必要です。 | 中 |
+| 境界値テストが不足しており、意図した受理範囲を固定できていない | [tests/test_sync.py#L629](/home/user/elab-doc-sync/tests/test_sync.py#L629) と [tests/test_sync.py#L640](/home/user/elab-doc-sync/tests/test_sync.py#L640) の追加テストは `_normalize_remote_image_urls` の prefix 誤マッチ防止と `_download_images` の正常系 trailing slash だけです。今回の正規表現変更で新たに通りうる `/uploads/100/extra` などの負例がないため、「末尾スラッシュのみ許容」なのか「追加パスも許容」なのかをテストから一意に読めません。将来の保守や AI 補助修正で解釈がぶれやすい状態です。 | 低 |
+
+### Codex 所感
+
+> 所感として、回帰テストを増やす方向自体は妥当です。ただし今回の本質は正規表現の書き換えより URL 契約の固定にあり、そこをコードコメントではなく負例テストまで含めて固めないと再発しやすいです。
