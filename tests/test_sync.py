@@ -652,3 +652,16 @@ def test_download_images_trailing_slash(tmp_path):
     result = _download_images(body, "items", 1, client, tmp_path)
     assert "img.png" in result
     client.download_upload.assert_called_once()
+
+
+# S-67: /uploads/{id}/extra (subpath) is NOT matched
+def test_download_images_rejects_subpath(tmp_path):
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"id": 100, "long_name": "xx/xx.png", "real_name": "img.png", "storage": 1},
+    ]
+    body = "![](/api/v2/items/1/uploads/100/extra)"
+    result = _download_images(body, "items", 1, client, tmp_path)
+    # subpath 付きはマッチしないので元の URL がそのまま残る
+    assert "/uploads/100/extra" in result
+    client.download_upload.assert_not_called()

@@ -13,7 +13,14 @@ from .config import TargetConfig
 from . import sync_log
 
 IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
-UPLOAD_ID_RE = re.compile(r"/uploads/(\d+)(?:[/?#]|$)")
+# eLabFTW の画像 URL から upload_id を抽出する正規表現。
+# 許容する形式:
+#   /api/v2/{entity}/{id}/uploads/{upload_id}
+#   /api/v2/{entity}/{id}/uploads/{upload_id}/
+#   /api/v2/{entity}/{id}/uploads/{upload_id}?query
+# 許容しない形式:
+#   /api/v2/{entity}/{id}/uploads/{upload_id}/extra (サブパス付き)
+UPLOAD_ID_RE = re.compile(r"/uploads/(\d+)(?:[?#]|/?$)")
 MD_EXTENSIONS = ["tables", "fenced_code", "codehilite", "toc", "nl2br"]
 
 
