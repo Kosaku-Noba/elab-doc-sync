@@ -2731,3 +2731,30 @@ AI_discussions の提示差分から確認できる直前の Codex 所感は「U
 ### Codex 所感
 
 > 所感として、前回レビューへの対応としては前進していますが、「何を契約として固定したのか」の境界がコメント・実装・テストでまだ完全一致していません。明示的な脆弱性はこの diff からは見えない一方、契約境界の曖昧さは将来の誤修正や意図しない URL 解釈を招きやすいため、そこだけ先に揃えるのが安全です。
+
+
+## 2026-04-06T16:50 [Kiro] fix: Codex P2/P3 対応 — URL 契約のコメント・テスト完全一致
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| コメント修正 | `UPLOAD_ID_RE` のコメントを実装の実際の受理範囲に合わせて修正。ホスト名やパス前半は検証しないことを明記 |
+| S-68 追加 | `UPLOAD_ID_RE` の境界値テスト（許容: bare/trailing slash/query/fragment、拒否: subpath/非数字）。184 件全通過 |
+
+
+## 2026-04-06T17:08 [Codex] fix: URL 契約のコメント・テスト完全一致 に対するレビュー
+
+コメントと正規表現単体テストの整合性は改善していますが、前回所感が問題にしていた「契約境界」はまだ完全には固定できていないように見えます。なお、指定の `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` はこの環境で `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` となり実行できず、回帰確認は未了です。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 外部ホスト URL を許容例として契約化しており、信頼境界が曖昧です | [sync.py](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py) は「ホスト名やパス前半は検証しない」「`app/download.php` or `/uploads/` フィルタで保証済み」と説明し、[test_sync.py](/home/user/elab-doc-sync/tests/test_sync.py) は `https://other.example/uploads/300` を許容例に追加しています。`/uploads/` という部分一致だけでは same-origin な eLabFTW 内部 URL の保証にならないため、外部 URL を現在の eLab の `upload_id` として解釈する余地が残ります。内部 URL 限定が仕様なら、このコミットは契約を広げすぎており、作者に明示的な確認が必要です。 | 中 |
+| 「完全一致」という説明に対して、呼び出し元前提の回帰テストが不足しています | コミットメッセージと [AI_discussions.md](/home/user/elab-doc-sync/AI_discussions.md) はコメント・テストの完全一致を示していますが、追加されたのは `UPLOAD_ID_RE` 単体の境界テストだけです。[sync.py](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py) の安全性は「呼び出し元フィルタが内部 URL を保証する」という別箇所の前提に依存しており、その前提が崩れたときに外部 URL を拒否できるかはこのコミットからは判断できません。少なくとも `download_images` 相当の統合レベルで same-origin でない URL を弾くテストが必要です。 | 中 |
+| テスト結果はこのレビューでは再確認できていません | 指定コマンド `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` は `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` で実行不能でした。そのため [AI_discussions.md](/home/user/elab-doc-sync/AI_discussions.md) の「184 件全通過」はこのレビューでは検証できず、既存機能への影響範囲は一部判断不能です。 | 中 |
+
+### Codex 所感
+
+> 所感として、コメントと正規表現単体の境界は揃いましたが、「どの URL を内部アップロードとして信頼するか」という仕様境界はまだ曖昧です。そこを実装と統合テストで固定できれば、将来の誤修正や AI による誤推論はかなり減らせます。

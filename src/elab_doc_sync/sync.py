@@ -14,12 +14,11 @@ from . import sync_log
 
 IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 # eLabFTW の画像 URL から upload_id を抽出する正規表現。
-# 許容する形式:
-#   /api/v2/{entity}/{id}/uploads/{upload_id}
-#   /api/v2/{entity}/{id}/uploads/{upload_id}/
-#   /api/v2/{entity}/{id}/uploads/{upload_id}?query
-# 許容しない形式:
-#   /api/v2/{entity}/{id}/uploads/{upload_id}/extra (サブパス付き)
+# /uploads/{数字} の後に区切り文字（? # / 行末）が続くパターンにマッチ。
+# URL のホスト名やパス前半は検証しない（eLabFTW 内部 URL であることは
+# 呼び出し元の "app/download.php" or "/uploads/" フィルタで保証済み）。
+# 許容例: /uploads/100  /uploads/100/  /uploads/100?x=1  /uploads/100#frag
+# 拒否例: /uploads/100/extra（サブパス付き）
 UPLOAD_ID_RE = re.compile(r"/uploads/(\d+)(?:[?#]|/?$)")
 MD_EXTENSIONS = ["tables", "fenced_code", "codehilite", "toc", "nl2br"]
 
