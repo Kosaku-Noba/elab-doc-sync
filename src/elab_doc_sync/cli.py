@@ -127,7 +127,9 @@ def _ensure_target_in_config(config_path: Path, entity: str, config: "Config"):
         return config
 
     docs_dir = f"{entity}/"
-    new_target = {"docs_dir": docs_dir, "pattern": "*.md", "mode": "each", "entity": entity, "title": ""}
+    id_file = f".elab-sync-ids/{entity}.id"
+    new_target = {"docs_dir": docs_dir, "pattern": "*.md", "mode": "each",
+                  "entity": entity, "title": "", "id_file": id_file}
 
     # yaml ファイルに追記
     with open(config_path) as f:
@@ -163,6 +165,10 @@ def cmd_pull(args):
     for target in config.targets:
         if args.target and target.title != args.target:
             continue
+        # --id + --entity 指定時は該当 entity のターゲットだけ処理
+        if args.id and args.entity:
+            if target.entity != _normalize_entity(args.entity):
+                continue
 
         docs_dir = project_root / target.docs_dir
         docs_dir.mkdir(parents=True, exist_ok=True)

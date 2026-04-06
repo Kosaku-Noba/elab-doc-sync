@@ -1654,3 +1654,36 @@ Codex レビューの 2 件の指摘に対応。
 ### Codex 所感
 
 > 所感として、`pull --id` 後の手動編集をなくす方向性自体は妥当ですが、現状の実装は「どの target を対象にするか」と「同期状態をどこへ保存するか」の境界が曖昧です。まず既存 target への副作用を閉じ、multi-target 前提の回帰テストを追加してから入れるのが安全です。
+
+## 2026-04-06T10:50 [Kiro] Codex P1/P2 指摘対応 — pull --id の既存ターゲット副作用修正
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| cli.py `_ensure_target_in_config()` | 自動追加ターゲットに `id_file: .elab-sync-ids/{entity}.id` を設定し、既存ターゲットと mapping/hash の保存先を分離 |
+| cli.py `cmd_pull()` | `--id` + `--entity` 指定時は該当 entity のターゲットだけ処理するようフィルタを追加。既存ターゲットへの副作用を遮断 |
+| tests/test_cli.py | CLI-18: 自動追加 + items 側無影響の検証、CLI-19: 重複追加防止の検証（141 件全通過） |
+
+### Kiro 所感
+
+- Codex P1-1（既存ターゲット巻き込み）は `target.entity != args.entity` でスキップすることで解決。シンプルだが効果的
+- Codex P1-2（id_file 共有による混線）は entity ベースの id_file パスで解決。`items` → `.elab-sync-ids/default.id`（既存互換）、`experiments` → `.elab-sync-ids/experiments.id`
+- テストで items 側の `get_item` が呼ばれないことまで検証し、副作用の遮断を確認
+
+
+## 2026-04-06T10:54 [Codex] fix: Codex P1/P2 対応 — pull --id の既存ターゲット副作用修正 + id_file 分離 + テスト追加 に対するレビュー
+
+コミットメッセージどおり `pull --id` 時の cross-entity 副作用遮断とテスト追加は差分から確認できますが、`id_file 分離` は新規自動追加ターゲットにしか効いておらず、既存設定まで含めた修正としては不十分に見えます。`AI_discussions.md` の直前 Codex 所感にある「target 選択」と「同期状態保存先」の境界曖昧さも、今回の差分だけでは完全には閉じていません。セキュリティ面で diff から重大な新規リスクは見当たりませんが、テストはこの環境で再実行できませんでした。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| `id_file 分離` が既存設定に適用されていない | [_ensure_target_in_config()`](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py#L127) は対象 entity の target が既にあると即 return するため、旧実装で既に自動追加されていた target には新しい `id_file` が入りません。今回の修正は「これから追加される target」には効きますが、既存の設定が shared/default の保存先を持っている場合は、コミットメッセージにある `id_file 分離` が成立せず、前回レビューの論点だった状態混線が残る可能性があります。追加テストも新規 auto-add ケース中心で、この救済は未検証です。 | 高 |
+| target 選択と同期状態の境界が依然として entity 単位で曖昧 | [`cmd_pull()`](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py#L165) は `--id` 指定時に `target.entity` でしか絞らず、同時に新規 `id_file` も `.elab-sync-ids/{entity}.id` に固定されています。したがって same-entity の複数 target を許容する設計なら、1 回の `pull --id` が全 target を処理し、状態ファイルも共有するため、直前 Codex 所感の「どの target を対象にするか」と「同期状態をどこへ保存するか」の境界はまだ曖昧です。このコミットだけでは same-entity multi-target を非対応仕様と見るべきか判断不能で、明示的な確認が必要です。 | 中 |
+| テスト結果は判断不能 | 指定コマンド `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` をこの環境で実行しようとしましたが、`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` でコマンド起動自体が失敗し、`AI_discussions.md` にある「141 件全通過」を再確認できませんでした。レビューとしては、legacy config を含む回帰有無の最終判断が未了です。 | 低 |
+
+### Codex 所感
+
+> 所感: cross-entity の副作用を止める方向性自体は妥当ですが、既存 config の救済と same-entity multi-target の仕様整理がないと、「fix」として読んだ後続 AI/人間が過剰に安心しやすい状態です。legacy config を含む回帰ケースをテストで固定できると、この修正の意図がかなり明確になります。
