@@ -634,6 +634,12 @@ def cmd_tag(args):
     # --id と --entity が指定されたら直接操作
     direct_id = getattr(args, "id", None)
     direct_entity = getattr(args, "entity", None)
+    if direct_entity and not direct_id:
+        print("エラー: --entity 指定時は --id も指定してください", file=sys.stderr)
+        sys.exit(1)
+    if direct_id and not direct_entity:
+        print("エラー: --id 指定時は --entity も指定してください（items / experiments）", file=sys.stderr)
+        sys.exit(1)
     if direct_id and direct_entity:
         entity_type = _normalize_entity(direct_entity)
         _tag_action(client, args, entity_type, direct_id)
@@ -963,15 +969,15 @@ def main():
     tag_sub = tag_parser.add_subparsers(dest="tag_action")
     tag_list_p = tag_sub.add_parser("list", help="タグ一覧を表示")
     tag_list_p.add_argument("--id", type=int, default=None, help="エンティティ ID")
-    tag_list_p.add_argument("--entity", default=None, help="items / experiments")
+    tag_list_p.add_argument("--entity", default=None, choices=["items", "experiments", "resources"], help="items / experiments")
     tag_add_p = tag_sub.add_parser("add", help="タグを追加")
     tag_add_p.add_argument("tag_name", help="追加するタグ名")
     tag_add_p.add_argument("--id", type=int, default=None, help="エンティティ ID")
-    tag_add_p.add_argument("--entity", default=None, help="items / experiments")
+    tag_add_p.add_argument("--entity", default=None, choices=["items", "experiments", "resources"], help="items / experiments")
     tag_rm_p = tag_sub.add_parser("remove", help="タグを外す")
     tag_rm_p.add_argument("tag_name", help="外すタグ名")
     tag_rm_p.add_argument("--id", type=int, default=None, help="エンティティ ID")
-    tag_rm_p.add_argument("--entity", default=None, help="items / experiments")
+    tag_rm_p.add_argument("--entity", default=None, choices=["items", "experiments", "resources"], help="items / experiments")
 
     meta_parser = sub.add_parser("metadata", help="メタデータを管理")
     meta_sub = meta_parser.add_subparsers(dest="meta_action")

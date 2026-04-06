@@ -2090,3 +2090,20 @@ README への利用例追加という点では、コミットメッセージと 
 ### Codex 所感
 
 > 所感: 変更の方向性自体は妥当ですが、今回先に固定すべきなのは「`--entity` をフィルタとして許可するのか、`--id` とセットでのみ受け付けるのか」という仕様です。そこをエラー仕様と回帰テストで閉じれば、この機能はかなり安全になります。
+
+
+## 2026-04-06T14:58 [Codex] fix: tag の --id / --entity を必ずセットで指定、--entity に choices 追加 に対するレビュー
+
+コミットメッセージどおり、`tag` の direct 指定を `--id`/`--entity` のペア必須にし、`--entity` に `choices` を導入する変更です。取得できた範囲の `AI_discussions.md` では直前のレビューは `pull` 系の論点で、今回の `tag` 変更に直接対応する未解決指摘は確認できませんでした。なお指定の `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` はこの環境で `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` により起動できず、テスト結果は判断不能です。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 既存 CLI 呼び出し互換性の変更として扱うべき可能性がある | [src/elab_doc_sync/cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py) のこの差分により、従来は受理されていた `tag list/add/remove --entity ...` や `--id ...` 単独指定が即時エラーに変わります。コミットメッセージには意図が書かれていますが、既存の自動化や運用手順を壊してよい変更か、ヘルプや周辺ドキュメント更新を含めて作者に明示的な確認が必要です。 | 中 |
+| `choices` 追加の主目的が parser 層で固定されていない | [tests/test_cli.py](/home/user/elab-doc-sync/tests/test_cli.py) の追加テストは `cmd_tag()` を `Namespace` で直呼びしているため、`main()` 経由で `resources` が通ることや不正な `--entity` 値が `argparse` で拒否されることを検証していません。今回の差分は `add_argument(..., choices=...)` 自体を触っているので、回帰検知としては一段浅いです。 | 中 |
+| `resources` を受け付ける仕様がユーザー向け文面に反映されていない | [src/elab_doc_sync/cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py) では `choices` に `resources` を追加していますが、help とエラーメッセージは依然として `items / experiments` のままです。人間にも後続 AI にも「`resources` は正式入力なのか alias なのか」が読み取りづらく、CLI 契約の誤解を招きます。 | 低 |
+
+### Codex 所感
+
+> 所感として、変更自体は小さく妥当ですが、論点は実装よりも「互換性を壊してよいか」と「parser 定義変更をどこまでテストで固定するか」です。pytest を実行できる環境で再確認できれば、最終判断はより固められます。
