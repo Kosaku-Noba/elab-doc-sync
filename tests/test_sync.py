@@ -681,13 +681,31 @@ def test_upload_id_re_boundaries():
     assert UPLOAD_ID_RE.search("/uploads/abc") is None
 
 
-# S-69: external URL with /uploads/ does not cause download (no matching upload_id)
-def test_download_images_external_url_ignored(tmp_path):
+# S-69: external URL with /uploads/ — id が一致しても download は自サーバー API 経由
+def test_download_images_external_url_with_matching_id(tmp_path):
+    """外部 URL の upload_id が偶然一致しても、download_upload は自サーバーの
+    API に対して実行される（URL のホストは無関係）。これは仕様として許容する。
+    理由: eLabFTW の body HTML 内の画像 URL は相対パスか自サーバー URL のみ。"""
     client = MagicMock()
     client.list_uploads.return_value = [
         {"id": 100, "long_name": "xx/xx.png", "real_name": "img.png", "storage": 1},
     ]
-    # upload_id=999 は list_uploads に存在しないのでスキップされる
+    client.download_upload.return_value = b"\x89PNG"
+    body = "![](https://evil.example/uploads/100)"
+    result = _download_images(body, "items", 1, client, tmp_path)
+    # id=100 が一致するので download_upload が呼ばれる（自サーバー API 経由）
+    assert "img.png" in result
+    client.download_upload.assert_called_once_with(
+        entity_type="items", entity_id=1, upload_id=100,
+    )
+
+
+# S-70: external URL with /uploads/ — id が不一致なら無視
+def test_download_images_external_url_no_match(tmp_path):
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"id": 100, "long_name": "xx/xx.png", "real_name": "img.png", "storage": 1},
+    ]
     body = "![](https://evil.example/uploads/999)"
     result = _download_images(body, "items", 1, client, tmp_path)
     assert "https://evil.example/uploads/999" in result
