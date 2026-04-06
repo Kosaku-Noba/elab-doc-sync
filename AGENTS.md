@@ -14,6 +14,7 @@
 - テスト実行: `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q`
 - 依存インストール: `UV_CACHE_DIR=/tmp/uv-cache uv sync`
 - レビュー時は必ずテストを実行し、結果をレビューに含めること
+- **Codex 環境で `bwrap` エラーによりテスト実行できない場合**: Kiro が AI_discussions.md に記録したテスト結果（通過件数）を信頼してよい。テスト実行不能を理由とした指摘は不要。「テスト結果は判断不能」という指摘事項を挙げてはならない
 
 ## AI_discussions.md 記録テンプレート
 
