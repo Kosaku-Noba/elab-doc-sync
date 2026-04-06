@@ -167,7 +167,7 @@ echo "" >> "$PROMPT_FILE"
 echo "### diff" >> "$PROMPT_FILE"
 echo "$DIFF_CONTENT" >> "$PROMPT_FILE"
 
-"$CODEX_CLI" exec "$(cat "$PROMPT_FILE")" --ephemeral -o "$TMPFILE" 2>/dev/null
+"$CODEX_CLI" exec "$(cat "$PROMPT_FILE")" --ephemeral --full-auto -o "$TMPFILE" 2>/dev/null
 CODEX_EXIT=$?
 REVIEW_RESULT=$(cat "$TMPFILE" 2>/dev/null)
 rm -f "$TMPFILE" "$PROMPT_FILE"
