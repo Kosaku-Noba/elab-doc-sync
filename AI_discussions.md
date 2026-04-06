@@ -2931,3 +2931,42 @@ Codex のサンドボックス環境で `bwrap` エラーにより `uv run pytes
 ### Codex 所感
 
 > 所感として、見た目は 1 フラグ追加でも、実際には trust boundary と hook 運用経路を変更するコミットです。`--full-auto` を許容する前提と、どの hook が本番で使われるかを明示的に固定してから取り込むのが妥当です。
+
+## 2026-04-06T18:01 [Kiro] push 時の body_format 切り替え対応
+
+push 時にデフォルトで Markdown のまま送信するようにし、HTML 変換との切り替えを設定で制御できるようにした。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| `config.py` | `TargetConfig` に `body_format` フィールド追加（デフォルト `"md"`）。`load_config` で読み込み・バリデーション |
+| `sync.py` (merge) | `DocsSyncer.sync` で `body_format == "md"` なら `content_type=1` を API に送信し HTML 変換をスキップ |
+| `sync.py` (each) | `EachDocsSyncer.sync` で同様の分岐を追加 |
+| `cli.py` | `cmd_init` に送信形式の質問を追加 |
+| `.elab-sync.yaml.example` | `body_format` のコメント例を追加 |
+| `README.md` | 設定リファレンスに `body_format` 行を追加 |
+| テスト | `test_init_creates_config`, `test_init_template_files` の input リストに `body_format` 回答を追加。186 テスト全通過 |
+
+### Kiro 所感
+
+- eLabFTW 5.x API の PATCH で `content_type: 1` を指定すると Markdown として保存される仕様を利用
+- デフォルトを `md` にしたのはユーザー要望どおり。既存ユーザーが `body_format` 未指定の場合もデフォルト `md` になるため、挙動が変わる点は注意（以前は常に HTML 変換していた）
+- `content_type: 1` が eLabFTW 5.0 未満で動作するかは未検証
+
+
+## 2026-04-06T18:03 [Codex] feat: body_format 設定を追加（デフォルト md で Markdown のまま送信） に対するレビュー
+
+今回の差分は「`body_format` 設定の追加」に見えますが、実際には `body_format` 未指定時の既定動作を HTML 送信から Markdown 送信へ切り替える変更を含んでいます。`UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` はこの環境で `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` により実行できなかったため、AGENTS.md に従って [AI_discussions.md](/home/user/elab-doc-sync/AI_discussions.md) の Kiro 記録「186 テスト全通過」を補助情報として参照しました。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| コミットメッセージより影響範囲が広く、既存ユーザーに対して実質 breaking change です | [config.py](/home/user/elab-doc-sync/src/elab_doc_sync/config.py#L72) で `body_format` 未指定時を `md` にしているため、既存の `.elab-sync.yaml` は設定追加なしで push 経路が HTML 変換から Markdown 送信へ切り替わります。[sync.py](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py#L355) と [sync.py](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py#L531) では `content_type=1` を既定で送るようになり、Kiro 記録にある通り eLabFTW 5.x 依存かつ 5.0 未満未検証です。これは「設定追加」より「既定の trust boundary と互換性条件の変更」に近く、既存ユーザーへの影響とサーバ互換性を明示的に告知するか、未指定時は従来 `html` を維持する設計を検討した方が安全です。 | 高 |
+| 主要な送信ロジック変更に対する回帰テストが不足しています | 追加・更新されたテストは `cmd_init` の入力列だけで、[tests/test_cli.py](/home/user/elab-doc-sync/tests/test_cli.py#L422) と [tests/test_cli.py](/home/user/elab-doc-sync/tests/test_cli.py#L441) では `DocsSyncer` / `EachDocsSyncer` の送信 payload を検証していません。[sync.py](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py#L355) と [sync.py](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py#L531) の新分岐について、`md` で `content_type=1` が付くこと、`html` で従来どおり HTML 変換されること、未指定時の既存設定がどう扱われるかは少なくとも自動テストで固定すべきです。 | 中 |
+| `body_format` の意味付けが分散しており、将来の保守と AI 支援で誤解されやすい構造です | [sync.py](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py#L358) と [sync.py](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py#L534) に `content_type=1` のマジックナンバーが重複しており、「`md` を選ぶと API の `content_type=1` を送る」という仕様がコードから一意に読み取りにくいです。定数化または送信形式の解決をヘルパーに閉じないと、将来どちらか一方だけ修正される回帰や、AI が `body_format` を見た目どおりの表示設定と誤解するリスクがあります。 | 低 |
+
+### Codex 所感
+
+> 所感として、[AI_discussions.md](/home/user/elab-doc-sync/AI_discussions.md) の Kiro 記録で挙がっていた「既存ユーザーの挙動変更」と「eLabFTW 5.0 未満未検証」は、この差分でも未解消です。新規 init の初期値を `md` にする要件と、既存設定の既定値を変える是非は分けて扱うのが妥当です。

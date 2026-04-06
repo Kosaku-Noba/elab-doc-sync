@@ -355,8 +355,11 @@ class DocsSyncer:
             print(f"  [{self.target.title}] {entity_label} #{item_id} を新規作成しました")
 
         body = _rewrite_images(raw_body, self.entity, item_id, self.client, self.docs_dir, self.project_root)
-        html = _md_to_html(body)
-        self._update_entity(item_id, body=html, title=self.target.title)
+        if self.target.body_format == "md":
+            self._update_entity(item_id, body=body, content_type=1, title=self.target.title)
+        else:
+            html = _md_to_html(body)
+            self._update_entity(item_id, body=html, title=self.target.title)
         self.save_hash(raw_body)
 
         # push 後のリモート body ハッシュを保存（競合検出用）
@@ -528,8 +531,11 @@ class EachDocsSyncer:
                 print(f"  [{title}] {entity_label} #{eid} を新規作成しました")
 
             body = _rewrite_images(raw_body, self.entity, eid, self.client, self.docs_dir, self.project_root)
-            html = _md_to_html(body)
-            self._update_entity(eid, body=html, title=title)
+            if self.target.body_format == "md":
+                self._update_entity(eid, body=body, content_type=1, title=title)
+            else:
+                html = _md_to_html(body)
+                self._update_entity(eid, body=html, title=title)
             self._save_hash(f.name, raw_body)
 
             # push 後のリモート body ハッシュを保存（競合検出用）

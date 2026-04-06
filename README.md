@@ -296,6 +296,7 @@ targets:
 | `targets[].entity` | — | `items` | `items`(`resources`) / `experiments` |
 | `targets[].id_file` | — | `.elab-sync-ids/default.id` | ID 保存先 |
 | `targets[].tags` | — | `[]` | push 時に自動追加するタグ（追記のみ、既存タグは外さない） |
+| `targets[].body_format` | — | `md` | `md`（Markdown のまま送信）/ `html`（HTML に変換して送信） |
 
 サンプル: [`.elab-sync.yaml.example`](.elab-sync.yaml.example)
 

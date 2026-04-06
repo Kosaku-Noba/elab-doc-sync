@@ -429,7 +429,9 @@ def cmd_init(args):
     entity_input = input("送信先 — items(resources): リソース / experiments: 実験ノート [items]: ").strip().lower() or "items"
     entity_input = _normalize_entity(entity_input)
 
-    target = {"docs_dir": docs_dir, "pattern": pattern, "mode": mode_input, "entity": entity_input}
+    fmt_input = input("送信形式 — md: Markdown のまま / html: HTML に変換 [md]: ").strip().lower() or "md"
+
+    target = {"docs_dir": docs_dir, "pattern": pattern, "mode": mode_input, "entity": entity_input, "body_format": fmt_input}
 
     if mode_input == "merge":
         title = ""
