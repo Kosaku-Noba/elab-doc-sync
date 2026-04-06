@@ -290,6 +290,15 @@ def test_pull_same_entity_with_target(MockClient, tmp_path):
     assert not (tmp_path / "alpha" / "Y.md").exists()
 
 
+# CLI-20c: --target 不一致 → 0 件処理
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_target_mismatch_zero(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path, mode="each", entity="items")
+    cmd_pull(_ns(tmp_path, id=[1], entity="items", command="pull", target="NoSuchTarget"))
+    out = capsys.readouterr().out
+    assert "0 件取得" in out
+
+
 def _clone_ns(tmp_path, **kw):
     defaults = {
         "url": "https://elab.example.com", "id": [1], "dir": str(tmp_path / "cloned"),
