@@ -11,7 +11,7 @@ import yaml
 from markdownify import markdownify as html_to_md
 
 from .client import ELabFTWClient
-from .config import load_config
+from .config import load_config, BODY_FORMAT_INIT
 from .sync import DocsSyncer, EachDocsSyncer, ConflictError, _download_images, _normalize_remote_image_urls
 from . import sync_log
 
@@ -429,7 +429,7 @@ def cmd_init(args):
     entity_input = input("送信先 — items(resources): リソース / experiments: 実験ノート [items]: ").strip().lower() or "items"
     entity_input = _normalize_entity(entity_input)
 
-    fmt_input = input("送信形式 — md: Markdown のまま / html: HTML に変換 [md]: ").strip().lower() or "md"
+    fmt_input = input(f"送信形式 — md: Markdown のまま / html: HTML に変換 [{BODY_FORMAT_INIT}]: ").strip().lower() or BODY_FORMAT_INIT
 
     target = {"docs_dir": docs_dir, "pattern": pattern, "mode": mode_input, "entity": entity_input, "body_format": fmt_input}
 
