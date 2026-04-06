@@ -103,7 +103,11 @@ class ELabFTWClient:
     # ── uploads ──────────────────────────────────────────────
 
     def upload_file(self, entity_type: str, entity_id: int, filepath: str, comment: str = "") -> dict:
-        """Upload file. entity_type is 'items' or 'experiments'."""
+        """ファイルをアップロードする。
+
+        filepath の basename が eLabFTW 上の real_name として保存される。
+        entity_type は 'items' または 'experiments'。
+        """
         url = f"/api/v2/{entity_type}/{entity_id}/uploads"
         with open(filepath, "rb") as f:
             self._req("POST", url, headers=self._auth_headers,
