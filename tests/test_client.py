@@ -270,38 +270,23 @@ def test_list_uploads(mock_req, client):
     assert result[0]["real_name"] == "img.png"
 
 
-# CL-26: download_upload with format=binary
+# CL-26: download_upload via /app/download.php
 @patch("elab_doc_sync.client.requests.request")
 def test_download_upload(mock_req, client):
     resp = MagicMock()
     resp.raise_for_status.return_value = None
     resp.content = b"\x89PNG"
     mock_req.return_value = resp
-    data = client.download_upload("items", 42, 10)
+    data = client.download_upload(long_name="abc123.png", real_name="photo.png", storage=2)
     assert data == b"\x89PNG"
-    # format=binary が params に渡されていることを確認
-    call_kwargs = mock_req.call_args
-    assert call_kwargs[1].get("params") == {"format": "binary"}
+    url = mock_req.call_args[0][1]
+    assert "/app/download.php" in url
+    assert "f=abc123.png" in url
+    assert "name=photo.png" in url
+    assert "storage=2" in url
 
 
-# CL-27: download_upload accepts any Content-Type (json/html attachments are valid)
-@patch("elab_doc_sync.client.requests.request")
-def test_download_upload_accepts_any_content_type(mock_req, client):
-    for ct, content in [
-        ("application/json", b'{"key": "value"}'),
-        ("text/html", b"<html></html>"),
-        ("application/octet-stream", b"\x00\x01"),
-    ]:
-        resp = MagicMock()
-        resp.raise_for_status.return_value = None
-        resp.content = content
-        resp.headers = {"Content-Type": ct}
-        mock_req.return_value = resp
-        data = client.download_upload("items", 1, 1)
-        assert data == content
-
-
-# CL-28: download_upload raises on HTTP error (4xx/5xx)
+# CL-27: download_upload raises on HTTP error (4xx/5xx)
 @patch("elab_doc_sync.client.requests.request")
 def test_download_upload_raises_on_http_error(mock_req, client):
     from requests.exceptions import HTTPError
@@ -309,4 +294,67 @@ def test_download_upload_raises_on_http_error(mock_req, client):
     resp.raise_for_status.side_effect = HTTPError("404 Not Found")
     mock_req.return_value = resp
     with pytest.raises(HTTPError):
-        client.download_upload("items", 1, 999)
+        client.download_upload(long_name="abc.png", real_name="img.png", storage=1)
+
+
+# CL-28: download_upload URL-encodes special characters in real_name
+@patch("elab_doc_sync.client.requests.request")
+def test_download_upload_encodes_special_chars(mock_req, client):
+    resp = MagicMock()
+    resp.raise_for_status.return_value = None
+    resp.content = b"data"
+    mock_req.return_value = resp
+    client.download_upload(long_name="abc.png", real_name="file&name=evil#.png", storage=1)
+    url = mock_req.call_args[0][1]
+    assert "file%26name%3Devil%23.png" in url
+    assert "&name=evil" not in url  # not split into separate param
+
+
+# CL-29: download_upload accepts storage as str (eLabFTW may return str)
+@patch("elab_doc_sync.client.requests.request")
+def test_download_upload_storage_as_str(mock_req, client):
+    resp = MagicMock()
+    resp.raise_for_status.return_value = None
+    resp.content = b"data"
+    mock_req.return_value = resp
+    data = client.download_upload(long_name="abc.png", real_name="img.png", storage="2")
+    assert data == b"data"
+    url = mock_req.call_args[0][1]
+    assert "storage=2" in url
+
+
+# CL-30: list_uploads returns expected schema fields
+@patch("elab_doc_sync.client.requests.request")
+def test_list_uploads_schema(mock_req, client):
+    mock_req.return_value = _mock_response([
+        {"id": 1, "real_name": "a.png", "long_name": "abc.png", "storage": 2, "filesize": 1024},
+    ])
+    uploads = client.list_uploads("items", 42)
+    u = uploads[0]
+    # download_upload が必要とするフィールドが存在すること
+    assert "long_name" in u
+    assert "real_name" in u
+    assert "storage" in u
+
+
+# CL-31: download_upload rejects positional arguments (keyword-only enforcement)
+def test_download_upload_rejects_positional(client):
+    with pytest.raises(TypeError):
+        client.download_upload("abc.png", "img.png", 1)
+
+
+# CL-32: _download_images passes correct list_uploads fields to download_upload
+def test_download_images_passes_upload_fields(tmp_path):
+    """list_uploads → _download_images → download_upload の結合契約テスト。
+    list_uploads の long_name/real_name/storage が download_upload に正しく渡されることを検証。"""
+    from elab_doc_sync.sync import _download_images
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"id": 10, "long_name": "hash123.png", "real_name": "photo.png", "storage": 2, "filesize": 500},
+    ]
+    client.download_upload.return_value = b"\x89PNG"
+    body = "![a](https://elab.example.com/app/download.php?f=hash123.png&name=photo.png&storage=2)"
+    _download_images(body, "items", 42, client, tmp_path)
+    client.download_upload.assert_called_once_with(
+        long_name="hash123.png", real_name="photo.png", storage=2,
+    )
