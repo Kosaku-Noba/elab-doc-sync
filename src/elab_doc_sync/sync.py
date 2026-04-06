@@ -13,7 +13,7 @@ from .config import TargetConfig
 from . import sync_log
 
 IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
-UPLOAD_ID_RE = re.compile(r"/uploads/(\d+)(?:\?|$|#)")
+UPLOAD_ID_RE = re.compile(r"/uploads/(\d+)(?:[/?#]|$)")
 MD_EXTENSIONS = ["tables", "fenced_code", "codehilite", "toc", "nl2br"]
 
 

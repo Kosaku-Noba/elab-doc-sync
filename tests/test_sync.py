@@ -626,3 +626,29 @@ def test_download_images_no_prefix_mismatch(tmp_path):
     result = _download_images(body, "items", 1, client, tmp_path)
     assert "correct.png" in result
     assert "wrong.png" not in result
+
+
+# S-65: _normalize_remote_image_urls no prefix mismatch (15 vs 15579)
+def test_normalize_no_prefix_mismatch():
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"id": 15, "long_name": "aa/aa.png", "real_name": "wrong.png", "storage": 1},
+        {"id": 15579, "long_name": "bb/bb.png", "real_name": "correct.png", "storage": 2},
+    ]
+    body = "![](/api/v2/items/1/uploads/15579)"
+    result = _normalize_remote_image_urls(body, "items", 1, client)
+    assert "correct.png" in result
+    assert "wrong.png" not in result
+
+
+# S-66: trailing slash in upload URL is handled
+def test_download_images_trailing_slash(tmp_path):
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"id": 100, "long_name": "xx/xx.png", "real_name": "img.png", "storage": 1},
+    ]
+    client.download_upload.return_value = b"\x89PNG"
+    body = "![](/api/v2/items/1/uploads/100/)"
+    result = _download_images(body, "items", 1, client, tmp_path)
+    assert "img.png" in result
+    client.download_upload.assert_called_once()
