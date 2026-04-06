@@ -162,13 +162,15 @@ def cmd_pull(args):
     client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
 
     pulled = 0
-    for target in config.targets:
+    targets = config.targets
+    # --id + --entity 指定時は該当 entity の最初のターゲットだけ処理
+    if args.id and args.entity:
+        entity_norm = _normalize_entity(args.entity)
+        targets = [t for t in targets if t.entity == entity_norm][:1]
+
+    for target in targets:
         if args.target and target.title != args.target:
             continue
-        # --id + --entity 指定時は該当 entity のターゲットだけ処理
-        if args.id and args.entity:
-            if target.entity != _normalize_entity(args.entity):
-                continue
 
         docs_dir = project_root / target.docs_dir
         docs_dir.mkdir(parents=True, exist_ok=True)
