@@ -165,8 +165,9 @@ def test_pull_force_overwrite(MockClient, tmp_path):
 # CLI-15a: pull --id 指定時に --entity 未指定 → エラー終了
 def test_pull_id_without_entity_exits(tmp_path, capsys):
     _write_config(tmp_path, mode="each")
-    with pytest.raises(SystemExit, match="1"):
+    with pytest.raises(SystemExit) as exc_info:
         cmd_pull(_ns(tmp_path, id=[42], command="pull"))
+    assert exc_info.value.code == 1
     assert "--entity も指定してください" in capsys.readouterr().err
 
 
