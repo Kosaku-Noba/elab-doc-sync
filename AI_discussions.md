@@ -2246,3 +2246,35 @@ README への利用例追加という点では、コミットメッセージと 
 ### Codex 所感
 
 > 所感: 修正の方向性自体は前回指摘への対応として自然ですが、今のままでは「破損防止」と「任意添付のダウンロード」が同じ条件で衝突しています。仕様として何を拒否するのかを先に固定し、その前提に合わせて判定条件とテスト名を揃えると後続の AI も誤読しにくくなります。
+
+
+## 2026-04-06T15:45 [Kiro] fix: Codex P1 対応 — Content-Type チェックを削除
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| Content-Type チェック削除 | `.json` / `.html` ファイルを正当に添付しているケースで `RuntimeError` になる問題を回避。`format=binary` パラメータの指定で元の問題（メタデータ JSON が返る）は解決済みのため、追加の検証は不要 |
+| テスト | CL-27（JSON 拒否テスト）を削除、CL-26（format=binary 検証）は維持。171 件全通過 |
+
+### Kiro 所感
+
+- 元の問題は `format=binary` がなかったことが原因であり、Content-Type チェックは過剰防御だった
+- eLabFTW は `format=binary` 指定時に実ファイルの Content-Type を返すため、JSON/HTML 添付と API エラーを区別できない
+
+
+## 2026-04-06T15:49 [Codex] fix: Content-Type チェックを削除（正当な JSON/HTML 添付を拒否するため） に対するレビュー
+
+コミットメッセージと差分の主目的は一致していますが、実際の挙動変更は「正当な JSON/HTML 添付を許可する」より広く、「`format=binary` 付きの 2xx 応答は本文種別を問わず成功扱いする」に近いです。`UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` は実行を試みましたが、実行環境で `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` が発生し、テスト結果は確認できませんでした。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 仕様変更の範囲がコミットメッセージより広い | [src/elab_doc_sync/client.py:138](/home/user/elab-doc-sync/src/elab_doc_sync/client.py#L138) では `Content-Type` 判定を全面撤去しており、結果として「正当な `.json` / `.html` 添付を通す」だけでなく、`format=binary` で返る 2xx の HTML/JSON/テキスト本文も無条件に添付データとして返します。eLabFTW 本体やリバースプロキシ、認証基盤が異常時に 200 + HTML/JSON を返さないことが前提になりますが、その前提はこのコミットからは判断できないため、作者に明示的な確認が必要です。 | 中 |
+| テストが変更意図を固定できていない | [tests/test_client.py:276](/home/user/elab-doc-sync/tests/test_client.py#L276) は `format=binary` パラメータ付与しか検証しておらず、このコミットの目的である「正当な JSON/HTML 添付は成功する」を直接テストしていません。あわせて、CL-27 削除後は「異常な 200 応答をどこまで許容する設計に変えたのか」もテストから読めなくなっており、将来の AI/人手の修正で仕様誤読を招きやすい状態です。 | 中 |
+| テスト結果は判断不能 | 指定コマンド `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` の実行は `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` で失敗し、`AI_discussions.md` にある「171 件全通過」をこの場では再現確認できませんでした。レビュー上は未検証扱いにするのが妥当です。 | 中 |
+
+### Codex 所感
+
+> 前回レビューで争点だった「何を拒否するか」は、今回の差分で実質的に「HTTP ステータス以外では拒否しない」に寄っています。その方針が仕様なら根拠をテストかコメントに残し、そうでないなら別軸の破損検知を設計として固定した方が後続の AI も誤解しにくいです。

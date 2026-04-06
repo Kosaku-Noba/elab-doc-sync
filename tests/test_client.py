@@ -276,22 +276,9 @@ def test_download_upload(mock_req, client):
     resp = MagicMock()
     resp.raise_for_status.return_value = None
     resp.content = b"\x89PNG"
-    resp.headers = {"Content-Type": "image/png"}
     mock_req.return_value = resp
     data = client.download_upload("items", 42, 10)
     assert data == b"\x89PNG"
     # format=binary が params に渡されていることを確認
     call_kwargs = mock_req.call_args
     assert call_kwargs[1].get("params") == {"format": "binary"}
-
-
-# CL-27: download_upload rejects JSON response
-@patch("elab_doc_sync.client.requests.request")
-def test_download_upload_rejects_json(mock_req, client):
-    resp = MagicMock()
-    resp.raise_for_status.return_value = None
-    resp.content = b'{"id": 10}'
-    resp.headers = {"Content-Type": "application/json"}
-    mock_req.return_value = resp
-    with pytest.raises(RuntimeError, match="application/json"):
-        client.download_upload("items", 42, 10)

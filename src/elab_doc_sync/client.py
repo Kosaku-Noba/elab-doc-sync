@@ -138,9 +138,6 @@ class ELabFTWClient:
         resp = self._req("GET", f"/api/v2/{entity_type}/{entity_id}/uploads/{upload_id}",
                          headers=self._auth_headers,
                          params={"format": "binary"})
-        ct = resp.headers.get("Content-Type", "")
-        if "application/json" in ct or "text/html" in ct:
-            raise RuntimeError(f"バイナリを期待しましたが {ct} が返されました（upload #{upload_id}）")
         return resp.content
         return resp.content
 
