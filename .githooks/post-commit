@@ -48,6 +48,7 @@ cat > "$PROMPT_FILE" <<'REVIEW_PROMPT'
 以下の情報を必ず確認してください。
 
 * コミットメッセージ
+* AI_discussions.md に記載された前回のレビュー内容（あれば）
 * 変更内容（コード差分）
 * テスト結果（以下のコマンドで実行すること）:
   `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q`

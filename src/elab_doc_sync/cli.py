@@ -122,6 +122,10 @@ def cmd_status(args):
 
 def cmd_pull(args):
     """eLabFTW からエンティティを取得してローカルに Markdown として保存する。"""
+    if args.id and not getattr(args, "entity", None):
+        print("エラー: --id 指定時は --entity も指定してください（items / experiments）", file=sys.stderr)
+        sys.exit(1)
+
     config_path = Path(args.config)
     project_root = config_path.parent or Path(".")
     config = load_config(config_path)
