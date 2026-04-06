@@ -129,25 +129,18 @@ class ELabFTWClient:
         """エンティティの添付ファイル一覧を返す。"""
         return self._req("GET", f"/api/v2/{entity_type}/{entity_id}/uploads").json()
 
-    def download_upload(self, entity_type: str, entity_id: int, upload_id: int) -> bytes:
+    def download_upload(self, long_name: str, real_name: str, storage: int) -> bytes:
         """添付ファイル（画像含む全種別）のバイナリを返す。
 
-        eLabFTW API v2 の /uploads/{id} は format=binary を指定しないと
-        JSON メタデータを返すため、必ずクエリパラメータで指定する。
+        eLabFTW API v2 の /uploads/{id}?format=binary は一部環境で
+        JSON メタデータを返すため、/app/download.php 経由でダウンロードする。
         参照: https://doc.elabftw.net/api/v2/#/uploads/readUpload
 
         成否判定は HTTP ステータスコードのみで行う（raise_for_status）。
-        Content-Type による検証は行わない。理由:
-        - format=binary 指定時、eLabFTW は実ファイルの MIME を返す
-        - .json や .html を添付として正当にダウンロードするケースがある
-        - eLabFTW API のエラーは 4xx/5xx で返される
-
         コンテンツ妥当性（ファイル形式・サイズ等）の担保は呼び出し側の責務。
-        認証プロキシ等が 200 + HTML を返す環境では、呼び出し側で追加検証が必要。
         """
-        resp = self._req("GET", f"/api/v2/{entity_type}/{entity_id}/uploads/{upload_id}",
-                         headers=self._auth_headers,
-                         params={"format": "binary"})
+        resp = self._req("GET", f"/app/download.php?f={long_name}&name={real_name}&storage={storage}",
+                         headers=self._auth_headers)
         return resp.content
         return resp.content
 
