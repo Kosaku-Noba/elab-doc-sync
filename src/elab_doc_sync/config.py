@@ -7,6 +7,13 @@ from pathlib import Path
 import yaml
 
 
+# body_format の既定値:
+# - 既存設定で省略された場合は互換性のため html（HTML 変換して送信）
+# - esync init で新規作成する場合は md を提案（cli.py 側で制御）
+BODY_FORMAT_DEFAULT = "html"
+BODY_FORMAT_INIT = "md"
+
+
 @dataclass
 class TargetConfig:
     title: str
@@ -16,7 +23,7 @@ class TargetConfig:
     mode: str = "merge"       # "merge" (全結合→1エンティティ) or "each" (1ファイル=1エンティティ)
     entity: str = "items"     # "items" or "experiments"
     tags: list[str] = None    # push 時に自動設定するタグ
-    body_format: str = "html"  # "md" (Markdown のまま送信) or "html" (HTML に変換して送信)
+    body_format: str = BODY_FORMAT_DEFAULT
 
     def __post_init__(self):
         if self.tags is None:
@@ -72,7 +79,7 @@ def load_config(config_path: Path) -> Config:
         if entity in ("resources", "resource"):
             entity = "items"
         title = t.get("title", "") if mode == "merge" else t.get("title", "")
-        body_format = t.get("body_format", "html")
+        body_format = t.get("body_format", BODY_FORMAT_DEFAULT)
         if body_format not in ("md", "html"):
             _abort(f"body_format は 'md' または 'html' を指定してください（現在: {body_format!r}）")
         targets.append(TargetConfig(

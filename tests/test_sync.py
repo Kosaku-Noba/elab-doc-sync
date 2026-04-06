@@ -11,7 +11,7 @@ from elab_doc_sync.sync import (
     _parse_image_local_name,
     ConflictError, DocsSyncer, EachDocsSyncer, CONTENT_TYPE_MD,
 )
-from elab_doc_sync.config import TargetConfig
+from elab_doc_sync.config import TargetConfig, BODY_FORMAT_DEFAULT
 
 
 # ── Utilities ────────────────────────────────────────────
@@ -778,4 +778,5 @@ def test_each_body_format_html(tmp_path, mock_client):
 # S-84: body_format 未指定時は html（既存互換）
 def test_default_body_format_is_html():
     target = TargetConfig(title="T", docs_dir="docs/", id_file=".ids/d.id")
+    assert target.body_format == BODY_FORMAT_DEFAULT
     assert target.body_format == "html"
