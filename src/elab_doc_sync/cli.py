@@ -933,40 +933,43 @@ def cmd_entity_status(args):
 
 
 def main():
+    # 共通オプション（全サブコマンドで使える）
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--config", "-c", default=DEFAULT_CONFIG, help="設定ファイルのパス（デフォルト: .elab-sync.yaml）")
+    common.add_argument("--target", "-t", default=None, help="同期するターゲット名（指定しない場合は全ターゲット）")
+    common.add_argument("--force", "-f", action="store_true", help="変更がなくても強制同期 / pull 時は既存ファイルを上書き")
+    common.add_argument("--dry-run", "-n", action="store_true", help="実行せずに同期内容を確認")
+
     parser = argparse.ArgumentParser(
         prog=Path(sys.argv[0]).stem if Path(sys.argv[0]).stem in ("esync", "elab-doc-sync") else "elab-doc-sync",
         description="Markdown ドキュメントを eLabFTW に同期する CLI ツール",
         epilog=HELP_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        parents=[common],
     )
-    parser.add_argument("--config", "-c", default=DEFAULT_CONFIG, help="設定ファイルのパス（デフォルト: .elab-sync.yaml）")
-    parser.add_argument("--target", "-t", default=None, help="同期するターゲット名（指定しない場合は全ターゲット）")
-    parser.add_argument("--force", "-f", action="store_true", help="変更がなくても強制同期 / pull 時は既存ファイルを上書き")
-    parser.add_argument("--dry-run", "-n", action="store_true", help="実行せずに同期内容を確認")
 
     sub = parser.add_subparsers(dest="command")
-    sub.add_parser("status", help="同期状態を確認")
-    sub.add_parser("init", help="対話的に設定ファイルを作成")
-    sub.add_parser("diff", help="ローカルと eLabFTW の差分を表示")
+    sub.add_parser("status", help="同期状態を確認", parents=[common])
+    sub.add_parser("init", help="対話的に設定ファイルを作成", parents=[common])
+    sub.add_parser("diff", help="ローカルと eLabFTW の差分を表示", parents=[common])
     sub.add_parser("update", help="ツールを最新版に更新")
 
-    pull_parser = sub.add_parser("pull", help="eLabFTW からエンティティを取得してローカルに保存")
+    pull_parser = sub.add_parser("pull", help="eLabFTW からエンティティを取得してローカルに保存", parents=[common])
     pull_parser.add_argument("--id", type=int, action="append", default=None, help="取得するエンティティ ID（複数指定可）")
     pull_parser.add_argument("--entity", default=None, choices=["items", "experiments", "resources"],
                              help="エンティティ種別（resources は items のエイリアス）")
-    pull_parser.add_argument("--force", "-f", action="store_true", default=False, help="既存ファイルを上書き")
 
-    log_parser = sub.add_parser("log", help="同期ログを表示")
+    log_parser = sub.add_parser("log", help="同期ログを表示", parents=[common])
     log_parser.add_argument("--limit", "-l", type=int, default=20, help="表示件数（デフォルト: 20）")
 
-    clone_parser = sub.add_parser("clone", help="eLabFTW からプロジェクトを構築")
+    clone_parser = sub.add_parser("clone", help="eLabFTW からプロジェクトを構築", parents=[common])
     clone_parser.add_argument("--url", required=True, help="eLabFTW の URL")
     clone_parser.add_argument("--id", type=int, action="append", required=True, help="取得するエンティティ ID（複数指定可）")
     clone_parser.add_argument("--dir", default=None, help="プロジェクトディレクトリ名")
     clone_parser.add_argument("--entity", default="items", choices=["items", "experiments", "resources"], help="エンティティ種別")
     clone_parser.add_argument("--no-verify", action="store_true", help="SSL 検証を無効化")
 
-    tag_parser = sub.add_parser("tag", help="タグを管理")
+    tag_parser = sub.add_parser("tag", help="タグを管理", parents=[common])
     tag_sub = tag_parser.add_subparsers(dest="tag_action")
     tag_list_p = tag_sub.add_parser("list", help="タグ一覧を表示")
     tag_list_p.add_argument("--id", type=int, default=None, help="エンティティ ID")
@@ -980,31 +983,31 @@ def main():
     tag_rm_p.add_argument("--id", type=int, default=None, help="エンティティ ID")
     tag_rm_p.add_argument("--entity", default=None, choices=["items", "experiments", "resources"], help="items / experiments / resources")
 
-    meta_parser = sub.add_parser("metadata", help="メタデータを管理")
+    meta_parser = sub.add_parser("metadata", help="メタデータを管理", parents=[common])
     meta_sub = meta_parser.add_subparsers(dest="meta_action")
     meta_sub.add_parser("get", help="メタデータを表示")
     meta_set_p = meta_sub.add_parser("set", help="メタデータを設定")
     meta_set_p.add_argument("keyvalues", nargs="+", help="key=value ペア")
     meta_set_p.add_argument("--id", type=int, default=None, help="エンティティ ID")
 
-    estatus_parser = sub.add_parser("entity-status", help="エンティティのステータスを管理")
+    estatus_parser = sub.add_parser("entity-status", help="エンティティのステータスを管理", parents=[common])
     sub.add_parser("whoami", help="現在のユーザー情報を表示")
 
-    new_parser = sub.add_parser("new", help="テンプレートから新規ドキュメントを作成")
+    new_parser = sub.add_parser("new", help="テンプレートから新規ドキュメントを作成", parents=[common])
     new_parser.add_argument("--list", dest="list_templates", action="store_true", help="テンプレート一覧を表示")
     new_parser.add_argument("--template-id", type=int, default=None, help="テンプレート ID")
     new_parser.add_argument("--title", default=None, help="ファイルのタイトル（省略時はテンプレート名）")
     new_parser.add_argument("--output", "-o", default=None, help="出力ファイルパス")
 
-    list_parser = sub.add_parser("list", help="リモートのリソース/実験ノート一覧を表示")
+    list_parser = sub.add_parser("list", help="リモートのリソース/実験ノート一覧を表示", parents=[common])
     list_parser.add_argument("--entity", dest="entity_type", default="items", choices=["items", "experiments", "resources"], help="エンティティ種別")
     list_parser.add_argument("--limit", type=int, default=20, help="表示件数（デフォルト: 20）")
 
-    link_parser = sub.add_parser("link", help="既存リモートエンティティとローカルを紐付け")
+    link_parser = sub.add_parser("link", help="既存リモートエンティティとローカルを紐付け", parents=[common])
     link_parser.add_argument("entity_id", type=int, help="リモートエンティティ ID")
     link_parser.add_argument("--file", default=None, help="紐付けるローカルファイル名（each モード時）")
 
-    sub.add_parser("verify", help="ローカルとリモートの整合性チェック")
+    sub.add_parser("verify", help="ローカルとリモートの整合性チェック", parents=[common])
 
     estatus_sub = estatus_parser.add_subparsers(dest="status_action")
     estatus_sub.add_parser("show", help="現在のステータスを表示")
