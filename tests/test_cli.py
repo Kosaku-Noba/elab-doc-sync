@@ -162,6 +162,14 @@ def test_pull_force_overwrite(MockClient, tmp_path):
 # ── cmd_clone (CLI-20 ~ CLI-26) ──────────────────────────
 
 
+# CLI-15a: pull --id 指定時に --entity 未指定 → エラー終了
+def test_pull_id_without_entity_exits(tmp_path, capsys):
+    _write_config(tmp_path, mode="each")
+    with pytest.raises(SystemExit, match="1"):
+        cmd_pull(_ns(tmp_path, id=[42], command="pull"))
+    assert "--entity も指定してください" in capsys.readouterr().err
+
+
 # CLI-15: pull --id なし + mapping なし → エラーメッセージ
 @patch("elab_doc_sync.cli.ELabFTWClient")
 def test_pull_no_id_no_mapping(MockClient, tmp_path, capsys):
