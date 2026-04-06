@@ -99,7 +99,7 @@ def test_sync_conflict_error(MockSyncer, MockClient, tmp_path, capsys):
 def test_pull_each(MockClient, tmp_path):
     cfg, docs = _write_config(tmp_path, mode="each")
     MockClient.return_value.get_item.return_value = {"id": 1, "title": "Doc1", "body": "<p>hi</p>"}
-    cmd_pull(_ns(tmp_path, id=[1], command="pull"))
+    cmd_pull(_ns(tmp_path, id=[1], entity="items", command="pull"))
     assert (docs / "Doc1.md").exists()
     ids_dir = tmp_path / ".elab-sync-ids"
     assert (ids_dir / "mapping.json").exists()
@@ -126,7 +126,7 @@ def test_pull_merge(MockClient, tmp_path):
 def test_pull_specific_id(MockClient, tmp_path):
     cfg, docs = _write_config(tmp_path, mode="each")
     MockClient.return_value.get_item.return_value = {"id": 99, "title": "Specific", "body": "<p>x</p>"}
-    cmd_pull(_ns(tmp_path, id=[99], command="pull"))
+    cmd_pull(_ns(tmp_path, id=[99], entity="items", command="pull"))
     assert (docs / "Specific.md").exists()
 
 
@@ -179,7 +179,7 @@ def test_pull_multiple_ids_each(MockClient, tmp_path):
         {"id": 1, "title": "A", "body": "<p>a</p>"},
         {"id": 2, "title": "B", "body": "<p>b</p>"},
     ]
-    cmd_pull(_ns(tmp_path, id=[1, 2], command="pull"))
+    cmd_pull(_ns(tmp_path, id=[1, 2], entity="items", command="pull"))
     assert (docs / "A.md").exists()
     assert (docs / "B.md").exists()
 
@@ -190,7 +190,7 @@ def test_pull_merge_multiple_ids_warning(MockClient, tmp_path, capsys):
     cfg, docs = _write_config(tmp_path, mode="merge")
     client = MockClient.return_value
     client.get_item.return_value = {"id": 10, "title": "T", "body": "<p>x</p>"}
-    cmd_pull(_ns(tmp_path, id=[10, 20], command="pull"))
+    cmd_pull(_ns(tmp_path, id=[10, 20], entity="items", command="pull"))
     out = capsys.readouterr().out
     assert "最初の ID のみ使用" in out
     assert (docs / "T.md").exists()
