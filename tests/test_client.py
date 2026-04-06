@@ -270,7 +270,7 @@ def test_list_uploads(mock_req, client):
     assert result[0]["real_name"] == "img.png"
 
 
-# CL-26: download_upload
+# CL-26: download_upload with format=binary
 @patch("elab_doc_sync.client.requests.request")
 def test_download_upload(mock_req, client):
     resp = MagicMock()
@@ -279,3 +279,34 @@ def test_download_upload(mock_req, client):
     mock_req.return_value = resp
     data = client.download_upload("items", 42, 10)
     assert data == b"\x89PNG"
+    # format=binary が params に渡されていることを確認
+    call_kwargs = mock_req.call_args
+    assert call_kwargs[1].get("params") == {"format": "binary"}
+
+
+# CL-27: download_upload accepts any Content-Type (json/html attachments are valid)
+@patch("elab_doc_sync.client.requests.request")
+def test_download_upload_accepts_any_content_type(mock_req, client):
+    for ct, content in [
+        ("application/json", b'{"key": "value"}'),
+        ("text/html", b"<html></html>"),
+        ("application/octet-stream", b"\x00\x01"),
+    ]:
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        resp.content = content
+        resp.headers = {"Content-Type": ct}
+        mock_req.return_value = resp
+        data = client.download_upload("items", 1, 1)
+        assert data == content
+
+
+# CL-28: download_upload raises on HTTP error (4xx/5xx)
+@patch("elab_doc_sync.client.requests.request")
+def test_download_upload_raises_on_http_error(mock_req, client):
+    from requests.exceptions import HTTPError
+    resp = MagicMock()
+    resp.raise_for_status.side_effect = HTTPError("404 Not Found")
+    mock_req.return_value = resp
+    with pytest.raises(HTTPError):
+        client.download_upload("items", 1, 999)
