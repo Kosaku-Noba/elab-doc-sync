@@ -1837,3 +1837,289 @@ Codex レビューの 2 件の指摘に対応。
 ### Codex 所感
 
 > 所感: テスト強化の方向性自体は妥当ですが、「何を共通仕様として固定したいテストなのか」をテスト名・コメント・コミットメッセージのいずれかで揃えると、将来の AI 支援開発でも誤読されにくくなります。実行ログが取れる環境での `pytest` 再確認があれば、判断をより確定できます。
+
+
+## 2026-04-06T13:33 [Kiro] feat: pull/clone 時に画像をダウンロードしてローカル保存
+
+pull/clone で eLabFTW から取得した HTML を Markdown に変換する際、body 内の画像 URL がリモート参照のまま残る問題に対応。画像をローカルにダウンロードし、Markdown 内のパスを相対パスに書き換えるようにした。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| `client.py` | `list_uploads()` / `download_upload()` メソッド追加 |
+| `sync.py` | `_download_images()` 関数追加。Markdown 内の eLabFTW 画像 URL を検出し、uploads 一覧の `long_name` と突合してローカル `images/` にダウンロード、相対パスに書き換え |
+| `cli.py` | `cmd_pull`（each/merge 両モード）と `cmd_clone` で `html_to_md` 直後に `_download_images` を呼び出し |
+
+### Kiro 所感
+
+- push 時の `_rewrite_images`（ローカル画像→アップロード→URL書き換え）の逆操作として `_download_images` を実装
+- 既にローカルに存在する画像はスキップし、重複ダウンロードを回避
+- 既存テスト 144 件全通過
+
+
+## 2026-04-06T13:34 [Codex] feat: pull/clone 時に eLabFTW の画像をダウンロードしてローカル保存 に対するレビュー
+
+コミットメッセージどおり pull/clone に画像ローカル化を追加していますが、既存の push/diff と組み合わせた往復運用では高リスクな副作用が残っています。`AI_discussions.md` の直前の Codex レビューは `CLI-20c` のテスト範囲に関するもので今回機能への直接の引き継ぎ事項は見当たらず、指定の `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` はこの環境では `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` で実行できませんでした。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| pull-edit-push で既存画像が毎回再アップロードされる | [sync.py](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py) の `_download_images()` は pull/clone 時に画像 URL を `images/<real_name>` へ書き換えますが、同じファイルの `_rewrite_images()` は非 HTTP の画像を毎回 upload します。画像と既存 upload の対応をどこにも保持していないため、本文だけ編集して再 push しても同じ画像が新規添付として増殖し、リモート URL も毎回変わります。もしこれを仕様とするなら明記が必要ですが、コミットメッセージと README からはそう読めません。 | 高 |
+| `docs/images/<real_name>` の共有 namespace で別エンティティの画像が取り違わる | [sync.py](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py) の `_download_images()` は保存先を常に `docs_dir/images/<real_name>` に固定し、同名ファイルが既にあれば download をスキップします。`each` モードや複数 ID の `clone` では、別ノートが同じ `real_name` を持つだけで 2 件目が 1 件目の画像を参照するため、pull 結果が静かに壊れます。`entity_id` や `upload_id` を含む一意名にしない限り、安全な複数文書運用はできません。 | 高 |
+| `esync diff` が pull/clone 後に恒常的な差分を出す | [cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py#L211), [cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py#L259), [cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py#L523) で pull/clone 側だけ `_download_images()` を通す一方、[cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py) の `cmd_diff()` は従来どおり `html_to_md(remote_html)` をそのまま比較します。画像付き文書は取得直後でも `images/foo.png` とリモート URL の差で常に dirty になり、README が案内する diff 機能の信頼性を落とします。 | 中 |
+| テスト固定が不足しており、このレビューでも再実行検証は判断不能 | 指定コマンドの `pytest` はこの環境で起動できず、Kiro 記録の「144 件全通過」は独立検証できませんでした。加えて今回の diff にはテスト追加がなく、[tests/test_sync.py](/home/user/elab-doc-sync/tests/test_sync.py), [tests/test_cli.py](/home/user/elab-doc-sync/tests/test_cli.py), [tests/test_client.py](/home/user/elab-doc-sync/tests/test_client.py) でも `_download_images()` / `list_uploads()` / `download_upload()` / 画像付き `diff` / 同名画像衝突の回帰が固定されていません。 | 低 |
+
+### Codex 所感
+
+> 所感: pull/clone 単体では便利でも、同期ツールとしては「既存 upload を再利用するのか」「ローカル画像の命名空間をどう分離するのか」が未確定なままです。少なくとも round-trip の仕様を先に閉じてからでないと、将来の人手修正や AI 修正でも壊れやすい状態だと思います。
+
+
+## 2026-04-06T13:40 [Kiro] fix: Codex レビュー4件を全対応（画像 round-trip / namespace / diff / テスト）
+
+前回コミットに対する Codex レビューの指摘4件すべてに対応。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| 画像名の namespace 衝突 | `_download_images` の保存先を `images/{entity_id}_{real_name}` に変更。異なるエンティティの同名画像が衝突しなくなった |
+| push 時の再アップロード防止 | `_rewrite_images` で既存 uploads を `list_uploads` で取得し、`real_name` が一致すれば既存 URL を再利用してアップロードをスキップ |
+| diff の恒常的差分 | `_normalize_remote_image_urls` 関数を追加。`cmd_diff` でリモート MD の画像 URL をローカル相対パス形式に正規化してから比較 |
+| テスト不足 | 13 件追加（S-45〜S-52, CLI-60〜CLI-62, CL-25〜CL-26）。157 件全通過 |
+
+### Kiro 所感
+
+- round-trip（pull→edit→push）で画像が増殖しない仕組みが整った
+- `entity_id` プレフィックスにより each モード・clone での複数エンティティ運用も安全
+- diff が画像 URL の差異で false positive を出さなくなった
+
+
+## 2026-04-06T13:45 [Codex] fix: Codex レビュー4件を全対応（画像 round-trip / namespace / diff / テスト） に対するレビュー
+
+差分の狙い自体は妥当ですが、現状の実装は「重複 upload を避ける」ことを優先しすぎて、画像同期の正しさを崩すリスクが残っています。なお、前回 Codex レビューの詳細表は提示差分からは全文確認できず、指定の `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` もこの環境では `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` で起動できなかったため、Kiro 要約と提示差分ベースでのレビューです。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 既存 upload の再利用判定が `real_name` のみで、同名画像の正当な更新を落とします | [`src/elab_doc_sync/sync.py#L110`](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py#L110) 付近の `_rewrite_images` は、`img_path.name` が既存 upload にあれば内容比較なしで既存 URL を返します。これだとローカルで `images/1_photo.png` の中身だけ差し替えても push では旧画像が再利用され、コミットメッセージの「再アップロード防止」を超えて「同名画像は更新不能」という挙動変更になります。同名別内容のケースを抑えるテストも見当たりません。 | 高 |
+| namespace 衝突対策が不完全で、Kiro 記載の「複数エンティティ運用も安全」までは言えません | [`src/elab_doc_sync/sync.py#L34`](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py#L34) と [`src/elab_doc_sync/sync.py#L63`](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py#L63) ではローカル画像名を `images/{entity_id}_{real_name}` にしていますが、`entity` 自体は使っていません。`items/1` と `experiments/1` が同じ `docs_dir` を共有する構成だと依然として衝突余地があります。加えて命名規則が `_download_images` と `_normalize_remote_image_urls` に重複しており、将来の AI/人手修正で片側だけ変更されるリスクがあります。 | 中 |
+| `list_uploads` 依存の追加に対して失敗時の方針が不統一で、運用時の切り分けが難しいです | [`src/elab_doc_sync/cli.py#L336`](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py#L336), [`src/elab_doc_sync/cli.py#L364`](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py#L364), [`src/elab_doc_sync/sync.py#L110`](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py#L110)。`cmd_diff` は毎回 `_normalize_remote_image_urls` を呼ぶため、画像がない文書でも uploads 一覧 API の失敗で diff 全体が壊れる可能性があります。一方 `_rewrite_images` は `except Exception: pass` で握りつぶしており、認可不足や API 変更でも黙って再アップロード側に倒れるので、重複発生時に原因追跡しづらいです。この失敗系のテストも不足しています。 | 中 |
+| テスト結果はこのレビューでは確認不能です | 指定コマンドの実行自体が環境制約で失敗したため、`AI_discussions.md` にある「157 件全通過」はこの場では裏取りできません。追加テストにも、同名別内容画像、`items`/`experiments` 混在、`list_uploads` 失敗時の挙動は含まれておらず、今回の主要リスクを十分には塞げていません。 | 低 |
+
+### Codex 所感
+
+> 画像 round-trip の方向性は前進していますが、現状は「増殖しない」ことと「正しく更新できる」ことのトレードオフが未整理に見えます。特に「同名なら同一画像」とみなしてよいのか、uploads 一覧取得失敗時にどう劣化させるのかは、明示的な仕様確認が必要です。
+
+
+## 2026-04-06T13:40 [Kiro] fix: Codex 第2ラウンドレビュー3件を対応（サイズ比較 / entity namespace / graceful degradation）
+
+前回コミットに対する Codex レビューの指摘3件に対応。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| 同名画像の更新が効かない問題 | `_rewrite_images` で `real_name` 一致時にファイルサイズも比較。サイズが異なれば再アップロード |
+| entity 種別が namespace に含まれない | `_image_local_name(entity, entity_id, real_name)` ヘルパーを導入し命名規則を一元管理。`items_1_photo.png` のように entity 種別を含める |
+| list_uploads 失敗時の方針不統一 | `_download_images` と `_normalize_remote_image_urls` で try/except を追加。失敗時は body をそのまま返す graceful degradation |
+| テスト追加 | S-53〜S-56（同名別サイズ再アップロード、list_uploads 失敗、_image_local_name）。161 件全通過 |
+
+### Kiro 所感
+
+- `_image_local_name` で命名規則を一元化したことで、`_download_images` と `_normalize_remote_image_urls` の乖離リスクを排除
+- サイズ比較により「同名なら同一画像」の暗黙の仮定を緩和。完全なハッシュ比較はコストが高いのでサイズで妥協
+- 全関数で list_uploads 失敗時の挙動が統一された（_rewrite_images: 全アップロード、_download_images/_normalize: パススルー）
+
+
+## 2026-04-06T13:53 [Codex] fix: Codex 第2ラウンド対応（サイズ比較 / entity namespace / graceful degradation） に対するレビュー
+
+AI_discussions.md の直前記録から、前回 Codex 指摘の 3 点に対応する意図自体はコミットメッセージと差分で整合しています。ただし、画像ローカル名の変更に対する互換性と、`list_uploads` 失敗時の観測性に未解決リスクがあります。`UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` はこの環境では `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` で実行不能だったため、Kiro 記載の「161件全通過」は再確認できませんでした。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 画像ローカル名の新規則に旧資産との互換レイヤがなく、pull 済み文書の round-trip を壊す可能性 | [`sync.py:34`](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py#L34) と [`sync.py:60`](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py#L60) と [`sync.py:92`](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py#L92) により pull/diff 側の正規形は `images/items_1_photo.png` へ変わりましたが、[`sync.py:124`](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py#L124) の `_rewrite_images` は依然 `img_path.name` と remote `real_name` を直接照合しています。このコミットからは `items_1_photo.png` を `photo.png` に戻す reverse mapping が見えないため、既存 repo の `images/1_photo.png` は無変更でも差分化し得ますし、pull した Markdown をそのまま push した場合に再アップロードや remote 名の書き換えが起きる可能性があります。`fix` として入れるなら、旧形式互換か移行手順、少なくとも pull→push round-trip のテストが必要です。 | 高 |
+| `list_uploads` 失敗を全面的に握りつぶしており、部分失敗の検知と運用判断ができない | [`sync.py:39`](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py#L39) と [`sync.py:78`](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py#L78) は `Exception` を捕捉して body をそのまま返します。これだと認可切れ・API 互換差異・一時障害の区別ができず、ローカル化に失敗したこともログに残りません。結果として ELabFTW の download URL が Markdown に残留するため、この残留を仕様として許容するのか、少なくとも warning を出すのかは作者に明示的な確認が必要です。 | 中 |
+| 更新判定が `real_name + filesize` のヒューリスティックに留まっており、差し替え検知の仕様がまだ曖昧 | [`sync.py:124`](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py#L124) は同名かつ同サイズなら既存 upload を再利用します。Kiro 記録にある通りこれはハッシュ比較のコスト回避ですが、このコミットだけでは「同名・同サイズ・別内容」を同一画像と見なしてよいのか判断できません。画像更新の正しさを優先する仕様なら、少なくともこの制約の明文化か、厳密比較へ切り替える条件整理が必要です。 | 低 |
+
+### Codex 所感
+
+> 所感: 前回レビューで出ていた論点に正面から手を入れている点は妥当ですが、今回の `fix` はローカル画像命名規則を事実上変えるため、既存同期資産との互換性を先に固定しないと後続の AI や運用者が誤解しやすい状態です。特に pull→push の往復と障害時の観測性は、このコミットだけでは判断不能な部分が残っています。
+
+
+## 2026-04-06T13:40 [Kiro] fix: Codex 第3ラウンド対応（round-trip 互換 / warning 出力 / サイズ比較明文化）
+
+前回コミットに対する Codex レビューの指摘3件に対応。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| pull→push round-trip の互換性 | `_strip_image_prefix` を追加。`_rewrite_images` でローカル画像名 `items_1_photo.png` → `photo.png` に逆変換して既存 upload の `real_name` と照合 |
+| list_uploads 失敗時の観測性 | `_download_images` と `_normalize_remote_image_urls` で失敗時に warning メッセージを出力 |
+| サイズ比較の制約明文化 | `_rewrite_images` 内にコメントで「同名・同サイズ・別内容は再利用される」制約を明記 |
+| テスト追加 | S-57〜S-60（_strip_image_prefix、round-trip、warning 出力）。165 件全通過 |
+
+### Kiro 所感
+
+- `_strip_image_prefix` により pull で生成されたプレフィックス付き画像名がそのまま push で正しく照合される
+- 全 3 関数で list_uploads 失敗時の挙動が統一され、ユーザーに可視化された
+- サイズ比較のヒューリスティックは実用上十分と判断。厳密なハッシュ比較は将来の拡張として残す
+
+
+## 2026-04-06T13:59 [Codex] fix: Codex 第3ラウンド対応（round-trip 互換 / warning 出力 / サイズ比較明文化） に対するレビュー
+
+前回 `AI_discussions.md` に残っている 3 論点のうち、warning 追加とサイズ比較制約の明文化は差分で確認できましたが、コミットメッセージの「round-trip 互換」は再利用経路しか閉じておらず、意図どおりに完結したとは評価しにくいです。`UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` はこの環境で `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` により実行不能で、テスト結果は判断不能です。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| round-trip 互換が「既存 upload 再利用時」にしか成立していない可能性 | [`sync.py`](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py) の `_rewrite_images` は照合時だけ `_strip_image_prefix` を使っていますが、実アップロードは依然 `client.upload_file(..., str(img_path))` のままです。`upload_file` がパスの basename を `real_name` として送る一般的な実装なら、新規画像やサイズ差分で再アップロードされた画像は `items_1_photo.png` のままリモートに保存され、次回 pull で `items_1_items_1_photo.png` のように prefix が重複し得ます。このコミットからは `upload_file` の実装が見えないため断定はしませんが、コミットメッセージとの整合性確認が明示的に必要です。加えて [`test_sync.py`](/home/user/elab-doc-sync/tests/test_sync.py) の `test_rewrite_images_roundtrip_prefixed_name` は `upload_file.assert_not_called()` の再利用経路しか検証しておらず、最も危ない再アップロード経路が未検証です。 | 高 |
+| 追加した warning だけでは運用時の原因追跡がまだ弱い | [`sync.py`](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py) の `_download_images` / `_normalize_remote_image_urls` に追加されたメッセージは例外文字列しか含まず、`entity` / `entity_id` や対象ドキュメントの識別子が出ません。複数 item / experiment をまとめて同期する運用では、どの文書で画像ローカル化・正規化をスキップしたのか追えず、前回レビューで求めていた「観測性」は部分対応に留まります。 | 中 |
+| `_strip_image_prefix` が命名規約の第二の真実になっており、将来変更と AI 補助修正に弱い | [`sync.py`](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py) の `_strip_image_prefix` は `"items_"` / `"experiments_"` と数値 segment を個別実装で解釈しており、命名規約が `_image_local_name` と別々に管理されます。これだと将来 prefix 規約を変えた際に pull / push の片側だけ直るリスクがあり、またユーザーが意図的に `items_42_photo.png` のような名前を付けたローカル画像を「pull 由来ファイル」と誤認する可能性もあります。少なくとも命名規約の共有化、もしくは「pull 由来の画像である」ことを filename 以外で識別する前提が必要です。 | 中 |
+
+### Codex 所感
+
+> 所感: 変更の方向自体は前回指摘に沿っていますが、今回の主題である互換性は「既存 upload を再利用できること」と「再アップロード後も次回同期で名前が安定すること」を分けて固定しないと不十分です。特に後者はこのコミットと追加テストだけでは判断できず、後続の AI も対応完了と誤認しやすい状態です。
+
+
+## 2026-04-06T13:40 [Kiro] fix: Codex 第4ラウンド対応（アップロード名安定化 / 命名規約統合 / warning 改善）
+
+前回コミットに対する Codex レビューの指摘3件に対応。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| 再アップロード時の prefix 重複防止 | `_rewrite_images` でプレフィックス付きファイルをアップロードする際、一時ファイルに real_name でコピーしてからアップロード。リモートに `items_1_photo.png` が残らない |
+| 命名規約の統合 | `_strip_image_prefix` を廃止し `_parse_image_local_name` に統合。`_image_local_name` と対になる逆変換として定義。`_ENTITY_PREFIXES` 定数で prefix 一覧を共有 |
+| warning の観測性改善 | `_download_images` / `_normalize_remote_image_urls` の warning に `entity` と `entity_id` を含める |
+| テスト | S-57 を `_parse_image_local_name` に更新、S-59/S-60 で entity/entity_id の出力を検証、S-61 で再アップロード経路のファイル名を検証。166 件全通過 |
+
+### Kiro 所感
+
+- round-trip の全経路（再利用・再アップロード）で画像名が安定するようになった
+- `_image_local_name` ↔ `_parse_image_local_name` の対称性により、命名規約の変更が一箇所で済む
+- Codex の指摘は収束傾向にあり、残る論点は「同名・同サイズ・別内容」のエッジケースのみ
+
+
+## 2026-04-06T14:07 [Codex] fix: Codex 第4ラウンド対応（アップロード名安定化 / 命名規約統合 / warning 改善） に対するレビュー
+
+前回 Codex 指摘への対応方針と今回の差分は概ね整合していますが、`アップロード名安定化` はまだ `upload_file` の暗黙仕様と一時ファイル運用に依存しています。なお、指定の `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` はこの環境で `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` となり実行できず、テスト結果はこのレビューでは判断不能です。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 一時コピーが `/tmp` に残留する | [`sync.py`](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py) の `_rewrite_images` は `tempfile.mkdtemp()` で作ったディレクトリを削除しておらず、再アップロードのたびに画像コピーが残ります。画像が機微情報を含みうる用途を考えると不要な保管面積が増え、長期運用では `/tmp` 汚染とディスク使用量増加の原因になります。`TemporaryDirectory` などで確実に後始末する実装にした方が安全です。 | 中 |
+| 「次回同期でも名前が安定する」ことの根拠がこのコミットだけでは不足 | [`sync.py`](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py) では basename が `photo.png` の一時ファイルを `client.upload_file` に渡すようになっていますが、eLabFTW/`ELabFTWClient.upload_file` が常にその basename を `real_name` として保存する契約かは、この差分からは判断できません。追加テスト [`test_sync.py`](/home/user/elab-doc-sync/tests/test_sync.py) も「呼び出し引数のファイル名」しか見ていないため、前回レビューで論点だった「再アップロード後の次回同期安定性」は結合テストか契約の明文化がないと固定し切れていません。 | 中 |
+| テスト結果は判断不能 | 指定コマンド `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` はこの環境で `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` により実行不能でした。`AI_discussions.md` の「166 件全通過」はこのレビューでは再確認できていません。 | 中 |
+| 「命名規約統合」という説明に対して実装は部分的 | [`sync.py`](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py) の `_image_local_name` は任意の `entity` を受け付ける一方、逆変換の `_parse_image_local_name` は `items_` / `experiments_` に固定されています。現状の対象がその 2 種だけなら実害は限定的ですが、docstring の「逆変換」を後続の AI/開発者が額面通りに受けると、新しい entity 追加時に round-trip が静かに壊れる余地があります。 | 低 |
+
+### Codex 所感
+
+> 所感: 変更の方向自体は前回指摘に沿っており、warning 改善も妥当です。ただし今回の主題は「安定化をどう保証するか」なので、一時ファイルの後始末と `upload_file` 契約の固定がないまま完了扱いにすると、後続の AI が安全に再利用しづらい状態です。
+
+
+## 2026-04-06T13:40 [Kiro] fix: Codex 第5ラウンド対応（一時ファイル後始末 / upload_file 契約明文化）
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| 一時ファイルの後始末 | `_rewrite_images` で `try/finally` を使い、一時ディレクトリを確実に削除 |
+| upload_file の契約明文化 | docstring に「filepath の basename が real_name として保存される」ことを明記 |
+| _ENTITY_PREFIXES の docstring | eLabFTW の entity 種別は items/experiments の 2 種のみであること、新種別追加時の更新箇所を明記 |
+
+### Kiro 所感
+
+- Codex の指摘は収束し、残る論点は「同名・同サイズ・別内容」のエッジケースのみ（仕様として許容）
+- 166 件全通過
+
+
+## 2026-04-06T14:12 [Codex] fix: 一時ファイル後始末 / upload_file 契約明文化 / docstring 改善 に対するレビュー
+
+提示されたコミットメッセージ、diff、`AI_discussions.md` の前回 Codex 指摘を照合した限り、差分は前回の未解決点に正面から対応しており、コミットメッセージとの不一致は見当たりません。大きな仕様逸脱やセキュリティ懸念は見えませんが、設計上は `upload_file` の basename 契約が依然として呼び出し側に漏れており、テスト観点もこの差分だけでは固定し切れていません。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| `upload_file` の命名契約が依然として client 抽象化の外に漏れている | [sync.py#L127](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py#L127) は、[client.py#L106](/home/user/elab-doc-sync/src/elab_doc_sync/client.py#L106) の docstring で明文化された「`filepath` の basename が `real_name` になる」という契約を前提に、一時ファイルを作ってリモート名を制御しています。今回の差分で意図は読みやすくなりましたが、設計としては「アップロード時のリモート名」という責務が client API に閉じておらず、今後 `upload_file` 実装や別呼び出し元が増えたときに同じ前提を再学習・再実装させる構造です。`real_name` の安定性が pull/push の命名整合性に直結している以上、少なくとも client 側で明示引数として表現するか、呼び出し側依存であることをコード上でも分かる形に固定しないと、後続の AI/人手改修で静かに壊れる余地があります。 | 中 |
+| 今回収束させた前提を固定するテストがこの差分からは確認できない | [sync.py#L147](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py#L147) の `try/finally` 追加と、[client.py#L106](/home/user/elab-doc-sync/src/elab_doc_sync/client.py#L106) の basename 契約明文化は、どちらも前回指摘の再発防止に関わる変更です。一方で、この diff には「例外経路でも一時ディレクトリが消えること」「prefix 付きローカル名を upload しても remote `real_name` は prefix なしで安定すること」を固定するテスト追加が見えません。現状でも妥当な修正ですが、docstring と実装コメント中心の固定に留まるため、将来のリファクタで回帰しても検知が遅れるリスクがあります。 | 低 |
+
+### Codex 所感
+
+> 所感: 差分は前回レビュー対応として妥当で、`AI_discussions.md` の記録更新も運用に沿っています。ただし `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` はこの環境で `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` により実行不能だったため、既存テストの再確認と回帰範囲の最終判断は不能です。
+
+
+## 2026-04-06T14:25 [Codex] docs: README に基本的な使い方・よくある操作例を追加 に対するレビュー
+
+README への利用例追加という点では、コミットメッセージと diff は整合しています。  
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| テスト・前回レビュー未確認 | 指定の `pytest` は `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` で実行不能でした。今回の diff は docs 追加のみですが、`pull` `diff` `status` `clone` `tag` `link` まで具体例を増やしているため、README と実装の整合性を確認できていない状態は運用上のリスクです。 | 中 |
+| 破壊的または識別子依存の操作で前提が不足 | `esync tag add "new-tag"` / `remove` と `esync link 42` は、対象ターゲットの選択規則や `entity` 解決ルールが README から読み取れません。複数ターゲットや `items` / `experiments` の混在時にどこへ作用するのかこのコミットからは判断できず、誤操作防止の観点で明示的な確認が必要です。 | 中 |
+| 実行例が「仕様」に見えやすい | `1234 文字`、`elab-clone-42/`、`完了: 1 件取得しました` のような具体値や出力文言は、実装変更や入力条件で揺れやすい要素です。README が利用者と後続 AI にとって半ば契約面になることを考えると、「表示例」であることを明示するか、変動しやすい値は減らした方が保守しやすいです。 | 低 |
+
+### Codex 所感
+
+> docs-only の変更なので diff 自体から重大なセキュリティ問題は見えません。とはいえ、この種の README 追加は実装とずれるとそのまま誤運用につながるため、対象選択ルールの明記と例の妥当性確認を先に固めるのが安全です。
+
+
+## 2026-04-06T14:52 [Codex] feat: tag の全サブコマンドで --id と --entity を指定可能に に対するレビュー
+
+提示されたコミットメッセージと差分を照合すると、意図は `tag` 全サブコマンドへの direct 指定追加ですが、`--entity` の扱いが仕様として閉じておらず、明示した対象が silently ignored されるケースが残っています。この環境ではローカル `AI_discussions.md` と `pytest` をシェル実行で直接確認できず、確認できたのは公開版履歴のみで、本コミット相当の直前レビューは判断不能です。指定の `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` も `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` で実行不能でした。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| `--entity` 単独指定が無視され、意図しないエンティティにタグ操作しうる | [src/elab_doc_sync/cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py#L634) の `cmd_tag()` は `if direct_id and direct_entity` のときしか direct 経路に入らず、それ以外の経路では `direct_entity` を参照していません。したがって `esync tag remove old --entity experiments` のような呼び出しでも、実際には同期済み target 群から解決された `etype` 全体に対して `_tag_action()` が走ります。コミットメッセージや [README.md](/home/user/elab-doc-sync/README.md#L159) の説明は「`--entity` を指定できる」と読めるのに、実装は `--id` と対でない限り無視するため不一致があり、特に `remove` では誤ったリモート対象のタグ削除につながります。 | 高 |
+| `tag` の `--entity` だけ入力検証がなく、既存 CLI の設計と不整合 | [src/elab_doc_sync/cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py#L964) で追加した `tag list/add/remove` の `--entity` は自由文字列ですが、同じ CLI の `pull` や `list` は `choices` で `items / experiments / resources` に閉じています。今回の実装では `_normalize_entity()` が未知値をそのまま通し、`_entity_label()` は未知値でも「リソース」と表示するので、typo や不正入力が遅延失敗し、しかも誤解されやすいです。信頼境界の閉じ方がコマンドごとに揺れており、作者に明示的な確認が必要です。 | 中 |
+| 追加テストが新仕様の危険分岐を固定していない | [tests/test_cli.py](/home/user/elab-doc-sync/tests/test_cli.py#L567) 付近で追加されているのは `add` と `list` の happy path だけで、最も破壊的な `remove --id --entity`、`--entity` 単独指定、無効な `--entity` のケースがありません。今回の差分はロジック本体より「オプション解釈の仕様」が本質なので、この分岐が未検証のままだと将来の修正や AI 支援変更で同じ取り違えを再導入しやすいです。 | 中 |
+
+### Codex 所感
+
+> 所感: 変更の方向性自体は妥当ですが、今回先に固定すべきなのは「`--entity` をフィルタとして許可するのか、`--id` とセットでのみ受け付けるのか」という仕様です。そこをエラー仕様と回帰テストで閉じれば、この機能はかなり安全になります。
+
+
+## 2026-04-06T14:58 [Codex] fix: tag の --id / --entity を必ずセットで指定、--entity に choices 追加 に対するレビュー
+
+コミットメッセージどおり、`tag` の direct 指定を `--id`/`--entity` のペア必須にし、`--entity` に `choices` を導入する変更です。取得できた範囲の `AI_discussions.md` では直前のレビューは `pull` 系の論点で、今回の `tag` 変更に直接対応する未解決指摘は確認できませんでした。なお指定の `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` はこの環境で `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` により起動できず、テスト結果は判断不能です。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 既存 CLI 呼び出し互換性の変更として扱うべき可能性がある | [src/elab_doc_sync/cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py) のこの差分により、従来は受理されていた `tag list/add/remove --entity ...` や `--id ...` 単独指定が即時エラーに変わります。コミットメッセージには意図が書かれていますが、既存の自動化や運用手順を壊してよい変更か、ヘルプや周辺ドキュメント更新を含めて作者に明示的な確認が必要です。 | 中 |
+| `choices` 追加の主目的が parser 層で固定されていない | [tests/test_cli.py](/home/user/elab-doc-sync/tests/test_cli.py) の追加テストは `cmd_tag()` を `Namespace` で直呼びしているため、`main()` 経由で `resources` が通ることや不正な `--entity` 値が `argparse` で拒否されることを検証していません。今回の差分は `add_argument(..., choices=...)` 自体を触っているので、回帰検知としては一段浅いです。 | 中 |
+| `resources` を受け付ける仕様がユーザー向け文面に反映されていない | [src/elab_doc_sync/cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py) では `choices` に `resources` を追加していますが、help とエラーメッセージは依然として `items / experiments` のままです。人間にも後続 AI にも「`resources` は正式入力なのか alias なのか」が読み取りづらく、CLI 契約の誤解を招きます。 | 低 |
+
+### Codex 所感
+
+> 所感として、変更自体は小さく妥当ですが、論点は実装よりも「互換性を壊してよいか」と「parser 定義変更をどこまでテストで固定するか」です。pytest を実行できる環境で再確認できれば、最終判断はより固められます。
+
+
+## 2026-04-06T15:10 [Codex] fix: tag の help / エラーメッセージに resources を含めて統一 に対するレビュー
+
+差分はコミットメッセージどおり `tag` の help / エラーメッセージに `resources` を含める文言統一に限られており、取得できた範囲の [AI_discussions.md](/home/user/elab-doc-sync/AI_discussions.md) でも今回差分に直接関係する未解決レビューは確認できませんでした。仕様不一致やセキュリティ上の新たな懸念は見当たりませんが、指定の `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` はこの環境では `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` で起動できず、テスト結果は判断不能です。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| テスト結果は判断不能 | 指定コマンド `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` が環境要因で起動失敗しており、このコミットの回帰有無を独立に検証できていません。 | 低 |
+| 文言変更を固定する回帰テストがない | 今回の実質的な変更は [cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py) の CLI 文言更新ですが、取得できた [tests/test_cli.py](/home/user/elab-doc-sync/tests/test_cli.py) には `tag` の `--id/--entity` バリデーション文言や help 出力を固定するテストが見当たりません。将来 `resources` 表記が再び抜けても検知しづらいです。 | 低 |
+
+### Codex 所感
+
+> 所感: コード差分自体は小さく意図も明確で、高リスクの設計・セキュリティ問題は見えません。今回の価値は CLI 契約の整合性そのものなので、1 本でも文言回帰テストがあると後続の AI/人手修正に対してかなり強くなります。

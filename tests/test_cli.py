@@ -528,7 +528,7 @@ def test_cmd_tag_list(MockClient, tmp_path, capsys):
     id_dir = tmp_path / ".elab-sync-ids"
     id_dir.mkdir()
     (id_dir / "default.id").write_text("42", encoding="utf-8")
-    args = Namespace(config=str(cfg), target=None, force=False, tag_action="list")
+    args = Namespace(config=str(cfg), target=None, force=False, tag_action="list", id=None, entity=None)
     cmd_tag(args)
     out = capsys.readouterr().out
     assert "alpha" in out
@@ -544,7 +544,7 @@ def test_cmd_tag_add(MockClient, tmp_path, capsys):
     id_dir = tmp_path / ".elab-sync-ids"
     id_dir.mkdir()
     (id_dir / "default.id").write_text("42", encoding="utf-8")
-    args = Namespace(config=str(cfg), target=None, force=False, tag_action="add", tag_name="newtag", id=None)
+    args = Namespace(config=str(cfg), target=None, force=False, tag_action="add", tag_name="newtag", id=None, entity=None)
     cmd_tag(args)
     client.add_tag.assert_called_once_with("items", 42, "newtag")
 
@@ -559,9 +559,67 @@ def test_cmd_tag_remove(MockClient, tmp_path, capsys):
     id_dir = tmp_path / ".elab-sync-ids"
     id_dir.mkdir()
     (id_dir / "default.id").write_text("42", encoding="utf-8")
-    args = Namespace(config=str(cfg), target=None, force=False, tag_action="remove", tag_name="old", id=None)
+    args = Namespace(config=str(cfg), target=None, force=False, tag_action="remove", tag_name="old", id=None, entity=None)
     cmd_tag(args)
     client.untag_by_name.assert_called_once_with("items", 42, "old")
+
+
+# CLI-63: tag add with --id and --entity (直接指定)
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_tag_add_direct(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    client = MockClient.return_value
+    args = Namespace(config=str(cfg), target=None, force=False, tag_action="add",
+                     tag_name="direct-tag", id=99, entity="experiments")
+    cmd_tag(args)
+    client.add_tag.assert_called_once_with("experiments", 99, "direct-tag")
+    assert "実験ノート #99" in capsys.readouterr().out
+
+
+# CLI-64: tag list with --id and --entity (直接指定)
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_tag_list_direct(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    client = MockClient.return_value
+    client.get_tags.return_value = [{"id": 1, "tag": "x"}]
+    args = Namespace(config=str(cfg), target=None, force=False, tag_action="list",
+                     id=50, entity="items")
+    cmd_tag(args)
+    client.get_tags.assert_called_once_with("items", 50)
+    assert "リソース #50" in capsys.readouterr().out
+
+
+# CLI-65: tag --entity without --id exits with error
+def test_cmd_tag_entity_without_id_exits(tmp_path, capsys):
+    cfg, _ = _write_config(tmp_path)
+    args = Namespace(config=str(cfg), target=None, force=False, tag_action="list",
+                     id=None, entity="items")
+    with pytest.raises(SystemExit):
+        cmd_tag(args)
+    assert "--id" in capsys.readouterr().err
+
+
+# CLI-66: tag --id without --entity exits with error
+def test_cmd_tag_id_without_entity_exits(tmp_path, capsys):
+    cfg, _ = _write_config(tmp_path)
+    args = Namespace(config=str(cfg), target=None, force=False, tag_action="add",
+                     tag_name="x", id=42, entity=None)
+    with pytest.raises(SystemExit):
+        cmd_tag(args)
+    assert "--entity" in capsys.readouterr().err
+
+
+# CLI-67: tag remove with --id and --entity (直接指定)
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_tag_remove_direct(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    client = MockClient.return_value
+    client.untag_by_name.return_value = True
+    args = Namespace(config=str(cfg), target=None, force=False, tag_action="remove",
+                     tag_name="bye", id=10, entity="experiments")
+    cmd_tag(args)
+    client.untag_by_name.assert_called_once_with("experiments", 10, "bye")
+    assert "実験ノート #10" in capsys.readouterr().out
 
 
 # ── FR-15 metadata コマンドテスト ────────────────────────
@@ -899,7 +957,7 @@ def test_tag_list_shows_resource_label(MockClient, tmp_path, capsys):
     id_dir = tmp_path / ".elab-sync-ids"
     id_dir.mkdir()
     (id_dir / "default.id").write_text("1", encoding="utf-8")
-    args = Namespace(config=str(cfg), target=None, force=False, tag_action="list")
+    args = Namespace(config=str(cfg), target=None, force=False, tag_action="list", id=None, entity=None)
     cmd_tag(args)
     out = capsys.readouterr().out
     assert "リソース" in out
@@ -921,3 +979,68 @@ def test_entity_status_shows_resource_label(MockClient, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "リソース" in out
     assert "items" not in out
+
+
+# ── pull 画像ダウンロード (CLI-60 ~ CLI-61) ─────────────
+
+# CLI-60: pull each で画像がダウンロードされる
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_each_downloads_images(MockClient, tmp_path):
+    cfg, docs = _write_config(tmp_path, mode="each")
+    client = MockClient.return_value
+    client.get_item.return_value = {
+        "id": 1, "title": "Doc1",
+        "body": '<p><img src="https://elab.example.com/app/download.php?f=abc123.png&name=photo.png&storage=1" alt="pic"></p>',
+    }
+    client.list_uploads.return_value = [
+        {"id": 10, "long_name": "abc123.png", "real_name": "photo.png", "storage": "1"},
+    ]
+    client.download_upload.return_value = b"\x89PNG"
+    cmd_pull(_ns(tmp_path, id=[1], entity="items", command="pull"))
+    md = (docs / "Doc1.md").read_text(encoding="utf-8")
+    assert "images/items_1_photo.png" in md
+    assert (docs / "images" / "items_1_photo.png").exists()
+
+
+# CLI-61: pull merge で画像がダウンロードされる
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_merge_downloads_images(MockClient, tmp_path):
+    cfg, docs = _write_config(tmp_path, mode="merge")
+    ids_dir = tmp_path / ".elab-sync-ids"
+    ids_dir.mkdir(exist_ok=True)
+    (ids_dir / "default.id").write_text("1\n")
+    client = MockClient.return_value
+    client.get_item.return_value = {
+        "id": 1, "title": "T",
+        "body": '<p><img src="https://elab.example.com/app/download.php?f=xyz.png&name=fig.png&storage=1" alt="f"></p>',
+    }
+    client.list_uploads.return_value = [
+        {"id": 20, "long_name": "xyz.png", "real_name": "fig.png", "storage": "1"},
+    ]
+    client.download_upload.return_value = b"\x89PNG"
+    cmd_pull(_ns(tmp_path, id=[1], entity="items", command="pull", force=True))
+    md = (docs / "T.md").read_text(encoding="utf-8")
+    assert "images/items_1_fig.png" in md
+
+
+# ── diff 画像正規化 (CLI-62) ────────────────────────────
+
+# CLI-62: diff でリモート画像 URL が正規化され、ローカルと一致すれば差分なし
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_diff_no_false_positive_with_images(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("![pic](images/items_1_photo.png)", encoding="utf-8")
+    ids_dir = tmp_path / ".elab-sync-ids"
+    ids_dir.mkdir(exist_ok=True)
+    (ids_dir / "default.id").write_text("1\n")
+    client = MockClient.return_value
+    client.get_item.return_value = {
+        "id": 1,
+        "body": '<p><img src="https://elab.example.com/app/download.php?f=abc123.png&name=photo.png&storage=1" alt="pic"></p>',
+    }
+    client.list_uploads.return_value = [
+        {"id": 10, "long_name": "abc123.png", "real_name": "photo.png", "storage": "1"},
+    ]
+    cmd_diff(_ns(tmp_path))
+    out = capsys.readouterr().out
+    assert "差分なし" in out or "最新" in out

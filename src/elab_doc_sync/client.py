@@ -103,7 +103,11 @@ class ELabFTWClient:
     # ── uploads ──────────────────────────────────────────────
 
     def upload_file(self, entity_type: str, entity_id: int, filepath: str, comment: str = "") -> dict:
-        """Upload file. entity_type is 'items' or 'experiments'."""
+        """ファイルをアップロードする。
+
+        filepath の basename が eLabFTW 上の real_name として保存される。
+        entity_type は 'items' または 'experiments'。
+        """
         url = f"/api/v2/{entity_type}/{entity_id}/uploads"
         with open(filepath, "rb") as f:
             self._req("POST", url, headers=self._auth_headers,
@@ -120,6 +124,16 @@ class ELabFTWClient:
                         "url": f"{self.base_url}/app/download.php?f={long_name}&name={filename}&storage={storage}",
                     }
         return {"filename": filename, "url": None}
+
+    def list_uploads(self, entity_type: str, entity_id: int) -> list[dict]:
+        """エンティティの添付ファイル一覧を返す。"""
+        return self._req("GET", f"/api/v2/{entity_type}/{entity_id}/uploads").json()
+
+    def download_upload(self, entity_type: str, entity_id: int, upload_id: int) -> bytes:
+        """添付ファイルのバイナリを返す。"""
+        resp = self._req("GET", f"/api/v2/{entity_type}/{entity_id}/uploads/{upload_id}",
+                         headers={**self._auth_headers, "Accept": "application/octet-stream"})
+        return resp.content
 
     # ── tags ─────────────────────────────────────────────────
 

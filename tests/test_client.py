@@ -259,3 +259,23 @@ def test_patch_entity(mock_req, client):
     mock_req.return_value = _mock_response()
     client.patch_entity("experiments", 1, status=2)
     assert mock_req.call_args[1]["json"] == {"status": 2}
+
+
+# CL-25: list_uploads
+@patch("elab_doc_sync.client.requests.request")
+def test_list_uploads(mock_req, client):
+    mock_req.return_value = _mock_response([{"id": 1, "real_name": "img.png", "long_name": "abc.png"}])
+    result = client.list_uploads("items", 42)
+    assert len(result) == 1
+    assert result[0]["real_name"] == "img.png"
+
+
+# CL-26: download_upload
+@patch("elab_doc_sync.client.requests.request")
+def test_download_upload(mock_req, client):
+    resp = MagicMock()
+    resp.raise_for_status.return_value = None
+    resp.content = b"\x89PNG"
+    mock_req.return_value = resp
+    data = client.download_upload("items", 42, 10)
+    assert data == b"\x89PNG"

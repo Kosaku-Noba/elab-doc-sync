@@ -3,6 +3,8 @@
 import hashlib
 import json
 import re
+import shutil
+import tempfile
 import markdown
 from pathlib import Path
 
@@ -31,7 +33,122 @@ def _md_to_html(text: str) -> str:
     return markdown.markdown(text, extensions=MD_EXTENSIONS)
 
 
+def _image_local_name(entity: str, entity_id: int, real_name: str) -> str:
+    """画像のローカルファイル名を生成する（命名規則の一元管理）。
+
+    形式: {entity}_{entity_id}_{real_name}
+    逆変換は _parse_image_local_name で行う。
+    """
+    return f"{entity}_{entity_id}_{real_name}"
+
+
+# eLabFTW API の entity 種別プレフィックス（items / experiments のみ）
+_ENTITY_PREFIXES = ("items_", "experiments_")
+
+
+def _parse_image_local_name(filename: str) -> str | None:
+    """_image_local_name で生成されたファイル名から real_name を復元する。
+
+    形式に合致しない場合は None を返す。
+    eLabFTW の entity 種別は items / experiments の 2 種のみ。
+    新しい entity 種別が追加された場合は _ENTITY_PREFIXES も更新すること。
+    """
+    for prefix in _ENTITY_PREFIXES:
+        if filename.startswith(prefix):
+            rest = filename[len(prefix):]
+            idx = rest.find("_")
+            if idx != -1 and rest[:idx].isdigit():
+                return rest[idx + 1:]
+    return None
+
+
+def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path) -> str:
+    """Markdown 内の eLabFTW 画像 URL をローカルにダウンロードし相対パスに書き換える。"""
+    try:
+        uploads = client.list_uploads(entity, entity_id)
+    except Exception as e:
+        print(f"    ⚠ 添付ファイル一覧の取得に失敗（{entity} #{entity_id}、画像のローカル化をスキップ）: {e}")
+        return body
+    upload_map = {}
+    for u in uploads:
+        ln = u.get("long_name")
+        if ln:
+            upload_map[ln] = u
+
+    def replace_match(m):
+        alt, src = m.group(1), m.group(2)
+        if "app/download.php" not in src and "/uploads/" not in src:
+            return m.group(0)
+        matched_upload = None
+        for ln, u in upload_map.items():
+            if ln in src:
+                matched_upload = u
+                break
+        if not matched_upload:
+            return m.group(0)
+        real_name = matched_upload.get("real_name", f"upload_{matched_upload['id']}")
+        local_name = _image_local_name(entity, entity_id, real_name)
+        img_dir = docs_dir / "images"
+        img_dir.mkdir(parents=True, exist_ok=True)
+        dest = img_dir / local_name
+        if not dest.exists():
+            data = client.download_upload(entity, entity_id, matched_upload["id"])
+            dest.write_bytes(data)
+            print(f"    画像をダウンロード: {real_name}")
+        return f"![{alt}](images/{local_name})"
+
+    return IMAGE_RE.sub(replace_match, body)
+
+
+def _normalize_remote_image_urls(body: str, entity: str, entity_id: int, client: ELabFTWClient) -> str:
+    """diff 比較用: リモート MD 内の eLabFTW 画像 URL をローカル相対パスに書き換える（DL なし）。"""
+    try:
+        uploads = client.list_uploads(entity, entity_id)
+    except Exception as e:
+        print(f"    ⚠ 添付ファイル一覧の取得に失敗（{entity} #{entity_id}、画像 URL の正規化をスキップ）: {e}")
+        return body
+    upload_map = {}
+    for u in uploads:
+        ln = u.get("long_name")
+        if ln:
+            upload_map[ln] = u
+
+    def replace_match(m):
+        alt, src = m.group(1), m.group(2)
+        if "app/download.php" not in src and "/uploads/" not in src:
+            return m.group(0)
+        for ln, u in upload_map.items():
+            if ln in src:
+                real_name = u.get("real_name", f"upload_{u['id']}")
+                return f"![{alt}](images/{_image_local_name(entity, entity_id, real_name)})"
+        return m.group(0)
+
+    return IMAGE_RE.sub(replace_match, body)
+
+
 def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path) -> str:
+    """Markdown 内のローカル画像を eLabFTW にアップロードし URL に書き換える。
+
+    upload_file はファイルパスの basename を real_name としてリモートに保存する。
+    プレフィックス付きローカル名（例: items_1_photo.png）は real_name（photo.png）に
+    戻してからアップロードし、次回 pull 時の命名安定性を保つ。
+    """
+    existing = {}
+    try:
+        for u in client.list_uploads(entity, entity_id):
+            rn = u.get("real_name")
+            ln = u.get("long_name")
+            st = u.get("storage")
+            if rn and ln and st:
+                existing[rn] = {
+                    "url": f"{client.base_url}/app/download.php?f={ln}&name={rn}&storage={st}",
+                    "size": u.get("filesize", 0),
+                }
+    except Exception:
+        pass
+
+    tmp_dirs: list[str] = []
+
     def replace_match(m):
         alt, src = m.group(1), m.group(2)
         if src.startswith(("http://", "https://")):
@@ -42,14 +159,33 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
         if not img_path.exists():
             print(f"    ⚠ 画像が見つかりません: {src}")
             return m.group(0)
-        print(f"    画像をアップロード中: {img_path.name}")
-        result = client.upload_file(entity, entity_id, str(img_path))
+        real_name = _parse_image_local_name(img_path.name) or img_path.name
+        # NOTE: 同名・同サイズ・別内容のケースは再利用される（ハッシュ比較はコスト回避のため省略）
+        ex = existing.get(real_name)
+        if ex and ex["size"] and img_path.stat().st_size == ex["size"]:
+            print(f"    ✓ {real_name}（既存アップロードを再利用）")
+            return f"![{alt}]({ex['url']})"
+        if real_name != img_path.name:
+            td = tempfile.mkdtemp()
+            tmp_dirs.append(td)
+            tmp_file = Path(td) / real_name
+            shutil.copy2(img_path, tmp_file)
+            upload_path = str(tmp_file)
+        else:
+            upload_path = str(img_path)
+        print(f"    画像をアップロード中: {real_name}")
+        result = client.upload_file(entity, entity_id, upload_path)
         if result.get("url"):
-            print(f"    ✓ {img_path.name}")
+            print(f"    ✓ {real_name}")
             return f"![{alt}]({result['url']})"
-        print(f"    ✗ アップロード失敗: {img_path.name}")
+        print(f"    ✗ アップロード失敗: {real_name}")
         return m.group(0)
-    return IMAGE_RE.sub(replace_match, body)
+
+    try:
+        return IMAGE_RE.sub(replace_match, body)
+    finally:
+        for td in tmp_dirs:
+            shutil.rmtree(td, ignore_errors=True)
 
 
 class DocsSyncer:
