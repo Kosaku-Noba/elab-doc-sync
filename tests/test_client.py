@@ -277,7 +277,7 @@ def test_download_upload(mock_req, client):
     resp.raise_for_status.return_value = None
     resp.content = b"\x89PNG"
     mock_req.return_value = resp
-    data = client.download_upload("abc123.png", "photo.png", 2)
+    data = client.download_upload(long_name="abc123.png", real_name="photo.png", storage=2)
     assert data == b"\x89PNG"
     url = mock_req.call_args[0][1]
     assert "/app/download.php" in url
@@ -294,7 +294,7 @@ def test_download_upload_raises_on_http_error(mock_req, client):
     resp.raise_for_status.side_effect = HTTPError("404 Not Found")
     mock_req.return_value = resp
     with pytest.raises(HTTPError):
-        client.download_upload("abc.png", "img.png", 1)
+        client.download_upload(long_name="abc.png", real_name="img.png", storage=1)
 
 
 # CL-28: download_upload URL-encodes special characters in real_name
@@ -304,7 +304,34 @@ def test_download_upload_encodes_special_chars(mock_req, client):
     resp.raise_for_status.return_value = None
     resp.content = b"data"
     mock_req.return_value = resp
-    client.download_upload("abc.png", "file&name=evil#.png", 1)
+    client.download_upload(long_name="abc.png", real_name="file&name=evil#.png", storage=1)
     url = mock_req.call_args[0][1]
     assert "file%26name%3Devil%23.png" in url
     assert "&name=evil" not in url  # not split into separate param
+
+
+# CL-29: download_upload accepts storage as str (eLabFTW may return str)
+@patch("elab_doc_sync.client.requests.request")
+def test_download_upload_storage_as_str(mock_req, client):
+    resp = MagicMock()
+    resp.raise_for_status.return_value = None
+    resp.content = b"data"
+    mock_req.return_value = resp
+    data = client.download_upload(long_name="abc.png", real_name="img.png", storage="2")
+    assert data == b"data"
+    url = mock_req.call_args[0][1]
+    assert "storage=2" in url
+
+
+# CL-30: list_uploads returns expected schema fields
+@patch("elab_doc_sync.client.requests.request")
+def test_list_uploads_schema(mock_req, client):
+    mock_req.return_value = _mock_response([
+        {"id": 1, "real_name": "a.png", "long_name": "abc.png", "storage": 2, "filesize": 1024},
+    ])
+    uploads = client.list_uploads("items", 42)
+    u = uploads[0]
+    # download_upload が必要とするフィールドが存在すること
+    assert "long_name" in u
+    assert "real_name" in u
+    assert "storage" in u
