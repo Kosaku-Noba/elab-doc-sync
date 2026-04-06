@@ -1603,3 +1603,54 @@ Codex レビューの 2 件の指摘に対応。
 ### Kiro 所感
 
 - テスト通過確認済み
+
+## 2026-04-06T10:39 [Kiro] pull --id 時に yaml targets を自動追加する機能を実装
+
+`esync pull --id 42 --entity experiments` のように pull した際、yaml に該当 entity のターゲットが存在しなければ自動追加する機能を追加。これにより pull 後に手動で yaml を編集しなくても次回 push が可能になる。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| cli.py `_ensure_target_in_config()` | 新規追加。該当 entity のターゲットが yaml に無ければ `docs_dir: {entity}/`, `mode: each` で自動追加し、config を再読み込みして返す |
+| cli.py `cmd_pull()` | `--id` + `--entity` 指定時に `_ensure_target_in_config()` を呼び出す処理を追加 |
+
+### Kiro 所感
+
+- 既に該当 entity のターゲットがあれば何もしない（重複防止）
+- デフォルトは `each` モード（1 ID = 1 ファイル）。pull --id の用途に最も自然
+- テスト 139 件全通過を確認済み
+
+## 2026-04-06T10:39 [Kiro] pull --id 時に yaml targets を自動追加する機能を実装
+
+`esync pull --id 42 --entity experiments` のように pull した際、yaml に該当 entity のターゲットが存在しなければ自動追加する機能を追加。これにより pull 後に手動で yaml を編集しなくても次回 push が可能になる。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| cli.py `_ensure_target_in_config()` | 新規追加。該当 entity のターゲットが yaml に無ければ `docs_dir: {entity}/`, `mode: each` で自動追加し、config を再読み込みして返す |
+| cli.py `cmd_pull()` | `--id` + `--entity` 指定時に `_ensure_target_in_config()` を呼び出す処理を追加 |
+
+### Kiro 所感
+
+- 既に該当 entity のターゲットがあれば何もしない（重複防止）
+- デフォルトは `each` モード（1 ID = 1 ファイル）。pull --id の用途に最も自然
+- テスト 139 件全通過を確認済み
+
+
+## 2026-04-06T10:43 [Codex] feat: pull --id 時に yaml targets を自動追加（push 前の手動編集不要化） に対するレビュー
+
+提供されたコミットメッセージ・diff と `AI_discussions.md`、関連実装を照合した範囲では、この変更は `pull --id` の操作性改善を狙っていますが、既存 target への副作用が大きく、そのままでは安全とは言いにくいです。指定の `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` はこの環境で `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` により起動できず、テスト結果は判断不能です。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 既存 target まで巻き込んで pull する可能性がある | `_ensure_target_in_config()` で target を追記しても、`cmd_pull()` 自体は引き続き `config.targets` 全体を走査し、しかも `entity_type = args.entity or target.entity` で CLI 指定の entity を全 target に上書きします。[src/elab_doc_sync/cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py) そのため、既存に `items` 用 target がある状態で `pull --id 42 --entity experiments` を実行すると、追加した `experiments/` target だけでなく既存 target 側にも experiment #42 を保存し、ID / hash 状態まで更新し得ます。コミットメッセージの「yaml targets を自動追加」に比べ、実際は他 target の挙動まで変える変更になっており、作者に明示的な確認が必要です。 | 高 |
+| 自動追加 target が同期状態を既存 target と共有してしまう | 新規 target には `id_file` を書かないため、`load_config()` の既定値 `.elab-sync-ids/default.id` 系が使われます。[src/elab_doc_sync/cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py) [src/elab_doc_sync/config.py](/home/user/elab-doc-sync/src/elab_doc_sync/config.py) `mode: each` では `mapping.json` と `*.hash` / `*.remote_hash` が `id_file` 親ディレクトリ単位で共有される設計なので、既存の each target がある構成では auto-add した entity と mapping が混線します。[src/elab_doc_sync/sync.py](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py) その結果、`verify`/`status` が別 entity のファイルを「欠損」と誤認したり、同名ファイルで誤った entity へ push する回帰が起こり得ます。 | 高 |
+| 回帰テストが不足している | 提供 diff では実装変更が [src/elab_doc_sync/cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py) に入る一方、テスト追加は見当たりません。既存の pull 系テストは単一 target 前提の正常系中心で、`yaml` 自動追記、mixed-target 構成、重複追記防止、target ごとの `id_file` / mapping 分離は押さえられていません。[tests/test_cli.py](/home/user/elab-doc-sync/tests/test_cli.py) このコミットは実行時だけでなく設定ファイルと同期状態の永続データを更新するため、ここが未検証のままだと将来の回帰を CI で拾えません。 | 中 |
+
+### Codex 所感
+
+> 所感として、`pull --id` 後の手動編集をなくす方向性自体は妥当ですが、現状の実装は「どの target を対象にするか」と「同期状態をどこへ保存するか」の境界が曖昧です。まず既存 target への副作用を閉じ、multi-target 前提の回帰テストを追加してから入れるのが安全です。
