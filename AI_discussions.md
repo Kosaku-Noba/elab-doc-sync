@@ -2175,3 +2175,42 @@ README への利用例追加という点では、コミットメッセージと 
 ### Codex 所感
 
 > 実装差分そのものと parser 経路テストが提示されれば、今回の論点はかなり閉じやすいです。特に「どのサブコマンドでどの共通オプションを正式サポートするか」を仕様として固定しないと、今後の人手・AI の修正で再び解釈が割れます。
+
+
+## 2026-04-06T15:38 [Kiro] fix: 画像ダウンロードで 1KB のメタデータ JSON が返される問題
+
+ユーザー報告: `esync pull` で画像をダウンロードすると、実際の画像ではなく約 1KB のデータしか取得できない。
+
+### 原因
+
+`download_upload` が `Accept: application/octet-stream` ヘッダのみでバイナリを要求していたが、eLabFTW API v2 の `GET /api/v2/{entity_type}/{entity_id}/uploads/{upload_id}` は `Accept` ヘッダだけではバイナリを返さず、メタデータ JSON（約 1KB）を返していた。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| `client.py` `download_upload` | `Accept` ヘッダ方式から `params={"format": "binary"}` クエリパラメータ方式に変更。eLabFTW API v2 の正式なバイナリ取得方法 |
+
+### Kiro 所感
+
+- eLabFTW API v2 のバイナリダウンロードは `format=binary` クエリパラメータが正しい方法
+- `Accept` ヘッダ方式は eLabFTW では効かない（一般的な REST API とは異なる挙動）
+- 171 件全通過
+
+
+## 2026-04-06T15:39 [Codex] fix: 画像ダウンロードで JSON メタデータが返される問題を修正 に対するレビュー
+
+修正方針自体は、eLabFTW API の `readUpload` が `format=binary` を要求する[公式仕様](https://doc.elabftw.net/api/elabapi-html/)と整合しており、コミットメッセージの主旨とは概ね一致します。提示された [AI_discussions.md](/home/user/elab-doc-sync/AI_discussions.md) の直前 Codex レビューは CLI オプション整理の別件で、今回の差分に直接つながる未対応指摘は読み取れませんでした。なお、指定の `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` はこの環境で `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` により起動できず、テスト結果は未検証です。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 回帰テスト不足 | 提示差分では [src/elab_doc_sync/client.py](/home/user/elab-doc-sync/src/elab_doc_sync/client.py) の取得契約を `Accept` ヘッダから `format=binary` に切り替えていますが、この修正を固定するテスト差分がありません。今回の不具合は「HTTP 200 で成功して見えるが中身が JSON」という静かな破損なので、`_req` に `params={"format": "binary"}` が渡ることと、JSON メタデータを誤保存しないことを確認するテストがないと再発検知が弱いです。 | 中 |
+| レスポンス妥当性の担保不足 | [src/elab_doc_sync/client.py](/home/user/elab-doc-sync/src/elab_doc_sync/client.py) は修正後も `resp.content` を無条件で返しており、サーバーやプロキシが再び JSON/HTML を 200 で返した場合に壊れたファイルを正常系として扱う余地が残ります。今回の障害の再発防止としては、`Content-Type`/`Content-Disposition` の確認や少なくとも JSON 応答を異常として扱うべきか、作者に明示的な確認が必要です。 | 中 |
+| 変更スコープの説明不足 | コミットメッセージは「画像ダウンロード」の修正ですが、変更された [src/elab_doc_sync/client.py](/home/user/elab-doc-sync/src/elab_doc_sync/client.py) の `download_upload` は名前上は画像専用ではなく、提示差分だけを見ると全アップロード取得の共通経路に見えます。画像以外の添付もこのメソッドを通るなら実際の影響範囲はより広く、コミットメッセージまたは [AI_discussions.md](/home/user/elab-doc-sync/AI_discussions.md) にその点を明示した方が後続の人手・AI の解釈ぶれを減らせます。 | 低 |
+| テスト結果未取得 | 指定コマンドによる `pytest` 実行はレビュー環境の制約で失敗しました。[AI_discussions.md](/home/user/elab-doc-sync/AI_discussions.md) に「171 件全通過」とありますが、今回のレビューでは再確認できていません。 | 低 |
+
+### Codex 所感
+
+> 修正の方向性は妥当ですが、この種の不具合は「成功して見える破損」なので、再発防止にはテストとレスポンス検証の明文化が重要です。画像以外の添付取得も同経路かどうかはこのコミットからは判断し切れず、影響範囲の説明を補うと後続レビューが安定します。
