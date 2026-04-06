@@ -42,7 +42,7 @@ def _image_local_name(entity: str, entity_id: int, real_name: str) -> str:
     return f"{entity}_{entity_id}_{real_name}"
 
 
-# entity 種別のプレフィックス一覧（_image_local_name と一致させること）
+# eLabFTW API の entity 種別プレフィックス（items / experiments のみ）
 _ENTITY_PREFIXES = ("items_", "experiments_")
 
 
@@ -50,6 +50,8 @@ def _parse_image_local_name(filename: str) -> str | None:
     """_image_local_name で生成されたファイル名から real_name を復元する。
 
     形式に合致しない場合は None を返す。
+    eLabFTW の entity 種別は items / experiments の 2 種のみ。
+    新しい entity 種別が追加された場合は _ENTITY_PREFIXES も更新すること。
     """
     for prefix in _ENTITY_PREFIXES:
         if filename.startswith(prefix):
@@ -125,7 +127,12 @@ def _normalize_remote_image_urls(body: str, entity: str, entity_id: int, client:
 
 
 def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path) -> str:
-    # 既存 uploads を取得して real_name → (url, size) のマップを作る
+    """Markdown 内のローカル画像を eLabFTW にアップロードし URL に書き換える。
+
+    upload_file はファイルパスの basename を real_name としてリモートに保存する。
+    プレフィックス付きローカル名（例: items_1_photo.png）は real_name（photo.png）に
+    戻してからアップロードし、次回 pull 時の命名安定性を保つ。
+    """
     existing = {}
     try:
         for u in client.list_uploads(entity, entity_id):
@@ -140,6 +147,8 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
     except Exception:
         pass
 
+    tmp_dirs: list[str] = []
+
     def replace_match(m):
         alt, src = m.group(1), m.group(2)
         if src.startswith(("http://", "https://")):
@@ -150,18 +159,16 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
         if not img_path.exists():
             print(f"    ⚠ 画像が見つかりません: {src}")
             return m.group(0)
-        # ローカル名からプレフィックスを除去して real_name と照合
         real_name = _parse_image_local_name(img_path.name) or img_path.name
-        # 既存 upload に同名かつ同サイズのファイルがあれば再利用
         # NOTE: 同名・同サイズ・別内容のケースは再利用される（ハッシュ比較はコスト回避のため省略）
         ex = existing.get(real_name)
         if ex and ex["size"] and img_path.stat().st_size == ex["size"]:
             print(f"    ✓ {real_name}（既存アップロードを再利用）")
             return f"![{alt}]({ex['url']})"
-        # real_name でアップロード（プレフィックス付きファイル名がリモートに残らないようにする）
         if real_name != img_path.name:
-            tmp_dir = Path(tempfile.mkdtemp())
-            tmp_file = tmp_dir / real_name
+            td = tempfile.mkdtemp()
+            tmp_dirs.append(td)
+            tmp_file = Path(td) / real_name
             shutil.copy2(img_path, tmp_file)
             upload_path = str(tmp_file)
         else:
@@ -173,7 +180,12 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
             return f"![{alt}]({result['url']})"
         print(f"    ✗ アップロード失敗: {real_name}")
         return m.group(0)
-    return IMAGE_RE.sub(replace_match, body)
+
+    try:
+        return IMAGE_RE.sub(replace_match, body)
+    finally:
+        for td in tmp_dirs:
+            shutil.rmtree(td, ignore_errors=True)
 
 
 class DocsSyncer:
