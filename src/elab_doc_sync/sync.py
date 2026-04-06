@@ -70,20 +70,31 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
         print(f"    ⚠ 添付ファイル一覧の取得に失敗（{entity} #{entity_id}、画像のローカル化をスキップ）: {e}")
         return body
     upload_map = {}
+    id_map = {}
     for u in uploads:
         ln = u.get("long_name")
         if ln:
             upload_map[ln] = u
+        uid = u.get("id")
+        if uid is not None:
+            id_map[str(uid)] = u
 
     def replace_match(m):
         alt, src = m.group(1), m.group(2)
         if "app/download.php" not in src and "/uploads/" not in src:
             return m.group(0)
+        # long_name でマッチ（download.php 形式）
         matched_upload = None
         for ln, u in upload_map.items():
             if ln in src:
                 matched_upload = u
                 break
+        # upload_id でマッチ（/api/v2/.../uploads/{id} 形式）
+        if not matched_upload:
+            for uid, u in id_map.items():
+                if src.rstrip("/").endswith(f"/uploads/{uid}") or f"/uploads/{uid}" in src:
+                    matched_upload = u
+                    break
         if not matched_upload:
             return m.group(0)
         real_name = matched_upload.get("real_name", f"upload_{matched_upload['id']}")
@@ -112,19 +123,32 @@ def _normalize_remote_image_urls(body: str, entity: str, entity_id: int, client:
         print(f"    ⚠ 添付ファイル一覧の取得に失敗（{entity} #{entity_id}、画像 URL の正規化をスキップ）: {e}")
         return body
     upload_map = {}
+    id_map = {}
     for u in uploads:
         ln = u.get("long_name")
         if ln:
             upload_map[ln] = u
+        uid = u.get("id")
+        if uid is not None:
+            id_map[str(uid)] = u
 
     def replace_match(m):
         alt, src = m.group(1), m.group(2)
         if "app/download.php" not in src and "/uploads/" not in src:
             return m.group(0)
+        matched = None
         for ln, u in upload_map.items():
             if ln in src:
-                real_name = u.get("real_name", f"upload_{u['id']}")
-                return f"![{alt}](images/{_image_local_name(entity, entity_id, real_name)})"
+                matched = u
+                break
+        if not matched:
+            for uid, u in id_map.items():
+                if src.rstrip("/").endswith(f"/uploads/{uid}") or f"/uploads/{uid}" in src:
+                    matched = u
+                    break
+        if matched:
+            real_name = matched.get("real_name", f"upload_{matched['id']}")
+            return f"![{alt}](images/{_image_local_name(entity, entity_id, real_name)})"
         return m.group(0)
 
     return IMAGE_RE.sub(replace_match, body)

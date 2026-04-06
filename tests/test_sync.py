@@ -585,3 +585,28 @@ def test_rewrite_images_upload_strips_prefix(tmp_path):
     upload_path = client.upload_file.call_args[0][2]
     assert Path(upload_path).name == "photo.png"
     assert "https://elab.example.com/dl/photo.png" in result
+
+
+# S-62: _download_images handles /api/v2/.../uploads/{id} format (HTML editor images)
+def test_download_images_api_v2_url(tmp_path):
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"id": 15579, "long_name": "9a/9ac3cd.png", "real_name": "photo.png", "storage": 2},
+    ]
+    client.download_upload.return_value = b"\x89PNG"
+    body = "![](/api/v2/items/3713/uploads/15579)"
+    result = _download_images(body, "items", 3713, client, tmp_path)
+    assert "images/items_3713_photo.png" in result
+    assert (tmp_path / "images" / "items_3713_photo.png").exists()
+    client.download_upload.assert_called_once()
+
+
+# S-63: _normalize_remote_image_urls handles /api/v2/.../uploads/{id} format
+def test_normalize_api_v2_url():
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"id": 15579, "long_name": "9a/9ac3cd.png", "real_name": "photo.png", "storage": 2},
+    ]
+    body = "![](/api/v2/items/3713/uploads/15579)"
+    result = _normalize_remote_image_urls(body, "items", 3713, client)
+    assert "images/items_3713_photo.png" in result
