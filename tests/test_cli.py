@@ -206,6 +206,40 @@ def test_pull_merge_multiple_ids_warning(MockClient, tmp_path, capsys):
     client.get_item.assert_called_once_with(10)
 
 
+# CLI-18: pull --id --entity experiments で items ターゲットのみの yaml → 自動追加 + items 側は無影響
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_auto_add_target(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path, mode="each", entity="items")
+    client = MockClient.return_value
+    client.get_experiment.return_value = {"id": 42, "title": "Exp1", "body": "<p>exp</p>"}
+    cmd_pull(_ns(tmp_path, id=[42], entity="experiments", command="pull"))
+    out = capsys.readouterr().out
+    # ターゲットが自動追加された
+    assert "ターゲットを .elab-sync.yaml に追加" in out
+    # experiments/ に保存された
+    exp_dir = tmp_path / "experiments"
+    assert (exp_dir / "Exp1.md").exists()
+    # items 側の docs/ には何も保存されていない
+    assert not list(docs.glob("Exp1*"))
+    # items の get_item は呼ばれていない
+    client.get_item.assert_not_called()
+    # id_file が分離されている（experiments.id ベース）
+    raw = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    exp_target = [t for t in raw["targets"] if t["entity"] == "experiments"][0]
+    assert "experiments" in exp_target.get("id_file", "")
+
+
+# CLI-19: 既に該当 entity のターゲットがあれば重複追加しない
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_no_duplicate_target(MockClient, tmp_path):
+    cfg, docs = _write_config(tmp_path, mode="each", entity="items")
+    client = MockClient.return_value
+    client.get_item.return_value = {"id": 1, "title": "D", "body": "<p>d</p>"}
+    cmd_pull(_ns(tmp_path, id=[1], entity="items", command="pull"))
+    raw = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    assert len(raw["targets"]) == 1
+
+
 def _clone_ns(tmp_path, **kw):
     defaults = {
         "url": "https://elab.example.com", "id": [1], "dir": str(tmp_path / "cloned"),
