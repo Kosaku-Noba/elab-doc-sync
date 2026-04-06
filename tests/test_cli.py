@@ -240,6 +240,31 @@ def test_pull_no_duplicate_target(MockClient, tmp_path):
     assert len(raw["targets"]) == 1
 
 
+# CLI-20a: same-entity multi-target → --id 指定時は最初のターゲットだけ処理
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_same_entity_multi_target(MockClient, tmp_path):
+    data = {
+        "elabftw": {"url": "https://elab.example.com", "api_key": "key", "verify_ssl": False},
+        "targets": [
+            {"title": "", "docs_dir": "alpha/", "pattern": "*.md", "mode": "each",
+             "entity": "items", "id_file": ".elab-sync-ids/alpha.id"},
+            {"title": "", "docs_dir": "beta/", "pattern": "*.md", "mode": "each",
+             "entity": "items", "id_file": ".elab-sync-ids/beta.id"},
+        ],
+    }
+    cfg = tmp_path / ".elab-sync.yaml"
+    cfg.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    (tmp_path / "alpha").mkdir()
+    (tmp_path / "beta").mkdir()
+    client = MockClient.return_value
+    client.get_item.return_value = {"id": 5, "title": "X", "body": "<p>x</p>"}
+    cmd_pull(_ns(tmp_path, id=[5], entity="items", command="pull"))
+    # alpha にだけ保存される（最初のターゲット）
+    assert (tmp_path / "alpha" / "X.md").exists()
+    # beta には保存されない
+    assert not (tmp_path / "beta" / "X.md").exists()
+
+
 def _clone_ns(tmp_path, **kw):
     defaults = {
         "url": "https://elab.example.com", "id": [1], "dir": str(tmp_path / "cloned"),
