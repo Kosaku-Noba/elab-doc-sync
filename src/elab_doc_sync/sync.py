@@ -40,7 +40,8 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
     """Markdown 内の eLabFTW 画像 URL をローカルにダウンロードし相対パスに書き換える。"""
     try:
         uploads = client.list_uploads(entity, entity_id)
-    except Exception:
+    except Exception as e:
+        print(f"    ⚠ 添付ファイル一覧の取得に失敗（画像のローカル化をスキップ）: {e}")
         return body
     upload_map = {}
     for u in uploads:
@@ -77,7 +78,8 @@ def _normalize_remote_image_urls(body: str, entity: str, entity_id: int, client:
     """diff 比較用: リモート MD 内の eLabFTW 画像 URL をローカル相対パスに書き換える（DL なし）。"""
     try:
         uploads = client.list_uploads(entity, entity_id)
-    except Exception:
+    except Exception as e:
+        print(f"    ⚠ 添付ファイル一覧の取得に失敗（画像 URL の正規化をスキップ）: {e}")
         return body
     upload_map = {}
     for u in uploads:
@@ -96,6 +98,21 @@ def _normalize_remote_image_urls(body: str, entity: str, entity_id: int, client:
         return m.group(0)
 
     return IMAGE_RE.sub(replace_match, body)
+
+
+def _strip_image_prefix(filename: str) -> str:
+    """ローカル画像名からプレフィックス（entity_id_）を除去して real_name を復元する。
+
+    例: "items_42_photo.png" → "photo.png", "photo.png" → "photo.png"
+    """
+    for prefix in ("items_", "experiments_"):
+        if filename.startswith(prefix):
+            rest = filename[len(prefix):]
+            # 次の _ までが entity_id
+            idx = rest.find("_")
+            if idx != -1 and rest[:idx].isdigit():
+                return rest[idx + 1:]
+    return filename
 
 
 def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path) -> str:
@@ -124,17 +141,20 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
         if not img_path.exists():
             print(f"    ⚠ 画像が見つかりません: {src}")
             return m.group(0)
+        # ローカル名からプレフィックスを除去して real_name と照合
+        real_name = _strip_image_prefix(img_path.name)
         # 既存 upload に同名かつ同サイズのファイルがあれば再利用
-        ex = existing.get(img_path.name)
+        # NOTE: 同名・同サイズ・別内容のケースは再利用される（ハッシュ比較はコスト回避のため省略）
+        ex = existing.get(real_name)
         if ex and ex["size"] and img_path.stat().st_size == ex["size"]:
-            print(f"    ✓ {img_path.name}（既存アップロードを再利用）")
+            print(f"    ✓ {real_name}（既存アップロードを再利用）")
             return f"![{alt}]({ex['url']})"
-        print(f"    画像をアップロード中: {img_path.name}")
+        print(f"    画像をアップロード中: {real_name}")
         result = client.upload_file(entity, entity_id, str(img_path))
         if result.get("url"):
-            print(f"    ✓ {img_path.name}")
+            print(f"    ✓ {real_name}")
             return f"![{alt}]({result['url']})"
-        print(f"    ✗ アップロード失敗: {img_path.name}")
+        print(f"    ✗ アップロード失敗: {real_name}")
         return m.group(0)
     return IMAGE_RE.sub(replace_match, body)
 

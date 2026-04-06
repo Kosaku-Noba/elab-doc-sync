@@ -8,6 +8,7 @@ import pytest
 from elab_doc_sync.sync import (
     _compute_hash, _count_local_images, _md_to_html, _rewrite_images,
     _download_images, _normalize_remote_image_urls, _image_local_name,
+    _strip_image_prefix,
     ConflictError, DocsSyncer, EachDocsSyncer,
 )
 from elab_doc_sync.config import TargetConfig
@@ -514,3 +515,46 @@ def test_image_local_name_includes_entity():
     assert _image_local_name("items", 1, "photo.png") == "items_1_photo.png"
     assert _image_local_name("experiments", 1, "photo.png") == "experiments_1_photo.png"
     assert _image_local_name("items", 1, "photo.png") != _image_local_name("experiments", 1, "photo.png")
+
+
+# S-57: _strip_image_prefix の動作確認
+def test_strip_image_prefix():
+    assert _strip_image_prefix("items_42_photo.png") == "photo.png"
+    assert _strip_image_prefix("experiments_1_fig.jpg") == "fig.jpg"
+    assert _strip_image_prefix("photo.png") == "photo.png"
+    assert _strip_image_prefix("items_notanumber_photo.png") == "items_notanumber_photo.png"
+
+
+# S-58: pull→push round-trip でプレフィックス付き画像が既存 upload と照合される
+def test_rewrite_images_roundtrip_prefixed_name(tmp_path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    img_dir = docs / "images"
+    img_dir.mkdir()
+    (img_dir / "items_1_photo.png").write_bytes(b"\x89PNG")
+    client = MagicMock()
+    client.base_url = "https://elab.example.com"
+    client.list_uploads.return_value = [
+        {"id": 10, "real_name": "photo.png", "long_name": "abc123.png", "storage": "1", "filesize": 4},
+    ]
+    result = _rewrite_images("![a](images/items_1_photo.png)", "items", 1, client, docs, tmp_path)
+    client.upload_file.assert_not_called()
+    assert "app/download.php?f=abc123.png" in result
+
+
+# S-59: list_uploads 失敗時に warning が出力される
+def test_download_images_warns_on_failure(capsys):
+    client = MagicMock()
+    client.list_uploads.side_effect = Exception("timeout")
+    body = "![a](https://elab.example.com/app/download.php?f=abc.png&name=x.png&storage=1)"
+    _download_images(body, "items", 1, client, Path("."))
+    assert "添付ファイル一覧の取得に失敗" in capsys.readouterr().out
+
+
+# S-60: _normalize_remote_image_urls 失敗時に warning が出力される
+def test_normalize_warns_on_failure(capsys):
+    client = MagicMock()
+    client.list_uploads.side_effect = Exception("timeout")
+    body = "![a](https://elab.example.com/app/download.php?f=abc.png&name=x.png&storage=1)"
+    _normalize_remote_image_urls(body, "items", 1, client)
+    assert "添付ファイル一覧の取得に失敗" in capsys.readouterr().out
