@@ -128,3 +128,29 @@ def test_config_entity_resources_alias(tmp_path):
     p.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
     config = load_config(p)
     assert config.targets[0].entity == "items"
+
+
+# C-12: body_format 未指定時は html（既存設定互換 — load_config 経路）
+def test_config_body_format_default(tmp_path):
+    from elab_doc_sync.config import load_config
+    data = {
+        "elabftw": {"url": "https://x.com", "api_key": "k"},
+        "targets": [{"title": "T", "docs_dir": "docs/"}],
+    }
+    p = tmp_path / ".elab-sync.yaml"
+    p.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    config = load_config(p)
+    assert config.targets[0].body_format == "html"
+
+
+# C-13: body_format=md を明示指定すると md になる
+def test_config_body_format_md(tmp_path):
+    from elab_doc_sync.config import load_config
+    data = {
+        "elabftw": {"url": "https://x.com", "api_key": "k"},
+        "targets": [{"title": "T", "docs_dir": "docs/", "body_format": "md"}],
+    }
+    p = tmp_path / ".elab-sync.yaml"
+    p.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    config = load_config(p)
+    assert config.targets[0].body_format == "md"

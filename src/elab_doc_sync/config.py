@@ -72,7 +72,7 @@ def load_config(config_path: Path) -> Config:
         if entity in ("resources", "resource"):
             entity = "items"
         title = t.get("title", "") if mode == "merge" else t.get("title", "")
-        body_format = t.get("body_format", "md")
+        body_format = t.get("body_format", "html")
         if body_format not in ("md", "html"):
             _abort(f"body_format は 'md' または 'html' を指定してください（現在: {body_format!r}）")
         targets.append(TargetConfig(

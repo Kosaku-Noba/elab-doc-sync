@@ -298,6 +298,8 @@ targets:
 | `targets[].tags` | — | `[]` | push 時に自動追加するタグ（追記のみ、既存タグは外さない） |
 | `targets[].body_format` | — | `html` | `md`（Markdown のまま送信）/ `html`（HTML に変換して送信） |
 
+> **Note:** `esync init` で新規作成する場合、`body_format` のデフォルト提案は `md` です。既存の設定ファイルで `body_format` を省略した場合は互換性のため `html` が適用されます。
+
 サンプル: [`.elab-sync.yaml.example`](.elab-sync.yaml.example)
 
 ## 困ったとき
