@@ -121,6 +121,16 @@ class ELabFTWClient:
                     }
         return {"filename": filename, "url": None}
 
+    def list_uploads(self, entity_type: str, entity_id: int) -> list[dict]:
+        """エンティティの添付ファイル一覧を返す。"""
+        return self._req("GET", f"/api/v2/{entity_type}/{entity_id}/uploads").json()
+
+    def download_upload(self, entity_type: str, entity_id: int, upload_id: int) -> bytes:
+        """添付ファイルのバイナリを返す。"""
+        resp = self._req("GET", f"/api/v2/{entity_type}/{entity_id}/uploads/{upload_id}",
+                         headers={**self._auth_headers, "Accept": "application/octet-stream"})
+        return resp.content
+
     # ── tags ─────────────────────────────────────────────────
 
     def get_tags(self, entity_type: str, entity_id: int) -> list[dict]:
