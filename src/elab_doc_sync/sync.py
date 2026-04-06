@@ -93,9 +93,9 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
         dest = img_dir / local_name
         if not dest.exists():
             data = client.download_upload(
-                long_name=matched_upload["long_name"],
-                real_name=real_name,
-                storage=matched_upload.get("storage", 1),
+                entity_type=entity,
+                entity_id=entity_id,
+                upload_id=matched_upload["id"],
             )
             dest.write_bytes(data)
             print(f"    画像をダウンロード: {real_name}")
