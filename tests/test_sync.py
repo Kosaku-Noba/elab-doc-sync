@@ -598,7 +598,9 @@ def test_download_images_api_v2_url(tmp_path):
     result = _download_images(body, "items", 3713, client, tmp_path)
     assert "images/items_3713_photo.png" in result
     assert (tmp_path / "images" / "items_3713_photo.png").exists()
-    client.download_upload.assert_called_once()
+    client.download_upload.assert_called_once_with(
+        entity_type="items", entity_id=3713, upload_id=15579,
+    )
 
 
 # S-63: _normalize_remote_image_urls handles /api/v2/.../uploads/{id} format
@@ -610,3 +612,17 @@ def test_normalize_api_v2_url():
     body = "![](/api/v2/items/3713/uploads/15579)"
     result = _normalize_remote_image_urls(body, "items", 3713, client)
     assert "images/items_3713_photo.png" in result
+
+
+# S-64: upload_id prefix mismatch prevention (15 vs 15579)
+def test_download_images_no_prefix_mismatch(tmp_path):
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"id": 15, "long_name": "aa/aa.png", "real_name": "wrong.png", "storage": 1},
+        {"id": 15579, "long_name": "bb/bb.png", "real_name": "correct.png", "storage": 2},
+    ]
+    client.download_upload.return_value = b"\x89PNG"
+    body = "![](/api/v2/items/1/uploads/15579)"
+    result = _download_images(body, "items", 1, client, tmp_path)
+    assert "correct.png" in result
+    assert "wrong.png" not in result
