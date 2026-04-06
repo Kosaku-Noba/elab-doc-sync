@@ -31,9 +31,17 @@ def _md_to_html(text: str) -> str:
     return markdown.markdown(text, extensions=MD_EXTENSIONS)
 
 
+def _image_local_name(entity: str, entity_id: int, real_name: str) -> str:
+    """画像のローカルファイル名を生成する（命名規則の一元管理）。"""
+    return f"{entity}_{entity_id}_{real_name}"
+
+
 def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path) -> str:
     """Markdown 内の eLabFTW 画像 URL をローカルにダウンロードし相対パスに書き換える。"""
-    uploads = client.list_uploads(entity, entity_id)
+    try:
+        uploads = client.list_uploads(entity, entity_id)
+    except Exception:
+        return body
     upload_map = {}
     for u in uploads:
         ln = u.get("long_name")
@@ -52,7 +60,7 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
         if not matched_upload:
             return m.group(0)
         real_name = matched_upload.get("real_name", f"upload_{matched_upload['id']}")
-        local_name = f"{entity_id}_{real_name}"
+        local_name = _image_local_name(entity, entity_id, real_name)
         img_dir = docs_dir / "images"
         img_dir.mkdir(parents=True, exist_ok=True)
         dest = img_dir / local_name
@@ -67,7 +75,10 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
 
 def _normalize_remote_image_urls(body: str, entity: str, entity_id: int, client: ELabFTWClient) -> str:
     """diff 比較用: リモート MD 内の eLabFTW 画像 URL をローカル相対パスに書き換える（DL なし）。"""
-    uploads = client.list_uploads(entity, entity_id)
+    try:
+        uploads = client.list_uploads(entity, entity_id)
+    except Exception:
+        return body
     upload_map = {}
     for u in uploads:
         ln = u.get("long_name")
@@ -81,14 +92,14 @@ def _normalize_remote_image_urls(body: str, entity: str, entity_id: int, client:
         for ln, u in upload_map.items():
             if ln in src:
                 real_name = u.get("real_name", f"upload_{u['id']}")
-                return f"![{alt}](images/{entity_id}_{real_name})"
+                return f"![{alt}](images/{_image_local_name(entity, entity_id, real_name)})"
         return m.group(0)
 
     return IMAGE_RE.sub(replace_match, body)
 
 
 def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path) -> str:
-    # 既存 uploads を取得して real_name → URL のマップを作る
+    # 既存 uploads を取得して real_name → (url, size) のマップを作る
     existing = {}
     try:
         for u in client.list_uploads(entity, entity_id):
@@ -96,7 +107,10 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
             ln = u.get("long_name")
             st = u.get("storage")
             if rn and ln and st:
-                existing[rn] = f"{client.base_url}/app/download.php?f={ln}&name={rn}&storage={st}"
+                existing[rn] = {
+                    "url": f"{client.base_url}/app/download.php?f={ln}&name={rn}&storage={st}",
+                    "size": u.get("filesize", 0),
+                }
     except Exception:
         pass
 
@@ -110,10 +124,11 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
         if not img_path.exists():
             print(f"    ⚠ 画像が見つかりません: {src}")
             return m.group(0)
-        # 既存 upload に同名ファイルがあればスキップ
-        if img_path.name in existing:
+        # 既存 upload に同名かつ同サイズのファイルがあれば再利用
+        ex = existing.get(img_path.name)
+        if ex and ex["size"] and img_path.stat().st_size == ex["size"]:
             print(f"    ✓ {img_path.name}（既存アップロードを再利用）")
-            return f"![{alt}]({existing[img_path.name]})"
+            return f"![{alt}]({ex['url']})"
         print(f"    画像をアップロード中: {img_path.name}")
         result = client.upload_file(entity, entity_id, str(img_path))
         if result.get("url"):
