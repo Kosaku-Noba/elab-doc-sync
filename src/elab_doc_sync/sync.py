@@ -106,26 +106,11 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
             if uid_match:
                 matched_upload = id_map.get(uid_match.group(1))
         if not matched_upload:
-            # list_uploads にない画像: URL から long_name を抽出して users/me/uploads 経由で取得
-            ln_match = UPLOAD_LONGNAME_RE.search(src)
-            if ln_match:
-                extracted_ln = ln_match.group(1)
-                # long_name の拡張子からファイル名を推定
-                ext = Path(extracted_ln).suffix or ".png"
-                fname = f"upload_{hash(extracted_ln) & 0xFFFF:04x}{ext}"
-                local_name = _image_local_name(entity, entity_id, fname)
-                img_dir = docs_dir / "images"
-                img_dir.mkdir(parents=True, exist_ok=True)
-                dest = img_dir / local_name
-                if not dest.exists():
-                    try:
-                        data = client.download_by_long_name(extracted_ln)
-                        dest.write_bytes(data)
-                        print(f"    画像をダウンロード: {fname}")
-                    except Exception as e:
-                        print(f"    ⚠ 画像のダウンロードに失敗: {e}")
-                        return m.group(0)
-                return f"![{alt}](images/{local_name})"
+            # list_uploads にない画像: 絶対 URL に変換して保持
+            if "app/download.php" in src and not src.startswith(("http://", "https://")):
+                abs_url = f"{client.base_url}/{src.lstrip('/')}"
+                print(f"    画像を絶対 URL に変換: {Path(src).name[:40]}")
+                return f"![{alt}]({abs_url})"
             return m.group(0)
         real_name = matched_upload.get("real_name", f"upload_{matched_upload['id']}")
         local_name = _image_local_name(entity, entity_id, real_name)
