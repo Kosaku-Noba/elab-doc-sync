@@ -64,6 +64,142 @@ elabftw:
   verify_ssl: true   # 自己署名証明書の場合のみ false に変更
 ```
 
+## 基本的な使い方
+
+### ローカル → eLabFTW に同期（push）
+
+```bash
+$ esync
+  [プロジェクトドキュメント] 2 件のドキュメントを収集しました（1234 文字）
+  [プロジェクトドキュメント] リソース #42 を更新しました
+
+完了: 1 ターゲットを同期しました
+```
+
+変更がないファイルは自動でスキップされます:
+
+```bash
+$ esync
+  [プロジェクトドキュメント] 変更なし（スキップ）
+```
+
+### eLabFTW → ローカルに取得（pull）
+
+初回は `--id` と `--entity` を指定:
+
+```bash
+$ esync pull --id 42 --entity items
+  [実験メモ] リソース #42 → docs/実験メモ.md
+    画像をダウンロード: figure1.png
+
+完了: 1 件取得しました
+```
+
+2回目以降は ID を覚えているのでそのまま:
+
+```bash
+$ esync pull
+  [実験メモ] リソース #42 → docs/実験メモ.md
+
+完了: 1 件取得しました
+```
+
+### 差分を確認（diff）
+
+```bash
+$ esync diff
+--- eLabFTW: 実験メモ
++++ ローカル: 実験メモ
+@@ -1,3 +1,3 @@
+ # 実験メモ
+-古い内容
++新しい内容
+```
+
+差分がなければ:
+
+```bash
+$ esync diff
+  [実験メモ] 差分なし
+
+すべて最新です
+```
+
+### 同期状態を確認（status）
+
+```bash
+$ esync status
+  [プロジェクトドキュメント] 変更あり（2 ファイル, 画像 1 枚, ID: #42）
+```
+
+### 実行前に確認（dry-run）
+
+```bash
+$ esync --dry-run
+  [プロジェクトドキュメント] 2 ファイル, 画像 1 枚, 変更あり → 同期対象
+```
+
+## よくある操作例
+
+### 既存プロジェクトを eLabFTW から構築（clone）
+
+```bash
+$ export ELABFTW_API_KEY="your_key"
+$ esync clone --url https://elab.example.com --entity items --id 42 --id 43
+
+=== esync clone: https://elab.example.com ===
+
+  .elab-sync.yaml を作成しました
+  [実験メモ] リソース #42 → elab-clone-42/docs/実験メモ.md
+  [結果まとめ] リソース #43 → elab-clone-42/docs/結果まとめ.md
+
+✅ プロジェクトを作成しました: elab-clone-42/ (2 件)
+```
+
+### タグ操作
+
+```bash
+# タグ一覧を表示
+$ esync tag list
+  リソース #42: biology, 2025-Q1
+
+# タグを追加
+$ esync tag add "new-tag"
+  リソース #42: タグ 'new-tag' を追加しました
+
+# タグを外す
+$ esync tag remove "old-tag"
+  リソース #42: タグ 'old-tag' を外しました
+```
+
+### リモート一覧を表示
+
+```bash
+# リソース一覧
+$ esync list
+  #42  実験メモ
+  #43  結果まとめ
+
+# 実験ノート一覧
+$ esync list --entity experiments
+  #1  Day 1 実験記録
+  #2  Day 2 実験記録
+```
+
+### 特定のターゲットだけ同期
+
+```bash
+$ esync -t "プロジェクト概要"
+  [プロジェクト概要] リソース #42 を更新しました
+```
+
+### 既存エンティティとローカルを紐付け（link）
+
+```bash
+$ esync link 42
+  [実験メモ.md] → リソース #42 に紐付けました
+```
+
 ## コマンド一覧
 
 | コマンド | 説明 |
