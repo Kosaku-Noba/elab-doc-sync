@@ -2123,3 +2123,20 @@ README への利用例追加という点では、コミットメッセージと 
 ### Codex 所感
 
 > 所感: コード差分自体は小さく意図も明確で、高リスクの設計・セキュリティ問題は見えません。今回の価値は CLI 契約の整合性そのものなので、1 本でも文言回帰テストがあると後続の AI/人手修正に対してかなり強くなります。
+
+
+## 2026-04-06T15:23 [Codex] fix: esync pull --force が認識されない問題を修正 に対するレビュー
+
+コミットメッセージと diff は整合しており、変更は `pull_parser` に `--force/-f` を追加して `esync pull --force` を受理する一点です。[AI_discussions.md](/home/user/elab-doc-sync/AI_discussions.md) の直近レビューは 2026-04-06T11:18 の CLI-20c テスト強化で、今回の parser 経路については未言及でした。なお、指定の `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` はこの環境で `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` により実行不能でした。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| `pull` だけを特例化すると CLI 仕様が不統一なまま残る | [src/elab_doc_sync/cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py#L954) の追加で `esync pull --force` は通る想定ですが、共通オプションの本体は依然としてトップレベル parser 側にあります。[src/elab_doc_sync/cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py) では `cmd_new()` も `args.force` を使う一方で `new_parser` に `--force` は無く、`pull` だけ post-subcommand で許可するのか、共通オプションを親 parser 化して全サブコマンドで揃えるのかはこのコミットからは判断できません。仕様として `pull` だけを例外にするなら、作者に明示的な確認が必要です。 | 中 |
+| 回帰テストが壊れていた層を固定していない | 既存の [tests/test_cli.py](/home/user/elab-doc-sync/tests/test_cli.py) にある `CLI-14` は `cmd_pull(..., force=True)` を直接呼ぶテストで、今回の不具合だった `argparse` の受理可否は通っていません。この diff に `main()` / `parse_args()` / 実際の `sys.argv` を通すテスト追加が見えない以上、将来 parser 定義を整理した際に同じ「実装は正しいが CLI から呼べない」回帰を再発させる余地があります。 | 中 |
+| テスト結果は判断不能 | 指定コマンド `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` はこの環境では `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` で起動できませんでした。[AI_discussions.md](/home/user/elab-doc-sync/AI_discussions.md) の過去ログは参照できますが、このレビューでは独立に成功可否を確認できていません。 | 低 |
+
+### Codex 所感
+
+> 所感: 症状に対する一点修正としては自然ですが、CLI の共通オプション設計を局所的に複製しているため、後続の人や AI が「どのサブコマンドでどの位置の `--force` が有効か」を誤読しやすい形です。共通オプションの設計方針を揃えたうえで、parser 経路を通す回帰テストを 1 本追加できると、この種の不具合はかなり閉じやすくなります。
