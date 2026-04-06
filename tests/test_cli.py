@@ -422,7 +422,7 @@ def test_log_limit(tmp_path, capsys):
 # CLI-40
 def test_init_creates_config(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    inputs = iter(["https://elab.example.com", "n", "", "", "merge", "items", "TestTitle"])
+    inputs = iter(["https://elab.example.com", "n", "", "", "merge", "items", "md", "TestTitle"])
     monkeypatch.setattr("builtins.input", lambda _: next(inputs))
     cfg_path = tmp_path / ".elab-sync.yaml"
     cmd_init(Namespace(config=str(cfg_path)))
@@ -441,7 +441,7 @@ def test_init_existing_abort(tmp_path, monkeypatch):
 # CLI-42
 def test_init_template_files(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    inputs = iter(["https://elab.example.com", "n", "docs/", "", "each", "items"])
+    inputs = iter(["https://elab.example.com", "n", "docs/", "", "each", "items", "md"])
     monkeypatch.setattr("builtins.input", lambda _: next(inputs))
     cmd_init(Namespace(config=str(tmp_path / ".elab-sync.yaml")))
     # init creates config; template expansion depends on package template dir

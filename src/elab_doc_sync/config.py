@@ -16,6 +16,7 @@ class TargetConfig:
     mode: str = "merge"       # "merge" (全結合→1エンティティ) or "each" (1ファイル=1エンティティ)
     entity: str = "items"     # "items" or "experiments"
     tags: list[str] = None    # push 時に自動設定するタグ
+    body_format: str = "md"   # "md" (Markdown のまま送信) or "html" (HTML に変換して送信)
 
     def __post_init__(self):
         if self.tags is None:
@@ -71,6 +72,9 @@ def load_config(config_path: Path) -> Config:
         if entity in ("resources", "resource"):
             entity = "items"
         title = t.get("title", "") if mode == "merge" else t.get("title", "")
+        body_format = t.get("body_format", "md")
+        if body_format not in ("md", "html"):
+            _abort(f"body_format は 'md' または 'html' を指定してください（現在: {body_format!r}）")
         targets.append(TargetConfig(
             title=title,
             docs_dir=t["docs_dir"],
@@ -79,6 +83,7 @@ def load_config(config_path: Path) -> Config:
             mode=mode,
             entity=entity,
             tags=t.get("tags", []),
+            body_format=body_format,
         ))
 
     if not targets:
