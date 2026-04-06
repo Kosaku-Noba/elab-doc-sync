@@ -585,3 +585,128 @@ def test_rewrite_images_upload_strips_prefix(tmp_path):
     upload_path = client.upload_file.call_args[0][2]
     assert Path(upload_path).name == "photo.png"
     assert "https://elab.example.com/dl/photo.png" in result
+
+
+# S-62: _download_images handles /api/v2/.../uploads/{id} format (HTML editor images)
+def test_download_images_api_v2_url(tmp_path):
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"id": 15579, "long_name": "9a/9ac3cd.png", "real_name": "photo.png", "storage": 2},
+    ]
+    client.download_upload.return_value = b"\x89PNG"
+    body = "![](/api/v2/items/3713/uploads/15579)"
+    result = _download_images(body, "items", 3713, client, tmp_path)
+    assert "images/items_3713_photo.png" in result
+    assert (tmp_path / "images" / "items_3713_photo.png").exists()
+    client.download_upload.assert_called_once_with(
+        entity_type="items", entity_id=3713, upload_id=15579,
+    )
+
+
+# S-63: _normalize_remote_image_urls handles /api/v2/.../uploads/{id} format
+def test_normalize_api_v2_url():
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"id": 15579, "long_name": "9a/9ac3cd.png", "real_name": "photo.png", "storage": 2},
+    ]
+    body = "![](/api/v2/items/3713/uploads/15579)"
+    result = _normalize_remote_image_urls(body, "items", 3713, client)
+    assert "images/items_3713_photo.png" in result
+
+
+# S-64: upload_id prefix mismatch prevention (15 vs 15579)
+def test_download_images_no_prefix_mismatch(tmp_path):
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"id": 15, "long_name": "aa/aa.png", "real_name": "wrong.png", "storage": 1},
+        {"id": 15579, "long_name": "bb/bb.png", "real_name": "correct.png", "storage": 2},
+    ]
+    client.download_upload.return_value = b"\x89PNG"
+    body = "![](/api/v2/items/1/uploads/15579)"
+    result = _download_images(body, "items", 1, client, tmp_path)
+    assert "correct.png" in result
+    assert "wrong.png" not in result
+
+
+# S-65: _normalize_remote_image_urls no prefix mismatch (15 vs 15579)
+def test_normalize_no_prefix_mismatch():
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"id": 15, "long_name": "aa/aa.png", "real_name": "wrong.png", "storage": 1},
+        {"id": 15579, "long_name": "bb/bb.png", "real_name": "correct.png", "storage": 2},
+    ]
+    body = "![](/api/v2/items/1/uploads/15579)"
+    result = _normalize_remote_image_urls(body, "items", 1, client)
+    assert "correct.png" in result
+    assert "wrong.png" not in result
+
+
+# S-66: trailing slash in upload URL is handled
+def test_download_images_trailing_slash(tmp_path):
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"id": 100, "long_name": "xx/xx.png", "real_name": "img.png", "storage": 1},
+    ]
+    client.download_upload.return_value = b"\x89PNG"
+    body = "![](/api/v2/items/1/uploads/100/)"
+    result = _download_images(body, "items", 1, client, tmp_path)
+    assert "img.png" in result
+    client.download_upload.assert_called_once()
+
+
+# S-67: /uploads/{id}/extra (subpath) is NOT matched
+def test_download_images_rejects_subpath(tmp_path):
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"id": 100, "long_name": "xx/xx.png", "real_name": "img.png", "storage": 1},
+    ]
+    body = "![](/api/v2/items/1/uploads/100/extra)"
+    result = _download_images(body, "items", 1, client, tmp_path)
+    # subpath 付きはマッチしないので元の URL がそのまま残る
+    assert "/uploads/100/extra" in result
+    client.download_upload.assert_not_called()
+
+
+# S-68: UPLOAD_ID_RE boundary tests (query, fragment, bare, trailing slash, subpath)
+def test_upload_id_re_boundaries():
+    from elab_doc_sync.sync import UPLOAD_ID_RE
+    # 許容例
+    assert UPLOAD_ID_RE.search("/uploads/100").group(1) == "100"
+    assert UPLOAD_ID_RE.search("/uploads/100/").group(1) == "100"
+    assert UPLOAD_ID_RE.search("/uploads/100?x=1").group(1) == "100"
+    assert UPLOAD_ID_RE.search("/uploads/100#frag").group(1) == "100"
+    assert UPLOAD_ID_RE.search("/api/v2/items/1/uploads/200").group(1) == "200"
+    # 拒否例
+    assert UPLOAD_ID_RE.search("/uploads/100/extra") is None
+    assert UPLOAD_ID_RE.search("/uploads/abc") is None
+
+
+# S-69: external URL with /uploads/ — id が一致しても download は自サーバー API 経由
+def test_download_images_external_url_with_matching_id(tmp_path):
+    """外部 URL の upload_id が偶然一致しても、download_upload は自サーバーの
+    API に対して実行される（URL のホストは無関係）。これは仕様として許容する。
+    理由: eLabFTW の body HTML 内の画像 URL は相対パスか自サーバー URL のみ。"""
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"id": 100, "long_name": "xx/xx.png", "real_name": "img.png", "storage": 1},
+    ]
+    client.download_upload.return_value = b"\x89PNG"
+    body = "![](https://evil.example/uploads/100)"
+    result = _download_images(body, "items", 1, client, tmp_path)
+    # id=100 が一致するので download_upload が呼ばれる（自サーバー API 経由）
+    assert "img.png" in result
+    client.download_upload.assert_called_once_with(
+        entity_type="items", entity_id=1, upload_id=100,
+    )
+
+
+# S-70: external URL with /uploads/ — id が不一致なら無視
+def test_download_images_external_url_no_match(tmp_path):
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"id": 100, "long_name": "xx/xx.png", "real_name": "img.png", "storage": 1},
+    ]
+    body = "![](https://evil.example/uploads/999)"
+    result = _download_images(body, "items", 1, client, tmp_path)
+    assert "https://evil.example/uploads/999" in result
+    client.download_upload.assert_not_called()
