@@ -20,6 +20,8 @@ def mock_client():
     client.get_item.return_value = {"id": 1, "title": "test", "body": "<p>hello</p>"}
     client.get_experiment.return_value = {"id": 1, "title": "test", "body": "<p>hello</p>"}
     client.upload_file.return_value = {"id": 1, "filename": "img.png", "url": "https://elab.example.com/dl/img.png"}
+    client.list_uploads.return_value = []
+    client.download_upload.return_value = b"\x89PNG"
     client.list_items.return_value = [{"id": 1}, {"id": 2}]
     client.list_experiments.return_value = [{"id": 1}]
     return client
