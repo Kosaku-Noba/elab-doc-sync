@@ -31,6 +31,41 @@ def _md_to_html(text: str) -> str:
     return markdown.markdown(text, extensions=MD_EXTENSIONS)
 
 
+def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path) -> str:
+    """Markdown 内の eLabFTW 画像 URL をローカルにダウンロードし相対パスに書き換える。"""
+    uploads = client.list_uploads(entity, entity_id)
+    # long_name → upload を引けるマップ
+    upload_map = {}
+    for u in uploads:
+        ln = u.get("long_name")
+        if ln:
+            upload_map[ln] = u
+
+    def replace_match(m):
+        alt, src = m.group(1), m.group(2)
+        if "app/download.php" not in src and "/uploads/" not in src:
+            return m.group(0)
+        # long_name を URL から抽出
+        matched_upload = None
+        for ln, u in upload_map.items():
+            if ln in src:
+                matched_upload = u
+                break
+        if not matched_upload:
+            return m.group(0)
+        real_name = matched_upload.get("real_name", f"upload_{matched_upload['id']}")
+        img_dir = docs_dir / "images"
+        img_dir.mkdir(parents=True, exist_ok=True)
+        dest = img_dir / real_name
+        if not dest.exists():
+            data = client.download_upload(entity, entity_id, matched_upload["id"])
+            dest.write_bytes(data)
+            print(f"    画像をダウンロード: {real_name}")
+        return f"![{alt}](images/{real_name})"
+
+    return IMAGE_RE.sub(replace_match, body)
+
+
 def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path) -> str:
     def replace_match(m):
         alt, src = m.group(1), m.group(2)

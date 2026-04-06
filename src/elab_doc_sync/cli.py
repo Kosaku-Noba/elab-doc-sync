@@ -12,7 +12,7 @@ from markdownify import markdownify as html_to_md
 
 from .client import ELabFTWClient
 from .config import load_config
-from .sync import DocsSyncer, EachDocsSyncer, ConflictError
+from .sync import DocsSyncer, EachDocsSyncer, ConflictError, _download_images
 from . import sync_log
 
 DEFAULT_CONFIG = ".elab-sync.yaml"
@@ -211,6 +211,7 @@ def cmd_pull(args):
                 title = data.get("title", f"untitled_{eid}")
                 body_html = data.get("body", "") or ""
                 body_md = html_to_md(body_html, heading_style="ATX").strip()
+                body_md = _download_images(body_md, entity_type, eid, client, docs_dir)
 
                 filename = f"{title}.md"
                 filepath = docs_dir / filename
@@ -258,6 +259,7 @@ def cmd_pull(args):
 
             body_html = data.get("body", "") or ""
             body_md = html_to_md(body_html, heading_style="ATX").strip()
+            body_md = _download_images(body_md, entity_type, eid, client, docs_dir)
 
             filename = f"{target.title or 'pulled'}.md"
             filepath = docs_dir / filename
@@ -521,6 +523,7 @@ def cmd_clone(args):
         title = data.get("title", f"untitled_{eid}")
         body_html = data.get("body", "") or ""
         body_md = html_to_md(body_html, heading_style="ATX").strip()
+        body_md = _download_images(body_md, entity, eid, client, docs_path)
 
         filename = f"{title}.md"
         filepath = docs_path / filename
