@@ -954,6 +954,7 @@ def main():
     pull_parser.add_argument("--id", type=int, action="append", default=None, help="取得するエンティティ ID（複数指定可）")
     pull_parser.add_argument("--entity", default=None, choices=["items", "experiments", "resources"],
                              help="エンティティ種別（resources は items のエイリアス）")
+    pull_parser.add_argument("--force", "-f", action="store_true", default=False, help="既存ファイルを上書き")
 
     log_parser = sub.add_parser("log", help="同期ログを表示")
     log_parser.add_argument("--limit", "-l", type=int, default=20, help="表示件数（デフォルト: 20）")
