@@ -17,6 +17,9 @@ IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 # /uploads/{数字} の後に区切り文字（? # / 行末）が続くパターンにマッチ。
 # ホスト名やパス前半は検証しない（外部 URL がマッチしても、id_map に
 # 存在しない upload_id は無視されるため安全）。
+# id が一致した場合は自サーバーの API 経由でダウンロードされる。
+# eLabFTW の body HTML 内の画像 URL は相対パスか自サーバー URL のみのため、
+# 外部 URL が /uploads/ を含むことは実運用上ありえない。
 # 許容例: /uploads/100  /uploads/100/  /uploads/100?x=1  /uploads/100#frag
 # 拒否例: /uploads/100/extra（サブパス付き）
 UPLOAD_ID_RE = re.compile(r"/uploads/(\d+)(?:[?#]|/?$)")
