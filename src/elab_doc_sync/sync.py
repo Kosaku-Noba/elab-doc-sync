@@ -15,8 +15,8 @@ from . import sync_log
 IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 # eLabFTW の画像 URL から upload_id を抽出する正規表現。
 # /uploads/{数字} の後に区切り文字（? # / 行末）が続くパターンにマッチ。
-# URL のホスト名やパス前半は検証しない（eLabFTW 内部 URL であることは
-# 呼び出し元の "app/download.php" or "/uploads/" フィルタで保証済み）。
+# ホスト名やパス前半は検証しない（外部 URL がマッチしても、id_map に
+# 存在しない upload_id は無視されるため安全）。
 # 許容例: /uploads/100  /uploads/100/  /uploads/100?x=1  /uploads/100#frag
 # 拒否例: /uploads/100/extra（サブパス付き）
 UPLOAD_ID_RE = re.compile(r"/uploads/(\d+)(?:[?#]|/?$)")

@@ -676,7 +676,19 @@ def test_upload_id_re_boundaries():
     assert UPLOAD_ID_RE.search("/uploads/100?x=1").group(1) == "100"
     assert UPLOAD_ID_RE.search("/uploads/100#frag").group(1) == "100"
     assert UPLOAD_ID_RE.search("/api/v2/items/1/uploads/200").group(1) == "200"
-    assert UPLOAD_ID_RE.search("https://other.example/uploads/300").group(1) == "300"
     # 拒否例
     assert UPLOAD_ID_RE.search("/uploads/100/extra") is None
     assert UPLOAD_ID_RE.search("/uploads/abc") is None
+
+
+# S-69: external URL with /uploads/ does not cause download (no matching upload_id)
+def test_download_images_external_url_ignored(tmp_path):
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"id": 100, "long_name": "xx/xx.png", "real_name": "img.png", "storage": 1},
+    ]
+    # upload_id=999 は list_uploads に存在しないのでスキップされる
+    body = "![](https://evil.example/uploads/999)"
+    result = _download_images(body, "items", 1, client, tmp_path)
+    assert "https://evil.example/uploads/999" in result
+    client.download_upload.assert_not_called()
