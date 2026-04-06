@@ -335,3 +335,26 @@ def test_list_uploads_schema(mock_req, client):
     assert "long_name" in u
     assert "real_name" in u
     assert "storage" in u
+
+
+# CL-31: download_upload rejects positional arguments (keyword-only enforcement)
+def test_download_upload_rejects_positional(client):
+    with pytest.raises(TypeError):
+        client.download_upload("abc.png", "img.png", 1)
+
+
+# CL-32: _download_images passes correct list_uploads fields to download_upload
+def test_download_images_passes_upload_fields(tmp_path):
+    """list_uploads → _download_images → download_upload の結合契約テスト。
+    list_uploads の long_name/real_name/storage が download_upload に正しく渡されることを検証。"""
+    from elab_doc_sync.sync import _download_images
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"id": 10, "long_name": "hash123.png", "real_name": "photo.png", "storage": 2, "filesize": 500},
+    ]
+    client.download_upload.return_value = b"\x89PNG"
+    body = "![a](https://elab.example.com/app/download.php?f=hash123.png&name=photo.png&storage=2)"
+    _download_images(body, "items", 42, client, tmp_path)
+    client.download_upload.assert_called_once_with(
+        long_name="hash123.png", real_name="photo.png", storage=2,
+    )
