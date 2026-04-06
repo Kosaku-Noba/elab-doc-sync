@@ -130,9 +130,14 @@ class ELabFTWClient:
         return self._req("GET", f"/api/v2/{entity_type}/{entity_id}/uploads").json()
 
     def download_upload(self, entity_type: str, entity_id: int, upload_id: int) -> bytes:
-        """添付ファイルのバイナリを返す。"""
+        """添付ファイルのバイナリを返す。
+
+        eLabFTW API v2 の /uploads/{id} は Accept ヘッダだけでは
+        バイナリを返さない場合があるため、format=binary を指定する。
+        """
         resp = self._req("GET", f"/api/v2/{entity_type}/{entity_id}/uploads/{upload_id}",
-                         headers={**self._auth_headers, "Accept": "application/octet-stream"})
+                         headers=self._auth_headers,
+                         params={"format": "binary"})
         return resp.content
 
     # ── tags ─────────────────────────────────────────────────
