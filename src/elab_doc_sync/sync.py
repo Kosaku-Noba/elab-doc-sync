@@ -13,6 +13,7 @@ from .config import TargetConfig
 from . import sync_log
 
 IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+UPLOAD_ID_RE = re.compile(r"/uploads/(\d+)(?:\?|$|#)")
 MD_EXTENSIONS = ["tables", "fenced_code", "codehilite", "toc", "nl2br"]
 
 
@@ -91,10 +92,9 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
                 break
         # upload_id でマッチ（/api/v2/.../uploads/{id} 形式）
         if not matched_upload:
-            for uid, u in id_map.items():
-                if src.rstrip("/").endswith(f"/uploads/{uid}") or f"/uploads/{uid}" in src:
-                    matched_upload = u
-                    break
+            uid_match = UPLOAD_ID_RE.search(src)
+            if uid_match:
+                matched_upload = id_map.get(uid_match.group(1))
         if not matched_upload:
             return m.group(0)
         real_name = matched_upload.get("real_name", f"upload_{matched_upload['id']}")
@@ -142,10 +142,9 @@ def _normalize_remote_image_urls(body: str, entity: str, entity_id: int, client:
                 matched = u
                 break
         if not matched:
-            for uid, u in id_map.items():
-                if src.rstrip("/").endswith(f"/uploads/{uid}") or f"/uploads/{uid}" in src:
-                    matched = u
-                    break
+            uid_match = UPLOAD_ID_RE.search(src)
+            if uid_match:
+                matched = id_map.get(uid_match.group(1))
         if matched:
             real_name = matched.get("real_name", f"upload_{matched['id']}")
             return f"![{alt}](images/{_image_local_name(entity, entity_id, real_name)})"
