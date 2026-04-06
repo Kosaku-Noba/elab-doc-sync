@@ -377,7 +377,7 @@ def test_download_images_replaces_url(tmp_path):
     result = _download_images(body, "items", 42, client, tmp_path)
     assert "images/items_42_photo.png" in result
     assert (tmp_path / "images" / "items_42_photo.png").exists()
-    client.download_upload.assert_called_once_with("items", 42, 10)
+    client.download_upload.assert_called_once_with(long_name="abc123.png", real_name="photo.png", storage="1")
 
 
 # S-46

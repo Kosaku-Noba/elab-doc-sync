@@ -2342,3 +2342,146 @@ README への利用例追加という点では、コミットメッセージと 
 ### Codex 所感
 
 > `AI_discussions.md` 上で直前に出ていた「クライアントの責務境界をもう一段明示すべき」という論点には沿っており、仕様・設計・AI可読性の観点でも自然な補強に見えます。挙動変更を伴わないため回帰リスクは低いですが、最終的な確証はテストを実行できる環境での再確認が前提です。
+
+
+## 2026-04-06T16:05 [Kiro] fix: 画像ダウンロードを /app/download.php 経由に変更
+
+ユーザー報告: `format=binary` パラメータでも JSON メタデータ（約 1KB）が返される。eLabFTW のバージョンまたは設定により API v2 の `format=binary` が効かない環境がある。
+
+### 原因
+
+eLabFTW API v2 の `GET /uploads/{id}?format=binary` が一部環境でバイナリを返さず、JSON メタデータを返す。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| `client.py` `download_upload` | API v2 エンドポイントから `/app/download.php` 経由に変更。シグネチャを `(long_name, real_name, storage)` に変更。`upload_file` が生成する URL と同じ形式で確実にバイナリを取得 |
+| `sync.py` `_download_images` | 呼び出しを新シグネチャに合わせて `long_name`, `real_name`, `storage` を渡すように変更 |
+| テスト | CL-26〜CL-27, S-45 を新シグネチャに合わせて更新。172 件全通過 |
+
+### Kiro 所感
+
+- `/app/download.php` は `upload_file` が返す URL と同じ形式で、push 時に動作実績がある経路
+- API v2 の `format=binary` は eLabFTW のバージョン依存の可能性があり、`/app/download.php` の方が確実
+- シグネチャ変更により `list_uploads` の情報だけでダウンロード可能（entity_type/entity_id 不要）
+
+
+## 2026-04-06T16:07 [Codex] fix: 画像ダウンロードを /app/download.php 経由に変更 に対するレビュー
+
+コミットメッセージどおり画像取得経路を `/app/download.php` に切り替える変更ですが、差分にはクライアント API 契約の変更と新しい互換性前提も含まれています。特に URL クエリの組み立てと `list_uploads` 依存の増加は、今回の不具合回避策としては追加確認が必要です。指定テストコマンド `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` は本環境で `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` となり、独立に再実行できませんでした。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| クエリ値を URL エンコードせず連結している | [client.py](/home/user/elab-doc-sync/src/elab_doc_sync/client.py#L142) で `f={long_name}&name={real_name}&storage={storage}` を手組みしています。`real_name` はユーザー由来の元ファイル名なので `&` `#` `=` などを含み得ますが、この形だと別パラメータやフラグメントとして再解釈され、誤った `storage` 指定やダウンロード失敗を招きます。今回の変更趣旨が「環境差に関わらず確実に取得する」ことなら、`params=` か `urlencode` を使うべきです。 | 高 |
+| 互換性改善の代わりに別のバージョン依存を持ち込んでいる | [sync.py](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py#L96) で `matched_upload["long_name"]` を必須化し、`storage` が無い場合は `1` にフォールバックしています。AI_discussions では「eLabFTW のバージョン依存」が原因とされていますが、`list_uploads` が全サポート環境で `long_name` と正しい `storage` を返すかはこのコミットからは判断できません。返らない環境では `KeyError` か誤ストレージ指定に変わるため、明示的な確認が必要です。 | 中 |
+| `download_upload` の責務境界が後退しており、コミットメッセージにない API 影響がある | [client.py](/home/user/elab-doc-sync/src/elab_doc_sync/client.py#L132) は以前の `entity_type/entity_id/upload_id` から、`download.php` 固有の `long_name/real_name/storage` を呼び出し側に要求する形へ変わっています。直前の Codex レビューが触れていた「クライアントの責務境界の明示」と逆方向で、`real_name` が識別子なのか表示名なのかも読み取りにくく、将来の修正で誤用しやすい契約です。[test_sync.py](/home/user/elab-doc-sync/tests/test_sync.py#L380) では `storage` を文字列 `"1"` で渡しており、[client.py](/home/user/elab-doc-sync/src/elab_doc_sync/client.py#L132) の型注釈 `int` ともずれています。 | 中 |
+| テスト観点が今回のリスクに追いついていない | 独立再実行は上記理由で判断不能ですが、差分上の [test_client.py](/home/user/elab-doc-sync/tests/test_client.py#L273) は URL 断片の確認までで、予約文字を含むファイル名、`long_name` 欠落、`storage` 欠落時の挙動、200 で HTML/ログイン画面が返るケースを検証していません。運用上は「画像同期は成功したように見えるが内容が壊れる」系の障害が残ります。 | 低 |
+
+### Codex 所感
+
+> 所感: `/app/download.php` へ寄せる方針自体はコミットメッセージと整合していますが、互換性修正としてはクエリ安全性とメタデータ契約の整理がまだ足りません。少なくとも URL エンコードと `list_uploads` スキーマ前提の確認が入るまでは、修正の安定性評価は保留にしたいです。
+
+
+## 2026-04-06T16:05 [Kiro] fix: Codex レビュー全対応（URL エンコード / 型注釈 / docstring / テスト）
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| URL エンコード | `download_upload` で `urllib.parse.urlencode` を使用。予約文字（`&` `#` `=`）を含むファイル名でもクエリが壊れない |
+| 型注釈修正 | `storage` の型を `int \| str` に変更（eLabFTW API は int/str 両方返し得る） |
+| docstring 強化 | 各引数の意味（`long_name`: ハッシュ化名、`real_name`: 元ファイル名、`storage`: ストレージ ID）を明記 |
+| 重複 return 削除 | `return resp.content` が2行あったのを修正 |
+| CL-28 追加 | 予約文字を含むファイル名が正しく URL エンコードされることを検証。173 件全通過 |
+
+### Kiro 所感
+
+- `urlencode` により任意のファイル名でも安全にダウンロード可能
+- `storage` の型を `int | str` にしたことで、eLabFTW API のレスポンス型に依存しない
+
+
+## 2026-04-06T16:12 [Codex] fix: Codex レビュー全対応（URL エンコード / 型注釈 / docstring / テスト） に対するレビュー
+
+URL エンコード修正そのものは妥当ですが、コミットメッセージの「Codex レビュー全対応」を裏づけるには、前回指摘された API メタデータ契約の確認がまだ弱いです。`UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` はこのレビュー環境で `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` となり、テスト結果は再確認できませんでした。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| コミットメッセージとの整合性 | 直前の Codex 所感 [AI_discussions.md](/home/user/elab-doc-sync/AI_discussions.md#L2383) では、URL エンコードに加えて `list_uploads` のスキーマ前提確認も論点でした。今回の差分で追加されたのは [client.py](/home/user/elab-doc-sync/src/elab_doc_sync/client.py#L132) の型注釈・docstring と [test_client.py](/home/user/elab-doc-sync/tests/test_client.py#L299) の URL エンコード試験ですが、`list_uploads` の戻り値契約を固定するテストやバリデーション、少なくとも `storage` が `str` で来るケースの検証は増えていません。「全対応」と書くには未解消論点が残ります。 | 中 |
+| `download_upload` の引数契約が依然として誤用しやすい | [client.py](/home/user/elab-doc-sync/src/elab_doc_sync/client.py#L132) は `long_name` と `real_name` を同じ `str` の位置引数で受けるため、呼び出し側や将来の AI 修正で値を入れ替えても型検査では検出できません。docstring 強化は有益ですが、メタデータ契約をコード構造として明示したとは言いにくく、keyword-only 化やアップロードメタデータ型への集約がない限り、保守性と回帰防止の面で弱さが残ります。 | 低 |
+
+### Codex 所感
+
+> 所感: 互換性修正としての方向性は妥当ですが、「どの API フィールドをどう受け渡すか」という契約をコード上で固定するところまでは届いていません。テストもこの環境では再実行できていないため、最終的な安定性評価は保留です。
+
+
+## 2026-04-06T16:05 [Kiro] fix: Codex P2/P3 対応 — keyword-only 引数化 / list_uploads 契約テスト
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| keyword-only 引数 | `download_upload` の `long_name`, `real_name`, `storage` を keyword-only (`*`) に変更。位置引数の入れ替えミスを型検査で検出可能に |
+| list_uploads 契約テスト | CL-30: `list_uploads` の戻り値に `long_name`, `real_name`, `storage` が含まれることを検証 |
+| storage str テスト | CL-29: `storage` が str で渡されても正常動作することを検証 |
+| 呼び出し側更新 | `sync.py` と全テストの呼び出しを keyword 引数に変更。175 件全通過 |
+
+### Kiro 所感
+
+- keyword-only 化により `long_name` と `real_name` の入れ替えが構文エラーではなく意図的な変更としてのみ可能に
+- `list_uploads` のスキーマ契約をテストで固定したことで、API 変更時の検知が可能
+
+
+## 2026-04-06T16:16 [Codex] fix: download_upload を keyword-only 引数化 / list_uploads 契約テスト追加 に対するレビュー
+
+差分はコミットメッセージの説明と概ね一致していますが、`download_upload` の keyword-only 化は公開 API なら破壊的変更であり、追加された `list_uploads` の契約テストも契約固定としては弱いです。AI_discussions の前回レビュー詳細は diff から全量確認できず、`UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` も `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` で実行不能だったため、最終的な回帰評価は保留です。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 破壊的 API 変更の扱いが不明確 | [`src/elab_doc_sync/client.py`](/home/user/elab-doc-sync/src/elab_doc_sync/client.py) の `ELabFTWClient.download_upload` を keyword-only にしたことで、このリポジトリ外で位置引数呼び出ししている既存利用者は即 `TypeError` になります。コミットメッセージには変更自体が書かれていますが、`fix` として出すには互換性影響の扱いが不足しており、公開 API であれば release note や移行方針の明示が必要です。このコミットからは外部利用有無を判断できないため、作者に明示的な確認が必要です。 | 中 |
+| 追加された「契約テスト」が実際の契約逸脱検知としては弱い | [`tests/test_client.py`](/home/user/elab-doc-sync/tests/test_client.py) の `test_list_uploads_schema` は、モックに `long_name` / `real_name` / `storage` を含め、そのまま返ってくることを確認しているだけに見えます。これでは upstream API のレスポンス変更や、[`src/elab_doc_sync/sync.py`](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py) の `_download_images` との結合契約崩れを検知できず、前回レビューで問題化されていた「どのフィールドをどう受け渡すか」の固定としては不十分です。 | 中 |
+| keyword-only 化の意図そのものはテストで固定されていない | 既存テストをキーワード呼び出しに書き換えただけなので、将来 [`src/elab_doc_sync/client.py`](/home/user/elab-doc-sync/src/elab_doc_sync/client.py) から `*` が外れても失敗しません。今回の目的が「位置引数の入れ替えミス防止」であるなら、[`tests/test_client.py`](/home/user/elab-doc-sync/tests/test_client.py) に「位置引数呼び出しは `TypeError` になる」ことを明示する回帰テストがある方が、意図を人間にも AI にも誤解なく伝えられます。 | 低 |
+
+### Codex 所感
+
+> 方向性自体は妥当ですが、今回の価値は「互換性影響をどう扱うか」と「契約を本当に固定できたか」にあります。その2点はまだ詰め切れておらず、特に公開 API としての扱いとテストの実効性は次に明示しておくべきです。
+
+
+## 2026-04-06T16:05 [Kiro] fix: Codex 全指摘対応 — 内部 API 明記 / keyword-only 回帰テスト / 結合契約テスト
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| 内部 API 明記 | `download_upload` の docstring に「内部メソッド: このリポジトリ内でのみ使用。外部公開 API ではない」を追加。破壊的変更の影響範囲を明確化 |
+| CL-31 | 位置引数呼び出しが `TypeError` になることを検証（keyword-only の回帰テスト） |
+| CL-32 | `list_uploads` → `_download_images` → `download_upload` の結合契約テスト。`long_name`, `real_name`, `storage` が正しく受け渡されることを検証 |
+
+### Kiro 所感
+
+- 内部 API であることを明記したことで、破壊的変更の影響範囲が「このリポジトリ内のみ」と明確に
+- CL-31 で keyword-only の意図がテストで固定され、将来 `*` が外れたら検知可能
+- CL-32 で list_uploads → download_upload の結合契約が固定され、フィールド名の変更時に検知可能
+- 177 件全通過
+
+
+## 2026-04-06T16:19 [Codex] fix: 内部 API 明記 / keyword-only 回帰テスト / 結合契約テスト に対するレビュー
+
+コミットメッセージと差分は概ね整合しており、`AI_discussions.md` の直前レビューで求められていた「keyword-only の意図固定」と「`list_uploads` から `download_upload` への結合契約固定」には、今回の CL-31/CL-32 で対応しています。コミットメッセージに書かれていない新たな挙動変更は、この diff からは見当たりません。一方で、指定の `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` はこの環境では `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` により実行不能で、テスト結果の独立確認は判断不能です。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 内部 API 化の根拠がコード内 docstring に閉じている | [src/elab_doc_sync/client.py:132](/home/user/elab-doc-sync/src/elab_doc_sync/client.py#L132) の追記で意図は読めますが、`ELabFTWClient.download_upload` は依然として公開クラスの通常メソッドです。外部利用者や将来の AI 支援では「使ってよい API」に見え続けるため、互換性影響を本当にリポジトリ内へ閉じるのかは README / API ドキュメント / 命名規約のどこで公開面を定義するか、作者に明示的な確認が必要です。 | 低 |
+| テスト結果は判断不能 | 指定コマンド `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` をこのレビューでは完走できず、Kiro 記録の「177 件全通過」を独立には検証できませんでした。今回の差分はテスト補強が主目的なので、運用上は pytest を実行できる環境での再確認が前提です。 | 低 |
+
+### Codex 所感
+
+> 所感: 差分自体はドキュメントと回帰テスト補強に限られ、仕様・セキュリティ・既存機能への新規リスクは大きくありません。残る論点は、前回レビューでも触れられていた「公開 API として扱うのか」をコード外の契約まで含めて固定するかどうかです。
