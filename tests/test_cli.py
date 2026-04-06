@@ -921,3 +921,68 @@ def test_entity_status_shows_resource_label(MockClient, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "リソース" in out
     assert "items" not in out
+
+
+# ── pull 画像ダウンロード (CLI-60 ~ CLI-61) ─────────────
+
+# CLI-60: pull each で画像がダウンロードされる
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_each_downloads_images(MockClient, tmp_path):
+    cfg, docs = _write_config(tmp_path, mode="each")
+    client = MockClient.return_value
+    client.get_item.return_value = {
+        "id": 1, "title": "Doc1",
+        "body": '<p><img src="https://elab.example.com/app/download.php?f=abc123.png&name=photo.png&storage=1" alt="pic"></p>',
+    }
+    client.list_uploads.return_value = [
+        {"id": 10, "long_name": "abc123.png", "real_name": "photo.png", "storage": "1"},
+    ]
+    client.download_upload.return_value = b"\x89PNG"
+    cmd_pull(_ns(tmp_path, id=[1], entity="items", command="pull"))
+    md = (docs / "Doc1.md").read_text(encoding="utf-8")
+    assert "images/1_photo.png" in md
+    assert (docs / "images" / "1_photo.png").exists()
+
+
+# CLI-61: pull merge で画像がダウンロードされる
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_merge_downloads_images(MockClient, tmp_path):
+    cfg, docs = _write_config(tmp_path, mode="merge")
+    ids_dir = tmp_path / ".elab-sync-ids"
+    ids_dir.mkdir(exist_ok=True)
+    (ids_dir / "default.id").write_text("1\n")
+    client = MockClient.return_value
+    client.get_item.return_value = {
+        "id": 1, "title": "T",
+        "body": '<p><img src="https://elab.example.com/app/download.php?f=xyz.png&name=fig.png&storage=1" alt="f"></p>',
+    }
+    client.list_uploads.return_value = [
+        {"id": 20, "long_name": "xyz.png", "real_name": "fig.png", "storage": "1"},
+    ]
+    client.download_upload.return_value = b"\x89PNG"
+    cmd_pull(_ns(tmp_path, id=[1], entity="items", command="pull", force=True))
+    md = (docs / "T.md").read_text(encoding="utf-8")
+    assert "images/1_fig.png" in md
+
+
+# ── diff 画像正規化 (CLI-62) ────────────────────────────
+
+# CLI-62: diff でリモート画像 URL が正規化され、ローカルと一致すれば差分なし
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_diff_no_false_positive_with_images(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("![pic](images/1_photo.png)", encoding="utf-8")
+    ids_dir = tmp_path / ".elab-sync-ids"
+    ids_dir.mkdir(exist_ok=True)
+    (ids_dir / "default.id").write_text("1\n")
+    client = MockClient.return_value
+    client.get_item.return_value = {
+        "id": 1,
+        "body": '<p><img src="https://elab.example.com/app/download.php?f=abc123.png&name=photo.png&storage=1" alt="pic"></p>',
+    }
+    client.list_uploads.return_value = [
+        {"id": 10, "long_name": "abc123.png", "real_name": "photo.png", "storage": "1"},
+    ]
+    cmd_diff(_ns(tmp_path))
+    out = capsys.readouterr().out
+    assert "差分なし" in out or "最新" in out

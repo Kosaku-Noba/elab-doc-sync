@@ -12,7 +12,7 @@ from markdownify import markdownify as html_to_md
 
 from .client import ELabFTWClient
 from .config import load_config
-from .sync import DocsSyncer, EachDocsSyncer, ConflictError, _download_images
+from .sync import DocsSyncer, EachDocsSyncer, ConflictError, _download_images, _normalize_remote_image_urls
 from . import sync_log
 
 DEFAULT_CONFIG = ".elab-sync.yaml"
@@ -336,6 +336,7 @@ def cmd_diff(args):
 
                 local_md = local_path.read_text(encoding="utf-8").strip()
                 remote_md = html_to_md(data.get("body", "") or "", heading_style="ATX").strip()
+                remote_md = _normalize_remote_image_urls(remote_md, target.entity, eid, client)
 
                 if _show_diff(filename, local_md, remote_md):
                     has_diff = True
@@ -363,6 +364,7 @@ def cmd_diff(args):
                 continue
 
             remote_md = html_to_md(data.get("body", "") or "", heading_style="ATX").strip()
+            remote_md = _normalize_remote_image_urls(remote_md, target.entity, eid, client)
 
             if _show_diff(target.title, local_md, remote_md):
                 has_diff = True

@@ -7,6 +7,7 @@ import pytest
 
 from elab_doc_sync.sync import (
     _compute_hash, _count_local_images, _md_to_html, _rewrite_images,
+    _download_images, _normalize_remote_image_urls,
     ConflictError, DocsSyncer, EachDocsSyncer,
 )
 from elab_doc_sync.config import TargetConfig
@@ -360,3 +361,115 @@ def test_sync_tags_best_effort(capsys):
     _sync_tags(client, "items", 42, ["tag1"])
     captured = capsys.readouterr()
     assert "タグ同期に失敗" in captured.out
+
+
+# ── _download_images ─────────────────────────────────────
+
+# S-45
+def test_download_images_replaces_url(tmp_path):
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"id": 10, "long_name": "abc123.png", "real_name": "photo.png", "storage": "1"},
+    ]
+    client.download_upload.return_value = b"\x89PNG"
+    body = "![alt](https://elab.example.com/app/download.php?f=abc123.png&name=photo.png&storage=1)"
+    result = _download_images(body, "items", 42, client, tmp_path)
+    assert "images/42_photo.png" in result
+    assert (tmp_path / "images" / "42_photo.png").exists()
+    client.download_upload.assert_called_once_with("items", 42, 10)
+
+
+# S-46
+def test_download_images_skips_non_elab_url():
+    client = MagicMock()
+    client.list_uploads.return_value = []
+    body = "![a](https://example.com/img.png)"
+    result = _download_images(body, "items", 1, client, Path("."))
+    assert result == body
+    client.download_upload.assert_not_called()
+
+
+# S-47
+def test_download_images_no_duplicate_download(tmp_path):
+    img_dir = tmp_path / "images"
+    img_dir.mkdir()
+    (img_dir / "42_photo.png").write_bytes(b"\x89PNG")
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"id": 10, "long_name": "abc123.png", "real_name": "photo.png", "storage": "1"},
+    ]
+    body = "![alt](https://elab.example.com/app/download.php?f=abc123.png&name=photo.png&storage=1)"
+    _download_images(body, "items", 42, client, tmp_path)
+    client.download_upload.assert_not_called()
+
+
+# S-48: 異なるエンティティの同名画像が衝突しない
+def test_download_images_entity_id_namespace(tmp_path):
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"id": 10, "long_name": "abc.png", "real_name": "photo.png", "storage": "1"},
+    ]
+    client.download_upload.return_value = b"data1"
+    body = "![a](https://elab.example.com/app/download.php?f=abc.png&name=photo.png&storage=1)"
+    r1 = _download_images(body, "items", 1, client, tmp_path)
+    client.list_uploads.return_value = [
+        {"id": 20, "long_name": "def.png", "real_name": "photo.png", "storage": "1"},
+    ]
+    client.download_upload.return_value = b"data2"
+    body2 = "![a](https://elab.example.com/app/download.php?f=def.png&name=photo.png&storage=1)"
+    r2 = _download_images(body2, "items", 2, client, tmp_path)
+    assert "images/1_photo.png" in r1
+    assert "images/2_photo.png" in r2
+    assert (tmp_path / "images" / "1_photo.png").read_bytes() == b"data1"
+    assert (tmp_path / "images" / "2_photo.png").read_bytes() == b"data2"
+
+
+# ── _normalize_remote_image_urls ─────────────────────────
+
+# S-49
+def test_normalize_remote_image_urls():
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"id": 10, "long_name": "abc123.png", "real_name": "photo.png", "storage": "1"},
+    ]
+    body = "![alt](https://elab.example.com/app/download.php?f=abc123.png&name=photo.png&storage=1)"
+    result = _normalize_remote_image_urls(body, "items", 42, client)
+    assert result == "![alt](images/42_photo.png)"
+
+
+# S-50
+def test_normalize_preserves_non_elab():
+    client = MagicMock()
+    client.list_uploads.return_value = []
+    body = "![a](https://example.com/img.png)"
+    assert _normalize_remote_image_urls(body, "items", 1, client) == body
+
+
+# ── _rewrite_images: 既存 upload 再利用 ─────────────────
+
+# S-51
+def test_rewrite_images_reuses_existing_upload(tmp_path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "photo.png").write_bytes(b"\x89PNG")
+    client = MagicMock()
+    client.base_url = "https://elab.example.com"
+    client.list_uploads.return_value = [
+        {"id": 10, "real_name": "photo.png", "long_name": "abc123.png", "storage": "1"},
+    ]
+    result = _rewrite_images("![a](photo.png)", "items", 1, client, docs, tmp_path)
+    client.upload_file.assert_not_called()
+    assert "app/download.php?f=abc123.png" in result
+
+
+# S-52
+def test_rewrite_images_uploads_new_file(tmp_path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "new.png").write_bytes(b"\x89PNG")
+    client = MagicMock()
+    client.list_uploads.return_value = []
+    client.upload_file.return_value = {"url": "https://elab.example.com/dl/new.png"}
+    result = _rewrite_images("![a](new.png)", "items", 1, client, docs, tmp_path)
+    client.upload_file.assert_called_once()
+    assert "https://elab.example.com/dl/new.png" in result
