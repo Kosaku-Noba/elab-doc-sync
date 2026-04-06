@@ -164,9 +164,15 @@ def cmd_pull(args):
     pulled = 0
     targets = config.targets
     # --id + --entity 指定時は該当 entity の最初のターゲットだけ処理
+    # ただし --target 指定時はそちらを優先
     if args.id and args.entity:
         entity_norm = _normalize_entity(args.entity)
-        targets = [t for t in targets if t.entity == entity_norm][:1]
+        matched = [t for t in targets if t.entity == entity_norm]
+        if args.target:
+            matched = [t for t in matched if t.title == args.target] or matched[:1]
+        else:
+            matched = matched[:1]
+        targets = matched
 
     for target in targets:
         if args.target and target.title != args.target:
