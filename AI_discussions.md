@@ -2861,3 +2861,44 @@ body HTML 内の画像（`app/download.php?f={long_name}`）は:
 | `_download_images` | `list_uploads` にマッチしない `app/download.php` URL を eLabFTW の絶対 URL に変換して保持。ローカルでは表示できないが、eLabFTW 上では参照可能 |
 | `download_by_long_name` 削除 | `users/me/uploads` 経由では見つからないため不要 |
 | デバッグスクリプト削除 | 調査完了 |
+
+
+## 2026-04-06T17:48 [Kiro] 仕様決定: 画像ダウンロードのスコープ
+
+### 仕様
+
+| 画像の種類 | 対応 |
+|---|---|
+| `list_uploads` にある画像（エンティティ自身の添付） | API v2 `format=binary` でローカルにダウンロード |
+| `/api/v2/.../uploads/{id}` 形式の画像（HTML エディタ挿入） | upload_id で `list_uploads` と照合し、あればダウンロード |
+| `list_uploads` にない画像（複製元エンティティの参照等） | 相対 URL を eLabFTW の絶対 URL に変換して Markdown に保持 |
+
+### スコープ外
+
+- 複製された実験ノートや items の body に含まれる、元エンティティの画像参照
+  - これらは eLabFTW の uploads テーブルに存在せず、API v2 からはアクセス不可
+  - `app/download.php` は Web UI セッション専用で API キー認証非対応
+  - eLabFTW 側の制約であり、本ツールでは対応不可
+
+### 経緯
+
+- `list_uploads` / `users/me/uploads` / `users/{owner}/uploads` / `state=1,2,3` / body 検索 → いずれも画像が見つからない
+- `app/download.php` は API キー認証非対応、セッション Cookie でもアクセス不可
+- eLabFTW のテンプレート複製時に画像ファイルが uploads テーブルにコピーされない仕様が原因
+
+
+## 2026-04-06T17:48 [Codex] docs: 画像ダウンロードのスコープを仕様として確定 に対するレビュー
+
+コミットメッセージと差分は概ね一致しており、変更は [AI_discussions.md](/home/user/elab-doc-sync/AI_discussions.md) への仕様整理に限られます。ただし、前回レビューで残っていた画像 URL の信頼境界は現行実装・テストとまだ完全には揃っておらず、「仕様として確定」という表現にはやや早さがあります。指定の `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` はこの環境で `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` となり再実行できませんでした。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 「仕様として確定」に対して実行時契約がまだ一意ではない | 前回の [AI_discussions.md](/home/user/elab-doc-sync/AI_discussions.md) 2026-04-06T17:16 の Codex レビューでは「どの URL を内部 upload として信頼するか」が未解決でした。今回の追記は `list_uploads` にない `app/download.php` を scope out していますが、現行 [sync.py](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py) は依然として `host` を見ずに `/uploads/{id}` を解釈し、[test_sync.py](/home/user/elab-doc-sync/tests/test_sync.py) の S-69/S-70 では外部 absolute URL でも `id` 一致時は正常系として固定しています。入力契約を「eLabFTW が生成した body HTML のみ」とするのか、「外部 absolute URL も互換入力として許容する」のか、作者に明示的な確認が必要です。 | 中 |
+| 今回確定した主仕様の回帰テストが不足している | 新規追記の中核は「`list_uploads` に存在しない `app/download.php` 画像はローカルに落とさず、相対 URL を eLabFTW の絶対 URL に変換して Markdown に保持する」という振る舞いですが、現行 [test_sync.py](/home/user/elab-doc-sync/tests/test_sync.py) にはこの未一致ケースを直接固定するテストが見当たりません。`_download_images` のこの分岐はローカル表示不能だが eLabFTW 上では参照可能という運用上かなり癖のある仕様なので、ここが未テストのままだと将来の整理や hardening で静かに変わる回帰リスクがあります。 | 中 |
+| テスト結果は判断不能 | 指定コマンド `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` は `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` で実行できませんでした。そのため、Kiro 記録にある通過件数や既存機能への影響範囲はこのレビューでは再確認できていません。 | 低 |
+
+### Codex 所感
+
+> 所感として、調査結果の整理としては有益ですが、仕様確定コミットとして閉じるなら trust boundary の文章と回帰テストを実装契約に揃えるのが先です。現状のままだと、後続の人や AI が「外部 URL は対象外」と読むか「現行テスト通り許容する」と読むかで解釈が割れる余地が残っています。
