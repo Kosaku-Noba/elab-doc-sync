@@ -2839,3 +2839,25 @@ eLabFTW の HTML エディタで body に直接埋め込まれた画像は、エ
 - `users/me/uploads` は全 uploads を返すため、body 埋め込み画像も検索可能
 - ユーザー環境での実動作確認が必要
 - 186 件全通過
+
+
+## 2026-04-06T17:32 [Kiro] fix: body 埋め込み画像を絶対 URL に変換して保持
+
+### 調査結果
+
+body HTML 内の画像（`app/download.php?f={long_name}`）は:
+- `list_uploads`（エンティティの添付一覧）に含まれない
+- `users/me/uploads`（自分の全 uploads）にも含まれない
+- `users/{owner_id}/uploads`（エンティティ所有者の uploads）にも含まれない
+- `app/download.php` は Web UI セッション専用で API キー認証に対応していない
+- API v2 経由のセッション Cookie でも `app/download.php` にアクセスできない
+
+これらの画像は eLabFTW 内部で別管理されており、API からはダウンロードできない。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| `_download_images` | `list_uploads` にマッチしない `app/download.php` URL を eLabFTW の絶対 URL に変換して保持。ローカルでは表示できないが、eLabFTW 上では参照可能 |
+| `download_by_long_name` 削除 | `users/me/uploads` 経由では見つからないため不要 |
+| デバッグスクリプト削除 | 調査完了 |
