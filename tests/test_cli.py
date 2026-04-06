@@ -940,8 +940,8 @@ def test_pull_each_downloads_images(MockClient, tmp_path):
     client.download_upload.return_value = b"\x89PNG"
     cmd_pull(_ns(tmp_path, id=[1], entity="items", command="pull"))
     md = (docs / "Doc1.md").read_text(encoding="utf-8")
-    assert "images/1_photo.png" in md
-    assert (docs / "images" / "1_photo.png").exists()
+    assert "images/items_1_photo.png" in md
+    assert (docs / "images" / "items_1_photo.png").exists()
 
 
 # CLI-61: pull merge で画像がダウンロードされる
@@ -962,7 +962,7 @@ def test_pull_merge_downloads_images(MockClient, tmp_path):
     client.download_upload.return_value = b"\x89PNG"
     cmd_pull(_ns(tmp_path, id=[1], entity="items", command="pull", force=True))
     md = (docs / "T.md").read_text(encoding="utf-8")
-    assert "images/1_fig.png" in md
+    assert "images/items_1_fig.png" in md
 
 
 # ── diff 画像正規化 (CLI-62) ────────────────────────────
@@ -971,7 +971,7 @@ def test_pull_merge_downloads_images(MockClient, tmp_path):
 @patch("elab_doc_sync.cli.ELabFTWClient")
 def test_diff_no_false_positive_with_images(MockClient, tmp_path, capsys):
     cfg, docs = _write_config(tmp_path)
-    (docs / "a.md").write_text("![pic](images/1_photo.png)", encoding="utf-8")
+    (docs / "a.md").write_text("![pic](images/items_1_photo.png)", encoding="utf-8")
     ids_dir = tmp_path / ".elab-sync-ids"
     ids_dir.mkdir(exist_ok=True)
     (ids_dir / "default.id").write_text("1\n")
