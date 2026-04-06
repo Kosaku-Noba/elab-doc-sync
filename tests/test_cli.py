@@ -589,6 +589,39 @@ def test_cmd_tag_list_direct(MockClient, tmp_path, capsys):
     assert "リソース #50" in capsys.readouterr().out
 
 
+# CLI-65: tag --entity without --id exits with error
+def test_cmd_tag_entity_without_id_exits(tmp_path, capsys):
+    cfg, _ = _write_config(tmp_path)
+    args = Namespace(config=str(cfg), target=None, force=False, tag_action="list",
+                     id=None, entity="items")
+    with pytest.raises(SystemExit):
+        cmd_tag(args)
+    assert "--id" in capsys.readouterr().err
+
+
+# CLI-66: tag --id without --entity exits with error
+def test_cmd_tag_id_without_entity_exits(tmp_path, capsys):
+    cfg, _ = _write_config(tmp_path)
+    args = Namespace(config=str(cfg), target=None, force=False, tag_action="add",
+                     tag_name="x", id=42, entity=None)
+    with pytest.raises(SystemExit):
+        cmd_tag(args)
+    assert "--entity" in capsys.readouterr().err
+
+
+# CLI-67: tag remove with --id and --entity (直接指定)
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_tag_remove_direct(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    client = MockClient.return_value
+    client.untag_by_name.return_value = True
+    args = Namespace(config=str(cfg), target=None, force=False, tag_action="remove",
+                     tag_name="bye", id=10, entity="experiments")
+    cmd_tag(args)
+    client.untag_by_name.assert_called_once_with("experiments", 10, "bye")
+    assert "実験ノート #10" in capsys.readouterr().out
+
+
 # ── FR-15 metadata コマンドテスト ────────────────────────
 
 
