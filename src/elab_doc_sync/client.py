@@ -130,41 +130,37 @@ class ELabFTWClient:
         return self._req("GET", f"/api/v2/{entity_type}/{entity_id}/uploads").json()
 
     def download_upload(self, *, long_name: str, real_name: str, storage: int | str,
-                        entity_type: str = "", entity_id: int = 0, upload_id: int = 0) -> bytes:
+                        entity_type: str, entity_id: int, upload_id: int) -> bytes:
         """添付ファイル（画像含む全種別）のバイナリを返す。
 
         内部メソッド: このリポジトリ内でのみ使用。外部公開 API ではない。
 
-        API v2 エンドポイント（entity_type/entity_id/upload_id 指定時）で
-        Accept: application/octet-stream + format=binary の両方を指定して取得を試みる。
+        eLabFTW API v2 の /uploads/{id} に Accept: application/octet-stream と
+        format=binary の両方を指定してバイナリを取得する。
         参照: https://doc.elabftw.net/api/v2/#/uploads/readUpload
 
         Args:
-            long_name: list_uploads で取得できるハッシュ化ファイル名
-            real_name: 元のファイル名（表示用）
-            storage: ストレージ ID（list_uploads の storage フィールド、int または str）
-            entity_type: items / experiments（API v2 経由で取得する場合に必要）
+            long_name: list_uploads で取得できるハッシュ化ファイル名（未使用、将来の拡張用に保持）
+            real_name: 元のファイル名（未使用、将来の拡張用に保持）
+            storage: ストレージ ID（未使用、将来の拡張用に保持）
+            entity_type: items / experiments
             entity_id: エンティティ ID
             upload_id: アップロード ID
 
-        成否判定は HTTP ステータスコードのみで行う（raise_for_status）。
-        コンテンツ妥当性（ファイル形式・サイズ等）の担保は呼び出し側の責務。
+        Raises:
+            RuntimeError: レスポンスが JSON（メタデータ）の場合
         """
-        if entity_type and entity_id and upload_id:
-            resp = self._req(
-                "GET", f"/api/v2/{entity_type}/{entity_id}/uploads/{upload_id}",
-                headers={**self._auth_headers, "Accept": "application/octet-stream"},
-                params={"format": "binary"},
+        resp = self._req(
+            "GET", f"/api/v2/{entity_type}/{entity_id}/uploads/{upload_id}",
+            headers={**self._auth_headers, "Accept": "application/octet-stream"},
+            params={"format": "binary"},
+        )
+        ct = resp.headers.get("Content-Type", "")
+        if "application/json" in ct:
+            raise RuntimeError(
+                f"画像のバイナリ取得に失敗しました（upload #{upload_id}: Content-Type={ct}）。"
+                f"eLabFTW が format=binary に対応していない可能性があります"
             )
-            # API がバイナリを返したか確認（JSON メタデータは通常 < 2KB）
-            ct = resp.headers.get("Content-Type", "")
-            if "application/json" not in ct:
-                return resp.content
-        # フォールバック: /app/download.php 経由
-        from urllib.parse import urlencode
-        params = urlencode({"f": long_name, "name": real_name, "storage": storage})
-        resp = self._req("GET", f"/app/download.php?{params}",
-                         headers=self._auth_headers)
         return resp.content
 
     # ── tags ─────────────────────────────────────────────────
