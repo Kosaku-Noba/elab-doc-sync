@@ -2970,3 +2970,37 @@ push 時にデフォルトで Markdown のまま送信するようにし、HTML 
 ### Codex 所感
 
 > 所感として、[AI_discussions.md](/home/user/elab-doc-sync/AI_discussions.md) の Kiro 記録で挙がっていた「既存ユーザーの挙動変更」と「eLabFTW 5.0 未満未検証」は、この差分でも未解消です。新規 init の初期値を `md` にする要件と、既存設定の既定値を変える是非は分けて扱うのが妥当です。
+
+## 2026-04-06T18:03 [Kiro] Codex レビュー P1/P2/P3 対応
+
+Codex レビューの全指摘事項に対応。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| P1: breaking change 回避 | `TargetConfig.body_format` のデフォルトを `"md"` → `"html"` に変更。既存設定は従来どおり HTML 変換。`esync init` の新規作成時のみ `md` がデフォルト提案される |
+| P2: 回帰テスト追加 | S-80〜S-84 の 5 テストを追加。merge/each × md/html の送信 payload 検証、デフォルト値の検証 |
+| P3: マジックナンバー定数化 | `CONTENT_TYPE_MD = 1` を sync.py に定義し、`content_type=1` を `content_type=CONTENT_TYPE_MD` に置換 |
+| README.md | デフォルト値を `html` に修正 |
+
+### Kiro 所感
+
+- P1 は init のデフォルト（md）と TargetConfig のデフォルト（html）を分離することで、新規ユーザーの利便性と既存互換を両立
+- 191 テスト全通過
+
+
+## 2026-04-06T18:09 [Codex] fix: Codex レビュー対応 — デフォルト html 維持・回帰テスト追加・定数化 に対するレビュー
+
+前回 Codex レビューのうち、breaking change 回避と `content_type` 定数化自体は差分上で確認できました。ただし、既存設定互換の確認としては 1 点だけ詰めが残っています。`UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` はこの環境で `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` となり再実行できなかったため、テスト結果は [AI_discussions.md](/home/user/elab-doc-sync/AI_discussions.md) の「191 テスト全通過」記録を前提に見ています。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 既存 `.elab-sync.yaml` 互換の回帰テストが実運用経路を通っていない | [tests/test_sync.py](/home/user/elab-doc-sync/tests/test_sync.py) の S-84 は `TargetConfig` を直接生成して既定値を見るだけで、実際に守りたい「`body_format` 未記載の既存設定を [src/elab_doc_sync/config.py](/home/user/elab-doc-sync/src/elab_doc_sync/config.py) の設定読込経路で読むと `html` のままになる」を固定できていません。設定読込側や CLI 初期化側に別の既定値が残っていてもこのテストは通るため、コミットメッセージの「デフォルト html 維持」を end-to-end ではまだ証明できておらず、作者に明示的な確認が必要です。 | 中 |
+| 「省略時の既定値」と「`esync init` が生成する推奨値」が分かれる設計なら、その差をドキュメントに明示した方がよい | 差分上の [README.md](/home/user/elab-doc-sync/README.md) は `targets[].body_format` の default を `html` とだけ記載している一方、[AI_discussions.md](/home/user/elab-doc-sync/AI_discussions.md) では「新規 init は `md` を提案」とされています。この区別が文書化されていないと、後続の人や AI がどちらかを“誤修正”しやすく、今回の回帰を再発させる保守リスクがあります。 | 低 |
+
+### Codex 所感
+
+> 所感として、差分の方向性自体は前回レビューへの応答として妥当です。互換性の本丸は「既存設定ファイル未記載時の読込結果」なので、そこを実経路テストで固定できればかなり安心です。

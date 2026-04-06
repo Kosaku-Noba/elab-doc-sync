@@ -9,7 +9,7 @@ from elab_doc_sync.sync import (
     _compute_hash, _count_local_images, _md_to_html, _rewrite_images,
     _download_images, _normalize_remote_image_urls, _image_local_name,
     _parse_image_local_name,
-    ConflictError, DocsSyncer, EachDocsSyncer,
+    ConflictError, DocsSyncer, EachDocsSyncer, CONTENT_TYPE_MD,
 )
 from elab_doc_sync.config import TargetConfig
 
@@ -710,3 +710,72 @@ def test_download_images_external_url_no_match(tmp_path):
     result = _download_images(body, "items", 1, client, tmp_path)
     assert "https://evil.example/uploads/999" in result
     client.download_upload.assert_not_called()
+
+
+# ── body_format テスト ───────────────────────────────────
+
+
+# S-80: merge — body_format=md で content_type=CONTENT_TYPE_MD が送られる
+def test_merge_body_format_md(tmp_path, mock_client):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "a.md").write_text("# hello", encoding="utf-8")
+    target = TargetConfig(title="Test", docs_dir="docs/", id_file=str(tmp_path / ".ids" / "default.id"), body_format="md")
+    syncer = DocsSyncer(mock_client, target, tmp_path)
+    mock_client.create_item.return_value = 1
+    mock_client.get_item.return_value = {"id": 1, "body": "# hello"}
+    syncer.sync()
+    call_kwargs = mock_client.update_item.call_args[1]
+    assert call_kwargs["content_type"] == CONTENT_TYPE_MD
+    assert "<" not in call_kwargs["body"]  # HTML 変換されていない
+
+
+# S-81: merge — body_format=html で HTML 変換される
+def test_merge_body_format_html(tmp_path, mock_client):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "a.md").write_text("# hello", encoding="utf-8")
+    target = TargetConfig(title="Test", docs_dir="docs/", id_file=str(tmp_path / ".ids" / "default.id"), body_format="html")
+    syncer = DocsSyncer(mock_client, target, tmp_path)
+    mock_client.create_item.return_value = 1
+    mock_client.get_item.return_value = {"id": 1, "body": "<h1>hello</h1>"}
+    syncer.sync()
+    call_kwargs = mock_client.update_item.call_args[1]
+    assert "content_type" not in call_kwargs
+    assert "<h1" in call_kwargs["body"]
+
+
+# S-82: each — body_format=md で content_type=CONTENT_TYPE_MD が送られる
+def test_each_body_format_md(tmp_path, mock_client):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "a.md").write_text("# hello", encoding="utf-8")
+    target = TargetConfig(title="", docs_dir="docs/", id_file=str(tmp_path / ".ids" / "default.id"), mode="each", body_format="md")
+    syncer = EachDocsSyncer(mock_client, target, tmp_path)
+    mock_client.create_item.return_value = 1
+    mock_client.get_item.return_value = {"id": 1, "body": "# hello"}
+    syncer.sync()
+    call_kwargs = mock_client.update_item.call_args[1]
+    assert call_kwargs["content_type"] == CONTENT_TYPE_MD
+    assert "<" not in call_kwargs["body"]
+
+
+# S-83: each — body_format=html で HTML 変換される
+def test_each_body_format_html(tmp_path, mock_client):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "a.md").write_text("# hello", encoding="utf-8")
+    target = TargetConfig(title="", docs_dir="docs/", id_file=str(tmp_path / ".ids" / "default.id"), mode="each", body_format="html")
+    syncer = EachDocsSyncer(mock_client, target, tmp_path)
+    mock_client.create_item.return_value = 1
+    mock_client.get_item.return_value = {"id": 1, "body": "<h1>hello</h1>"}
+    syncer.sync()
+    call_kwargs = mock_client.update_item.call_args[1]
+    assert "content_type" not in call_kwargs
+    assert "<h1" in call_kwargs["body"]
+
+
+# S-84: body_format 未指定時は html（既存互換）
+def test_default_body_format_is_html():
+    target = TargetConfig(title="T", docs_dir="docs/", id_file=".ids/d.id")
+    assert target.body_format == "html"
