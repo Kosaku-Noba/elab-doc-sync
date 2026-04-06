@@ -8,7 +8,7 @@
 |---|---|
 | `esync` | ローカル → eLabFTW に同期（push） |
 | `esync pull` | eLabFTW → ローカルに取得 |
-| `esync pull --id 42` | 指定 ID のエンティティを取得 |
+| `esync pull --id 42 --entity items` | 指定 ID のリソースを取得 |
 | `esync diff` | ローカルと eLabFTW の差分を表示 |
 | `esync status` | 同期状態を確認 |
 | `esync tag list` | リモートのタグ一覧を表示 |
@@ -62,16 +62,16 @@ esync --force            # 強制同期
 eLabFTW のエンティティをローカルに Markdown として保存する。
 
 ```bash
-esync pull --id 42                    # 指定 ID を取得
-esync pull --id 42 --id 43            # 複数 ID を取得
+esync pull --id 42 --entity items       # 指定 ID を取得（--entity 必須）
+esync pull --id 42 --id 43 --entity items  # 複数 ID を取得
 esync pull --id 42 --entity experiments  # 実験ノートとして取得
 esync pull                            # 既存の同期済み ID を再取得（初回は --id 必須）
 esync pull --force                    # 既存ファイルを上書き
 ```
 
 - 初回 pull には `--id` が必須（全件ダウンロードは行わない）
+- `--id` 指定時は `--entity` も必須（items / experiments の混在を防止）
 - 2回目以降は mapping/ID ファイルから対象を自動決定
-- `--entity` で items/experiments を明示指定可能
 - each モード: 複数 `--id` で一括取得可能
 - merge モード: 最初の `--id` を使用
 
