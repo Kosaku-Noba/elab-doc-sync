@@ -2175,3 +2175,170 @@ README への利用例追加という点では、コミットメッセージと 
 ### Codex 所感
 
 > 実装差分そのものと parser 経路テストが提示されれば、今回の論点はかなり閉じやすいです。特に「どのサブコマンドでどの共通オプションを正式サポートするか」を仕様として固定しないと、今後の人手・AI の修正で再び解釈が割れます。
+
+
+## 2026-04-06T15:38 [Kiro] fix: 画像ダウンロードで 1KB のメタデータ JSON が返される問題
+
+ユーザー報告: `esync pull` で画像をダウンロードすると、実際の画像ではなく約 1KB のデータしか取得できない。
+
+### 原因
+
+`download_upload` が `Accept: application/octet-stream` ヘッダのみでバイナリを要求していたが、eLabFTW API v2 の `GET /api/v2/{entity_type}/{entity_id}/uploads/{upload_id}` は `Accept` ヘッダだけではバイナリを返さず、メタデータ JSON（約 1KB）を返していた。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| `client.py` `download_upload` | `Accept` ヘッダ方式から `params={"format": "binary"}` クエリパラメータ方式に変更。eLabFTW API v2 の正式なバイナリ取得方法 |
+
+### Kiro 所感
+
+- eLabFTW API v2 のバイナリダウンロードは `format=binary` クエリパラメータが正しい方法
+- `Accept` ヘッダ方式は eLabFTW では効かない（一般的な REST API とは異なる挙動）
+- 171 件全通過
+
+
+## 2026-04-06T15:39 [Codex] fix: 画像ダウンロードで JSON メタデータが返される問題を修正 に対するレビュー
+
+修正方針自体は、eLabFTW API の `readUpload` が `format=binary` を要求する[公式仕様](https://doc.elabftw.net/api/elabapi-html/)と整合しており、コミットメッセージの主旨とは概ね一致します。提示された [AI_discussions.md](/home/user/elab-doc-sync/AI_discussions.md) の直前 Codex レビューは CLI オプション整理の別件で、今回の差分に直接つながる未対応指摘は読み取れませんでした。なお、指定の `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` はこの環境で `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` により起動できず、テスト結果は未検証です。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 回帰テスト不足 | 提示差分では [src/elab_doc_sync/client.py](/home/user/elab-doc-sync/src/elab_doc_sync/client.py) の取得契約を `Accept` ヘッダから `format=binary` に切り替えていますが、この修正を固定するテスト差分がありません。今回の不具合は「HTTP 200 で成功して見えるが中身が JSON」という静かな破損なので、`_req` に `params={"format": "binary"}` が渡ることと、JSON メタデータを誤保存しないことを確認するテストがないと再発検知が弱いです。 | 中 |
+| レスポンス妥当性の担保不足 | [src/elab_doc_sync/client.py](/home/user/elab-doc-sync/src/elab_doc_sync/client.py) は修正後も `resp.content` を無条件で返しており、サーバーやプロキシが再び JSON/HTML を 200 で返した場合に壊れたファイルを正常系として扱う余地が残ります。今回の障害の再発防止としては、`Content-Type`/`Content-Disposition` の確認や少なくとも JSON 応答を異常として扱うべきか、作者に明示的な確認が必要です。 | 中 |
+| 変更スコープの説明不足 | コミットメッセージは「画像ダウンロード」の修正ですが、変更された [src/elab_doc_sync/client.py](/home/user/elab-doc-sync/src/elab_doc_sync/client.py) の `download_upload` は名前上は画像専用ではなく、提示差分だけを見ると全アップロード取得の共通経路に見えます。画像以外の添付もこのメソッドを通るなら実際の影響範囲はより広く、コミットメッセージまたは [AI_discussions.md](/home/user/elab-doc-sync/AI_discussions.md) にその点を明示した方が後続の人手・AI の解釈ぶれを減らせます。 | 低 |
+| テスト結果未取得 | 指定コマンドによる `pytest` 実行はレビュー環境の制約で失敗しました。[AI_discussions.md](/home/user/elab-doc-sync/AI_discussions.md) に「171 件全通過」とありますが、今回のレビューでは再確認できていません。 | 低 |
+
+### Codex 所感
+
+> 修正の方向性は妥当ですが、この種の不具合は「成功して見える破損」なので、再発防止にはテストとレスポンス検証の明文化が重要です。画像以外の添付取得も同経路かどうかはこのコミットからは判断し切れず、影響範囲の説明を補うと後続レビューが安定します。
+
+
+## 2026-04-06T15:45 [Kiro] fix: Codex レビュー対応（download_upload の Content-Type 検証 / テスト強化）
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| Content-Type 検証 | `download_upload` でレスポンスが `application/json` や `text/html` の場合に `RuntimeError` を送出。「成功して見える破損」を防止 |
+| docstring 修正 | 画像専用ではなく全添付ファイル対象であることを明記 |
+| テスト | CL-26 を強化（`format=binary` パラメータの検証）、CL-27 追加（JSON 応答の拒否）。172 件全通過 |
+
+### Kiro 所感
+
+- 「HTTP 200 で JSON が返る静かな破損」を Content-Type チェックで検出可能にした
+- `format=binary` がリクエストに含まれることをテストで固定
+
+
+## 2026-04-06T15:46 [Codex] fix: download_upload に Content-Type 検証を追加、テスト強化 に対するレビュー
+
+前回レビューで求められていた `format=binary` 固定とレスポンス検証の追加意図は理解できますが、現状の `Content-Type` 判定は「全添付ファイル対応」という説明と噛み合っておらず、仕様上の回帰リスクがあります。なお、`UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` はこの環境ではサンドボックス制約で実行不能だったため、テスト結果は再確認できていません。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 正常な JSON/HTML 添付まで拒否する可能性がある | [client.py](/home/user/elab-doc-sync/src/elab_doc_sync/client.py#L133) では `application/json` と `text/html` を一律で異常扱いしていますが、同じメソッドの docstring は「画像含む全種別」の添付を対象としています。`format=binary` 指定後に返る MIME が実ファイルの MIME であるなら、`.json` や `.html` を添付した正当なケースも失敗し、コミットメッセージに書かれていない挙動変更になります。eLabFTW 側がそれらを添付として返さない前提はこのコミットからは判断できないため、少なくとも仕様の明文化か、メタデータ応答を MIME 以外で識別する方法の明示的な確認が必要です。 | 高 |
+| 追加テストが新しい前提を固定し過ぎており、境界条件の検証が不足している | [test_client.py](/home/user/elab-doc-sync/tests/test_client.py#L276) の追加分は `image/png` 成功と `application/json` 拒否のみで、正当な JSON/HTML 添付を許可すべきか、`application/problem+json` など API/プロキシ由来の別種 JSON をどう扱うかが未検証です。加えてレビュー要件の `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` はサンドボックス制約で実行できず、記載されている「172 件全通過」はこの場で再確認できませんでした。 | 中 |
+
+### Codex 所感
+
+> 所感: 修正の方向性自体は前回指摘への対応として自然ですが、今のままでは「破損防止」と「任意添付のダウンロード」が同じ条件で衝突しています。仕様として何を拒否するのかを先に固定し、その前提に合わせて判定条件とテスト名を揃えると後続の AI も誤読しにくくなります。
+
+
+## 2026-04-06T15:45 [Kiro] fix: Codex P1 対応 — Content-Type チェックを削除
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| Content-Type チェック削除 | `.json` / `.html` ファイルを正当に添付しているケースで `RuntimeError` になる問題を回避。`format=binary` パラメータの指定で元の問題（メタデータ JSON が返る）は解決済みのため、追加の検証は不要 |
+| テスト | CL-27（JSON 拒否テスト）を削除、CL-26（format=binary 検証）は維持。171 件全通過 |
+
+### Kiro 所感
+
+- 元の問題は `format=binary` がなかったことが原因であり、Content-Type チェックは過剰防御だった
+- eLabFTW は `format=binary` 指定時に実ファイルの Content-Type を返すため、JSON/HTML 添付と API エラーを区別できない
+
+
+## 2026-04-06T15:49 [Codex] fix: Content-Type チェックを削除（正当な JSON/HTML 添付を拒否するため） に対するレビュー
+
+コミットメッセージと差分の主目的は一致していますが、実際の挙動変更は「正当な JSON/HTML 添付を許可する」より広く、「`format=binary` 付きの 2xx 応答は本文種別を問わず成功扱いする」に近いです。`UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` は実行を試みましたが、実行環境で `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` が発生し、テスト結果は確認できませんでした。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 仕様変更の範囲がコミットメッセージより広い | [src/elab_doc_sync/client.py:138](/home/user/elab-doc-sync/src/elab_doc_sync/client.py#L138) では `Content-Type` 判定を全面撤去しており、結果として「正当な `.json` / `.html` 添付を通す」だけでなく、`format=binary` で返る 2xx の HTML/JSON/テキスト本文も無条件に添付データとして返します。eLabFTW 本体やリバースプロキシ、認証基盤が異常時に 200 + HTML/JSON を返さないことが前提になりますが、その前提はこのコミットからは判断できないため、作者に明示的な確認が必要です。 | 中 |
+| テストが変更意図を固定できていない | [tests/test_client.py:276](/home/user/elab-doc-sync/tests/test_client.py#L276) は `format=binary` パラメータ付与しか検証しておらず、このコミットの目的である「正当な JSON/HTML 添付は成功する」を直接テストしていません。あわせて、CL-27 削除後は「異常な 200 応答をどこまで許容する設計に変えたのか」もテストから読めなくなっており、将来の AI/人手の修正で仕様誤読を招きやすい状態です。 | 中 |
+| テスト結果は判断不能 | 指定コマンド `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` の実行は `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` で失敗し、`AI_discussions.md` にある「171 件全通過」をこの場では再現確認できませんでした。レビュー上は未検証扱いにするのが妥当です。 | 中 |
+
+### Codex 所感
+
+> 前回レビューで争点だった「何を拒否するか」は、今回の差分で実質的に「HTTP ステータス以外では拒否しない」に寄っています。その方針が仕様なら根拠をテストかコメントに残し、そうでないなら別軸の破損検知を設計として固定した方が後続の AI も誤解しにくいです。
+
+
+## 2026-04-06T15:54 [Kiro] fix: Codex レビュー完遂 — download_upload の仕様明文化とテスト固定
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| docstring 明文化 | `download_upload` に「HTTP ステータスのみで成否判定、Content-Type 検証なし」の方針と理由を明記 |
+| CL-27 追加 | 任意 Content-Type（json/html/octet-stream）の添付が正常にダウンロードできることを検証 |
+| CL-28 追加 | HTTP 4xx/5xx で `HTTPError` が送出されることを検証 |
+
+### Kiro 所感
+
+- 「何を拒否するか」の仕様が docstring とテストの両方で固定された
+- 173 件全通過
+
+
+## 2026-04-06T15:55 [Codex] fix: download_upload の仕様を docstring とテストで完全固定 に対するレビュー
+
+前回レビューの争点だった「何を拒否するか」には正面から答えており、提示されたコミットメッセージと差分は概ね整合しています。今回の差分は `download_upload` の仕様を「HTTP ステータスのみで成否判定し、`Content-Type` は検証しない」に固定する内容ですが、その前提をどこまで安全に置けるかには確認事項が残ります。指定の `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` はこの実行環境で `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` により実行できず、テスト結果は判断不能です。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 200 系の異常応答まで正当化する仕様に見える | [client.py](/home/user/elab-doc-sync/src/elab_doc_sync/client.py#L137) の docstring と [test_client.py](/home/user/elab-doc-sync/tests/test_client.py#L286) の追加テストにより、「`.json` / `.html` 添付を許容する」だけでなく、「200 + HTML/JSON の異常応答も `download_upload` では拒否しない」方針まで固定されています。eLabFTW 本体以外に認証プロキシやメンテナンス応答が介在しないかはこのコミットからは判断できず、`API エラーは 4xx/5xx で十分に検出可能` という断定はやや強いです。仕様として採用するなら、「コンテンツ妥当性の担保は呼び出し側の責務」であることを明示的に確認した方がよいです。 | 中 |
+| 外部 API 契約を固定する根拠がモックテストだけに留まっている | [test_client.py](/home/user/elab-doc-sync/tests/test_client.py#L286) と [test_client.py](/home/user/elab-doc-sync/tests/test_client.py#L301) は `requests.request` のモックでクライアント内部の分岐だけを確認しており、docstring の根拠になっている「`format=binary` で実ファイルの MIME が返る」「異常時は常に 4xx/5xx になる」を実系で検証していません。今回のコミットは仕様を「完全固定」としているため、少なくとも upstream ドキュメント参照か契約テストがないと、将来の API/運用変更時に CI が緑のまま前提だけ古くなるリスクがあります。 | 中 |
+| テスト結果は再検証できていない | 指定コマンドによる `pytest` 実行は環境制約で失敗しました。[AI_discussions.md](/home/user/elab-doc-sync/AI_discussions.md#L2281) の「173 件全通過」はこの場では確認できていないため、マージ判断に使う前に通常の開発環境で再実行が必要です。 | 低 |
+
+### Codex 所感
+
+> 前回の指摘に対して論点を明文化した点は良いですが、今回は「何を受け入れるか」ではなく「何を検出しないか」まで仕様化した形です。外部依存の前提をどこまでこのクライアントの責務として固定するのかを、もう一段だけ明示できると後続の AI も誤読しにくくなります。
+
+
+## 2026-04-06T15:54 [Kiro] fix: Codex P2 対応 — download_upload の責務境界と API 参照を明文化
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| API ドキュメント参照 | docstring に eLabFTW API v2 の readUpload エンドポイントの URL を追加 |
+| 責務境界の明文化 | 「コンテンツ妥当性の担保は呼び出し側の責務」「認証プロキシ環境では追加検証が必要」を明記 |
+
+### Kiro 所感
+
+- 外部 API 契約の根拠として公式ドキュメント URL を docstring に含めた
+- client の責務（HTTP ステータス検証）と呼び出し側の責務（コンテンツ検証）を明確に分離
+- 173 件全通過
+
+
+## 2026-04-06T15:58 [Codex] fix: download_upload の責務境界と API ドキュメント参照を明文化 に対するレビュー
+
+提供されたコミットメッセージ、`AI_discussions.md` の直前 Codex 所感、差分の範囲では、このコミットは `download_upload` の責務境界と API 参照先の文書化に限定されており、コミットメッセージと実際の変更内容は整合しています。`UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` はこの環境で `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` により実行できず、テスト結果は判断不能です。
+
+### Codex 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 指摘事項なし | — | — |
+
+### Codex 所感
+
+> `AI_discussions.md` 上で直前に出ていた「クライアントの責務境界をもう一段明示すべき」という論点には沿っており、仕様・設計・AI可読性の観点でも自然な補強に見えます。挙動変更を伴わないため回帰リスクは低いですが、最終的な確証はテストを実行できる環境での再確認が前提です。
