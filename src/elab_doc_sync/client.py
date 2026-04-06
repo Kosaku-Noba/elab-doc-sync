@@ -132,6 +132,8 @@ class ELabFTWClient:
     def download_upload(self, *, long_name: str, real_name: str, storage: int | str) -> bytes:
         """添付ファイル（画像含む全種別）のバイナリを返す。
 
+        内部メソッド: このリポジトリ内でのみ使用。外部公開 API ではない。
+
         eLabFTW API v2 の /uploads/{id}?format=binary は一部環境で
         JSON メタデータを返すため、/app/download.php 経由でダウンロードする。
         参照: https://doc.elabftw.net/api/v2/#/uploads/readUpload
