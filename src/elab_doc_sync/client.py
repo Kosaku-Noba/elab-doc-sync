@@ -129,27 +129,38 @@ class ELabFTWClient:
         """エンティティの添付ファイル一覧を返す。"""
         return self._req("GET", f"/api/v2/{entity_type}/{entity_id}/uploads").json()
 
-    def download_upload(self, *, long_name: str, real_name: str, storage: int | str) -> bytes:
+    def download_upload(self, *, entity_type: str, entity_id: int, upload_id: int) -> bytes:
         """添付ファイル（画像含む全種別）のバイナリを返す。
 
         内部メソッド: このリポジトリ内でのみ使用。外部公開 API ではない。
 
-        eLabFTW API v2 の /uploads/{id}?format=binary は一部環境で
-        JSON メタデータを返すため、/app/download.php 経由でダウンロードする。
+        eLabFTW API v2 の /uploads/{id} に Accept: application/octet-stream と
+        format=binary の両方を指定してバイナリを取得する。
         参照: https://doc.elabftw.net/api/v2/#/uploads/readUpload
 
-        Args:
-            long_name: list_uploads で取得できるハッシュ化ファイル名
-            real_name: 元のファイル名（表示用、ダウンロード時のファイル名に使われる）
-            storage: ストレージ ID（list_uploads の storage フィールド、int または str）
+        eLabFTW API v2 は format=binary 成功時にファイルの実 MIME を返す。
+        テキスト系 MIME（json/html/text）が返った場合はメタデータ応答や
+        プロキシ応答と判断し RuntimeError を送出する。
 
-        成否判定は HTTP ステータスコードのみで行う（raise_for_status）。
-        コンテンツ妥当性（ファイル形式・サイズ等）の担保は呼び出し側の責務。
+        Args:
+            entity_type: items / experiments
+            entity_id: エンティティ ID
+            upload_id: アップロード ID
+
+        Raises:
+            RuntimeError: レスポンスがテキスト系（JSON/HTML/text）の場合
         """
-        from urllib.parse import urlencode
-        params = urlencode({"f": long_name, "name": real_name, "storage": storage})
-        resp = self._req("GET", f"/app/download.php?{params}",
-                         headers=self._auth_headers)
+        resp = self._req(
+            "GET", f"/api/v2/{entity_type}/{entity_id}/uploads/{upload_id}",
+            headers={**self._auth_headers, "Accept": "application/octet-stream"},
+            params={"format": "binary"},
+        )
+        ct = resp.headers.get("Content-Type", "")
+        if any(t in ct for t in ("application/json", "text/html", "text/plain")):
+            raise RuntimeError(
+                f"画像のバイナリ取得に失敗しました（upload #{upload_id}: Content-Type={ct}）。"
+                f"eLabFTW が format=binary に対応していない可能性があります"
+            )
         return resp.content
 
     # ── tags ─────────────────────────────────────────────────

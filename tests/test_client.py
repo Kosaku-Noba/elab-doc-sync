@@ -270,20 +270,22 @@ def test_list_uploads(mock_req, client):
     assert result[0]["real_name"] == "img.png"
 
 
-# CL-26: download_upload via /app/download.php
+# CL-26: download_upload via API v2 with Accept + format=binary
 @patch("elab_doc_sync.client.requests.request")
 def test_download_upload(mock_req, client):
     resp = MagicMock()
     resp.raise_for_status.return_value = None
     resp.content = b"\x89PNG"
+    resp.headers = {"Content-Type": "image/png"}
     mock_req.return_value = resp
-    data = client.download_upload(long_name="abc123.png", real_name="photo.png", storage=2)
+    data = client.download_upload(
+        
+        entity_type="items", entity_id=42, upload_id=10,
+    )
     assert data == b"\x89PNG"
-    url = mock_req.call_args[0][1]
-    assert "/app/download.php" in url
-    assert "f=abc123.png" in url
-    assert "name=photo.png" in url
-    assert "storage=2" in url
+    call_kwargs = mock_req.call_args
+    assert call_kwargs[1].get("params") == {"format": "binary"}
+    assert "application/octet-stream" in call_kwargs[1]["headers"]["Accept"]
 
 
 # CL-27: download_upload raises on HTTP error (4xx/5xx)
@@ -294,33 +296,38 @@ def test_download_upload_raises_on_http_error(mock_req, client):
     resp.raise_for_status.side_effect = HTTPError("404 Not Found")
     mock_req.return_value = resp
     with pytest.raises(HTTPError):
-        client.download_upload(long_name="abc.png", real_name="img.png", storage=1)
+        client.download_upload(
+            
+            entity_type="items", entity_id=1, upload_id=999,
+        )
 
 
-# CL-28: download_upload URL-encodes special characters in real_name
+# CL-28: download_upload raises RuntimeError when JSON is returned
 @patch("elab_doc_sync.client.requests.request")
-def test_download_upload_encodes_special_chars(mock_req, client):
+def test_download_upload_raises_on_json_response(mock_req, client):
     resp = MagicMock()
     resp.raise_for_status.return_value = None
-    resp.content = b"data"
+    resp.content = b'{"id": 10}'
+    resp.headers = {"Content-Type": "application/json"}
     mock_req.return_value = resp
-    client.download_upload(long_name="abc.png", real_name="file&name=evil#.png", storage=1)
-    url = mock_req.call_args[0][1]
-    assert "file%26name%3Devil%23.png" in url
-    assert "&name=evil" not in url  # not split into separate param
+    with pytest.raises(RuntimeError, match="format=binary"):
+        client.download_upload(
+            entity_type="items", entity_id=1, upload_id=10,
+        )
 
 
-# CL-29: download_upload accepts storage as str (eLabFTW may return str)
+# CL-28b: download_upload raises RuntimeError when HTML is returned
 @patch("elab_doc_sync.client.requests.request")
-def test_download_upload_storage_as_str(mock_req, client):
+def test_download_upload_raises_on_html_response(mock_req, client):
     resp = MagicMock()
     resp.raise_for_status.return_value = None
-    resp.content = b"data"
+    resp.content = b"<html>login</html>"
+    resp.headers = {"Content-Type": "text/html"}
     mock_req.return_value = resp
-    data = client.download_upload(long_name="abc.png", real_name="img.png", storage="2")
-    assert data == b"data"
-    url = mock_req.call_args[0][1]
-    assert "storage=2" in url
+    with pytest.raises(RuntimeError):
+        client.download_upload(
+            entity_type="items", entity_id=1, upload_id=10,
+        )
 
 
 # CL-30: list_uploads returns expected schema fields
@@ -340,7 +347,7 @@ def test_list_uploads_schema(mock_req, client):
 # CL-31: download_upload rejects positional arguments (keyword-only enforcement)
 def test_download_upload_rejects_positional(client):
     with pytest.raises(TypeError):
-        client.download_upload("abc.png", "img.png", 1)
+        client.download_upload("items", 1, 1)
 
 
 # CL-32: _download_images passes correct list_uploads fields to download_upload
@@ -356,5 +363,5 @@ def test_download_images_passes_upload_fields(tmp_path):
     body = "![a](https://elab.example.com/app/download.php?f=hash123.png&name=photo.png&storage=2)"
     _download_images(body, "items", 42, client, tmp_path)
     client.download_upload.assert_called_once_with(
-        long_name="hash123.png", real_name="photo.png", storage=2,
+        entity_type="items", entity_id=42, upload_id=10,
     )
