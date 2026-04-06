@@ -120,15 +120,61 @@ def cmd_status(args):
             print(f"  [{target.title}] {status}（{id_str}）")
 
 
+def _ensure_target_in_config(config_path: Path, entity: str, config: "Config"):
+    """--id pull 時に該当 entity のターゲットが yaml に無ければ自動追加する。"""
+    entity = _normalize_entity(entity)
+    if any(t.entity == entity for t in config.targets):
+        return config
+
+    docs_dir = f"{entity}/"
+    id_file = f".elab-sync-ids/{entity}.id"
+    new_target = {"docs_dir": docs_dir, "pattern": "*.md", "mode": "each",
+                  "entity": entity, "title": "", "id_file": id_file}
+
+    # yaml ファイルに追記
+    with open(config_path) as f:
+        raw = yaml.safe_load(f) or {}
+    raw.setdefault("targets", []).append(new_target)
+    with open(config_path, "w") as f:
+        yaml.dump(raw, f, default_flow_style=False, allow_unicode=True)
+
+    label = _entity_label(entity)
+    print(f"  ℹ {label}用ターゲットを .elab-sync.yaml に追加しました（docs_dir: {docs_dir}）")
+
+    # config を再読み込み
+    return load_config(config_path)
+
+
 def cmd_pull(args):
     """eLabFTW からエンティティを取得してローカルに Markdown として保存する。"""
+    if args.id and not getattr(args, "entity", None):
+        print("エラー: --id 指定時は --entity も指定してください（items / experiments）", file=sys.stderr)
+        sys.exit(1)
+
     config_path = Path(args.config)
     project_root = config_path.parent or Path(".")
     config = load_config(config_path)
+
+    # --id 指定時に該当 entity のターゲットが無ければ yaml に自動追加
+    if args.id and args.entity:
+        config = _ensure_target_in_config(config_path, args.entity, config)
+
     client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
 
     pulled = 0
-    for target in config.targets:
+    targets = config.targets
+    # --id + --entity 指定時は該当 entity の最初のターゲットだけ処理
+    # ただし --target 指定時はそちらを優先
+    if args.id and args.entity:
+        entity_norm = _normalize_entity(args.entity)
+        matched = [t for t in targets if t.entity == entity_norm]
+        if args.target:
+            matched = [t for t in matched if t.title == args.target]
+        else:
+            matched = matched[:1]
+        targets = matched
+
+    for target in targets:
         if args.target and target.title != args.target:
             continue
 

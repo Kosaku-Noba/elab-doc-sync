@@ -99,7 +99,7 @@ def test_sync_conflict_error(MockSyncer, MockClient, tmp_path, capsys):
 def test_pull_each(MockClient, tmp_path):
     cfg, docs = _write_config(tmp_path, mode="each")
     MockClient.return_value.get_item.return_value = {"id": 1, "title": "Doc1", "body": "<p>hi</p>"}
-    cmd_pull(_ns(tmp_path, id=[1], command="pull"))
+    cmd_pull(_ns(tmp_path, id=[1], entity="items", command="pull"))
     assert (docs / "Doc1.md").exists()
     ids_dir = tmp_path / ".elab-sync-ids"
     assert (ids_dir / "mapping.json").exists()
@@ -126,7 +126,7 @@ def test_pull_merge(MockClient, tmp_path):
 def test_pull_specific_id(MockClient, tmp_path):
     cfg, docs = _write_config(tmp_path, mode="each")
     MockClient.return_value.get_item.return_value = {"id": 99, "title": "Specific", "body": "<p>x</p>"}
-    cmd_pull(_ns(tmp_path, id=[99], command="pull"))
+    cmd_pull(_ns(tmp_path, id=[99], entity="items", command="pull"))
     assert (docs / "Specific.md").exists()
 
 
@@ -162,6 +162,15 @@ def test_pull_force_overwrite(MockClient, tmp_path):
 # ── cmd_clone (CLI-20 ~ CLI-26) ──────────────────────────
 
 
+# CLI-15a: pull --id 指定時に --entity 未指定 → エラー終了
+def test_pull_id_without_entity_exits(tmp_path, capsys):
+    _write_config(tmp_path, mode="each")
+    with pytest.raises(SystemExit) as exc_info:
+        cmd_pull(_ns(tmp_path, id=[42], command="pull"))
+    assert exc_info.value.code == 1
+    assert "--entity も指定してください" in capsys.readouterr().err
+
+
 # CLI-15: pull --id なし + mapping なし → エラーメッセージ
 @patch("elab_doc_sync.cli.ELabFTWClient")
 def test_pull_no_id_no_mapping(MockClient, tmp_path, capsys):
@@ -179,7 +188,7 @@ def test_pull_multiple_ids_each(MockClient, tmp_path):
         {"id": 1, "title": "A", "body": "<p>a</p>"},
         {"id": 2, "title": "B", "body": "<p>b</p>"},
     ]
-    cmd_pull(_ns(tmp_path, id=[1, 2], command="pull"))
+    cmd_pull(_ns(tmp_path, id=[1, 2], entity="items", command="pull"))
     assert (docs / "A.md").exists()
     assert (docs / "B.md").exists()
 
@@ -190,11 +199,109 @@ def test_pull_merge_multiple_ids_warning(MockClient, tmp_path, capsys):
     cfg, docs = _write_config(tmp_path, mode="merge")
     client = MockClient.return_value
     client.get_item.return_value = {"id": 10, "title": "T", "body": "<p>x</p>"}
-    cmd_pull(_ns(tmp_path, id=[10, 20], command="pull"))
+    cmd_pull(_ns(tmp_path, id=[10, 20], entity="items", command="pull"))
     out = capsys.readouterr().out
     assert "最初の ID のみ使用" in out
     assert (docs / "T.md").exists()
     client.get_item.assert_called_once_with(10)
+
+
+# CLI-18: pull --id --entity experiments で items ターゲットのみの yaml → 自動追加 + items 側は無影響
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_auto_add_target(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path, mode="each", entity="items")
+    client = MockClient.return_value
+    client.get_experiment.return_value = {"id": 42, "title": "Exp1", "body": "<p>exp</p>"}
+    cmd_pull(_ns(tmp_path, id=[42], entity="experiments", command="pull"))
+    out = capsys.readouterr().out
+    # ターゲットが自動追加された
+    assert "ターゲットを .elab-sync.yaml に追加" in out
+    # experiments/ に保存された
+    exp_dir = tmp_path / "experiments"
+    assert (exp_dir / "Exp1.md").exists()
+    # items 側の docs/ には何も保存されていない
+    assert not list(docs.glob("Exp1*"))
+    # items の get_item は呼ばれていない
+    client.get_item.assert_not_called()
+    # id_file が分離されている（experiments.id ベース）
+    raw = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    exp_target = [t for t in raw["targets"] if t["entity"] == "experiments"][0]
+    assert "experiments" in exp_target.get("id_file", "")
+
+
+# CLI-19: 既に該当 entity のターゲットがあれば重複追加しない
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_no_duplicate_target(MockClient, tmp_path):
+    cfg, docs = _write_config(tmp_path, mode="each", entity="items")
+    client = MockClient.return_value
+    client.get_item.return_value = {"id": 1, "title": "D", "body": "<p>d</p>"}
+    cmd_pull(_ns(tmp_path, id=[1], entity="items", command="pull"))
+    raw = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    assert len(raw["targets"]) == 1
+
+
+# CLI-20a: same-entity multi-target → --id 指定時は最初のターゲットだけ処理
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_same_entity_multi_target(MockClient, tmp_path):
+    data = {
+        "elabftw": {"url": "https://elab.example.com", "api_key": "key", "verify_ssl": False},
+        "targets": [
+            {"title": "", "docs_dir": "alpha/", "pattern": "*.md", "mode": "each",
+             "entity": "items", "id_file": ".elab-sync-ids/alpha.id"},
+            {"title": "", "docs_dir": "beta/", "pattern": "*.md", "mode": "each",
+             "entity": "items", "id_file": ".elab-sync-ids/beta.id"},
+        ],
+    }
+    cfg = tmp_path / ".elab-sync.yaml"
+    cfg.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    (tmp_path / "alpha").mkdir()
+    (tmp_path / "beta").mkdir()
+    client = MockClient.return_value
+    client.get_item.return_value = {"id": 5, "title": "X", "body": "<p>x</p>"}
+    cmd_pull(_ns(tmp_path, id=[5], entity="items", command="pull"))
+    # alpha にだけ保存される（最初のターゲット）
+    assert (tmp_path / "alpha" / "X.md").exists()
+    # beta には保存されない
+    assert not (tmp_path / "beta" / "X.md").exists()
+
+
+# CLI-20b: same-entity multi-target + --target で2件目を指定
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_same_entity_with_target(MockClient, tmp_path):
+    data = {
+        "elabftw": {"url": "https://elab.example.com", "api_key": "key", "verify_ssl": False},
+        "targets": [
+            {"title": "Alpha", "docs_dir": "alpha/", "pattern": "*.md", "mode": "each",
+             "entity": "items", "id_file": ".elab-sync-ids/alpha.id"},
+            {"title": "Beta", "docs_dir": "beta/", "pattern": "*.md", "mode": "each",
+             "entity": "items", "id_file": ".elab-sync-ids/beta.id"},
+        ],
+    }
+    cfg = tmp_path / ".elab-sync.yaml"
+    cfg.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    (tmp_path / "alpha").mkdir()
+    (tmp_path / "beta").mkdir()
+    client = MockClient.return_value
+    client.get_item.return_value = {"id": 7, "title": "Y", "body": "<p>y</p>"}
+    cmd_pull(_ns(tmp_path, id=[7], entity="items", command="pull", target="Beta"))
+    # beta に保存される（--target で指定）
+    assert (tmp_path / "beta" / "Y.md").exists()
+    # alpha には保存されない
+    assert not (tmp_path / "alpha" / "Y.md").exists()
+
+
+# CLI-20c: --target 不一致 → 0 件処理、API 呼び出しなし、副作用なし
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_target_mismatch_zero(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path, mode="each", entity="items")
+    cmd_pull(_ns(tmp_path, id=[1], entity="items", command="pull", target="NoSuchTarget"))
+    out = capsys.readouterr().out
+    assert "0 件取得" in out
+    # API は呼ばれない
+    client = MockClient.return_value
+    client.get_item.assert_not_called()
+    # ファイルは生成されない
+    assert list(docs.glob("*.md")) == []
 
 
 def _clone_ns(tmp_path, **kw):

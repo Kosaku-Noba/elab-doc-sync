@@ -70,8 +70,8 @@ elabftw:
 |---------|------|
 | `esync` | ローカル → eLabFTW に同期（push） |
 | `esync pull` | eLabFTW → ローカルに取得（既存同期済み ID を再取得） |
-| `esync pull --id 42` | 指定 ID のエンティティを取得 |
-| `esync pull --id 42 --id 43` | 複数 ID を一括取得 |
+| `esync pull --id 42 --entity items` | 指定 ID のリソースを取得 |
+| `esync pull --id 42 --id 43 --entity items` | 複数 ID を一括取得 |
 | `esync pull --id 42 --entity experiments` | 実験ノートとして取得 |
 | `esync diff` | ローカルと eLabFTW の差分を表示 |
 | `esync status` | 同期状態を確認 |
