@@ -134,6 +134,12 @@ class ELabFTWClient:
 
         eLabFTW API v2 の /uploads/{id} は format=binary を指定しないと
         JSON メタデータを返すため、必ずクエリパラメータで指定する。
+
+        成否判定は HTTP ステータスコードのみで行う（raise_for_status）。
+        Content-Type による検証は行わない。理由:
+        - format=binary 指定時、eLabFTW は実ファイルの MIME を返す
+        - .json や .html を添付として正当にダウンロードするケースがある
+        - API エラーは 4xx/5xx で返されるため、ステータスで十分に検出可能
         """
         resp = self._req("GET", f"/api/v2/{entity_type}/{entity_id}/uploads/{upload_id}",
                          headers=self._auth_headers,
