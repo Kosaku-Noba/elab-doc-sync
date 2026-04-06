@@ -279,7 +279,7 @@ def test_download_upload(mock_req, client):
     resp.headers = {"Content-Type": "image/png"}
     mock_req.return_value = resp
     data = client.download_upload(
-        long_name="abc123.png", real_name="photo.png", storage=2,
+        
         entity_type="items", entity_id=42, upload_id=10,
     )
     assert data == b"\x89PNG"
@@ -297,7 +297,7 @@ def test_download_upload_raises_on_http_error(mock_req, client):
     mock_req.return_value = resp
     with pytest.raises(HTTPError):
         client.download_upload(
-            long_name="abc.png", real_name="img.png", storage=1,
+            
             entity_type="items", entity_id=1, upload_id=999,
         )
 
@@ -312,24 +312,22 @@ def test_download_upload_raises_on_json_response(mock_req, client):
     mock_req.return_value = resp
     with pytest.raises(RuntimeError, match="format=binary"):
         client.download_upload(
-            long_name="abc.png", real_name="img.png", storage=1,
             entity_type="items", entity_id=1, upload_id=10,
         )
 
 
-# CL-29: download_upload accepts storage as str
+# CL-28b: download_upload raises RuntimeError when HTML is returned
 @patch("elab_doc_sync.client.requests.request")
-def test_download_upload_storage_as_str(mock_req, client):
+def test_download_upload_raises_on_html_response(mock_req, client):
     resp = MagicMock()
     resp.raise_for_status.return_value = None
-    resp.content = b"data"
-    resp.headers = {"Content-Type": "image/png"}
+    resp.content = b"<html>login</html>"
+    resp.headers = {"Content-Type": "text/html"}
     mock_req.return_value = resp
-    data = client.download_upload(
-        long_name="abc.png", real_name="img.png", storage="2",
-        entity_type="items", entity_id=1, upload_id=1,
-    )
-    assert data == b"data"
+    with pytest.raises(RuntimeError):
+        client.download_upload(
+            entity_type="items", entity_id=1, upload_id=10,
+        )
 
 
 # CL-30: list_uploads returns expected schema fields
@@ -349,7 +347,7 @@ def test_list_uploads_schema(mock_req, client):
 # CL-31: download_upload rejects positional arguments (keyword-only enforcement)
 def test_download_upload_rejects_positional(client):
     with pytest.raises(TypeError):
-        client.download_upload("abc.png", "img.png", 1, "items", 1, 1)
+        client.download_upload("items", 1, 1)
 
 
 # CL-32: _download_images passes correct list_uploads fields to download_upload
@@ -365,6 +363,5 @@ def test_download_images_passes_upload_fields(tmp_path):
     body = "![a](https://elab.example.com/app/download.php?f=hash123.png&name=photo.png&storage=2)"
     _download_images(body, "items", 42, client, tmp_path)
     client.download_upload.assert_called_once_with(
-        long_name="hash123.png", real_name="photo.png", storage=2,
         entity_type="items", entity_id=42, upload_id=10,
     )

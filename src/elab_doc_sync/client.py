@@ -129,8 +129,7 @@ class ELabFTWClient:
         """エンティティの添付ファイル一覧を返す。"""
         return self._req("GET", f"/api/v2/{entity_type}/{entity_id}/uploads").json()
 
-    def download_upload(self, *, long_name: str, real_name: str, storage: int | str,
-                        entity_type: str, entity_id: int, upload_id: int) -> bytes:
+    def download_upload(self, *, entity_type: str, entity_id: int, upload_id: int) -> bytes:
         """添付ファイル（画像含む全種別）のバイナリを返す。
 
         内部メソッド: このリポジトリ内でのみ使用。外部公開 API ではない。
@@ -139,16 +138,17 @@ class ELabFTWClient:
         format=binary の両方を指定してバイナリを取得する。
         参照: https://doc.elabftw.net/api/v2/#/uploads/readUpload
 
+        eLabFTW API v2 は format=binary 成功時にファイルの実 MIME を返す。
+        テキスト系 MIME（json/html/text）が返った場合はメタデータ応答や
+        プロキシ応答と判断し RuntimeError を送出する。
+
         Args:
-            long_name: list_uploads で取得できるハッシュ化ファイル名（未使用、将来の拡張用に保持）
-            real_name: 元のファイル名（未使用、将来の拡張用に保持）
-            storage: ストレージ ID（未使用、将来の拡張用に保持）
             entity_type: items / experiments
             entity_id: エンティティ ID
             upload_id: アップロード ID
 
         Raises:
-            RuntimeError: レスポンスが JSON（メタデータ）の場合
+            RuntimeError: レスポンスがテキスト系（JSON/HTML/text）の場合
         """
         resp = self._req(
             "GET", f"/api/v2/{entity_type}/{entity_id}/uploads/{upload_id}",
@@ -156,7 +156,7 @@ class ELabFTWClient:
             params={"format": "binary"},
         )
         ct = resp.headers.get("Content-Type", "")
-        if "application/json" in ct:
+        if any(t in ct for t in ("application/json", "text/html", "text/plain")):
             raise RuntimeError(
                 f"画像のバイナリ取得に失敗しました（upload #{upload_id}: Content-Type={ct}）。"
                 f"eLabFTW が format=binary に対応していない可能性があります"

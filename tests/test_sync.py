@@ -378,7 +378,6 @@ def test_download_images_replaces_url(tmp_path):
     assert "images/items_42_photo.png" in result
     assert (tmp_path / "images" / "items_42_photo.png").exists()
     client.download_upload.assert_called_once_with(
-        long_name="abc123.png", real_name="photo.png", storage="1",
         entity_type="items", entity_id=42, upload_id=10,
     )
 
