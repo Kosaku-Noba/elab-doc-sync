@@ -528,7 +528,7 @@ def test_cmd_tag_list(MockClient, tmp_path, capsys):
     id_dir = tmp_path / ".elab-sync-ids"
     id_dir.mkdir()
     (id_dir / "default.id").write_text("42", encoding="utf-8")
-    args = Namespace(config=str(cfg), target=None, force=False, tag_action="list")
+    args = Namespace(config=str(cfg), target=None, force=False, tag_action="list", id=None, entity=None)
     cmd_tag(args)
     out = capsys.readouterr().out
     assert "alpha" in out
@@ -544,7 +544,7 @@ def test_cmd_tag_add(MockClient, tmp_path, capsys):
     id_dir = tmp_path / ".elab-sync-ids"
     id_dir.mkdir()
     (id_dir / "default.id").write_text("42", encoding="utf-8")
-    args = Namespace(config=str(cfg), target=None, force=False, tag_action="add", tag_name="newtag", id=None)
+    args = Namespace(config=str(cfg), target=None, force=False, tag_action="add", tag_name="newtag", id=None, entity=None)
     cmd_tag(args)
     client.add_tag.assert_called_once_with("items", 42, "newtag")
 
@@ -559,9 +559,34 @@ def test_cmd_tag_remove(MockClient, tmp_path, capsys):
     id_dir = tmp_path / ".elab-sync-ids"
     id_dir.mkdir()
     (id_dir / "default.id").write_text("42", encoding="utf-8")
-    args = Namespace(config=str(cfg), target=None, force=False, tag_action="remove", tag_name="old", id=None)
+    args = Namespace(config=str(cfg), target=None, force=False, tag_action="remove", tag_name="old", id=None, entity=None)
     cmd_tag(args)
     client.untag_by_name.assert_called_once_with("items", 42, "old")
+
+
+# CLI-63: tag add with --id and --entity (直接指定)
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_tag_add_direct(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    client = MockClient.return_value
+    args = Namespace(config=str(cfg), target=None, force=False, tag_action="add",
+                     tag_name="direct-tag", id=99, entity="experiments")
+    cmd_tag(args)
+    client.add_tag.assert_called_once_with("experiments", 99, "direct-tag")
+    assert "実験ノート #99" in capsys.readouterr().out
+
+
+# CLI-64: tag list with --id and --entity (直接指定)
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_tag_list_direct(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    client = MockClient.return_value
+    client.get_tags.return_value = [{"id": 1, "tag": "x"}]
+    args = Namespace(config=str(cfg), target=None, force=False, tag_action="list",
+                     id=50, entity="items")
+    cmd_tag(args)
+    client.get_tags.assert_called_once_with("items", 50)
+    assert "リソース #50" in capsys.readouterr().out
 
 
 # ── FR-15 metadata コマンドテスト ────────────────────────
@@ -899,7 +924,7 @@ def test_tag_list_shows_resource_label(MockClient, tmp_path, capsys):
     id_dir = tmp_path / ".elab-sync-ids"
     id_dir.mkdir()
     (id_dir / "default.id").write_text("1", encoding="utf-8")
-    args = Namespace(config=str(cfg), target=None, force=False, tag_action="list")
+    args = Namespace(config=str(cfg), target=None, force=False, tag_action="list", id=None, entity=None)
     cmd_tag(args)
     out = capsys.readouterr().out
     assert "リソース" in out

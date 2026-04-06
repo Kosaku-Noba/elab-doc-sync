@@ -159,17 +159,25 @@ $ esync clone --url https://elab.example.com --entity items --id 42 --id 43
 ### タグ操作
 
 ```bash
-# タグ一覧を表示
+# タグ一覧を表示（同期済みターゲットから自動解決）
 $ esync tag list
   リソース #42: biology, 2025-Q1
 
+# ID とエンティティを直接指定して操作
+$ esync tag list --id 42 --entity items
+  リソース #42: biology, 2025-Q1
+
 # タグを追加
-$ esync tag add "new-tag"
-  リソース #42: タグ 'new-tag' を追加しました
+$ esync tag add "new-tag" --id 42 --entity items
+  リソース #42: タグ「new-tag」を追加しました
 
 # タグを外す
-$ esync tag remove "old-tag"
-  リソース #42: タグ 'old-tag' を外しました
+$ esync tag remove "old-tag" --id 42 --entity items
+  リソース #42: タグ「old-tag」を外しました
+
+# 実験ノートのタグを操作
+$ esync tag add "urgent" --id 1 --entity experiments
+  実験ノート #1: タグ「urgent」を追加しました
 ```
 
 ### リモート一覧を表示
@@ -212,8 +220,9 @@ $ esync link 42
 | `esync diff` | ローカルと eLabFTW の差分を表示 |
 | `esync status` | 同期状態を確認 |
 | `esync tag list` | リモートのタグ一覧を表示 |
-| `esync tag add "タグ"` | タグを追加 |
-| `esync tag remove "タグ"` | タグを外す |
+| `esync tag list --id 42 --entity items` | 指定エンティティのタグ一覧 |
+| `esync tag add "タグ" --id 42 --entity items` | タグを追加 |
+| `esync tag remove "タグ" --id 42 --entity items` | タグを外す |
 | `esync metadata get` | メタデータを表示 |
 | `esync metadata set k=v` | メタデータを設定 |
 | `esync entity-status show` | エンティティのステータスを表示 |
