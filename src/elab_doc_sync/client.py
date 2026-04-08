@@ -125,6 +125,10 @@ class ELabFTWClient:
                     }
         return {"filename": filename, "url": None}
 
+    def delete_upload(self, entity_type: str, entity_id: int, upload_id: int) -> None:
+        """添付ファイルを削除する。"""
+        self._req("DELETE", f"/api/v2/{entity_type}/{entity_id}/uploads/{upload_id}")
+
     def list_uploads(self, entity_type: str, entity_id: int) -> list[dict]:
         """エンティティの添付ファイル一覧を返す。"""
         return self._req("GET", f"/api/v2/{entity_type}/{entity_id}/uploads").json()
