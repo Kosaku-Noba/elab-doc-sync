@@ -4,26 +4,14 @@
 
 ## ① インストール
 
-**uv を使う場合（推奨）:**
-
 ```bash
 uv pip install git+https://github.com/Kosaku-Noba/elab-doc-sync.git
-```
-
-**pip を使う場合:**
-
-```bash
-pip install git+https://github.com/Kosaku-Noba/elab-doc-sync.git
 ```
 
 ## ② 設定ファイルを作る
 
 ```bash
-# uv の場合
 uv run elab-doc-sync init
-
-# pip の場合
-elab-doc-sync init
 ```
 
 対話形式で以下を入力する:
@@ -83,6 +71,6 @@ uv sync
 uv run esync update
 ```
 
-`uv` → `pip` の順で自動検出し、Git リポジトリから最新版をインストールする。
+`uv` で Git リポジトリから最新版をインストールする。
 
 設定ファイルの詳細は [設定リファレンス](04_CONFIGURATION.md) を参照。

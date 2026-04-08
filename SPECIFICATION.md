@@ -58,7 +58,7 @@ my-docs-repo/
 
 1. `.tool/elab-doc-sync` が存在しなければ `git clone TOOL_REPO` で取得
 2. `elab-doc-sync` コマンドが PATH にあるか確認
-3. なければインストール: `uv sync` を試行 → 失敗なら `pip install -e .`
+3. なければインストール: `uv sync` でインストール
 4. `sys.argv[1:]` をそのまま `elab-doc-sync` コマンドに転送
 
 ### 3.3 設定
