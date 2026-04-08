@@ -31,9 +31,6 @@ class ConflictError(Exception):
     """リモートが前回同期以降に変更されている。"""
     pass
 
-# eLabFTW API の content_type 値（1 = Markdown, 2 = HTML）
-CONTENT_TYPE_MD = 1
-
 
 def _compute_hash(body: str) -> str:
     return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
@@ -359,7 +356,7 @@ class DocsSyncer:
 
         body = _rewrite_images(raw_body, self.entity, item_id, self.client, self.docs_dir, self.project_root)
         if self.target.body_format == "md":
-            self._update_entity(item_id, body=body, content_type=CONTENT_TYPE_MD, title=self.target.title)
+            self._update_entity(item_id, body=body, title=self.target.title)
         else:
             html = _md_to_html(body)
             self._update_entity(item_id, body=html, title=self.target.title)
@@ -535,7 +532,7 @@ class EachDocsSyncer:
 
             body = _rewrite_images(raw_body, self.entity, eid, self.client, self.docs_dir, self.project_root)
             if self.target.body_format == "md":
-                self._update_entity(eid, body=body, content_type=CONTENT_TYPE_MD, title=title)
+                self._update_entity(eid, body=body, title=title)
             else:
                 html = _md_to_html(body)
                 self._update_entity(eid, body=html, title=title)
