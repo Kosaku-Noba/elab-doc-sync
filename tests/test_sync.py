@@ -510,6 +510,39 @@ def test_rewrite_images_reuploads_changed_file(tmp_path):
     assert "new_photo.png" in result
 
 
+# S-53b: アップロード失敗時は旧添付を削除しない
+def test_rewrite_images_upload_fail_keeps_old(tmp_path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "photo.png").write_bytes(b"\x89PNG_UPDATED")
+    client = MagicMock()
+    client.base_url = "https://elab.example.com"
+    client.list_uploads.return_value = [
+        {"id": 10, "real_name": "photo.png", "long_name": "abc123.png", "storage": "1", "filesize": 4},
+    ]
+    client.upload_file.return_value = {"url": None}
+    result = _rewrite_images("![a](photo.png)", "items", 1, client, docs, tmp_path)
+    client.delete_upload.assert_not_called()
+    assert "![a](photo.png)" == result
+
+
+# S-53c: 同名重複が複数ある場合、再利用時に余分な添付を削除
+def test_rewrite_images_reuse_cleans_duplicates(tmp_path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "photo.png").write_bytes(b"\x89PNG")  # 4 bytes
+    client = MagicMock()
+    client.base_url = "https://elab.example.com"
+    client.list_uploads.return_value = [
+        {"id": 10, "real_name": "photo.png", "long_name": "abc123.png", "storage": "1", "filesize": 4},
+        {"id": 11, "real_name": "photo.png", "long_name": "def456.png", "storage": "1", "filesize": 4},
+    ]
+    result = _rewrite_images("![a](photo.png)", "items", 1, client, docs, tmp_path)
+    client.upload_file.assert_not_called()
+    client.delete_upload.assert_called_once_with("items", 1, 11)
+    assert "abc123.png" in result
+
+
 # S-54: list_uploads 失敗時に _download_images は body をそのまま返す
 def test_download_images_list_uploads_failure():
     client = MagicMock()
