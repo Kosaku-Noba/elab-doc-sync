@@ -13,7 +13,7 @@ import yaml
 from elab_doc_sync.cli import (
     cmd_sync, cmd_pull, cmd_clone, cmd_log, cmd_diff, cmd_status, cmd_init, cmd_update,
     cmd_tag, cmd_metadata, cmd_entity_status, cmd_whoami, cmd_new,
-    cmd_list, cmd_link, cmd_verify,
+    cmd_list, cmd_link, cmd_verify, REPO_URL,
 )
 from elab_doc_sync.sync import ConflictError
 
@@ -453,8 +453,9 @@ def test_init_template_files(tmp_path, monkeypatch):
 def test_update(mock_run, tmp_path):
     mock_run.return_value = MagicMock(returncode=0)
     cmd_update(Namespace())
-    args = mock_run.call_args[0][0]
-    assert args[0] == "uv"
+    args, kwargs = mock_run.call_args
+    assert args[0] == ["uv", "pip", "install", "--upgrade", REPO_URL]
+    assert kwargs.get("check") is True
     mock_run.assert_called_once()
 
 
@@ -462,7 +463,9 @@ def test_update(mock_run, tmp_path):
 def test_update_no_uv(mock_run, capsys):
     with pytest.raises(SystemExit):
         cmd_update(Namespace())
-    assert "uv が見つかりません" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "uv が見つかりません" in err
+    assert "docs.astral.sh/uv" in err
 
 
 # ── cmd_diff / cmd_status (CLI-50 ~ CLI-53) ──────────────
