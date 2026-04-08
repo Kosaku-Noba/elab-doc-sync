@@ -175,22 +175,23 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
     プレフィックス付きローカル名（例: items_1_photo.png）は real_name（photo.png）に
     戻してからアップロードし、次回 pull 時の命名安定性を保つ。
     """
-    existing = {}
+    existing: dict[str, list[dict]] = {}
     try:
         for u in client.list_uploads(entity, entity_id):
             rn = u.get("real_name")
             ln = u.get("long_name")
             st = u.get("storage")
             if rn and ln and st:
-                existing[rn] = {
+                existing.setdefault(rn, []).append({
                     "url": f"{client.base_url}/app/download.php?f={ln}&name={rn}&storage={st}",
                     "size": int(u.get("filesize", 0) or 0),
                     "id": u.get("id"),
-                }
+                })
     except Exception:
         pass
 
     tmp_dirs: list[str] = []
+    stale_ids: list[int] = []
 
     def replace_match(m):
         alt, src = m.group(1), m.group(2)
@@ -203,17 +204,21 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
             print(f"    ⚠ 画像が見つかりません: {src}")
             return m.group(0)
         real_name = _parse_image_local_name(img_path.name) or img_path.name
+        entries = existing.get(real_name, [])
+        local_size = img_path.stat().st_size
         # NOTE: 同名・同サイズ・別内容のケースは再利用される（ハッシュ比較はコスト回避のため省略）
-        ex = existing.get(real_name)
-        if ex and ex["size"] and img_path.stat().st_size == ex["size"]:
+        reuse = next((e for e in entries if e["size"] and e["size"] == local_size), None)
+        if reuse:
+            # サイズ一致の1件を再利用し、残りの重複は削除予約
+            for e in entries:
+                if e is not reuse and e.get("id") is not None:
+                    stale_ids.append(e["id"])
             print(f"    ✓ {real_name}（既存アップロードを再利用）")
-            return f"![{alt}]({ex['url']})"
-        # 同名だがサイズ違い → 古い添付を削除してから再アップロード
-        if ex and ex.get("id") is not None:
-            try:
-                client.delete_upload(entity, entity_id, ex["id"])
-            except Exception:
-                pass
+            return f"![{alt}]({reuse['url']})"
+        # サイズ不一致 → 全件を削除予約（アップロード成功後に削除）
+        for e in entries:
+            if e.get("id") is not None:
+                stale_ids.append(e["id"])
         if real_name != img_path.name:
             td = tempfile.mkdtemp()
             tmp_dirs.append(td)
@@ -231,7 +236,14 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
         return m.group(0)
 
     try:
-        return IMAGE_RE.sub(replace_match, body)
+        result = IMAGE_RE.sub(replace_match, body)
+        # アップロード成功後に古い添付を削除（失敗しても本文は壊さない）
+        for uid in stale_ids:
+            try:
+                client.delete_upload(entity, entity_id, uid)
+            except Exception:
+                pass
+        return result
     finally:
         for td in tmp_dirs:
             shutil.rmtree(td, ignore_errors=True)
