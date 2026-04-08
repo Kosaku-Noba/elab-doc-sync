@@ -136,7 +136,7 @@ esync clone --url https://elab.example.com --id 42 --entity experiments --no-ver
 
 ### `esync update`
 
-ツール自体を最新版に更新する。`uv` → `pip` の順で自動検出。
+ツール自体を最新版に更新する。`uv` で Git リポジトリから最新版をインストールする。
 
 ### `esync tag`
 

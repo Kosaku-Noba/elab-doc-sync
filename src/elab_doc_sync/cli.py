@@ -582,16 +582,12 @@ def cmd_update(args):
     """ツール自体を最新版に更新する。"""
     import subprocess
     print("elab-doc-sync を最新版に更新しています...")
-    # uv が使えるか試す → だめなら pip
-    for installer in (["uv", "pip", "install", "--upgrade"], ["pip", "install", "--upgrade"]):
-        try:
-            subprocess.run([*installer, REPO_URL], check=True)
-            print("\n✅ 更新が完了しました")
-            return
-        except FileNotFoundError:
-            continue
-    print("エラー: uv も pip も見つかりません", file=sys.stderr)
-    sys.exit(1)
+    try:
+        subprocess.run(["uv", "pip", "install", "--upgrade", REPO_URL], check=True)
+        print("\n✅ 更新が完了しました")
+    except FileNotFoundError:
+        print("エラー: uv が見つかりません", file=sys.stderr)
+        sys.exit(1)
 
 
 HELP_EPILOG = """\

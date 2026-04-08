@@ -21,7 +21,7 @@
 | 対象 | 研究者・技術者（CLI 操作に抵抗がない層） |
 | 対応 OS | Linux / Windows |
 | Python | 3.10 以上 |
-| インストール | `uv pip install` または `pip install`（Git リポジトリから） |
+| インストール | `uv pip install`（Git リポジトリから） |
 
 ## ドキュメント一覧
 
