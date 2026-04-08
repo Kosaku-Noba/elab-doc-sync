@@ -586,7 +586,7 @@ def cmd_update(args):
         subprocess.run(["uv", "pip", "install", "--upgrade", REPO_URL], check=True)
         print("\n✅ 更新が完了しました")
     except FileNotFoundError:
-        print("エラー: uv が見つかりません", file=sys.stderr)
+        print("エラー: uv が見つかりません。https://docs.astral.sh/uv/ からインストールしてください", file=sys.stderr)
         sys.exit(1)
 
 

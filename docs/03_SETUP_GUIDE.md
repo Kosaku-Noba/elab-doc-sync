@@ -2,6 +2,13 @@
 
 → [プロジェクト概要](01_README.md) | [設定ファイル](04_CONFIGURATION.md)
 
+## 前提条件
+
+- Python 3.10 以上
+- [uv](https://docs.astral.sh/uv/) （パッケージ管理・実行に使用）
+
+> **pip からの移行:** `pip uninstall elab-doc-sync` で削除してから下記の手順で再インストールしてください。設定ファイル（`.elab-sync.yaml`）はそのまま使えます。
+
 ## ① インストール
 
 ```bash

@@ -453,7 +453,16 @@ def test_init_template_files(tmp_path, monkeypatch):
 def test_update(mock_run, tmp_path):
     mock_run.return_value = MagicMock(returncode=0)
     cmd_update(Namespace())
+    args = mock_run.call_args[0][0]
+    assert args[0] == "uv"
     mock_run.assert_called_once()
+
+
+@patch("subprocess.run", side_effect=FileNotFoundError)
+def test_update_no_uv(mock_run, capsys):
+    with pytest.raises(SystemExit):
+        cmd_update(Namespace())
+    assert "uv が見つかりません" in capsys.readouterr().err
 
 
 # ── cmd_diff / cmd_status (CLI-50 ~ CLI-53) ──────────────
