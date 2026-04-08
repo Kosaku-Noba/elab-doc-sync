@@ -187,6 +187,9 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
                     "size": int(u.get("filesize", 0) or 0),
                     "id": u.get("id"),
                 })
+        # id 昇順でソートし、最古の添付を正本として安定させる
+        for entries in existing.values():
+            entries.sort(key=lambda e: e.get("id") or 0)
     except Exception:
         pass
 
