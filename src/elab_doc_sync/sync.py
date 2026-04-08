@@ -215,10 +215,7 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
                     stale_ids.append(e["id"])
             print(f"    ✓ {real_name}（既存アップロードを再利用）")
             return f"![{alt}]({reuse['url']})"
-        # サイズ不一致 → 全件を削除予約（アップロード成功後に削除）
-        for e in entries:
-            if e.get("id") is not None:
-                stale_ids.append(e["id"])
+        # サイズ不一致 → 新規アップロードを試み、成功時のみ旧添付を削除予約
         if real_name != img_path.name:
             td = tempfile.mkdtemp()
             tmp_dirs.append(td)
@@ -230,6 +227,9 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
         print(f"    画像をアップロード中: {real_name}")
         result = client.upload_file(entity, entity_id, upload_path)
         if result.get("url"):
+            for e in entries:
+                if e.get("id") is not None:
+                    stale_ids.append(e["id"])
             print(f"    ✓ {real_name}")
             return f"![{alt}]({result['url']})"
         print(f"    ✗ アップロード失敗: {real_name}")
