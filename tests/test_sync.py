@@ -543,6 +543,25 @@ def test_rewrite_images_reuse_cleans_duplicates(tmp_path):
     assert "abc123.png" in result
 
 
+# S-53d: list_uploads の返却順が逆でも最小 id の添付が再利用される
+def test_rewrite_images_reuse_stable_regardless_of_order(tmp_path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "photo.png").write_bytes(b"\x89PNG")  # 4 bytes
+    client = MagicMock()
+    client.base_url = "https://elab.example.com"
+    # id=11 が先に返される（逆順）
+    client.list_uploads.return_value = [
+        {"id": 11, "real_name": "photo.png", "long_name": "def456.png", "storage": "1", "filesize": 4},
+        {"id": 10, "real_name": "photo.png", "long_name": "abc123.png", "storage": "1", "filesize": 4},
+    ]
+    result = _rewrite_images("![a](photo.png)", "items", 1, client, docs, tmp_path)
+    client.upload_file.assert_not_called()
+    # 最小 id=10 の abc123.png が再利用され、id=11 が削除される
+    client.delete_upload.assert_called_once_with("items", 1, 11)
+    assert "abc123.png" in result
+
+
 # S-54: list_uploads 失敗時に _download_images は body をそのまま返す
 def test_download_images_list_uploads_failure():
     client = MagicMock()
