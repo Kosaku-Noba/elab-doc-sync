@@ -184,7 +184,8 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
             if rn and ln and st:
                 existing[rn] = {
                     "url": f"{client.base_url}/app/download.php?f={ln}&name={rn}&storage={st}",
-                    "size": u.get("filesize", 0),
+                    "size": int(u.get("filesize", 0) or 0),
+                    "id": u.get("id"),
                 }
     except Exception:
         pass
@@ -207,6 +208,12 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
         if ex and ex["size"] and img_path.stat().st_size == ex["size"]:
             print(f"    ✓ {real_name}（既存アップロードを再利用）")
             return f"![{alt}]({ex['url']})"
+        # 同名だがサイズ違い → 古い添付を削除してから再アップロード
+        if ex and ex.get("id") is not None:
+            try:
+                client.delete_upload(entity, entity_id, ex["id"])
+            except Exception:
+                pass
         if real_name != img_path.name:
             td = tempfile.mkdtemp()
             tmp_dirs.append(td)
