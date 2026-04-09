@@ -974,6 +974,7 @@ def main():
 
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("status", help="同期状態を確認", parents=[common])
+    sub.add_parser("push", help="ローカル → eLabFTW に同期（esync と同じ）", parents=[common])
     sub.add_parser("init", help="対話的に設定ファイルを作成", parents=[common])
     sub.add_parser("diff", help="ローカルと eLabFTW の差分を表示", parents=[common])
     sub.add_parser("update", help="ツールを最新版に更新")
@@ -1071,4 +1072,5 @@ def main():
     elif args.command == "verify":
         cmd_verify(args)
     else:
+        # "push" サブコマンドまたは引数なし → 同期
         cmd_sync(args)
