@@ -294,6 +294,8 @@ targets:
 | `targets[].body_format` | — | `html` | `md`（Markdown のまま送信）/ `html`（HTML に変換して送信） |
 | `targets[].attachments_dir` | — | — | 添付ファイルディレクトリ（画像以外のファイルを自動アップロード・ダウンロード） |
 
+> **Note:** `attachments_dir` を `mode: each` で使用すると、同じディレクトリの添付ファイルが各エンティティに複製されます。エンティティごとに異なる添付が必要な場合は、ターゲットを分けてください。
+
 > **Note:** `esync init` で新規作成する場合、`body_format` のデフォルト提案は `md` です。既存の設定ファイルで `body_format` を省略した場合は互換性のため `html` が適用されます。
 
 サンプル: [`.elab-sync.yaml.example`](.elab-sync.yaml.example)
