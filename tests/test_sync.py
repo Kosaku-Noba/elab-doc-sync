@@ -846,3 +846,181 @@ def test_default_body_format_is_html():
     target = TargetConfig(title="T", docs_dir="docs/", id_file=".ids/d.id")
     assert target.body_format == BODY_FORMAT_DEFAULT
     assert target.body_format == "html"
+
+
+# ── Math protection tests ────────────────────────────────
+
+# S-85: ブロック数式 ($$...$$) が HTML 変換で保護される
+def test_md_to_html_block_math_preserved():
+    text = r"# Title" + "\n\n" + r"$$\frac{a}{b}$$"
+    result = _md_to_html(text)
+    assert r"\frac{a}{b}" in result
+    assert "$$" in result
+
+
+# S-86: インライン数式 ($...$) が HTML 変換で保護される
+def test_md_to_html_inline_math_preserved():
+    text = r"Text $E = mc^2$ end."
+    result = _md_to_html(text)
+    assert r"E = mc^2" in result
+    assert "$" in result
+
+
+# S-87: 数式内の <, >, & が HTML エンティティに変換される
+def test_md_to_html_math_html_escaped():
+    text = r"$a < b$ and $x > 0$ and $A \& B$"
+    result = _md_to_html(text)
+    assert "&lt;" in result
+    assert "&gt;" in result
+    assert "&amp;" in result
+
+
+# S-88: エスケープされたドル記号 (\$) は数式として扱わない
+def test_md_to_html_escaped_dollar_not_math():
+    text = r"Price is \$100 to \$200."
+    result = _md_to_html(text)
+    # \$ がそのまま残り、数式プレースホルダに退避されない
+    assert "MATH" not in result
+
+
+# S-89: ブロック数式とインライン数式が隣接しても正しく処理される
+def test_md_to_html_adjacent_math():
+    text = r"$$x^2$$ then $y^2$."
+    result = _md_to_html(text)
+    assert "x^2" in result
+    assert "y^2" in result
+
+
+# S-90: 数式内の _ がイタリックに変換されない
+def test_md_to_html_underscore_in_math():
+    text = r"$$\sum_{i=1}^{N} x_{i}$$"
+    result = _md_to_html(text)
+    assert "<em>" not in result
+    assert r"\sum_{i=1}" in result
+
+
+# ── Attachment tests ─────────────────────────────────────
+
+from elab_doc_sync.sync import (
+    _is_image, _count_local_attachments, _sync_attachments, _download_attachments,
+)
+
+
+# S-91: _is_image が画像拡張子を正しく判定する
+def test_is_image():
+    assert _is_image("photo.png") is True
+    assert _is_image("photo.PNG") is True
+    assert _is_image("photo.jpg") is True
+    assert _is_image("report.pdf") is False
+    assert _is_image("data.csv") is False
+    assert _is_image("archive.zip") is False
+
+
+# S-92: _count_local_attachments が非画像ファイルのみカウントする
+def test_count_local_attachments(tmp_path):
+    att_dir = tmp_path / "attachments"
+    att_dir.mkdir()
+    (att_dir / "report.pdf").write_bytes(b"pdf")
+    (att_dir / "data.csv").write_bytes(b"csv")
+    (att_dir / "photo.png").write_bytes(b"png")
+    assert _count_local_attachments(att_dir) == 2
+    assert _count_local_attachments(None) == 0
+    assert _count_local_attachments(tmp_path / "nonexistent") == 0
+
+
+# S-93: _sync_attachments がサイズ一致で再利用し、不一致で再アップロードする
+def test_sync_attachments_reuse_and_upload(tmp_path):
+    att_dir = tmp_path / "attachments"
+    att_dir.mkdir()
+    (att_dir / "report.pdf").write_bytes(b"x" * 100)
+    (att_dir / "new.csv").write_bytes(b"y" * 50)
+    (att_dir / "photo.png").write_bytes(b"img")  # 画像は除外
+
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"real_name": "report.pdf", "filesize": 100, "id": 1},  # サイズ一致 → 再利用
+    ]
+    client.upload_file.return_value = {"url": "http://example.com/new.csv"}
+
+    _sync_attachments(att_dir, "items", 42, client)
+
+    # new.csv のみアップロードされる
+    client.upload_file.assert_called_once()
+    assert "new.csv" in client.upload_file.call_args[0][2]
+    # photo.png はアップロードされない
+    for call in client.upload_file.call_args_list:
+        assert "photo.png" not in call[0][2]
+
+
+# S-94: _sync_attachments が attachments_dir=None のとき何もしない
+def test_sync_attachments_none_dir():
+    client = MagicMock()
+    _sync_attachments(None, "items", 42, client)
+    client.list_uploads.assert_not_called()
+
+
+# S-95: _download_attachments がパストラバーサルを防止する
+def test_download_attachments_path_traversal(tmp_path):
+    att_dir = tmp_path / "attachments"
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"real_name": "../evil.txt", "filesize": 5, "id": 1},
+        {"real_name": "subdir/file.txt", "filesize": 5, "id": 2},
+        {"real_name": "safe.pdf", "filesize": 5, "id": 3},
+    ]
+    client.download_upload.return_value = b"hello"
+
+    _download_attachments("items", 42, client, att_dir)
+
+    # ../evil.txt → basename "evil.txt" として att_dir 内に保存
+    assert (att_dir / "evil.txt").exists()
+    assert not (tmp_path / "evil.txt").exists()  # 親ディレクトリには書かれない
+    # subdir/file.txt → basename "file.txt" として att_dir 内に保存
+    assert (att_dir / "file.txt").exists()
+    assert not (att_dir / "subdir").exists()
+    # safe.pdf は通常通り
+    assert (att_dir / "safe.pdf").exists()
+
+
+# S-96: _download_attachments が画像をスキップする
+def test_download_attachments_skips_images(tmp_path):
+    att_dir = tmp_path / "attachments"
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"real_name": "photo.png", "filesize": 100, "id": 1},
+        {"real_name": "report.pdf", "filesize": 50, "id": 2},
+    ]
+    client.download_upload.return_value = b"data"
+
+    _download_attachments("items", 42, client, att_dir)
+
+    # photo.png はダウンロードされない
+    assert not (att_dir / "photo.png").exists()
+    # report.pdf はダウンロードされる
+    assert (att_dir / "report.pdf").exists()
+    assert client.download_upload.call_count == 1
+
+
+# S-97: _download_attachments が同名同サイズのファイルをスキップする
+def test_download_attachments_skips_same_size(tmp_path):
+    att_dir = tmp_path / "attachments"
+    att_dir.mkdir()
+    (att_dir / "report.pdf").write_bytes(b"x" * 50)
+
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"real_name": "report.pdf", "filesize": 50, "id": 1},
+    ]
+
+    _download_attachments("items", 42, client, att_dir)
+
+    # サイズ一致なのでダウンロードされない
+    client.download_upload.assert_not_called()
+
+
+# S-98: TargetConfig に attachments_dir が設定できる
+def test_target_config_attachments_dir():
+    t = TargetConfig(title="T", docs_dir="docs/", id_file=".ids/d.id", attachments_dir="att/")
+    assert t.attachments_dir == "att/"
+    t2 = TargetConfig(title="T", docs_dir="docs/", id_file=".ids/d.id")
+    assert t2.attachments_dir is None
