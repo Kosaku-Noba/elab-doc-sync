@@ -1,4 +1,7 @@
-"""CLI tool for syncing Markdown docs to eLabFTW. Not intended for use as a library."""
+"""Diff-based docs-to-eLabFTW sync with image upload and attachment support.
+
+CLI tool — not intended for use as a library.
+"""
 
 import hashlib
 import json
