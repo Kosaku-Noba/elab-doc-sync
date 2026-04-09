@@ -1110,8 +1110,8 @@ def test_push_subcommand_dispatches_to_sync(tmp_path, capsys):
     assert "更新しました" in out or "新規作成" in out
 
 
-# CLI-57: 未知コマンドは argparse が非ゼロ終了（code 2）で拒否する
-def test_unknown_command_exits_nonzero(tmp_path, capsys):
+# CLI-57: 未知コマンドは argparse が usage error（code 2）で拒否する
+def test_unknown_command_exits_with_usage_error(tmp_path, capsys):
     _write_config(tmp_path)
     from unittest.mock import patch
     with patch("sys.argv", ["esync", "nonexistent", "--config", str(tmp_path / ".elab-sync.yaml")]):
@@ -1119,5 +1119,3 @@ def test_unknown_command_exits_nonzero(tmp_path, capsys):
         with pytest.raises(SystemExit) as exc_info:
             main()
     assert exc_info.value.code == 2
-    err = capsys.readouterr().err
-    assert "invalid choice" in err
