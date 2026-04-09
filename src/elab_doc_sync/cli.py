@@ -17,6 +17,9 @@ from . import sync_log
 
 DEFAULT_CONFIG = ".elab-sync.yaml"
 
+# html_to_md 共通オプション: エスケープを抑制してラウンドトリップを安定させる
+_MD_OPTS = {"heading_style": "ATX", "escape_asterisks": False, "escape_underscores": False}
+
 # eLabFTW の Web UI では items を「リソース」と表示するため、CLI でも resources を受け付ける
 _ENTITY_ALIASES = {"resources": "items", "resource": "items"}
 
@@ -213,7 +216,7 @@ def cmd_pull(args):
 
                 title = data.get("title", f"untitled_{eid}")
                 body_html = data.get("body", "") or ""
-                body_md = html_to_md(body_html, heading_style="ATX").strip()
+                body_md = html_to_md(body_html, **_MD_OPTS).strip()
                 body_md = _download_images(body_md, entity_type, eid, client, docs_dir)
 
                 filename = f"{title}.md"
@@ -264,7 +267,7 @@ def cmd_pull(args):
                 continue
 
             body_html = data.get("body", "") or ""
-            body_md = html_to_md(body_html, heading_style="ATX").strip()
+            body_md = html_to_md(body_html, **_MD_OPTS).strip()
             body_md = _download_images(body_md, entity_type, eid, client, docs_dir)
 
             filename = f"{target.title or 'pulled'}.md"
@@ -344,7 +347,7 @@ def cmd_diff(args):
                     continue
 
                 local_md = local_path.read_text(encoding="utf-8").strip()
-                remote_md = html_to_md(data.get("body", "") or "", heading_style="ATX").strip()
+                remote_md = html_to_md(data.get("body", "") or "", **_MD_OPTS).strip()
                 remote_md = _normalize_remote_image_urls(remote_md, target.entity, eid, client)
 
                 if _show_diff(filename, local_md, remote_md):
@@ -372,7 +375,7 @@ def cmd_diff(args):
                 has_diff = True
                 continue
 
-            remote_md = html_to_md(data.get("body", "") or "", heading_style="ATX").strip()
+            remote_md = html_to_md(data.get("body", "") or "", **_MD_OPTS).strip()
             remote_md = _normalize_remote_image_urls(remote_md, target.entity, eid, client)
 
             if _show_diff(target.title, local_md, remote_md):
@@ -535,7 +538,7 @@ def cmd_clone(args):
 
         title = data.get("title", f"untitled_{eid}")
         body_html = data.get("body", "") or ""
-        body_md = html_to_md(body_html, heading_style="ATX").strip()
+        body_md = html_to_md(body_html, **_MD_OPTS).strip()
         body_md = _download_images(body_md, entity, eid, client, docs_path)
 
         filename = f"{title}.md"
@@ -760,7 +763,7 @@ def cmd_new(args):
     template = client._req("GET", f"/api/v2/experiments_templates/{args.template_id}").json()
     title = args.title or template.get("title", "untitled")
     body_html = template.get("body", "") or ""
-    body_md = html_to_md(body_html, heading_style="ATX").strip() if body_html else ""
+    body_md = html_to_md(body_html, **_MD_OPTS).strip() if body_html else ""
 
     filename = "".join(c if c.isalnum() or c in "-_ " else "_" for c in title).replace(" ", "_") + ".md"
     if args.output:
