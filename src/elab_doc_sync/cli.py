@@ -957,6 +957,12 @@ def main():
     common.add_argument("--force", "-f", action="store_true", help="変更がなくても強制同期 / pull 時は既存ファイルを上書き")
     common.add_argument("--dry-run", "-n", action="store_true", help="実行せずに同期内容を確認")
 
+    from importlib.metadata import version as _pkg_version
+    try:
+        _version = _pkg_version("elab-doc-sync")
+    except Exception:
+        _version = "unknown"
+
     parser = argparse.ArgumentParser(
         prog=Path(sys.argv[0]).stem if Path(sys.argv[0]).stem in ("esync", "elab-doc-sync") else "elab-doc-sync",
         description="Markdown ドキュメントを eLabFTW に同期する CLI ツール",
@@ -964,6 +970,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         parents=[common],
     )
+    parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {_version}")
 
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("status", help="同期状態を確認", parents=[common])
