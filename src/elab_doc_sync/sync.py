@@ -1,4 +1,4 @@
-"""Diff-based docs sync to eLabFTW items/experiments with image upload."""
+"""CLI tool for syncing Markdown docs to eLabFTW. Not intended for use as a library."""
 
 import hashlib
 import json
