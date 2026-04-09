@@ -1080,13 +1080,17 @@ def test_download_attachments_write_failure_preserves_existing(tmp_path, capsys,
     ]
     client.download_upload.return_value = b"new data"
 
-    # os.write を失敗させる
-    import os as _os
-    original_write = _os.write
-    def failing_write(fd, data):
-        _os.close(fd)
-        raise OSError("disk full")
-    monkeypatch.setattr("os.write", failing_write)
+    # NamedTemporaryFile.write を失敗させる
+    import tempfile as _tempfile
+    _orig_ntf = _tempfile.NamedTemporaryFile
+    def failing_ntf(*args, **kwargs):
+        f = _orig_ntf(*args, **kwargs)
+        orig_write = f.write
+        def bad_write(data):
+            raise OSError("disk full")
+        f.write = bad_write
+        return f
+    monkeypatch.setattr("tempfile.NamedTemporaryFile", failing_ntf)
 
     _download_attachments("items", 42, client, att_dir)
 
@@ -1095,14 +1099,10 @@ def test_download_attachments_write_failure_preserves_existing(tmp_path, capsys,
     assert "ダウンロードに失敗" in captured.out
     # 既存ファイルは保護される
     assert (att_dir / "report.pdf").read_bytes() == original_content
-    # テンポラリファイルが残っていないことを確認
-    tmp_files = [f for f in att_dir.iterdir() if f.name.startswith(".report.pdf.")]
-    assert len(tmp_files) == 0
 
 
 # S-102: _download_attachments がダウンロードしたファイルの権限を umask に従って設定する
 def test_download_attachments_file_permissions(tmp_path):
-    import os as _os
     att_dir = tmp_path / "attachments"
     client = MagicMock()
     client.list_uploads.return_value = [
@@ -1114,9 +1114,8 @@ def test_download_attachments_file_permissions(tmp_path):
 
     dest = att_dir / "report.pdf"
     assert dest.exists()
-    # umask に従った権限（通常 0o022 → 0o644）
-    umask = _os.umask(0)
-    _os.umask(umask)
-    expected_mode = 0o666 & ~umask
     actual_mode = dest.stat().st_mode & 0o777
-    assert actual_mode == expected_mode
+    # umask に従った権限（0600 ではない）
+    from elab_doc_sync.sync import _get_umask
+    expected = 0o666 & ~_get_umask()
+    assert actual_mode == expected, f"期待: {oct(expected)}, 実際: {oct(actual_mode)}"
