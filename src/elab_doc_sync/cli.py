@@ -1074,5 +1074,6 @@ def main():
     elif args.command in (None, "push"):
         cmd_sync(args)
     else:
+        # argparse が未知コマンドを先に拒否するため通常は到達しない（防御的コード）
         parser.print_help()
         sys.exit(1)
