@@ -1071,6 +1071,7 @@ def main():
         cmd_link(args)
     elif args.command == "verify":
         cmd_verify(args)
-    else:
-        # "push" サブコマンドまたは引数なし → 同期
+    elif args.command in (None, "push"):
         cmd_sync(args)
+    else:
+        parser.print_help()
