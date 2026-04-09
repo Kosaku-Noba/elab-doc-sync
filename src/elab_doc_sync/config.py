@@ -24,6 +24,7 @@ class TargetConfig:
     entity: str = "items"     # "items" or "experiments"
     tags: list[str] = None    # push 時に自動設定するタグ
     body_format: str = BODY_FORMAT_DEFAULT
+    attachments_dir: str | None = None  # 添付ファイルディレクトリ（画像以外）
 
     def __post_init__(self):
         if self.tags is None:
@@ -91,6 +92,7 @@ def load_config(config_path: Path) -> Config:
             entity=entity,
             tags=t.get("tags", []),
             body_format=body_format,
+            attachments_dir=t.get("attachments_dir"),
         ))
 
     if not targets:
