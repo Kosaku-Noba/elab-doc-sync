@@ -1098,3 +1098,25 @@ def test_download_attachments_write_failure_preserves_existing(tmp_path, capsys,
     # テンポラリファイルが残っていないことを確認
     tmp_files = [f for f in att_dir.iterdir() if f.name.startswith(".report.pdf.")]
     assert len(tmp_files) == 0
+
+
+# S-102: _download_attachments がダウンロードしたファイルの権限を umask に従って設定する
+def test_download_attachments_file_permissions(tmp_path):
+    import os as _os
+    att_dir = tmp_path / "attachments"
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"real_name": "report.pdf", "filesize": 5, "id": 1},
+    ]
+    client.download_upload.return_value = b"hello"
+
+    _download_attachments("items", 42, client, att_dir)
+
+    dest = att_dir / "report.pdf"
+    assert dest.exists()
+    # umask に従った権限（通常 0o022 → 0o644）
+    umask = _os.umask(0)
+    _os.umask(umask)
+    expected_mode = 0o666 & ~umask
+    actual_mode = dest.stat().st_mode & 0o777
+    assert actual_mode == expected_mode

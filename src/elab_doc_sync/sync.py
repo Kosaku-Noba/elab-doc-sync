@@ -370,7 +370,10 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
                 os.close(fd)
                 fd = -1
                 tp = Path(tmp_path)
-                tp.chmod(0o644)
+                # umask に従った権限を設定（mkstemp は 0600 で作成するため）
+                umask = os.umask(0)
+                os.umask(umask)
+                tp.chmod(0o666 & ~umask)
                 tp.replace(dest)
             except Exception:
                 if fd >= 0:
