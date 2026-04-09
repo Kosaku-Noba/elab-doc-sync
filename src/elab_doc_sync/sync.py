@@ -31,6 +31,7 @@ IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", 
 
 # 数式保護用: $$...$$ (ブロック) と $...$ (インライン) を退避・復元する。
 # \$ (バックスラッシュ+ドル) はリテラルドル記号として数式開始とみなさない。
+# \\$ (偶数バックスラッシュ+ドル) 以上の連続バックスラッシュは非対応（実運用上は稀）。
 _MATH_BLOCK_RE = re.compile(r"(?<!\\)\$\$(.+?)(?<!\\)\$\$", re.DOTALL)
 _MATH_INLINE_RE = re.compile(r"(?<![\$\\])\$(?!\$)(.+?)(?<![\$\\])\$(?!\$)")
 
@@ -350,6 +351,8 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
         if dest.exists() and remote_size and dest.stat().st_size == remote_size:
             continue
         try:
+            if dest.exists():
+                print(f"    ⚠ 上書き: {safe_name}（{entity} #{entity_id} の添付で既存ファイルを置換）")
             data = client.download_upload(entity_type=entity, entity_id=entity_id, upload_id=u["id"])
             dest.write_bytes(data)
             print(f"    添付ファイルをダウンロード: {safe_name}")
