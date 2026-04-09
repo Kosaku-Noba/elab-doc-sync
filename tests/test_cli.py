@@ -1089,7 +1089,7 @@ def test_md_opts_literal_asterisk_underscore_becomes_emphasis():
 
 # CLI-56: esync push が cmd_sync と同じ経路に入る
 def test_push_subcommand_dispatches_to_sync(tmp_path, capsys):
-    """push サブコマンドが引数なしと同じ cmd_sync に委譲されることを確認。"""
+    """push サブコマンドが main() 経由で cmd_sync に委譲されることを確認。"""
     _write_config(tmp_path)
     docs = tmp_path / "docs"
     docs.mkdir(exist_ok=True)
@@ -1101,11 +1101,10 @@ def test_push_subcommand_dispatches_to_sync(tmp_path, capsys):
     mock_client.create_item.return_value = 1
     mock_client.list_uploads.return_value = []
 
-    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=mock_client):
-        from elab_doc_sync.cli import cmd_sync
-        ns = _ns(tmp_path)
-        ns.command = "push"
-        cmd_sync(ns)
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=mock_client), \
+         patch("sys.argv", ["esync", "push", "--config", str(tmp_path / ".elab-sync.yaml")]):
+        from elab_doc_sync.cli import main
+        main()
 
     out = capsys.readouterr().out
     assert "更新しました" in out or "新規作成" in out
