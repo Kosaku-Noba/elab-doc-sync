@@ -318,16 +318,21 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
         rn = u.get("real_name")
         if not rn or _is_image(rn):
             continue
-        dest = attachments_dir / rn
+        # パストラバーサル防止: basename のみ使用
+        safe_name = Path(rn).name
+        if not safe_name or safe_name in (".", ".."):
+            print(f"    ⚠ 不正なファイル名をスキップ: {rn!r}")
+            continue
+        dest = attachments_dir / safe_name
         remote_size = int(u.get("filesize", 0) or 0)
         if dest.exists() and remote_size and dest.stat().st_size == remote_size:
             continue
         try:
             data = client.download_upload(entity_type=entity, entity_id=entity_id, upload_id=u["id"])
             dest.write_bytes(data)
-            print(f"    添付ファイルをダウンロード: {rn}")
+            print(f"    添付ファイルをダウンロード: {safe_name}")
         except Exception as e:
-            print(f"    ⚠ 添付ファイルのダウンロードに失敗: {rn}: {e}")
+            print(f"    ⚠ 添付ファイルのダウンロードに失敗: {safe_name}: {e}")
 
 
 class DocsSyncer:
