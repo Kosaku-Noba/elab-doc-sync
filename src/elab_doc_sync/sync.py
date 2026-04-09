@@ -354,7 +354,14 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
         try:
             overwriting = dest.exists()
             data = client.download_upload(entity_type=entity, entity_id=entity_id, upload_id=u["id"])
-            dest.write_bytes(data)
+            # atomic write: テンポラリファイルに書いてからリネーム（既存ファイル保護）
+            tmp_dest = dest.with_suffix(dest.suffix + ".tmp")
+            try:
+                tmp_dest.write_bytes(data)
+                tmp_dest.replace(dest)
+            except Exception:
+                tmp_dest.unlink(missing_ok=True)
+                raise
             if overwriting:
                 print(f"    ⚠ 上書き: {safe_name}（{entity} #{entity_id} の添付で既存ファイルを置換）")
             print(f"    添付ファイルをダウンロード: {safe_name}")
