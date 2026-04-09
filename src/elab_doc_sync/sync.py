@@ -28,6 +28,10 @@ MD_EXTENSIONS = ["tables", "fenced_code", "codehilite", "toc", "nl2br"]
 
 IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp", ".ico"})
 
+# 数式保護用: $$...$$ (ブロック) と $...$ (インライン) を退避・復元する
+_MATH_BLOCK_RE = re.compile(r"\$\$(.+?)\$\$", re.DOTALL)
+_MATH_INLINE_RE = re.compile(r"(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)")
+
 
 class ConflictError(Exception):
     """リモートが前回同期以降に変更されている。"""
@@ -43,7 +47,19 @@ def _count_local_images(body: str) -> int:
 
 
 def _md_to_html(text: str) -> str:
-    return markdown.markdown(text, extensions=MD_EXTENSIONS)
+    """Markdown → HTML 変換。LaTeX 数式（$$...$$ / $...$）を保護する。"""
+    placeholders: list[str] = []
+
+    def _save(m: re.Match) -> str:
+        placeholders.append(m.group(0))
+        return f"\x00MATH{len(placeholders) - 1}\x00"
+
+    text = _MATH_BLOCK_RE.sub(_save, text)
+    text = _MATH_INLINE_RE.sub(_save, text)
+    html = markdown.markdown(text, extensions=MD_EXTENSIONS)
+    for i, original in enumerate(placeholders):
+        html = html.replace(f"\x00MATH{i}\x00", original)
+    return html
 
 
 def _image_local_name(entity: str, entity_id: int, real_name: str) -> str:
