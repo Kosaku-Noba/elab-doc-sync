@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import tempfile
@@ -331,7 +332,12 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
 
 
 def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, attachments_dir: Path) -> None:
-    """リモートの非画像添付ファイルをローカルにダウンロードする。"""
+    """リモートの非画像添付ファイルをローカルにダウンロードする。
+
+    書き込みはテンポラリファイル経由で行い、既存ファイルの部分破損を防ぐ。
+    fsync は行わないため、電源断やカーネルクラッシュ時のデータ保全は保証しない。
+    本ツールは単一プロセスでの実行を前提としている。
+    """
     try:
         uploads = client.list_uploads(entity, entity_id)
     except Exception as e:
@@ -354,13 +360,20 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
         try:
             overwriting = dest.exists()
             data = client.download_upload(entity_type=entity, entity_id=entity_id, upload_id=u["id"])
-            # atomic write: テンポラリファイルに書いてからリネーム（既存ファイル保護）
-            tmp_dest = dest.with_suffix(dest.suffix + ".tmp")
+            # テンポラリファイルに書いてからリネーム（既存ファイル保護）
+            fd, tmp_path = tempfile.mkstemp(dir=attachments_dir, prefix=f".{safe_name}.")
             try:
-                tmp_dest.write_bytes(data)
-                tmp_dest.replace(dest)
+                os.write(fd, data)
+                os.close(fd)
+                fd = -1
+                Path(tmp_path).replace(dest)
             except Exception:
-                tmp_dest.unlink(missing_ok=True)
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+                Path(tmp_path).unlink(missing_ok=True)
                 raise
             if overwriting:
                 print(f"    ⚠ 上書き: {safe_name}（{entity} #{entity_id} の添付で既存ファイルを置換）")
