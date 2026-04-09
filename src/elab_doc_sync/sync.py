@@ -30,13 +30,13 @@ MD_EXTENSIONS = ["tables", "fenced_code", "codehilite", "toc", "nl2br"]
 
 IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp", ".ico"})
 
-# プロセス起動時に umask を1回だけ取得してキャッシュ（スレッドセーフ）
+# umask をモジュールロード時に1回だけ取得してキャッシュする。
+# Python 標準ライブラリには umask を副作用なしに読む API がないため、
+# os.umask(0) → os.umask(元値) で取得する。
+# 本ツールは CLI 専用（単一プロセス・単一スレッド）であり、
+# import 時の一瞬の umask 変更は実運用上問題にならない。
 _UMASK = _os.umask(0)
 _os.umask(_UMASK)
-
-
-def _get_umask() -> int:
-    return _UMASK
 
 # 数式保護用: $$...$$ (ブロック) と $...$ (インライン) を退避・復元する。
 # 仕様: $ の直前が \ (バックスラッシュ) の場合、数式の開始/終了とみなさない。
@@ -380,7 +380,7 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
                 if orig_mode is not None:
                     tp.chmod(orig_mode)
                 else:
-                    tp.chmod(0o666 & ~_get_umask())
+                    tp.chmod(0o666 & ~_UMASK)
                 tp.replace(dest)
             except Exception:
                 if tmp_file is not None:

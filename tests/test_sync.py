@@ -1116,6 +1116,59 @@ def test_download_attachments_file_permissions(tmp_path):
     assert dest.exists()
     actual_mode = dest.stat().st_mode & 0o777
     # umask に従った権限（0600 ではない）
-    from elab_doc_sync.sync import _get_umask
-    expected = 0o666 & ~_get_umask()
+    from elab_doc_sync.sync import _UMASK
+    expected = 0o666 & ~_UMASK
     assert actual_mode == expected, f"期待: {oct(expected)}, 実際: {oct(actual_mode)}"
+
+
+# S-103: _download_attachments が上書き時に元ファイルの権限を復元する
+def test_download_attachments_preserves_permissions_on_overwrite(tmp_path):
+    import os as _os
+    att_dir = tmp_path / "attachments"
+    att_dir.mkdir()
+    existing = att_dir / "report.pdf"
+    existing.write_bytes(b"old")
+    existing.chmod(0o755)  # 特殊な権限を設定
+
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"real_name": "report.pdf", "filesize": 999, "id": 1},
+    ]
+    client.download_upload.return_value = b"new content"
+
+    _download_attachments("items", 42, client, att_dir)
+
+    assert existing.read_bytes() == b"new content"
+    actual_mode = existing.stat().st_mode & 0o777
+    assert actual_mode == 0o755, f"権限が復元されていない: {oct(actual_mode)}"
+
+
+# S-104: _download_attachments が書き込み失敗時にテンポラリファイルを残さない
+def test_download_attachments_cleans_up_temp_on_failure(tmp_path, capsys):
+    att_dir = tmp_path / "attachments"
+    att_dir.mkdir()
+
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"real_name": "report.pdf", "filesize": 5, "id": 1},
+    ]
+    client.download_upload.return_value = b"data"
+
+    import tempfile as _tempfile
+    _orig_ntf = _tempfile.NamedTemporaryFile
+    created_temps = []
+    def tracking_ntf(*args, **kwargs):
+        f = _orig_ntf(*args, **kwargs)
+        created_temps.append(f.name)
+        orig_write = f.write
+        def bad_write(data):
+            raise OSError("disk full")
+        f.write = bad_write
+        return f
+    import unittest.mock
+    with unittest.mock.patch("tempfile.NamedTemporaryFile", tracking_ntf):
+        _download_attachments("items", 42, client, att_dir)
+
+    # テンポラリファイルが残っていないことを確認
+    for tp in created_temps:
+        assert not Path(tp).exists(), f"テンポラリファイルが残っている: {tp}"
