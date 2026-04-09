@@ -30,8 +30,9 @@ MD_EXTENSIONS = ["tables", "fenced_code", "codehilite", "toc", "nl2br"]
 IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp", ".ico"})
 
 # 数式保護用: $$...$$ (ブロック) と $...$ (インライン) を退避・復元する。
-# \$ (バックスラッシュ+ドル) はリテラルドル記号として数式開始とみなさない。
-# \\$ (偶数バックスラッシュ+ドル) 以上の連続バックスラッシュは非対応（実運用上は稀）。
+# 仕様: $ の直前が \ (バックスラッシュ) の場合、数式の開始/終了とみなさない。
+# これにより \$ はリテラルドル記号として扱われる。
+# 制限: \\$ (バックスラッシュ2つ+ドル) も数式開始とみなさない（奇偶判定は非対応）。
 _MATH_BLOCK_RE = re.compile(r"(?<!\\)\$\$(.+?)(?<!\\)\$\$", re.DOTALL)
 _MATH_INLINE_RE = re.compile(r"(?<![\$\\])\$(?!\$)(.+?)(?<![\$\\])\$(?!\$)")
 
@@ -351,10 +352,11 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
         if dest.exists() and remote_size and dest.stat().st_size == remote_size:
             continue
         try:
-            if dest.exists():
-                print(f"    ⚠ 上書き: {safe_name}（{entity} #{entity_id} の添付で既存ファイルを置換）")
+            overwriting = dest.exists()
             data = client.download_upload(entity_type=entity, entity_id=entity_id, upload_id=u["id"])
             dest.write_bytes(data)
+            if overwriting:
+                print(f"    ⚠ 上書き: {safe_name}（{entity} #{entity_id} の添付で既存ファイルを置換）")
             print(f"    添付ファイルをダウンロード: {safe_name}")
         except Exception as e:
             print(f"    ⚠ 添付ファイルのダウンロードに失敗: {safe_name}: {e}")

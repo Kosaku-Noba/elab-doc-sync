@@ -1024,3 +1024,44 @@ def test_target_config_attachments_dir():
     assert t.attachments_dir == "att/"
     t2 = TargetConfig(title="T", docs_dir="docs/", id_file=".ids/d.id")
     assert t2.attachments_dir is None
+
+
+# S-99: _download_attachments が既存ファイル上書き時に警告を出す
+def test_download_attachments_overwrite_warning(tmp_path, capsys):
+    att_dir = tmp_path / "attachments"
+    att_dir.mkdir()
+    (att_dir / "report.pdf").write_bytes(b"old content")  # サイズ不一致で上書きされる
+
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"real_name": "report.pdf", "filesize": 999, "id": 1},  # サイズ不一致
+    ]
+    client.download_upload.return_value = b"new content"
+
+    _download_attachments("items", 42, client, att_dir)
+
+    captured = capsys.readouterr()
+    assert "上書き" in captured.out
+    assert "items #42" in captured.out
+    assert (att_dir / "report.pdf").read_bytes() == b"new content"
+
+
+# S-100: _download_attachments がダウンロード失敗時に上書き警告を出さない
+def test_download_attachments_no_overwrite_warning_on_failure(tmp_path, capsys):
+    att_dir = tmp_path / "attachments"
+    att_dir.mkdir()
+    (att_dir / "report.pdf").write_bytes(b"old content")
+
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"real_name": "report.pdf", "filesize": 999, "id": 1},
+    ]
+    client.download_upload.side_effect = RuntimeError("network error")
+
+    _download_attachments("items", 42, client, att_dir)
+
+    captured = capsys.readouterr()
+    assert "上書き" not in captured.out
+    assert "ダウンロードに失敗" in captured.out
+    # 元のファイルは変更されない
+    assert (att_dir / "report.pdf").read_bytes() == b"old content"
