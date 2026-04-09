@@ -1056,3 +1056,17 @@ def test_diff_no_false_positive_with_images(MockClient, tmp_path, capsys):
     cmd_diff(_ns(tmp_path))
     out = capsys.readouterr().out
     assert "差分なし" in out or "最新" in out
+
+
+# CLI-54: _MD_OPTS でラウンドトリップ時に過剰エスケープが入らない
+def test_md_opts_no_excessive_escape():
+    from markdownify import markdownify as html_to_md
+    from elab_doc_sync.cli import _MD_OPTS
+
+    # 本ツール push 済み HTML を想定
+    html = '<p>file_name and x*y and $a_{i}$</p>'
+    result = html_to_md(html, **_MD_OPTS)
+    assert r"\_" not in result, f"アンダースコアがエスケープされている: {result}"
+    assert r"\*" not in result, f"アスタリスクがエスケープされている: {result}"
+    assert "file_name" in result
+    assert "x*y" in result

@@ -18,6 +18,10 @@ from . import sync_log
 DEFAULT_CONFIG = ".elab-sync.yaml"
 
 # html_to_md 共通オプション: エスケープを抑制してラウンドトリップを安定させる
+# 適用先: pull, diff, clone, new（HTML→Markdown 変換の全経路）
+# 方針: 本ツール経由の push→pull ラウンドトリップの安定性を優先する。
+# Web UI 等で直接作成された HTML 内のリテラルな * や _ は、pull 後に
+# Markdown の強調記法として解釈される可能性がある（許容する仕様）。
 _MD_OPTS = {"heading_style": "ATX", "escape_asterisks": False, "escape_underscores": False}
 
 # eLabFTW の Web UI では items を「リソース」と表示するため、CLI でも resources を受け付ける
