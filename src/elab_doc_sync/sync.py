@@ -2,7 +2,7 @@
 
 import hashlib
 import json
-import os
+import os as _os
 import re
 import shutil
 import tempfile
@@ -29,6 +29,14 @@ UPLOAD_LONGNAME_RE = re.compile(r"[?&]f=([^&\s)]+)")
 MD_EXTENSIONS = ["tables", "fenced_code", "codehilite", "toc", "nl2br"]
 
 IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp", ".ico"})
+
+# プロセス起動時に umask を1回だけ取得してキャッシュ（スレッドセーフ）
+_UMASK = _os.umask(0)
+_os.umask(_UMASK)
+
+
+def _get_umask() -> int:
+    return _UMASK
 
 # 数式保護用: $$...$$ (ブロック) と $...$ (インライン) を退避・復元する。
 # 仕様: $ の直前が \ (バックスラッシュ) の場合、数式の開始/終了とみなさない。
@@ -359,29 +367,28 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
             continue
         try:
             overwriting = dest.exists()
+            orig_mode = dest.stat().st_mode & 0o777 if overwriting else None
             data = client.download_upload(entity_type=entity, entity_id=entity_id, upload_id=u["id"])
             # テンポラリファイルに書いてからリネーム（既存ファイル保護）
-            fd, tmp_path = tempfile.mkstemp(dir=attachments_dir, prefix=f".{safe_name}.")
+            tmp_file = None
             try:
-                mv = memoryview(data)
-                written = 0
-                while written < len(mv):
-                    written += os.write(fd, mv[written:])
-                os.close(fd)
-                fd = -1
-                tp = Path(tmp_path)
-                # umask に従った権限を設定（mkstemp は 0600 で作成するため）
-                umask = os.umask(0)
-                os.umask(umask)
-                tp.chmod(0o666 & ~umask)
+                tmp_file = tempfile.NamedTemporaryFile(
+                    dir=attachments_dir, prefix=f".{safe_name}.", delete=False)
+                tmp_file.write(data)
+                tmp_file.close()
+                tp = Path(tmp_file.name)
+                if orig_mode is not None:
+                    tp.chmod(orig_mode)
+                else:
+                    tp.chmod(0o666 & ~_get_umask())
                 tp.replace(dest)
             except Exception:
-                if fd >= 0:
+                if tmp_file is not None:
                     try:
-                        os.close(fd)
-                    except OSError:
+                        tmp_file.close()
+                    except Exception:
                         pass
-                Path(tmp_path).unlink(missing_ok=True)
+                    Path(tmp_file.name).unlink(missing_ok=True)
                 raise
             if overwriting:
                 print(f"    ⚠ 上書き: {safe_name}（{entity} #{entity_id} の添付で既存ファイルを置換）")
