@@ -1070,3 +1070,18 @@ def test_md_opts_no_excessive_escape():
     assert r"\*" not in result, f"アスタリスクがエスケープされている: {result}"
     assert "file_name" in result
     assert "x*y" in result
+
+
+# CLI-55: Web UI 作成 HTML のリテラル * _ は強調解釈される（許容する仕様）
+def test_md_opts_literal_asterisk_underscore_becomes_emphasis():
+    from markdownify import markdownify as html_to_md
+    from elab_doc_sync.cli import _MD_OPTS
+
+    # Web UI で <em> ではなくリテラルに * を含む HTML
+    html = '<p>use *bold* and _italic_ here</p>'
+    result = html_to_md(html, **_MD_OPTS)
+    # エスケープされないため Markdown の強調記法として解釈される（許容する仕様）
+    assert r"\*" not in result
+    assert r"\_" not in result
+    assert "*bold*" in result
+    assert "_italic_" in result
