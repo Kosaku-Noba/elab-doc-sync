@@ -298,6 +298,8 @@ targets:
 
 > **Note:** `esync init` で新規作成する場合、`body_format` のデフォルト提案は `md` です。既存の設定ファイルで `body_format` を省略した場合は互換性のため `html` が適用されます。
 
+> **Tip:** LaTeX 数式（`$...$` / `$$...$$`）を使う場合は `body_format: md` を推奨します。eLabFTW の MathJax が直接レンダリングします。`html` モードでも数式は保護されますが、`md` の方がシンプルです。
+
 サンプル: [`.elab-sync.yaml.example`](.elab-sync.yaml.example)
 
 ## 困ったとき
