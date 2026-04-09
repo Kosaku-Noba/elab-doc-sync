@@ -1065,3 +1065,36 @@ def test_download_attachments_no_overwrite_warning_on_failure(tmp_path, capsys):
     assert "ダウンロードに失敗" in captured.out
     # 元のファイルは変更されない
     assert (att_dir / "report.pdf").read_bytes() == b"old content"
+
+
+# S-101: _download_attachments が書き込み失敗時に既存ファイルを保護する
+def test_download_attachments_write_failure_preserves_existing(tmp_path, capsys, monkeypatch):
+    att_dir = tmp_path / "attachments"
+    att_dir.mkdir()
+    original_content = b"original data"
+    (att_dir / "report.pdf").write_bytes(original_content)
+
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"real_name": "report.pdf", "filesize": 999, "id": 1},
+    ]
+    client.download_upload.return_value = b"new data"
+
+    # os.write を失敗させる
+    import os as _os
+    original_write = _os.write
+    def failing_write(fd, data):
+        _os.close(fd)
+        raise OSError("disk full")
+    monkeypatch.setattr("os.write", failing_write)
+
+    _download_attachments("items", 42, client, att_dir)
+
+    captured = capsys.readouterr()
+    assert "上書き" not in captured.out
+    assert "ダウンロードに失敗" in captured.out
+    # 既存ファイルは保護される
+    assert (att_dir / "report.pdf").read_bytes() == original_content
+    # テンポラリファイルが残っていないことを確認
+    tmp_files = [f for f in att_dir.iterdir() if f.name.startswith(".report.pdf.")]
+    assert len(tmp_files) == 0
