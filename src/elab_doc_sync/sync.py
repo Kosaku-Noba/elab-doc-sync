@@ -363,10 +363,15 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
             # テンポラリファイルに書いてからリネーム（既存ファイル保護）
             fd, tmp_path = tempfile.mkstemp(dir=attachments_dir, prefix=f".{safe_name}.")
             try:
-                os.write(fd, data)
+                mv = memoryview(data)
+                written = 0
+                while written < len(mv):
+                    written += os.write(fd, mv[written:])
                 os.close(fd)
                 fd = -1
-                Path(tmp_path).replace(dest)
+                tp = Path(tmp_path)
+                tp.chmod(0o644)
+                tp.replace(dest)
             except Exception:
                 if fd >= 0:
                     try:
