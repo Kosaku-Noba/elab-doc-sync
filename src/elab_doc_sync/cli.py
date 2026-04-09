@@ -12,7 +12,7 @@ from markdownify import markdownify as html_to_md
 
 from .client import ELabFTWClient
 from .config import load_config, BODY_FORMAT_INIT
-from .sync import DocsSyncer, EachDocsSyncer, ConflictError, _download_images, _normalize_remote_image_urls
+from .sync import DocsSyncer, EachDocsSyncer, ConflictError, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments
 from . import sync_log
 
 DEFAULT_CONFIG = ".elab-sync.yaml"
@@ -51,6 +51,9 @@ def cmd_sync(args):
 
         if args.dry_run:
             entity_label = "実験ノート" if target.entity == "experiments" else "リソース"
+            att_dir = (project_root / target.attachments_dir) if target.attachments_dir else None
+            att_count = _count_local_attachments(att_dir)
+            att_str = f"  添付: {att_count}件" if att_count else ""
             if isinstance(syncer, EachDocsSyncer):
                 results = syncer.dry_run()
                 if not results:
@@ -60,7 +63,7 @@ def cmd_sync(args):
                     status = "変更あり" if r["changed"] else "変更なし（スキップ）"
                     dest = f"{entity_label} #{r['entity_id']}" if r["entity_id"] else f"新しい{entity_label}"
                     print(f"  [{r['title']}] {status}")
-                    print(f"    画像: {r['images']}件  → {dest}")
+                    print(f"    画像: {r['images']}件{att_str}  → {dest}")
             else:
                 info = syncer.dry_run()
                 if not info["files"]:
@@ -69,7 +72,7 @@ def cmd_sync(args):
                 status = "変更あり" if info["changed"] else "変更なし（スキップ）"
                 dest = f"{entity_label} #{info['item_id']}" if info["item_id"] else f"新しい{entity_label}"
                 print(f"  [{target.title}] {status}")
-                print(f"    ファイル: {info['files']}件  画像: {info['images']}件  → {dest}")
+                print(f"    ファイル: {info['files']}件  画像: {info['images']}件{att_str}  → {dest}")
             continue
 
         try:
@@ -233,6 +236,9 @@ def cmd_pull(args):
                 print(f"  [{title}] {entity_label} #{eid} → {filepath}")
                 pulled += 1
 
+                if target.attachments_dir:
+                    _download_attachments(entity_type, eid, client, project_root / target.attachments_dir)
+
                 log_path = project_root / sync_log.DEFAULT_LOG_PATH
                 sync_log.record(log_path, action="pull", target=title,
                                 entity=entity_type, entity_id=eid, files=[filename])
@@ -278,6 +284,9 @@ def cmd_pull(args):
 
             print(f"  [{target.title}] {entity_label} #{eid} → {filepath}")
             pulled += 1
+
+            if target.attachments_dir:
+                _download_attachments(entity_type, eid, client, project_root / target.attachments_dir)
 
             log_path = project_root / sync_log.DEFAULT_LOG_PATH
             sync_log.record(log_path, action="pull", target=target.title,
@@ -539,6 +548,9 @@ def cmd_clone(args):
         cloned += 1
 
         print(f"  [{title}] {entity_label} #{eid} → {filepath}")
+
+        # 非画像添付ファイルのダウンロード
+        _download_attachments(entity, eid, client, project_dir / "attachments")
 
     if cloned == 0:
         # clone が作成したディレクトリのみ削除（既存ディレクトリは残す）

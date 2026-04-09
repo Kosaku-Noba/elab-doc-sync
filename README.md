@@ -292,6 +292,7 @@ targets:
 | `targets[].id_file` | — | `.elab-sync-ids/default.id` | ID 保存先 |
 | `targets[].tags` | — | `[]` | push 時に自動追加するタグ（追記のみ、既存タグは外さない） |
 | `targets[].body_format` | — | `html` | `md`（Markdown のまま送信）/ `html`（HTML に変換して送信） |
+| `targets[].attachments_dir` | — | — | 添付ファイルディレクトリ（画像以外のファイルを自動アップロード・ダウンロード） |
 
 > **Note:** `esync init` で新規作成する場合、`body_format` のデフォルト提案は `md` です。既存の設定ファイルで `body_format` を省略した場合は互換性のため `html` が適用されます。
 

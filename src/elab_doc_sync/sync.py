@@ -26,6 +26,8 @@ UPLOAD_ID_RE = re.compile(r"/uploads/(\d+)(?:[?#]|/?$)")
 UPLOAD_LONGNAME_RE = re.compile(r"[?&]f=([^&\s)]+)")
 MD_EXTENSIONS = ["tables", "fenced_code", "codehilite", "toc", "nl2br"]
 
+IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp", ".ico"})
+
 
 class ConflictError(Exception):
     """リモートが前回同期以降に変更されている。"""
@@ -252,6 +254,82 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
             shutil.rmtree(td, ignore_errors=True)
 
 
+def _is_image(filename: str) -> bool:
+    return Path(filename).suffix.lower() in IMAGE_EXTENSIONS
+
+
+def _count_local_attachments(attachments_dir: Path | None) -> int:
+    if not attachments_dir or not attachments_dir.is_dir():
+        return 0
+    return sum(1 for f in attachments_dir.iterdir() if f.is_file() and not _is_image(f.name))
+
+
+def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int, client: ELabFTWClient) -> None:
+    """attachments_dir 内の非画像ファイルをリモートにアップロードする（サイズ比較で差分検知）。"""
+    if not attachments_dir or not attachments_dir.is_dir():
+        return
+    local_files = [f for f in sorted(attachments_dir.iterdir()) if f.is_file() and not _is_image(f.name)]
+    if not local_files:
+        return
+
+    existing: dict[str, list[dict]] = {}
+    try:
+        for u in client.list_uploads(entity, entity_id):
+            rn = u.get("real_name")
+            if rn and not _is_image(rn):
+                existing.setdefault(rn, []).append(u)
+        for entries in existing.values():
+            entries.sort(key=lambda e: e.get("id") or 0)
+    except Exception:
+        pass
+
+    for f in local_files:
+        entries = existing.get(f.name, [])
+        local_size = f.stat().st_size
+        reuse = next((e for e in entries if int(e.get("filesize", 0) or 0) == local_size), None)
+        if reuse:
+            print(f"    ✓ {f.name}（既存添付を再利用）")
+            stale = [e for e in entries if e is not reuse and e.get("id") is not None]
+        else:
+            print(f"    添付ファイルをアップロード中: {f.name}")
+            result = client.upload_file(entity, entity_id, str(f))
+            if result.get("url"):
+                print(f"    ✓ {f.name}")
+                stale = [e for e in entries if e.get("id") is not None]
+            else:
+                print(f"    ✗ アップロード失敗: {f.name}")
+                stale = []
+        for e in stale:
+            try:
+                client.delete_upload(entity, entity_id, e["id"])
+            except Exception:
+                pass
+
+
+def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, attachments_dir: Path) -> None:
+    """リモートの非画像添付ファイルをローカルにダウンロードする。"""
+    try:
+        uploads = client.list_uploads(entity, entity_id)
+    except Exception as e:
+        print(f"    ⚠ 添付ファイル一覧の取得に失敗: {e}")
+        return
+    attachments_dir.mkdir(parents=True, exist_ok=True)
+    for u in uploads:
+        rn = u.get("real_name")
+        if not rn or _is_image(rn):
+            continue
+        dest = attachments_dir / rn
+        remote_size = int(u.get("filesize", 0) or 0)
+        if dest.exists() and remote_size and dest.stat().st_size == remote_size:
+            continue
+        try:
+            data = client.download_upload(entity_type=entity, entity_id=entity_id, upload_id=u["id"])
+            dest.write_bytes(data)
+            print(f"    添付ファイルをダウンロード: {rn}")
+        except Exception as e:
+            print(f"    ⚠ 添付ファイルのダウンロードに失敗: {rn}: {e}")
+
+
 class DocsSyncer:
     """mode: merge — 複数 md を結合して 1 エンティティに同期。"""
 
@@ -394,6 +472,9 @@ class DocsSyncer:
         print(f"  [{self.target.title}] {entity_label} #{item_id} を更新しました")
 
         _sync_tags(self.client, self.entity, item_id, self.target.tags)
+
+        if self.target.attachments_dir:
+            _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, item_id, self.client)
 
         log_path = self.project_root / sync_log.DEFAULT_LOG_PATH
         files = [f.name for f in self.collect_files()]
@@ -570,6 +651,9 @@ class EachDocsSyncer:
             print(f"  [{title}] {entity_label} #{eid} を更新しました")
 
             _sync_tags(self.client, self.entity, eid, self.target.tags)
+
+            if self.target.attachments_dir:
+                _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, eid, self.client)
 
             log_path = self.project_root / sync_log.DEFAULT_LOG_PATH
             sync_log.record(log_path, action="push", target=title,

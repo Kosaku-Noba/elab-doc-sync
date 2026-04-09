@@ -40,6 +40,7 @@
 #     entity: items
 #     body_format: md            # md: Markdown のまま送信（デフォルト） / html: HTML に変換して送信
 #     id_file: ".elab-sync-ids/overview.id"
+#     attachments_dir: "attachments/"  # 画像以外の添付ファイルディレクトリ（省略可）
 #     tags:                      # push 時に自動追加するタグ（追記のみ）
 #       - "プロジェクトA"
 #       - "2026Q2"
