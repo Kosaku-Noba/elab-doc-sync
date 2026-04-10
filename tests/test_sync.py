@@ -959,6 +959,24 @@ def test_sync_attachments_none_dir():
     client.list_uploads.assert_not_called()
 
 
+# S-95b: _sync_attachments force=True でサイズ一致でも再アップロードする
+def test_sync_attachments_force_reuploads(tmp_path):
+    att_dir = tmp_path / "attachments"
+    att_dir.mkdir()
+    (att_dir / "report.pdf").write_bytes(b"x" * 100)
+
+    client = MagicMock()
+    client.list_uploads.return_value = [
+        {"real_name": "report.pdf", "filesize": 100, "id": 1},
+    ]
+    client.upload_file.return_value = {"url": "http://example.com/report.pdf"}
+
+    _sync_attachments(att_dir, "items", 42, client, force=True)
+
+    client.upload_file.assert_called_once()
+    assert "report.pdf" in client.upload_file.call_args[0][2]
+
+
 # S-95: _download_attachments がパストラバーサルを防止する
 def test_download_attachments_path_traversal(tmp_path):
     att_dir = tmp_path / "attachments"

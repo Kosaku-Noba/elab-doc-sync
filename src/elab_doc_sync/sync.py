@@ -300,7 +300,7 @@ def _count_local_attachments(attachments_dir: Path | None) -> int:
     return sum(1 for f in attachments_dir.iterdir() if f.is_file() and not _is_image(f.name))
 
 
-def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int, client: ELabFTWClient) -> None:
+def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int, client: ELabFTWClient, *, force: bool = False) -> None:
     """attachments_dir 内の非画像ファイルをリモートにアップロードする（サイズ比較で差分検知）。"""
     if not attachments_dir or not attachments_dir.is_dir():
         return
@@ -322,7 +322,7 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
     for f in local_files:
         entries = existing.get(f.name, [])
         local_size = f.stat().st_size
-        reuse = next((e for e in entries if int(e.get("filesize", 0) or 0) == local_size), None)
+        reuse = None if force else next((e for e in entries if int(e.get("filesize", 0) or 0) == local_size), None)
         if reuse:
             print(f"    ✓ {f.name}（既存添付を再利用）")
             stale = [e for e in entries if e is not reuse and e.get("id") is not None]
@@ -544,7 +544,7 @@ class DocsSyncer:
         _sync_tags(self.client, self.entity, item_id, self.target.tags)
 
         if self.target.attachments_dir:
-            _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, item_id, self.client)
+            _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, item_id, self.client, force=force)
 
         log_path = self.project_root / sync_log.DEFAULT_LOG_PATH
         files = [f.name for f in self.collect_files()]
@@ -723,7 +723,7 @@ class EachDocsSyncer:
             _sync_tags(self.client, self.entity, eid, self.target.tags)
 
             if self.target.attachments_dir:
-                _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, eid, self.client)
+                _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, eid, self.client, force=force)
 
             log_path = self.project_root / sync_log.DEFAULT_LOG_PATH
             sync_log.record(log_path, action="push", target=title,

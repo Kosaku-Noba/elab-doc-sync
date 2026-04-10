@@ -151,6 +151,8 @@ $ esync clone --url https://elab.example.com --entity items --id 42 --id 43
 ✅ プロジェクトを作成しました: elab-clone-42/ (2 件)
 ```
 
+> **Tip:** `clone` はリモートの添付ファイルも `attachments/` にダウンロードしますが、生成される `.elab-sync.yaml` には `attachments_dir` が含まれません。再 push で添付も同期したい場合は、設定ファイルに `attachments_dir: "attachments/"` を手動で追記してください。
+
 ### タグ操作
 
 ```bash
@@ -242,7 +244,7 @@ $ esync pull --id 42 --entity items
 完了: 1 件取得しました
 ```
 
-dry-run や status でも添付ファイル件数が表示されます:
+dry-run でも添付ファイル件数が表示されます:
 
 ```bash
 $ esync --dry-run
