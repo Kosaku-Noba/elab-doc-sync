@@ -1,0 +1,416 @@
+#!/bin/bash
+# dev — マルチエージェント開発フロー CLI エントリポイント
+set -euo pipefail
+
+DISCUSSIONS_FILE="AI_discussions.md"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+AGENTS_CONFIG="agents.yaml"
+
+usage() {
+  cat <<EOF
+使い方: ./dev <サブコマンド> [引数]
+
+サブコマンド:
+  init <プロジェクト名>    新規プロジェクトディレクトリを作成
+  install                  既存リポジトリにマルチエージェント開発フローを導入
+  propose <要求テキスト>   Feature Proposal Agent で仕様整理
+  review                   直近コミットのコード＋ドキュメントレビュー
+  status                   AI_discussions.md の最新エントリを表示
+EOF
+  exit 1
+}
+
+timestamp() {
+  date +"%Y-%m-%dT%H:%M"
+}
+
+# --- バックエンド抽象化 ---
+# agents.yaml から値を読む（簡易 YAML パーサー）
+yaml_get() {
+  local key="$1" file="${2:-$AGENTS_CONFIG}"
+  [ ! -f "$file" ] && return 1
+  sed -n "s/^${key}: *//p" "$file" | head -1
+}
+
+get_backend() {
+  yaml_get "backend" || echo "codex"
+}
+
+# LLM にプロンプトを送り、結果をファイルに書く
+# 引数: prompt_file output_file
+invoke_llm() {
+  local prompt_file="$1" output_file="$2"
+  local backend
+  backend=$(get_backend)
+
+  case "$backend" in
+    codex)
+      local codex_cli
+      codex_cli=$(command -v codex 2>/dev/null || true)
+      if [ -z "$codex_cli" ]; then
+        echo "⚠️  codex CLI が見つかりません。スキップします。" >&2
+        return 1
+      fi
+      local sandbox
+      sandbox=$(yaml_get "  sandbox" || echo "danger-full-access")
+      "$codex_cli" exec - --ephemeral --sandbox "$sandbox" -o "$output_file" < "$prompt_file" 2>/dev/null
+      ;;
+    openai)
+      local model max_tokens api_key
+      model=$(yaml_get "  model" || echo "gpt-4o")
+      max_tokens=$(yaml_get "  max_tokens" || echo "4096")
+      api_key="${OPENAI_API_KEY:-}"
+      if [ -z "$api_key" ]; then
+        echo "⚠️  OPENAI_API_KEY が設定されていません。スキップします。" >&2
+        return 1
+      fi
+      local prompt_content
+      prompt_content=$(cat "$prompt_file")
+      local response
+      response=$(curl -s https://api.openai.com/v1/chat/completions \
+        -H "Authorization: Bearer $api_key" \
+        -H "Content-Type: application/json" \
+        -d "$(jq -n --arg model "$model" --argjson max_tokens "$max_tokens" --arg content "$prompt_content" \
+          '{model: $model, max_tokens: $max_tokens, messages: [{role: "user", content: $content}]}')")
+      echo "$response" | jq -r '.choices[0].message.content // empty' > "$output_file"
+      ;;
+    custom)
+      local cmd_template
+      cmd_template=$(yaml_get "  command")
+      [ -z "$cmd_template" ] && { echo "⚠️  custom backend の command が未設定です。" >&2; return 1; }
+      # {prompt_file} と {output_file} を置換して実行
+      local cmd
+      cmd=$(echo "$cmd_template" | sed "s|{prompt_file}|$prompt_file|g; s|{output_file}|$output_file|g")
+      eval "$cmd"
+      ;;
+    *)
+      echo "⚠️  未知のバックエンド: $backend" >&2
+      return 1
+      ;;
+  esac
+}
+
+# --- propose ---
+cmd_propose() {
+  local request="${1:-}"
+  if [ -z "$request" ]; then
+    request=$(cat)
+  fi
+  [ -z "$request" ] && { echo "エラー: 要求テキストを指定してください"; exit 1; }
+
+  local prompt_file
+  prompt_file=$(mktemp)
+  cat prompts/proposal.md > "$prompt_file"
+  printf "\n## ユーザー要求\n\n%s\n" "$request" >> "$prompt_file"
+
+  local tmpfile
+  tmpfile=$(mktemp)
+  if ! invoke_llm "$prompt_file" "$tmpfile"; then
+    rm -f "$tmpfile" "$prompt_file"
+    exit 0
+  fi
+  local result
+  result=$(cat "$tmpfile" 2>/dev/null)
+  rm -f "$tmpfile" "$prompt_file"
+
+  if [ -z "$result" ]; then
+    echo "⚠️  応答がありませんでした"
+    exit 0
+  fi
+
+  local ts
+  ts=$(timestamp)
+  local entry="## ${ts} [FeatureProposal] 機能提案
+
+${result}"
+
+  printf "\n\n%s\n" "$entry" >> "$DISCUSSIONS_FILE"
+  echo "✅ 提案を AI_discussions.md に記録しました"
+}
+
+# --- review ---
+run_review() {
+  local label="$1" prompt_path="$2" tag="$3"
+  local diff_content
+  diff_content=$(git diff HEAD~1 HEAD 2>/dev/null)
+  [ -z "$diff_content" ] && { echo "⚠️  差分なし、${label}をスキップ"; return 1; }
+
+  local commit_msg
+  commit_msg=$(git log -1 --pretty=%s)
+
+  local prompt_file
+  prompt_file=$(mktemp)
+  cat "$prompt_path" > "$prompt_file"
+  printf "\n## 対象コミット\n\n### コミットメッセージ\n%s\n\n### diff\n%s\n" "$commit_msg" "$diff_content" >> "$prompt_file"
+
+  local tmpfile
+  tmpfile=$(mktemp)
+  if ! invoke_llm "$prompt_file" "$tmpfile"; then
+    rm -f "$tmpfile" "$prompt_file"
+    echo "⚠️  ${label}をスキップしました"
+    return 1
+  fi
+  local result
+  result=$(cat "$tmpfile" 2>/dev/null)
+  rm -f "$tmpfile" "$prompt_file"
+
+  if [ -z "$result" ]; then
+    echo "⚠️  ${label}をスキップしました"
+    return 1
+  fi
+
+  # テーブル行変換
+  local table_rows=""
+  while IFS= read -r line; do
+    local priority item detail prio_label
+    priority=$(echo "$line" | sed -n 's/.*\[P\([0-9]\)\].*/\1/p')
+    item=$(echo "$line" | sed 's/^- \[P[0-9]\] //' | sed 's/ — .*//')
+    detail=$(echo "$line" | sed -n 's/.*— //p')
+    case "$priority" in
+      1) prio_label="高" ;; 2) prio_label="中" ;; *) prio_label="低" ;;
+    esac
+    if [ -n "$detail" ]; then
+      table_rows="${table_rows}| ${item} | ${detail} | ${prio_label} |
+"
+    else
+      table_rows="${table_rows}| ${item} | — | ${prio_label} |
+"
+    fi
+  done < <(echo "$result" | grep -E '^\- \[P[0-9]\]' | head -10)
+  [ -z "$table_rows" ] && table_rows="| 指摘事項なし | — | — |
+"
+
+  local overview summary ts
+  overview=$(echo "$result" | sed '/^$/d' | grep -v '^\- \[P[0-9]\]' | head -1)
+  summary=$(echo "$result" | sed '/^$/d' | grep -v '^\- \[P[0-9]\]' | tail -1)
+  [ "$overview" = "$summary" ] && summary=""
+  ts=$(timestamp)
+
+  local entry="## ${ts} [${tag}] ${commit_msg} に対するレビュー
+
+${overview:-レビュー結果。}
+
+### ${tag} 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+${table_rows}
+### ${tag} 所感
+
+> ${summary:-特記事項なし。}"
+
+  printf "\n\n%s\n" "$entry" >> "$DISCUSSIONS_FILE"
+  echo "✅ ${label}完了・AI_discussions.md に追記済み"
+}
+
+cmd_review() {
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "🔍 コードレビュー実行中..."
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  run_review "コードレビュー" "prompts/code-review.md" "CodeReview" || true
+
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "📄 ドキュメントレビュー実行中..."
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  run_review "ドキュメントレビュー" "prompts/doc-review.md" "DocReview" || true
+}
+
+# --- status ---
+cmd_status() {
+  [ ! -f "$DISCUSSIONS_FILE" ] && { echo "AI_discussions.md が見つかりません"; exit 1; }
+  awk '/^## /{buf=""; found=1} found{buf=buf $0 "\n"} END{printf "%s", buf}' "$DISCUSSIONS_FILE"
+}
+
+# --- install ---
+cmd_install() {
+  # 既存 git リポジトリか確認
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "エラー: git リポジトリ内で実行してください"
+    exit 1
+  fi
+  local root
+  root="$(git rev-parse --show-toplevel)"
+  cd "$root"
+
+  local skipped=()
+  install_file() {
+    local src="$1" dst="$2"
+    if [ -e "$dst" ]; then
+      skipped+=("$dst")
+    else
+      mkdir -p "$(dirname "$dst")"
+      cp "$src" "$dst"
+      echo "  作成: $dst"
+    fi
+  }
+
+  echo "マルチエージェント開発フローを導入します..."
+
+  install_file "$SCRIPT_DIR/AGENTS.md" "AGENTS.md"
+  install_file "$SCRIPT_DIR/specification.md" "specification.md"
+  install_file "$SCRIPT_DIR/agents.yaml" "agents.yaml"
+  install_file "$SCRIPT_DIR/mcp_server.py" "mcp_server.py"
+  install_file "$SCRIPT_DIR/dev" "dev"
+  [ -f "dev" ] && chmod +x dev
+
+  install_file "$SCRIPT_DIR/prompts/proposal.md" "prompts/proposal.md"
+  install_file "$SCRIPT_DIR/prompts/code-review.md" "prompts/code-review.md"
+  install_file "$SCRIPT_DIR/prompts/doc-review.md" "prompts/doc-review.md"
+
+  install_file "$SCRIPT_DIR/.githooks/post-commit" ".githooks/post-commit"
+  [ -f ".githooks/post-commit" ] && chmod +x .githooks/post-commit
+
+  if [ ! -f "AI_discussions.md" ]; then
+    echo "# AI Discussions" > AI_discussions.md
+    echo "  作成: AI_discussions.md"
+  else
+    skipped+=("AI_discussions.md")
+  fi
+
+  git config core.hooksPath .githooks
+  mkdir -p .git/hooks
+  cp .githooks/post-commit .git/hooks/post-commit
+  chmod +x .git/hooks/post-commit
+
+  echo ""
+  if [ ${#skipped[@]} -gt 0 ]; then
+    echo "⚠️  既存ファイルをスキップしました:"
+    for f in "${skipped[@]}"; do
+      echo "  $f"
+    done
+  fi
+  echo "✅ 導入完了（core.hooksPath=.githooks を設定済み）"
+}
+
+# --- init ---
+cmd_init() {
+  local name="${1:-}"
+  [ -z "$name" ] && { echo "エラー: プロジェクト名を指定してください"; exit 1; }
+  if ! echo "$name" | grep -qE '^[a-zA-Z0-9][a-zA-Z0-9_-]*$'; then
+    echo "エラー: プロジェクト名は英数字で始まり、英数字・ハイフン・アンダースコアのみ使用できます"
+    exit 1
+  fi
+  [ -e "$name" ] && { echo "エラー: '$name' は既に存在します"; exit 1; }
+
+  mkdir -p "$name"
+  cd "$name"
+
+  git init
+  git config core.hooksPath .githooks
+
+  cat > .gitignore <<'GITIGNORE'
+.venv/
+__pycache__/
+*.pyc
+.uv/
+GITIGNORE
+
+  cat > pyproject.toml <<PYPROJECT
+[project]
+name = "${name}"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "mcp[cli]",
+]
+PYPROJECT
+
+  echo "# AI Discussions" > AI_discussions.md
+
+  cp "$SCRIPT_DIR/AGENTS.md" .
+  cp "$SCRIPT_DIR/specification.md" .
+  cp "$SCRIPT_DIR/agents.yaml" .
+  cp "$SCRIPT_DIR/mcp_server.py" .
+
+  mkdir -p prompts
+  cp "$SCRIPT_DIR/prompts/proposal.md" prompts/
+  cp "$SCRIPT_DIR/prompts/code-review.md" prompts/
+  cp "$SCRIPT_DIR/prompts/doc-review.md" prompts/
+
+  cp "$SCRIPT_DIR/dev" .
+  chmod +x dev
+
+  mkdir -p .githooks
+  cp "$SCRIPT_DIR/.githooks/post-commit" .githooks/
+  chmod +x .githooks/post-commit
+  mkdir -p .git/hooks
+  cp .githooks/post-commit .git/hooks/post-commit
+  chmod +x .git/hooks/post-commit
+
+  cat > README.md <<README
+# ${name} — マルチエージェント開発フロー
+
+AI エージェントによる構造化された開発フローで開発するリポジトリです。
+
+## 開発フロー
+
+| コマンド | 説明 |
+|---|---|
+| \`./dev init <プロジェクト名>\` | 新規プロジェクトディレクトリを作成 |
+| \`./dev propose "要求"\` | Feature Proposal Agent で仕様整理 |
+| \`./dev review\` | 直近コミットのコード＋ドキュメントレビュー |
+| \`./dev status\` | AI_discussions.md の最新エントリを表示 |
+
+コミット時に自動でコードレビューとドキュメントレビューが実行され、結果は \`AI_discussions.md\` に記録されます。自動レビューを一時的に無効化するには \`SKIP_CODEX_REVIEW=1 git commit ...\` を使用してください。
+
+### \`./dev init\` の生成物
+
+\`./dev init my-project\` を実行すると以下が作成されます:
+
+- \`my-project/\` — git 初期化済みディレクトリ（\`core.hooksPath=.githooks\`）
+- \`.githooks/post-commit\` — 自動レビューフック
+- \`prompts/\` — proposal, code-review, doc-review プロンプト
+- \`agents.yaml\` — バックエンド設定（codex / openai / custom）
+- \`mcp_server.py\` — MCP サーバー
+- \`dev\` — CLI スクリプト
+- \`AGENTS.md\`, \`specification.md\`, \`AI_discussions.md\`, \`pyproject.toml\`, \`README.md\`, \`.gitignore\`
+
+プロジェクト名は英数字で始まり、英数字・ハイフン・アンダースコアのみ使用可能です。
+
+### 前提条件
+
+- \`./dev propose\`、\`./dev review\`、および post-commit 自動レビューは \`agents.yaml\` で設定されたバックエンドに依存します
+  - \`codex\`: [Codex CLI](https://github.com/openai/codex) が必要
+  - \`openai\`: \`OPENAI_API_KEY\` 環境変数、\`curl\`、\`jq\` が必要
+  - \`custom\`: \`agents.yaml\` の \`custom.command\` に実行可能なコマンドを設定
+- バックエンドが利用不可の場合、\`propose\`、\`review\`、post-commit 自動レビューは graceful にスキップされます（\`status\` と \`init\` はバックエンド非依存）
+- テスト対象コードが未導入の初期段階（\`pyproject.toml\` に pytest 未定義かつ \`tests/\` ディレクトリ不在）では、テスト実行失敗は既知の制約としてスキップされます
+
+詳細は [specification.md](specification.md) を参照してください。
+
+## MCP サーバー
+
+\`mcp_server.py\` は \`./dev\` の機能を MCP ツールとして公開します。Claude Desktop、Kiro CLI 等の MCP 対応クライアントから利用できます。
+
+\`\`\`bash
+uv run python mcp_server.py
+\`\`\`
+
+| ツール | 説明 |
+|---|---|
+| \`propose\` | Feature Proposal Agent で要求を仕様に整理 |
+| \`review\` | 直近コミットのコードレビュー＋ドキュメントレビュー |
+| \`status\` | AI_discussions.md の最新エントリを表示 |
+| \`init_project\` | 新規プロジェクトディレクトリを作成 |
+
+各ツールは \`cwd\` 引数でプロジェクトディレクトリを指定できます（省略時はカレントディレクトリ）。\`init_project\` のみ \`cwd\` は親ディレクトリを指定します。
+
+> MCP サーバーはローカル環境での利用を前提としています。\`cwd\` で指定されたディレクトリの \`./dev\` スクリプトを実行するため、信頼できる環境でのみ使用してください。
+README
+
+  echo "✅ プロジェクト '${name}' を作成しました"
+  echo ""
+  echo "  cd ${name}"
+  echo "  git add -A && git commit -m 'init: プロジェクト初期化'"
+}
+
+# --- main ---
+[ $# -lt 1 ] && usage
+case "$1" in
+  init)    shift; cmd_init "$@" ;;
+  install) cmd_install ;;
+  propose) shift; cmd_propose "$*" ;;
+  review)  cmd_review ;;
+  status)  cmd_status ;;
+  *)       usage ;;
+esac
