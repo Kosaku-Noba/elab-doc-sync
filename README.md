@@ -189,6 +189,97 @@ $ esync list --entity experiments
   #2  Day 2 実験記録
 ```
 
+### 添付ファイルを同期する（v0.2.1〜）
+
+PDF や CSV など画像以外のファイルも eLabFTW に自動アップロードできます。
+
+#### ① 設定ファイルに `attachments_dir` を追加
+
+```yaml
+targets:
+  - title: "実験レポート"
+    docs_dir: "docs/"
+    attachments_dir: "attachments/"   # ← このディレクトリ内のファイルを自動アップロード
+    entity: items
+```
+
+#### ② ファイルを配置して push
+
+```
+project/
+├── docs/
+│   └── レポート.md
+├── attachments/
+│   ├── raw_data.csv
+│   └── protocol.pdf
+└── .elab-sync.yaml
+```
+
+```bash
+$ esync
+  [実験レポート] 2 件のドキュメントを収集しました（1234 文字）
+  [実験レポート] 添付ファイルをアップロード: raw_data.csv
+  [実験レポート] 添付ファイルをアップロード: protocol.pdf
+  [実験レポート] リソース #42 を更新しました
+
+完了: 1 ターゲットを同期しました
+```
+
+同名・同サイズのファイルは再アップロードされません。内容を差し替えた場合は `--force` で強制送信:
+
+```bash
+$ esync --force
+```
+
+#### ③ pull / clone で添付ファイルもダウンロード
+
+```bash
+$ esync pull --id 42 --entity items
+  [実験レポート] リソース #42 → docs/レポート.md
+    添付ファイルをダウンロード: raw_data.csv
+    添付ファイルをダウンロード: protocol.pdf
+
+完了: 1 件取得しました
+```
+
+dry-run や status でも添付ファイル件数が表示されます:
+
+```bash
+$ esync --dry-run
+  [実験レポート] 2 ファイル, 添付 2 件, 変更あり → 同期対象
+```
+
+> **Note:** `mode: each` で `attachments_dir` を使うと、同じ添付ファイルが各エンティティに複製されます。エンティティごとに異なる添付が必要な場合はターゲットを分けてください。
+
+### LaTeX 数式を使う（v0.2.1〜）
+
+Markdown 内の LaTeX 数式は eLabFTW の MathJax でレンダリングできます。
+
+```yaml
+targets:
+  - title: "数式メモ"
+    docs_dir: "docs/"
+    body_format: md    # ← 数式を使う場合は md を推奨
+```
+
+Markdown ファイル内でそのまま LaTeX を記述:
+
+```markdown
+# 実験結果
+
+インライン数式: $E = mc^2$
+
+ブロック数式:
+
+$$
+\frac{\partial f}{\partial x} = 2x + 1
+$$
+
+ドル記号をそのまま使いたい場合は \$ でエスケープ: 価格は \$100 です。
+```
+
+`body_format: html` でも数式は保護されますが、`md` の方がシンプルで確実です。
+
 ### 特定のターゲットだけ同期
 
 ```bash
