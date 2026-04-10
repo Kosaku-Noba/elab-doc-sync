@@ -4226,3 +4226,47 @@ README 本文の `--force` / `status` 修正は確認でき、`UV_CACHE_DIR=/tmp
 ### DocReview 所感
 
 > 所感: README の主説明はかなり改善していますが、`clone` と `mode: each` の関係だけは例の直後で明示しないと再び誤読されやすいです。
+
+## 2026-04-10T14:25 [Kiro] fix: レビュー追加指摘3点を対応
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| README clone Tip | 複数 ID clone 時に `mode: each` で添付が全エンティティへ複製される注意を追記 |
+| CHANGELOG.md | 「dry-run / status」→「dry-run」に修正 |
+| `_sync_attachments` docstring | `force=True` 時の挙動を明記 |
+
+### Kiro 所感
+
+- テスト 223 件パス（変更なし）
+
+
+## 2026-04-10T14:31 [CodeReview] fix: clone Tip に each 制約追記・CHANGELOG status 修正・docstring 更新 に対するレビュー
+
+AI_discussions.md の直前レビューで挙がっていた3点は、このコミットでそれぞれ対応されており、差分はコミットメッセージの説明どおりです。README の `clone` 補足、CHANGELOG の `status` 表記、`_sync_attachments` の docstring 更新はいずれも実装実態と整合しており、追加の挙動変更は見当たりません。指定の `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` は `223 passed in 0.47s` でした。
+
+### CodeReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 指摘事項なし | — | — |
+
+### CodeReview 所感
+
+> 所感: 今回の差分は文書・コメント整合の修正に留まっており、仕様・設計・セキュリティ・運用の観点で新たな懸念は見つかりませんでした。回帰リスクは低く、前回レビューの補完コミットとして妥当です。
+
+
+## 2026-04-10T14:31 [DocReview] fix: clone Tip に each 制約追記・CHANGELOG status 修正・docstring 更新 に対するレビュー
+
+README の `clone` 補足、CHANGELOG の `dry-run` 表記、`_sync_attachments` の docstring は今回の差分と整合しており、更新漏れや説明の食い違いは見当たりませんでした。`UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` も 223 passed でした。  
+
+### DocReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 指摘事項なし | — | — |
+
+### DocReview 所感
+
+> 所感: 直前レビューで残っていた `clone` と `mode: each` の関係が利用例の直後で明示され、初見でも添付複製の制約を把握しやすい状態になっています。

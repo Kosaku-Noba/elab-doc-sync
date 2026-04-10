@@ -301,7 +301,11 @@ def _count_local_attachments(attachments_dir: Path | None) -> int:
 
 
 def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int, client: ELabFTWClient, *, force: bool = False) -> None:
-    """attachments_dir 内の非画像ファイルをリモートにアップロードする（サイズ比較で差分検知）。"""
+    """attachments_dir 内の非画像ファイルをリモートにアップロードする。
+
+    サイズ比較で差分検知し、同名・同サイズなら再利用する。
+    force=True の場合はサイズ一致でも再アップロードする。
+    """
     if not attachments_dir or not attachments_dir.is_dir():
         return
     local_files = [f for f in sorted(attachments_dir.iterdir()) if f.is_file() and not _is_image(f.name)]

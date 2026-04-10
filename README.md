@@ -151,7 +151,7 @@ $ esync clone --url https://elab.example.com --entity items --id 42 --id 43
 ✅ プロジェクトを作成しました: elab-clone-42/ (2 件)
 ```
 
-> **Tip:** `clone` はリモートの添付ファイルも `attachments/` にダウンロードしますが、生成される `.elab-sync.yaml` には `attachments_dir` が含まれません。再 push で添付も同期したい場合は、設定ファイルに `attachments_dir: "attachments/"` を手動で追記してください。
+> **Tip:** `clone` はリモートの添付ファイルも `attachments/` にダウンロードしますが、生成される `.elab-sync.yaml` には `attachments_dir` が含まれません。再 push で添付も同期したい場合は、設定ファイルに `attachments_dir: "attachments/"` を手動で追記してください。複数 ID を clone した場合、`mode: each` では同じ添付ディレクトリが各エンティティに適用されるため、添付一式が全エンティティへ複製されます。エンティティごとに異なる添付が必要な場合はターゲットと添付ディレクトリを分けてください。
 
 ### タグ操作
 
