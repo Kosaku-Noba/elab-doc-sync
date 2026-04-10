@@ -1,0 +1,17 @@
+# エージェントバックエンド設定
+# 対応バックエンド: codex, openai, custom
+
+backend: codex
+
+# backend: codex
+codex:
+  sandbox: danger-full-access
+
+# backend: openai
+# openai:
+#   model: gpt-4o
+#   max_tokens: 4096
+
+# backend: custom
+# custom:
+#   command: my-tool --prompt-file {prompt_file} --output {output_file}
