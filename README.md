@@ -200,6 +200,10 @@ $ esync category set "試薬" --id 42 --entity items
 # カテゴリを設定（ID で指定）
 $ esync category set 1 --id 42 --entity items
   リソース #42: カテゴリを設定しました (#1)
+
+# 実験ノートのカテゴリを操作
+$ esync category set "プロトコル" --id 1 --entity experiments
+  実験ノート #1: カテゴリを設定しました (#3)
 ```
 
 YAML で `category` を設定すると push 時に自動適用されます:
@@ -351,6 +355,7 @@ $ esync link 42
 | `esync metadata get` | メタデータを表示 |
 | `esync metadata set k=v` | メタデータを設定 |
 | `esync category list` | カテゴリ一覧を表示 |
+| `esync category list --entity experiments` | 実験ノートのカテゴリ一覧 |
 | `esync category show --id 42 --entity items` | 現在のカテゴリを表示 |
 | `esync category set "名前" --id 42 --entity items` | カテゴリを設定（名前または ID） |
 | `esync entity-status show` | エンティティのステータスを表示 |

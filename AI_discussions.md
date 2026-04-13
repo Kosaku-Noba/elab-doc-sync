@@ -4688,3 +4688,34 @@ README の `category show/set` 反映自体は概ね適切ですが、CLI ヘル
 ### DocReview 所感
 
 > 所感: テスト仕様の追随はできていますが、今回の変更は利用者が直接触る CLI 契約の更新でもあるため、README と `--help` まで同じ前提にそろえた方が初見理解性は高まります。
+
+
+## 2026-04-13T13:29 [CodeReview] docs: READMEカテゴリ操作セクションを拡充（実験ノート例・list --entity追加） に対するレビュー
+
+前回の `AI_discussions.md` で残っていた README のカテゴリ操作補強には沿っており、コミットメッセージどおり差分も `README.md` のみでした。`UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` は `239 passed in 0.50s` で、コードやセキュリティ面の新たな懸念は見当たりませんが、実験ノート向けの例示にはまだ誤読余地があります。
+
+### CodeReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 実験ノート用カテゴリ例の前提が README 上で判別しづらい | [README.md](/home/user/elab-doc-sync/README.md:189) では `esync category list --entity experiments` を追加していますが出力例がなく、直後の [README.md](/home/user/elab-doc-sync/README.md:205) では `プロトコル (#3)` を実験ノートに設定する例になっています。一方、実装は [client.py](/home/user/elab-doc-sync/src/elab_doc_sync/client.py:175) と [client.py](/home/user/elab-doc-sync/src/elab_doc_sync/client.py:178) の通り `items` と `experiments` で別エンドポイントのカテゴリ一覧を取得するため、item 側の `#3 プロトコル` が experiments 側でも成り立つかは前提が必要です。README だけ読むと「items のカテゴリ名/ID を experiments にもそのまま使える」と読めるので、`--entity experiments` 側の出力例を載せるか、「カテゴリは entity ごとに別管理」の注記を足した方が安全です。 | 中 |
+
+### CodeReview 所感
+
+> 所感として、差分のスコープは適切で前回レビューの補完としては妥当です。残る論点は、実験ノート側カテゴリの前提を README 上で明示して、例示の誤読を防ぐことです。
+
+
+## 2026-04-13T13:29 [DocReview] docs: READMEカテゴリ操作セクションを拡充（実験ノート例・list --entity追加） に対するレビュー
+
+README のカテゴリ操作セクション拡充自体は妥当で、実験ノート向けコマンドが見えるようになりました。`UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` は 239 件通過でしたが、README だけ読む初見ユーザーにはまだ誤解余地が 2 点あります。
+
+### DocReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| `items` と `experiments` のカテゴリが別管理であることが README から読み取れない | [README.md:189](/home/user/elab-doc-sync/README.md:189) で `esync category list --entity experiments` を追加しつつ出力例がなく、直後の [README.md:205](/home/user/elab-doc-sync/README.md:205) では `プロトコル (#3)` をそのまま `experiments` に設定する例だけが示されています。一方、実装は [client.py:172](/home/user/elab-doc-sync/src/elab_doc_sync/client.py:172) と [client.py:175](/home/user/elab-doc-sync/src/elab_doc_sync/client.py:175) の別 API を使い分けています。README に `--entity experiments` の出力例、または「カテゴリ名/ID は entity ごとに解決される」という注記を入れた方が誤読を防げます。 | 中 |
+| クイックリファレンスでは `experiments` 対応が `category list` にしか見えない | [README.md:357](/home/user/elab-doc-sync/README.md:357) から [README.md:360](/home/user/elab-doc-sync/README.md:360) では `experiments` の具体例が `list` にしか追加されておらず、`show` / `set` は依然として `items` 例だけです。本文の詳細例 [README.md:204](/home/user/elab-doc-sync/README.md:204) まで読めば分かりますが、コマンド一覧だけを参照する利用者には対応範囲が伝わりきりません。 | 低 |
+
+### DocReview 所感
+
+> 所感: 今回の README 追記は方向性として正しく、致命的な更新漏れではありません。実験ノート用カテゴリの「別管理」と「show/set でも使える」ことを 1 行ずつ補うだけで、初見理解性はかなり安定します。
