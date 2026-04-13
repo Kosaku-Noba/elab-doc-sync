@@ -154,3 +154,21 @@ def test_config_body_format_md(tmp_path):
     p.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
     config = load_config(p)
     assert config.targets[0].body_format == "md"
+
+
+def test_load_config_cp932_fallback(tmp_path):
+    """cp932 で保存された設定ファイルをフォールバックで読めること。"""
+    data = _base_data()
+    data["targets"][0]["title"] = "実験メモ"
+    p = tmp_path / ".elab-sync.yaml"
+    p.write_bytes(yaml.dump(data, allow_unicode=True).encode("cp932"))
+    cfg = load_config(p)
+    assert cfg.targets[0].title == "実験メモ"
+
+
+def test_read_yaml_text_utf8_preferred(tmp_path):
+    """UTF-8 ファイルは cp932 フォールバックなしで読めること。"""
+    from elab_doc_sync.config import _read_yaml_text
+    p = tmp_path / "test.yaml"
+    p.write_text("title: テスト", encoding="utf-8")
+    assert "テスト" in _read_yaml_text(p)
