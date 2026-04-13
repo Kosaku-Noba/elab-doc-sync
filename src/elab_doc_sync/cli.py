@@ -977,28 +977,16 @@ def cmd_category(args):
         sys.exit(1)
 
     if action == "show":
-        if direct_id:
-            _category_show(client, _normalize_entity(direct_entity), direct_id)
-        else:
-            for target in config.targets:
-                if args.target and target.title != args.target:
-                    continue
-                syncer = _make_syncer(client, target, project_root)
-                ids = _get_entity_ids(client, syncer, target)
-                for eid, etype in ids:
-                    _category_show(client, etype, eid)
+        if not direct_id or not direct_entity:
+            print("エラー: --id と --entity を指定してください", file=sys.stderr)
+            sys.exit(1)
+        _category_show(client, _normalize_entity(direct_entity), direct_id)
     elif action == "set":
+        if not direct_id or not direct_entity:
+            print("エラー: --id と --entity を指定してください", file=sys.stderr)
+            sys.exit(1)
         cat_value = args.category_value
-        if direct_id:
-            _category_set(client, _normalize_entity(direct_entity), direct_id, cat_value)
-        else:
-            for target in config.targets:
-                if args.target and target.title != args.target:
-                    continue
-                syncer = _make_syncer(client, target, project_root)
-                ids = _get_entity_ids(client, syncer, target)
-                for eid, etype in ids:
-                    _category_set(client, etype, eid, cat_value)
+        _category_set(client, _normalize_entity(direct_entity), direct_id, cat_value)
 
 
 def _category_show(client, entity_type, entity_id):

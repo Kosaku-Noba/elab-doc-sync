@@ -1,4 +1,4 @@
-"""Tests for config.py (C-01 ~ C-16)."""
+"""Tests for config.py (C-01 ~ C-18)."""
 
 import os
 from pathlib import Path
@@ -189,3 +189,17 @@ def test_ensure_target_rewrites_cp932_to_utf8(tmp_path):
     raw = p.read_text(encoding="utf-8")
     assert "experiments" in raw
     assert "実験メモ" in raw
+
+
+# C-17: category フィールドの読み込み
+def test_config_category(tmp_path):
+    data = _base_data()
+    data["targets"][0]["category"] = "試薬"
+    cfg = load_config(_write_config(tmp_path, data))
+    assert cfg.targets[0].category == "試薬"
+
+
+# C-18: category フィールド省略時は None
+def test_config_category_default(tmp_path):
+    cfg = load_config(_write_config(tmp_path, _base_data()))
+    assert cfg.targets[0].category is None
