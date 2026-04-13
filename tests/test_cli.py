@@ -1,4 +1,4 @@
-"""Tests for cli.py (CLI-01 ~ CLI-53, CAT-01 ~ CAT-04)."""
+"""Tests for cli.py (CLI-01 ~ CLI-53, CAT-01 ~ CAT-05)."""
 
 import json
 import os
@@ -1163,20 +1163,23 @@ def test_cmd_category_set(MockClient, tmp_path, capsys):
     assert "#42" in capsys.readouterr().out
 
 
-# CAT-04: category show/set without --id exits
-def test_cmd_category_show_without_id_exits(tmp_path, capsys):
+# CAT-04: category show without --id exits (argparse required)
+def test_cmd_category_show_without_id_exits(tmp_path):
     cfg, _ = _write_config(tmp_path)
-    args = Namespace(config=str(cfg), target=None, force=False, cat_action="show", id=None, entity=None)
-    with pytest.raises(SystemExit):
-        cmd_category(args)
-    assert "--id" in capsys.readouterr().err
+    from unittest.mock import patch as _patch
+    with _patch("sys.argv", ["esync", "category", "show", "--config", str(cfg)]):
+        from elab_doc_sync.cli import main
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+    assert exc_info.value.code == 2
 
 
-# CAT-05: category set without --id exits
-def test_cmd_category_set_without_id_exits(tmp_path, capsys):
+# CAT-05: category set without --id exits (argparse required)
+def test_cmd_category_set_without_id_exits(tmp_path):
     cfg, _ = _write_config(tmp_path)
-    args = Namespace(config=str(cfg), target=None, force=False, cat_action="set",
-                     category_value="試薬", id=None, entity=None)
-    with pytest.raises(SystemExit):
-        cmd_category(args)
-    assert "--id" in capsys.readouterr().err
+    from unittest.mock import patch as _patch
+    with _patch("sys.argv", ["esync", "category", "set", "試薬", "--config", str(cfg)]):
+        from elab_doc_sync.cli import main
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+    assert exc_info.value.code == 2

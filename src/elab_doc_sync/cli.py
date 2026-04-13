@@ -172,15 +172,24 @@ def cmd_pull(args):
 
     pulled = 0
     targets = config.targets
-    # --id + --entity 指定時は該当 entity の最初のターゲットだけ処理
-    # ただし --target 指定時はそちらを優先
+    # --id + --entity 指定時: mapping から ID が紐付いているターゲットを自動解決
+    # 見つからなければ該当 entity の最初のターゲットにフォールバック
     if args.id and args.entity:
         entity_norm = _normalize_entity(args.entity)
         matched = [t for t in targets if t.entity == entity_norm]
         if args.target:
             matched = [t for t in matched if t.title == args.target]
-        else:
-            matched = matched[:1]
+        elif len(matched) > 1:
+            # mapping から ID が既に紐付いているターゲットを探す
+            id_set = set(args.id)
+            resolved = []
+            for t in matched:
+                if t.mode == "each":
+                    syncer = EachDocsSyncer(client, t, project_root)
+                    mapping = syncer._load_mapping()
+                    if id_set & set(mapping.values()):
+                        resolved.append(t)
+            matched = resolved if resolved else matched[:1]
         targets = matched
 
     for target in targets:
@@ -969,24 +978,11 @@ def cmd_category(args):
             print(f"  #{c['id']}  {c.get('title', '?')}")
         return
 
-    if direct_entity and not direct_id:
-        print("エラー: --entity 指定時は --id も指定してください", file=sys.stderr)
-        sys.exit(1)
-    if direct_id and not direct_entity:
-        print("エラー: --id 指定時は --entity も指定してください（items / experiments / resources）", file=sys.stderr)
-        sys.exit(1)
-
+    entity_type = _normalize_entity(direct_entity)
     if action == "show":
-        if not direct_id or not direct_entity:
-            print("エラー: --id と --entity を指定してください", file=sys.stderr)
-            sys.exit(1)
-        _category_show(client, _normalize_entity(direct_entity), direct_id)
+        _category_show(client, entity_type, direct_id)
     elif action == "set":
-        if not direct_id or not direct_entity:
-            print("エラー: --id と --entity を指定してください", file=sys.stderr)
-            sys.exit(1)
-        cat_value = args.category_value
-        _category_set(client, _normalize_entity(direct_entity), direct_id, cat_value)
+        _category_set(client, entity_type, direct_id, args.category_value)
 
 
 def _category_show(client, entity_type, entity_id):
@@ -1083,12 +1079,12 @@ def main():
     cat_list_p = cat_sub.add_parser("list", help="カテゴリ一覧を表示")
     cat_list_p.add_argument("--entity", default=None, choices=["items", "experiments", "resources"], help="items / experiments / resources")
     cat_show_p = cat_sub.add_parser("show", help="現在のカテゴリを表示")
-    cat_show_p.add_argument("--id", type=int, default=None, help="エンティティ ID")
-    cat_show_p.add_argument("--entity", default=None, choices=["items", "experiments", "resources"], help="items / experiments / resources")
+    cat_show_p.add_argument("--id", type=int, required=True, help="エンティティ ID")
+    cat_show_p.add_argument("--entity", required=True, choices=["items", "experiments", "resources"], help="items / experiments / resources")
     cat_set_p = cat_sub.add_parser("set", help="カテゴリを設定")
     cat_set_p.add_argument("category_value", help="カテゴリ ID または名前")
-    cat_set_p.add_argument("--id", type=int, default=None, help="エンティティ ID")
-    cat_set_p.add_argument("--entity", default=None, choices=["items", "experiments", "resources"], help="items / experiments / resources")
+    cat_set_p.add_argument("--id", type=int, required=True, help="エンティティ ID")
+    cat_set_p.add_argument("--entity", required=True, choices=["items", "experiments", "resources"], help="items / experiments / resources")
 
     new_parser = sub.add_parser("new", help="テンプレートから新規ドキュメントを作成", parents=[common])
     new_parser.add_argument("--list", dest="list_templates", action="store_true", help="テンプレート一覧を表示")
