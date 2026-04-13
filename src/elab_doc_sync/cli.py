@@ -11,7 +11,7 @@ import yaml
 from markdownify import markdownify as html_to_md
 
 from .client import ELabFTWClient
-from .config import load_config, BODY_FORMAT_INIT
+from .config import load_config, BODY_FORMAT_INIT, _read_yaml_text
 from .sync import DocsSyncer, EachDocsSyncer, ConflictError, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments
 from . import sync_log
 
@@ -142,8 +142,7 @@ def _ensure_target_in_config(config_path: Path, entity: str, config: "Config"):
                   "entity": entity, "title": "", "id_file": id_file}
 
     # yaml ファイルに追記
-    with open(config_path, encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
+    raw = yaml.safe_load(_read_yaml_text(config_path)) or {}
     raw.setdefault("targets", []).append(new_target)
     with open(config_path, "w", encoding="utf-8") as f:
         yaml.dump(raw, f, default_flow_style=False, allow_unicode=True)

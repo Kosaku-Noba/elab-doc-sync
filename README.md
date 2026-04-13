@@ -395,6 +395,8 @@ targets:
 
 サンプル: [`.elab-sync.yaml.example`](.elab-sync.yaml.example)
 
+> **Note:** `.elab-sync.yaml` は **UTF-8** で保存してください。Windows のメモ帳等で編集すると Shift-JIS (cp932) で保存される場合があります。既存の cp932 ファイルは読み込み時に自動変換されますが、新規作成・更新時は常に UTF-8 で書き出されます。
+
 ## 困ったとき
 
 | メッセージ | やること |

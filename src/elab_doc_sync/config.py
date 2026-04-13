@@ -14,6 +14,14 @@ BODY_FORMAT_DEFAULT = "html"
 BODY_FORMAT_INIT = "md"
 
 
+def _read_yaml_text(path: Path) -> str:
+    """UTF-8 で読み、失敗したら cp932 にフォールバックする。"""
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return path.read_text(encoding="cp932")
+
+
 @dataclass
 class TargetConfig:
     title: str
@@ -51,8 +59,7 @@ def load_config(config_path: Path) -> Config:
             "→ 'elab-doc-sync init' で作成できます"
         )
 
-    with open(config_path, encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
+    raw = yaml.safe_load(_read_yaml_text(config_path))
 
     elab = raw.get("elabftw", {})
     url = elab.get("url", "")
