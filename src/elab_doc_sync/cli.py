@@ -623,8 +623,8 @@ HELP_EPILOG = """\
   elab-doc-sync entity-status show ステータスを表示
   elab-doc-sync entity-status set 1 ステータスを変更
   elab-doc-sync category list    カテゴリ一覧を表示
-  elab-doc-sync category show    現在のカテゴリを表示
-  elab-doc-sync category set "名前" カテゴリを設定
+  elab-doc-sync category show --id 42 --entity items 現在のカテゴリを表示
+  elab-doc-sync category set "名前" --id 42 --entity items カテゴリを設定
   elab-doc-sync whoami           現在のユーザー情報を表示
   elab-doc-sync new --list       テンプレート一覧を表示
   elab-doc-sync new --template-id 1 テンプレートからファイル作成

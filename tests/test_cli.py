@@ -1170,3 +1170,13 @@ def test_cmd_category_show_without_id_exits(tmp_path, capsys):
     with pytest.raises(SystemExit):
         cmd_category(args)
     assert "--id" in capsys.readouterr().err
+
+
+# CAT-05: category set without --id exits
+def test_cmd_category_set_without_id_exits(tmp_path, capsys):
+    cfg, _ = _write_config(tmp_path)
+    args = Namespace(config=str(cfg), target=None, force=False, cat_action="set",
+                     category_value="試薬", id=None, entity=None)
+    with pytest.raises(SystemExit):
+        cmd_category(args)
+    assert "--id" in capsys.readouterr().err

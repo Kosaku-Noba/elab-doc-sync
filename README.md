@@ -351,8 +351,8 @@ $ esync link 42
 | `esync metadata get` | メタデータを表示 |
 | `esync metadata set k=v` | メタデータを設定 |
 | `esync category list` | カテゴリ一覧を表示 |
-| `esync category show` | 現在のカテゴリを表示 |
-| `esync category set "名前"` | カテゴリを設定（名前または ID） |
+| `esync category show --id 42 --entity items` | 現在のカテゴリを表示 |
+| `esync category set "名前" --id 42 --entity items` | カテゴリを設定（名前または ID） |
 | `esync entity-status show` | エンティティのステータスを表示 |
 | `esync entity-status set <ID>` | ステータスを変更 |
 | `esync list` | リモートのリソース一覧を表示 |
