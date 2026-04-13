@@ -1,4 +1,4 @@
-"""Tests for config.py (C-01 ~ C-08)."""
+"""Tests for config.py (C-01 ~ C-16)."""
 
 import os
 from pathlib import Path
@@ -156,6 +156,7 @@ def test_config_body_format_md(tmp_path):
     assert config.targets[0].body_format == "md"
 
 
+# C-14: cp932 で保存された設定ファイルをフォールバックで読めること
 def test_load_config_cp932_fallback(tmp_path):
     """cp932 で保存された設定ファイルをフォールバックで読めること。"""
     data = _base_data()
@@ -166,9 +167,24 @@ def test_load_config_cp932_fallback(tmp_path):
     assert cfg.targets[0].title == "実験メモ"
 
 
+# C-15: UTF-8 ファイルは cp932 フォールバックなしで読めること
 def test_read_yaml_text_utf8_preferred(tmp_path):
     """UTF-8 ファイルは cp932 フォールバックなしで読めること。"""
     from elab_doc_sync.config import _read_yaml_text
     p = tmp_path / "test.yaml"
     p.write_text("title: テスト", encoding="utf-8")
     assert "テスト" in _read_yaml_text(p)
+
+
+# C-16: cp932 設定を _ensure_target_in_config で読み→UTF-8 で再保存
+def test_ensure_target_rewrites_cp932_to_utf8(tmp_path):
+    from elab_doc_sync.cli import _ensure_target_in_config
+    data = _base_data()
+    data["targets"][0]["entity"] = "items"
+    p = tmp_path / ".elab-sync.yaml"
+    p.write_bytes(yaml.dump(data, allow_unicode=True).encode("cp932"))
+    config = load_config(p)
+    _ensure_target_in_config(p, "experiments", config)
+    # 再保存後は UTF-8 で読めること
+    raw = p.read_text(encoding="utf-8")
+    assert "experiments" in raw

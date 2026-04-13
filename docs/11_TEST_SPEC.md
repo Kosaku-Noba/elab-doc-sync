@@ -35,6 +35,14 @@ eLabFTW API への通信は全て mock し、ファイルシステム操作は `
 | C-06 | 設定ファイルが存在しない | `sys.exit` が呼ばれる |
 | C-07 | mode/entity のデフォルト値 | 未指定時に merge/items になる |
 | C-08 | each モード + experiments | mode=each, entity=experiments が正しく設定される |
+| C-09 | tags フィールドの読み込み | tags が正しくパースされる |
+| C-10 | tags フィールド省略時はデフォルト空リスト | 未指定時に空リストになる |
+| C-11 | entity に resources を指定すると items に正規化 | resources → items |
+| C-12 | body_format 未指定時は html | 既存設定互換 |
+| C-13 | body_format=md を明示指定 | md が設定される |
+| C-14 | cp932 設定ファイルのフォールバック読み込み | cp932 保存でも load_config が成功する |
+| C-15 | UTF-8 ファイルの優先読み込み | UTF-8 が cp932 より優先される |
+| C-16 | cp932 設定の再保存で UTF-8 化 | _ensure_target_in_config 経由で UTF-8 に移行される |
 
 ### 3.2 test_client.py
 
