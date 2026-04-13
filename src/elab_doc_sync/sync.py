@@ -546,6 +546,7 @@ class DocsSyncer:
         print(f"  [{self.target.title}] {entity_label} #{item_id} を更新しました")
 
         _sync_tags(self.client, self.entity, item_id, self.target.tags)
+        _sync_category(self.client, self.entity, item_id, self.target.category)
 
         if self.target.attachments_dir:
             _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, item_id, self.client, force=force)
@@ -572,6 +573,19 @@ def _sync_tags(client: ELabFTWClient, entity_type: str, entity_id: int, desired_
         import logging
         logging.getLogger(__name__).debug("タグ同期失敗", exc_info=True)
         print(f"    ⚠ タグ同期に失敗しました（本文の同期は成功しています）")
+
+
+def _sync_category(client: ELabFTWClient, entity_type: str, entity_id: int, category) -> None:
+    """設定のカテゴリをリモートに設定する。best-effort。"""
+    if category is None:
+        return
+    try:
+        cat_id = client.resolve_category_id(entity_type, category)
+        client.patch_entity(entity_type, entity_id, category=cat_id)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).debug("カテゴリ同期失敗", exc_info=True)
+        print(f"    ⚠ カテゴリ同期に失敗しました（本文の同期は成功しています）")
 
 
 class EachDocsSyncer:
@@ -725,6 +739,7 @@ class EachDocsSyncer:
             print(f"  [{title}] {entity_label} #{eid} を更新しました")
 
             _sync_tags(self.client, self.entity, eid, self.target.tags)
+            _sync_category(self.client, self.entity, eid, self.target.category)
 
             if self.target.attachments_dir:
                 _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, eid, self.client, force=force)

@@ -167,6 +167,30 @@ class ELabFTWClient:
             )
         return resp.content
 
+    # ── categories ───────────────────────────────────────────
+
+    def list_items_types(self) -> list[dict]:
+        return self._req("GET", "/api/v2/items_types").json()
+
+    def list_experiments_categories(self) -> list[dict]:
+        return self._req("GET", "/api/v2/experiments_categories").json()
+
+    def list_categories(self, entity_type: str) -> list[dict]:
+        if entity_type == "experiments":
+            return self.list_experiments_categories()
+        return self.list_items_types()
+
+    def resolve_category_id(self, entity_type: str, category: str | int) -> int:
+        """カテゴリ名または ID を ID に解決する。"""
+        try:
+            return int(category)
+        except (ValueError, TypeError):
+            pass
+        for cat in self.list_categories(entity_type):
+            if cat.get("title") == category:
+                return cat["id"]
+        raise ValueError(f"カテゴリ「{category}」が見つかりません")
+
     # ── tags ─────────────────────────────────────────────────
 
     def get_tags(self, entity_type: str, entity_id: int) -> list[dict]:

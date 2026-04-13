@@ -622,6 +622,9 @@ HELP_EPILOG = """\
   elab-doc-sync metadata set k=v メタデータを設定
   elab-doc-sync entity-status show ステータスを表示
   elab-doc-sync entity-status set 1 ステータスを変更
+  elab-doc-sync category list    カテゴリ一覧を表示
+  elab-doc-sync category show    現在のカテゴリを表示
+  elab-doc-sync category set "名前" カテゴリを設定
   elab-doc-sync whoami           現在のユーザー情報を表示
   elab-doc-sync new --list       テンプレート一覧を表示
   elab-doc-sync new --template-id 1 テンプレートからファイル作成
@@ -948,6 +951,76 @@ def cmd_entity_status(args):
             print(f"  {_entity_label(etype)} #{eid}: ステータスを変更しました")
 
 
+def cmd_category(args):
+    config_path = Path(args.config)
+    config = load_config(config_path)
+    client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
+    project_root = config_path.parent or Path(".")
+
+    direct_id = getattr(args, "id", None)
+    direct_entity = getattr(args, "entity", None)
+
+    action = args.cat_action
+
+    if action == "list":
+        entity_type = _normalize_entity(direct_entity) if direct_entity else "items"
+        cats = client.list_categories(entity_type)
+        for c in cats:
+            print(f"  #{c['id']}  {c.get('title', '?')}")
+        return
+
+    if direct_entity and not direct_id:
+        print("エラー: --entity 指定時は --id も指定してください", file=sys.stderr)
+        sys.exit(1)
+    if direct_id and not direct_entity:
+        print("エラー: --id 指定時は --entity も指定してください（items / experiments / resources）", file=sys.stderr)
+        sys.exit(1)
+
+    if action == "show":
+        if direct_id:
+            _category_show(client, _normalize_entity(direct_entity), direct_id)
+        else:
+            for target in config.targets:
+                if args.target and target.title != args.target:
+                    continue
+                syncer = _make_syncer(client, target, project_root)
+                ids = _get_entity_ids(client, syncer, target)
+                for eid, etype in ids:
+                    _category_show(client, etype, eid)
+    elif action == "set":
+        cat_value = args.category_value
+        if direct_id:
+            _category_set(client, _normalize_entity(direct_entity), direct_id, cat_value)
+        else:
+            for target in config.targets:
+                if args.target and target.title != args.target:
+                    continue
+                syncer = _make_syncer(client, target, project_root)
+                ids = _get_entity_ids(client, syncer, target)
+                for eid, etype in ids:
+                    _category_set(client, etype, eid, cat_value)
+
+
+def _category_show(client, entity_type, entity_id):
+    entity = client.get_entity(entity_type, entity_id)
+    cat_id = entity.get("category")
+    cat_title = entity.get("category_title")
+    label = f"{_entity_label(entity_type)} #{entity_id}"
+    if cat_title:
+        print(f"  {label}: {cat_title} (#{cat_id})")
+    elif cat_id:
+        print(f"  {label}: #{cat_id}")
+    else:
+        print(f"  {label}: (カテゴリ未設定)")
+
+
+def _category_set(client, entity_type, entity_id, category_value):
+    label = f"{_entity_label(entity_type)} #{entity_id}"
+    cat_id = client.resolve_category_id(entity_type, category_value)
+    client.patch_entity(entity_type, entity_id, category=cat_id)
+    print(f"  {label}: カテゴリを設定しました (#{cat_id})")
+
+
 def main():
     # 共通オプション（全サブコマンドで使える）
     common = argparse.ArgumentParser(add_help=False)
@@ -1017,6 +1090,18 @@ def main():
     estatus_parser = sub.add_parser("entity-status", help="エンティティのステータスを管理", parents=[common])
     sub.add_parser("whoami", help="現在のユーザー情報を表示")
 
+    cat_parser = sub.add_parser("category", help="カテゴリを管理", parents=[common])
+    cat_sub = cat_parser.add_subparsers(dest="cat_action")
+    cat_list_p = cat_sub.add_parser("list", help="カテゴリ一覧を表示")
+    cat_list_p.add_argument("--entity", default=None, choices=["items", "experiments", "resources"], help="items / experiments / resources")
+    cat_show_p = cat_sub.add_parser("show", help="現在のカテゴリを表示")
+    cat_show_p.add_argument("--id", type=int, default=None, help="エンティティ ID")
+    cat_show_p.add_argument("--entity", default=None, choices=["items", "experiments", "resources"], help="items / experiments / resources")
+    cat_set_p = cat_sub.add_parser("set", help="カテゴリを設定")
+    cat_set_p.add_argument("category_value", help="カテゴリ ID または名前")
+    cat_set_p.add_argument("--id", type=int, default=None, help="エンティティ ID")
+    cat_set_p.add_argument("--entity", default=None, choices=["items", "experiments", "resources"], help="items / experiments / resources")
+
     new_parser = sub.add_parser("new", help="テンプレートから新規ドキュメントを作成", parents=[common])
     new_parser.add_argument("--list", dest="list_templates", action="store_true", help="テンプレート一覧を表示")
     new_parser.add_argument("--template-id", type=int, default=None, help="テンプレート ID")
@@ -1060,6 +1145,8 @@ def main():
         cmd_metadata(args)
     elif args.command == "entity-status":
         cmd_entity_status(args)
+    elif args.command == "category":
+        cmd_category(args)
     elif args.command == "whoami":
         cmd_whoami(args)
     elif args.command == "new":
