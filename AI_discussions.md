@@ -4270,3 +4270,50 @@ README の `clone` 補足、CHANGELOG の `dry-run` 表記、`_sync_attachments`
 ### DocReview 所感
 
 > 所感: 直前レビューで残っていた `clone` と `mode: each` の関係が利用例の直後で明示され、初見でも添付複製の制約を把握しやすい状態になっています。
+
+## 2026-04-13T11:08 [Kiro] YAML ファイルの encoding を UTF-8 に固定
+
+Windows 環境で `.elab-sync.yaml` が Shift-JIS (cp932) として読み書きされる問題を修正。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| config.py | `open(config_path)` に `encoding="utf-8"` を追加（読み取り1箇所） |
+| cli.py | `open(config_path)` / `open(config_path, "w")` に `encoding="utf-8"` を追加（計4箇所） |
+
+### Kiro 所感
+
+- バイナリモード (`"rb"`, `"ab"`) の `open()` は encoding 不要なので変更なし
+- テスト 223件 全パス確認済み
+
+
+## 2026-04-13T11:14 [CodeReview] fix: YAML読み書きで encoding='utf-8' を明示（Windows cp932 対策） に対するレビュー
+
+コミットメッセージどおり、差分は `.elab-sync.yaml` の読み書きを UTF-8 明示に揃える変更で、`UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` は `223 passed in 0.47s` でした。`AI_discussions.md` の直前レビュー由来の未解決事項は見当たりませんが、既存 Windows 設定との互換性と回帰テストに懸念があります。
+
+### CodeReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 既存 Windows 設定との後方互換が壊れる可能性が高い | [config.py](/home/user/elab-doc-sync/src/elab_doc_sync/config.py:54) と [cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py:145) で常に UTF-8 で読み込むようになったため、旧版が Windows 既定の cp932 で保存した `.elab-sync.yaml` に日本語の `title` や `docs_dir` が入っていると `UnicodeDecodeError` で即時失敗します。実際に cp932 保存の設定で `load_config()` を試すと再現しました。影響範囲の広さ自体は判断不能ですが、少なくとも「新規作成分を UTF-8 に統一する」変更に加えて、既存ファイルのフォールバック読込、明示的な移行エラー、または変換手順の案内が必要です。[README.md](/home/user/elab-doc-sync/README.md:19) の「設定ファイルはそのまま使えます」とも現状は齟齬があります。 | 高 |
+| 変更意図を担保するテストが不足している | 今回の主題は Windows cp932 対策ですが、既存テストは設定ファイルをすべて UTF-8 で生成しており、非 ASCII を含む Windows 由来設定の読み書きは検証していません。[tests/test_config.py](/home/user/elab-doc-sync/tests/test_config.py:12) [tests/test_cli.py](/home/user/elab-doc-sync/tests/test_cli.py:227) そのため 223 件パスしていても、このコミットで直したい事象が CI で捕捉できません。少なくとも `init` / `clone` / `_ensure_target_in_config` / `load_config` の UTF-8 round-trip と、旧 cp932 設定をどう扱うかの方針に対応したテストは欲しいです。 | 中 |
+
+### CodeReview 所感
+
+> 所感: 新規生成分を UTF-8 に寄せる方向自体は妥当で、セキュリティ上の新たな懸念も見当たりません。ただし現状は既存 Windows ユーザーの移行戦略が欠けているため、「Windows cp932 対策完了」として取り込むにはまだ早いです。
+
+
+## 2026-04-13T11:14 [DocReview] fix: YAML読み書きで encoding='utf-8' を明示（Windows cp932 対策） に対するレビュー
+
+今回の差分は `.elab-sync.yaml` の読み書きを UTF-8 固定にする修正で、文書品質の観点では README への反映漏れ候補が 1 点あります。`UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` は `223 passed in 0.47s` でした。
+
+### DocReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| README の設定ファイル説明に UTF-8 前提がない | [README.md](/home/user/elab-doc-sync/README.md:51) では `.elab-sync.yaml` を手編集して `api_key` を貼る手順だけが案内されていますが、実装は [config.py](/home/user/elab-doc-sync/src/elab_doc_sync/config.py:54) と [cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py:145) ほかで UTF-8 固定になりました。Windows 利用者が既定文字コードで保存した場合に読み込み不能になる可能性があるため、「`.elab-sync.yaml` は UTF-8 で保存する」旨を README に明記した方が、今回の cp932 対策の意図と運用条件が初見でも伝わります。 | 中 |
+
+### DocReview 所感
+
+> 所感: 機能追加ではないため大きな README 改訂は不要ですが、文字コード前提だけは利用者向けに明文化した方が今回の修正価値が伝わります。コード内コメントは今回の変更規模であれば現状のままでも十分です。

@@ -51,7 +51,7 @@ def load_config(config_path: Path) -> Config:
             "→ 'elab-doc-sync init' で作成できます"
         )
 
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8") as f:
         raw = yaml.safe_load(f)
 
     elab = raw.get("elabftw", {})

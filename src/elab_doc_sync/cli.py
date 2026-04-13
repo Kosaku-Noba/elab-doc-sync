@@ -142,10 +142,10 @@ def _ensure_target_in_config(config_path: Path, entity: str, config: "Config"):
                   "entity": entity, "title": "", "id_file": id_file}
 
     # yaml ファイルに追記
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
     raw.setdefault("targets", []).append(new_target)
-    with open(config_path, "w") as f:
+    with open(config_path, "w", encoding="utf-8") as f:
         yaml.dump(raw, f, default_flow_style=False, allow_unicode=True)
 
     label = _entity_label(entity)
@@ -462,7 +462,7 @@ def cmd_init(args):
         "targets": [target],
     }
 
-    with open(config_path, "w") as f:
+    with open(config_path, "w", encoding="utf-8") as f:
         yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
 
     # テンプレートファイルのコピー
@@ -519,7 +519,7 @@ def cmd_clone(args):
         "targets": [{"docs_dir": docs_dir, "pattern": "*.md", "mode": "each", "entity": entity, "title": ""}],
     }
     config_path = project_dir / ".elab-sync.yaml"
-    with open(config_path, "w") as f:
+    with open(config_path, "w", encoding="utf-8") as f:
         yaml.dump(config_data, f, default_flow_style=False, allow_unicode=True)
     print(f"  {config_path} を作成しました")
 
