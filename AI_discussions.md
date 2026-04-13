@@ -4655,3 +4655,36 @@ README の `category show/set` 反映自体は概ね適切ですが、CLI ヘル
 ### DocReview 所感
 
 > 所感として、README 本文の category 記述は揃ってきていますが、「必須引数の説明を README・ヘルプ・仕様・コメントで同じ粒度に保つ」という点ではまだ仕上げ切れていません。今回の差分規模なら、残りも同時にそろえておくと後続の誤読を減らせます。
+
+
+## 2026-04-13T12:26 [CodeReview] fix: category show/setの--id --entityをargparse required化 & テスト・仕様書整備 に対するレビュー
+
+直前の `AI_discussions.md` で残っていた `category show/set` の `--id` / `--entity` 必須化自体は、[src/elab_doc_sync/cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py:1082) に `required=True` として反映されていました。`UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` も `239 passed in 0.56s` でしたが、コミットの意図と差分の整合という観点では 2 点残ります。
+
+### CodeReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| `cmd_pull()` の挙動変更がコミットメッセージ外で混入している | 今回のコミット名と直前のレビュー記録は `category show/set` の required 化とそのテスト・仕様書整備を主題にしていますが、実差分には [src/elab_doc_sync/cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py:175) の `pull --id --entity` のターゲット解決ロジック変更も含まれています。親コミットでは「同一 entity の複数ターゲット時は最初のターゲットだけ処理」だったのに対し、今回は `mapping.json` に ID が入っている `each` ターゲットを優先し、複数ヒットすれば複数ターゲットを処理し得ます。一方で、その新契約は pull の仕様書 [docs/11_TEST_SPEC.md](/home/user/elab-doc-sync/docs/11_TEST_SPEC.md:174) にも、既存テスト [tests/test_cli.py](/home/user/elab-doc-sync/tests/test_cli.py:243) にも反映されておらず、`mapping.json` 自体もターゲット横断の一意性保証を持っていません [src/elab_doc_sync/sync.py](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py:603)。意図的な改善ならコミット分離と仕様・テスト更新が必要で、そうでないなら今回の fix には含めない方が安全です。 | 中 |
+| required 化の回帰テストが「片側欠落」まで固定できていない | 仕様書更新 [docs/11_TEST_SPEC.md](/home/user/elab-doc-sync/docs/11_TEST_SPEC.md:265) と追加テスト [tests/test_cli.py](/home/user/elab-doc-sync/tests/test_cli.py:1167) は、実際には `--id` と `--entity` の両方を欠いたケースだけを見ています。今回の主題は「両方 required」にしたことなので、`category show --id 42` や `category set 試薬 --entity items` のような片側欠落ケースも押さえておかないと、将来どちらか一方だけ任意化されてもこのコミットの回帰テストでは検知できません。 | 低 |
+
+### CodeReview 所感
+
+> 所感として、`category` 側の修正そのものは妥当で、前回レビューで指摘されていた subcommand help の論点も実装上は解消しています。残る懸念は `cmd_pull()` の意図しない混入を切り分けることと、required 契約を片側欠落までテストで固定することです。
+
+
+## 2026-04-13T12:26 [DocReview] fix: category show/setの--id --entityをargparse required化 & テスト・仕様書整備 に対するレビュー
+
+対象差分を文書観点のみで確認しました。`docs/11_TEST_SPEC.md` の更新と実装の方向性は整合しており、関連テストは `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` で `239 passed` でしたが、利用者向け説明には更新漏れがあります。
+
+### DocReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| `category show/set` の必須引数化が README に明文化されていない | 実装では `--id` と `--entity` が `argparse` 必須になり、省略時は usage error（exit code 2）になりますが、README は実行例を載せるだけで必須条件や省略時の挙動を説明していません。[README.md](/home/user/elab-doc-sync/README.md:192) [src/elab_doc_sync/cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py:1081) [docs/11_TEST_SPEC.md](/home/user/elab-doc-sync/docs/11_TEST_SPEC.md:265) | 中 |
+| `pull --id --entity` のターゲット自動解決ルール変更が利用者向け文書に反映されていない | 実装では複数ターゲット候補があると mapping 一致ターゲットを優先し、見つからない場合だけ先頭ターゲットにフォールバックしますが、その選択規則や曖昧な場合に `--target` を使うべきことが README / CLI リファレンスから読み取れません。[README.md](/home/user/elab-doc-sync/README.md:81) [docs/05_CLI_REFERENCE.md](/home/user/elab-doc-sync/docs/05_CLI_REFERENCE.md:60) [src/elab_doc_sync/cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py:175) | 中 |
+| CLI 内蔵ヘルプの `pull` 使用例が実装と矛盾している | `HELP_EPILOG` は `elab-doc-sync pull --id 42` を有効例として表示しますが、実際には `--id` 指定時に `--entity` が必須です。`--help` を見た初見ユーザーを誤案内します。[src/elab_doc_sync/cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py:620) [src/elab_doc_sync/cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py:624) [docs/05_CLI_REFERENCE.md](/home/user/elab-doc-sync/docs/05_CLI_REFERENCE.md:65) | 中 |
+
+### DocReview 所感
+
+> 所感: テスト仕様の追随はできていますが、今回の変更は利用者が直接触る CLI 契約の更新でもあるため、README と `--help` まで同じ前提にそろえた方が初見理解性は高まります。

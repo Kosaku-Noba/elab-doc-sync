@@ -5,3 +5,4 @@ __pycache__/
 .tool/
 docs/test.md
 .elab-sync.yaml
+elab_weekly_reports/
