@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.2.2 (2026-04-13)
+
+### 新機能
+
+#### カテゴリ機能
+- `esync category list` でカテゴリ一覧を表示（`--entity experiments` 対応）
+- `esync category show --id <ID> --entity <TYPE>` で現在のカテゴリを表示
+- `esync category set <名前|ID> --id <ID> --entity <TYPE>` でカテゴリを設定
+- YAML の `category` 設定で push 時にカテゴリを自動適用（本文更新時または `--force` 時）
+
+### 修正
+
+- `category show` / `category set` の `--id` `--entity` を必須化
+- cp932 フォールバック読み込みを追加（Windows 環境対応）
+- YAML 読み書きで `encoding='utf-8'` を明示
+- `--force` で添付ファイルも再送されるように修正
+
 ## v0.2.1 (2026-04-09)
 
 ### 新機能
