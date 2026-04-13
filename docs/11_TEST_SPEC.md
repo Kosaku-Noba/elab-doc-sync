@@ -262,8 +262,8 @@ eLabFTW API への通信は全て mock し、ファイルシステム操作は `
 | CAT-01 | category list | カテゴリ一覧が表示される |
 | CAT-02 | category show | 現在のカテゴリが表示される |
 | CAT-03 | category set | resolve → patch_entity が呼ばれる |
-| CAT-04 | category show --id 未指定 | エラーで終了 |
-| CAT-05 | category set --id 未指定 | エラーで終了 |
+| CAT-04 | category show --id/--entity 未指定 | argparse が exit code 2 で終了 |
+| CAT-05 | category set --id/--entity 未指定 | argparse が exit code 2 で終了 |
 
 ## 4. テスト環境・方針
 
