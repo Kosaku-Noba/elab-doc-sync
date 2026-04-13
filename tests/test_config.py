@@ -180,11 +180,12 @@ def test_read_yaml_text_utf8_preferred(tmp_path):
 def test_ensure_target_rewrites_cp932_to_utf8(tmp_path):
     from elab_doc_sync.cli import _ensure_target_in_config
     data = _base_data()
-    data["targets"][0]["entity"] = "items"
+    data["targets"][0]["title"] = "実験メモ"
     p = tmp_path / ".elab-sync.yaml"
     p.write_bytes(yaml.dump(data, allow_unicode=True).encode("cp932"))
     config = load_config(p)
     _ensure_target_in_config(p, "experiments", config)
-    # 再保存後は UTF-8 で読めること
+    # 再保存後は UTF-8 で読め、日本語タイトルが保持されること
     raw = p.read_text(encoding="utf-8")
     assert "experiments" in raw
+    assert "実験メモ" in raw
