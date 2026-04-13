@@ -177,6 +177,41 @@ $ esync tag add "urgent" --id 1 --entity experiments
   実験ノート #1: タグ「urgent」を追加しました
 ```
 
+### カテゴリ操作
+
+```bash
+# カテゴリ一覧を表示
+$ esync category list
+  #1  試薬
+  #2  機器
+  #3  プロトコル
+
+# 実験ノートのカテゴリ一覧
+$ esync category list --entity experiments
+
+# 現在のカテゴリを表示
+$ esync category show --id 42 --entity items
+  リソース #42: 試薬 (#1)
+
+# カテゴリを設定（名前で指定）
+$ esync category set "試薬" --id 42 --entity items
+  リソース #42: カテゴリを設定しました (#1)
+
+# カテゴリを設定（ID で指定）
+$ esync category set 1 --id 42 --entity items
+  リソース #42: カテゴリを設定しました (#1)
+```
+
+YAML で `category` を設定すると push 時に自動適用されます:
+
+```yaml
+targets:
+  - title: "試薬リスト"
+    docs_dir: "docs/"
+    entity: items
+    category: "試薬"       # 名前または ID で指定
+```
+
 ### リモート一覧を表示
 
 ```bash
@@ -313,6 +348,9 @@ $ esync link 42
 | `esync tag remove "タグ" --id 42 --entity items` | タグを外す |
 | `esync metadata get` | メタデータを表示 |
 | `esync metadata set k=v` | メタデータを設定 |
+| `esync category list` | カテゴリ一覧を表示 |
+| `esync category show` | 現在のカテゴリを表示 |
+| `esync category set "名前"` | カテゴリを設定（名前または ID） |
 | `esync entity-status show` | エンティティのステータスを表示 |
 | `esync entity-status set <ID>` | ステータスを変更 |
 | `esync list` | リモートのリソース一覧を表示 |
@@ -384,6 +422,7 @@ targets:
 | `targets[].entity` | — | `items` | `items`(`resources`) / `experiments` |
 | `targets[].id_file` | — | `.elab-sync-ids/default.id` | ID 保存先 |
 | `targets[].tags` | — | `[]` | push 時に自動追加するタグ（追記のみ、既存タグは外さない） |
+| `targets[].category` | — | — | push 時に自動設定するカテゴリ（名前または ID） |
 | `targets[].body_format` | — | `html` | `md`（Markdown のまま送信）/ `html`（HTML に変換して送信） |
 | `targets[].attachments_dir` | — | — | 添付ファイルディレクトリ（画像以外のファイルを自動アップロード・ダウンロード） |
 
