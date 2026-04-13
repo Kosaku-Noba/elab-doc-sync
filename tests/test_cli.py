@@ -1,4 +1,4 @@
-"""Tests for cli.py (CLI-01 ~ CLI-53)."""
+"""Tests for cli.py (CLI-01 ~ CLI-53, CAT-01 ~ CAT-04)."""
 
 import json
 import os
@@ -13,7 +13,7 @@ import yaml
 from elab_doc_sync.cli import (
     cmd_sync, cmd_pull, cmd_clone, cmd_log, cmd_diff, cmd_status, cmd_init, cmd_update,
     cmd_tag, cmd_metadata, cmd_entity_status, cmd_whoami, cmd_new,
-    cmd_list, cmd_link, cmd_verify, REPO_URL,
+    cmd_list, cmd_link, cmd_verify, cmd_category, REPO_URL,
 )
 from elab_doc_sync.sync import ConflictError
 
@@ -1119,3 +1119,54 @@ def test_unknown_command_exits_with_usage_error(tmp_path, capsys):
         with pytest.raises(SystemExit) as exc_info:
             main()
     assert exc_info.value.code == 2
+
+
+# ── カテゴリコマンドテスト ────────────────────────
+
+
+# CAT-01: category list
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_category_list(MockClient, tmp_path, capsys):
+    cfg, _ = _write_config(tmp_path)
+    client = MockClient.return_value
+    client.list_categories.return_value = [{"id": 1, "title": "試薬"}, {"id": 2, "title": "機器"}]
+    args = Namespace(config=str(cfg), target=None, force=False, cat_action="list", entity=None)
+    cmd_category(args)
+    out = capsys.readouterr().out
+    assert "試薬" in out
+    assert "機器" in out
+
+
+# CAT-02: category show
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_category_show(MockClient, tmp_path, capsys):
+    cfg, _ = _write_config(tmp_path)
+    client = MockClient.return_value
+    client.get_entity.return_value = {"category": 1, "category_title": "試薬"}
+    args = Namespace(config=str(cfg), target=None, force=False, cat_action="show", id=42, entity="items")
+    cmd_category(args)
+    out = capsys.readouterr().out
+    assert "試薬" in out
+    assert "#42" in out
+
+
+# CAT-03: category set
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_category_set(MockClient, tmp_path, capsys):
+    cfg, _ = _write_config(tmp_path)
+    client = MockClient.return_value
+    client.resolve_category_id.return_value = 3
+    args = Namespace(config=str(cfg), target=None, force=False, cat_action="set",
+                     category_value="プロトコル", id=42, entity="items")
+    cmd_category(args)
+    client.patch_entity.assert_called_once_with("items", 42, category=3)
+    assert "#42" in capsys.readouterr().out
+
+
+# CAT-04: category show/set without --id exits
+def test_cmd_category_show_without_id_exits(tmp_path, capsys):
+    cfg, _ = _write_config(tmp_path)
+    args = Namespace(config=str(cfg), target=None, force=False, cat_action="show", id=None, entity=None)
+    with pytest.raises(SystemExit):
+        cmd_category(args)
+    assert "--id" in capsys.readouterr().err

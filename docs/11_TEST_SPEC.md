@@ -43,6 +43,8 @@ eLabFTW API への通信は全て mock し、ファイルシステム操作は `
 | C-14 | cp932 設定ファイルのフォールバック読み込み | cp932 保存でも load_config が成功する |
 | C-15 | UTF-8 ファイルの優先読み込み | UTF-8 が cp932 より優先される |
 | C-16 | cp932 設定の再保存で UTF-8 化 | _ensure_target_in_config 経由で UTF-8 に移行される |
+| C-17 | category フィールドの読み込み | category が正しくパースされる |
+| C-18 | category フィールド省略時は None | 未指定時に None になる |
 
 ### 3.2 test_client.py
 
@@ -72,6 +74,9 @@ eLabFTW API への通信は全て mock し、ファイルシステム操作は `
 | CL-22 | get_metadata（不正 JSON） | 空 dict が返る |
 | CL-23 | get_metadata（list 型） | 空 dict が返る |
 | CL-24 | get_entity / patch_entity | 汎用 GET/PATCH が動作する |
+| CL-25 | resolve_category_id（数値） | 数値・数値文字列がそのまま ID として返る |
+| CL-26 | resolve_category_id（名前） | カテゴリ名から ID が解決される |
+| CL-27 | resolve_category_id（不存在） | ValueError が発生する |
 
 ### 3.3 test_sync.py
 
@@ -129,6 +134,14 @@ eLabFTW API への通信は全て mock し、ファイルシステム操作は `
 | S-42 | mapping.json の読み書き | ファイル名 → エンティティ ID のマッピングが正しい |
 | S-43 | 競合検出（each） | remote_hash 不一致で ConflictError |
 | S-44 | sync 後に remote_hash が保存される | 各ファイルの remote_hash が保存される |
+
+#### 3.3.6 カテゴリ同期（_sync_category）
+
+| ID | テストケース | 検証内容 |
+|---|---|---|
+| S-50 | _sync_category 正常 | resolve → patch_entity が呼ばれる |
+| S-51 | _sync_category None スキップ | patch_entity が呼ばれない |
+| S-52 | _sync_category 失敗時 best-effort | 例外が発生せず警告が出力される |
 
 ### 3.4 test_sync_log.py（FR-13）
 
@@ -241,6 +254,15 @@ eLabFTW API への通信は全て mock し、ファイルシステム操作は `
 | CLI-63 | new --template-id | Markdown ファイルが生成される |
 | CLI-64 | new 既存ファイルエラー | SystemExit が発生する |
 | CLI-65 | new --output | 指定パスにファイルが生成される |
+
+#### 3.5.12 cmd_category
+
+| ID | テストケース | 検証内容 |
+|---|---|---|
+| CAT-01 | category list | カテゴリ一覧が表示される |
+| CAT-02 | category show | 現在のカテゴリが表示される |
+| CAT-03 | category set | resolve → patch_entity が呼ばれる |
+| CAT-04 | category show/set --id 未指定 | エラーで終了 |
 
 ## 4. テスト環境・方針
 

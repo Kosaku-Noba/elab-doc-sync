@@ -365,3 +365,24 @@ def test_download_images_passes_upload_fields(tmp_path):
     client.download_upload.assert_called_once_with(
         entity_type="items", entity_id=42, upload_id=10,
     )
+
+
+# ── カテゴリ解決テスト ────────────────────────
+
+
+def test_resolve_category_id_by_int(client):
+    assert client.resolve_category_id("items", 3) == 3
+    assert client.resolve_category_id("items", "5") == 5
+
+
+@patch("elab_doc_sync.client.requests.request")
+def test_resolve_category_id_by_name(mock_req, client):
+    mock_req.return_value = _mock_response([{"id": 1, "title": "試薬"}, {"id": 2, "title": "機器"}])
+    assert client.resolve_category_id("items", "試薬") == 1
+
+
+@patch("elab_doc_sync.client.requests.request")
+def test_resolve_category_id_not_found(mock_req, client):
+    mock_req.return_value = _mock_response([{"id": 1, "title": "試薬"}])
+    with pytest.raises(ValueError, match="見つかりません"):
+        client.resolve_category_id("items", "存在しない")

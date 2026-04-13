@@ -1190,3 +1190,26 @@ def test_download_attachments_cleans_up_temp_on_failure(tmp_path, capsys):
     # テンポラリファイルが残っていないことを確認
     for tp in created_temps:
         assert not Path(tp).exists(), f"テンポラリファイルが残っている: {tp}"
+
+
+# ── _sync_category テスト ────────────────────────
+
+
+def test_sync_category_sets_category(mock_client):
+    from elab_doc_sync.sync import _sync_category
+    mock_client.resolve_category_id.return_value = 3
+    _sync_category(mock_client, "items", 42, "試薬")
+    mock_client.patch_entity.assert_called_once_with("items", 42, category=3)
+
+
+def test_sync_category_none_skips(mock_client):
+    from elab_doc_sync.sync import _sync_category
+    _sync_category(mock_client, "items", 42, None)
+    mock_client.patch_entity.assert_not_called()
+
+
+def test_sync_category_failure_is_best_effort(mock_client, capsys):
+    from elab_doc_sync.sync import _sync_category
+    mock_client.resolve_category_id.side_effect = Exception("API error")
+    _sync_category(mock_client, "items", 42, "bad")
+    assert "カテゴリ同期に失敗" in capsys.readouterr().out
