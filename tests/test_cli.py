@@ -159,6 +159,97 @@ def test_pull_force_overwrite(MockClient, tmp_path):
     assert "original" not in content
 
 
+# ── pull リネーム関連テスト ───────────────────────────────
+
+# pull 時にリモートタイトルが変わったらファイルをリネーム
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_each_rename_on_title_change(MockClient, tmp_path):
+    cfg, docs = _write_config(tmp_path, mode="each")
+    (docs / "OldTitle.md").write_text("content\n", encoding="utf-8")
+    ids_dir = tmp_path / ".elab-sync-ids"
+    ids_dir.mkdir(exist_ok=True)
+    import json as _json
+    (ids_dir / "mapping.json").write_text(_json.dumps({"OldTitle.md": 1}))
+    (ids_dir / "OldTitle.md.hash").write_text("abc\n")
+    MockClient.return_value.get_item.return_value = {"id": 1, "title": "NewTitle", "body": "<p>new</p>"}
+    cmd_pull(_ns(tmp_path, id=None, command="pull", force=True))
+    assert (docs / "NewTitle.md").exists()
+    assert not (docs / "OldTitle.md").exists()
+    mapping = _json.loads((ids_dir / "mapping.json").read_text())
+    assert "NewTitle.md" in mapping
+    assert "OldTitle.md" not in mapping
+    # 旧ハッシュファイルが削除されている
+    assert not (ids_dir / "OldTitle.md.hash").exists()
+
+
+# リネーム先に同名ファイルが存在する場合はスキップ
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_each_rename_collision_skips(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path, mode="each")
+    (docs / "OldTitle.md").write_text("old content\n", encoding="utf-8")
+    (docs / "NewTitle.md").write_text("existing\n", encoding="utf-8")
+    ids_dir = tmp_path / ".elab-sync-ids"
+    ids_dir.mkdir(exist_ok=True)
+    import json as _json
+    (ids_dir / "mapping.json").write_text(_json.dumps({"OldTitle.md": 1}))
+    (ids_dir / "OldTitle.md.hash").write_text("abc\n")
+    MockClient.return_value.get_item.return_value = {"id": 1, "title": "NewTitle", "body": "<p>new</p>"}
+    cmd_pull(_ns(tmp_path, id=None, command="pull"))
+    out = capsys.readouterr().out
+    assert "リネームをスキップ" in out
+    # 旧ファイルは維持される
+    assert (docs / "OldTitle.md").exists()
+    # 既存ファイルは上書きされない
+    assert (docs / "NewTitle.md").read_text(encoding="utf-8") == "existing\n"
+    # mapping/hash は変更されない
+    mapping = _json.loads((ids_dir / "mapping.json").read_text())
+    assert "OldTitle.md" in mapping
+    assert (ids_dir / "OldTitle.md.hash").exists()
+
+
+# 旧ファイルが欠損 + 新タイトル名が未使用 → 新規作成
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_each_old_file_missing_creates_new(MockClient, tmp_path):
+    cfg, docs = _write_config(tmp_path, mode="each")
+    # OldTitle.md は存在しない（手動削除された想定）
+    ids_dir = tmp_path / ".elab-sync-ids"
+    ids_dir.mkdir(exist_ok=True)
+    import json as _json
+    (ids_dir / "mapping.json").write_text(_json.dumps({"OldTitle.md": 1}))
+    (ids_dir / "OldTitle.md.hash").write_text("abc\n")
+    MockClient.return_value.get_item.return_value = {"id": 1, "title": "NewTitle", "body": "<p>new</p>"}
+    cmd_pull(_ns(tmp_path, id=None, command="pull"))
+    assert (docs / "NewTitle.md").exists()
+    mapping = _json.loads((ids_dir / "mapping.json").read_text())
+    assert "NewTitle.md" in mapping
+    assert "OldTitle.md" not in mapping
+    # 旧ハッシュファイルが削除されている
+    assert not (ids_dir / "OldTitle.md.hash").exists()
+
+
+# 旧ファイルが欠損 + 新タイトル名が既存 → スキップ（mapping/hash 維持）
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_each_old_file_missing_new_exists_skips(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path, mode="each")
+    # OldTitle.md は存在しない、NewTitle.md は別ファイルとして存在
+    (docs / "NewTitle.md").write_text("existing\n", encoding="utf-8")
+    ids_dir = tmp_path / ".elab-sync-ids"
+    ids_dir.mkdir(exist_ok=True)
+    import json as _json
+    (ids_dir / "mapping.json").write_text(_json.dumps({"OldTitle.md": 1}))
+    (ids_dir / "OldTitle.md.hash").write_text("abc\n")
+    MockClient.return_value.get_item.return_value = {"id": 1, "title": "NewTitle", "body": "<p>new</p>"}
+    cmd_pull(_ns(tmp_path, id=None, command="pull"))
+    out = capsys.readouterr().out
+    assert "既にローカルに存在" in out
+    # 既存ファイルは上書きされない
+    assert (docs / "NewTitle.md").read_text(encoding="utf-8") == "existing\n"
+    # mapping/hash は変更されない（スキップ時は状態を触らない）
+    mapping = _json.loads((ids_dir / "mapping.json").read_text())
+    assert "OldTitle.md" in mapping
+    assert (ids_dir / "OldTitle.md.hash").exists()
+
+
 # ── cmd_clone (CLI-20 ~ CLI-26) ──────────────────────────
 
 

@@ -279,7 +279,6 @@ def cmd_pull(args):
                 title = data.get("title", f"untitled_{eid}")
                 body_html = data.get("body", "") or ""
                 body_md = html_to_md(body_html, **_MD_OPTS).strip()
-                body_md = _download_images(body_md, entity_type, eid, client, docs_dir)
 
                 filename = f"{title}.md"
                 old_filename = reverse_mapping.get(eid)
@@ -313,6 +312,9 @@ def cmd_pull(args):
                 if not args.force and filepath.exists() and not is_rename:
                     print(f"  [{title}] 既にローカルに存在（スキップ、--force で上書き）")
                     continue
+
+                # 画像ダウンロードはスキップ判定後に実行（副作用防止）
+                body_md = _download_images(body_md, entity_type, eid, client, docs_dir)
 
                 filepath.write_text(body_md + "\n", encoding="utf-8")
 
