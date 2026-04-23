@@ -291,15 +291,15 @@ def cmd_pull(args):
                     if old_path.exists() and not new_path.exists():
                         old_path.rename(new_path)
                         print(f"  [{title}] ファイル名を変更: {old_filename} → {filename}")
-                    elif old_path.exists():
-                        print(f"  [{title}] ⚠ リネーム先 {filename} が既に存在するためリネームをスキップ")
+                        # リネーム成功時のみ古いハッシュファイルを削除・mapping 更新
+                        for suffix in (".hash", ".remote_hash", ".meta_hash"):
+                            old_hp = syncer.hash_dir / f"{old_filename}{suffix}"
+                            old_hp.unlink(missing_ok=True)
+                        mapping.pop(old_filename, None)
+                    else:
+                        if old_path.exists():
+                            print(f"  [{title}] ⚠ リネーム先 {filename} が既に存在するためリネームをスキップ")
                         filename = old_filename  # 既存ファイル名を維持
-                    # 古いハッシュファイルを削除
-                    for suffix in (".hash", ".remote_hash", ".meta_hash"):
-                        old_hp = syncer.hash_dir / f"{old_filename}{suffix}"
-                        old_hp.unlink(missing_ok=True)
-                    # mapping から古いエントリを削除
-                    mapping.pop(old_filename, None)
 
                 filepath = docs_dir / filename
                 is_rename = old_filename is not None and old_filename != filename
