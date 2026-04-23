@@ -172,7 +172,8 @@ def test_pull_each_rename_on_title_change(MockClient, tmp_path):
     (ids_dir / "mapping.json").write_text(_json.dumps({"OldTitle.md": 1}))
     (ids_dir / "OldTitle.md.hash").write_text("abc\n")
     MockClient.return_value.get_item.return_value = {"id": 1, "title": "NewTitle", "body": "<p>new</p>"}
-    cmd_pull(_ns(tmp_path, id=None, command="pull", force=True))
+    # --force なしでもリネームは成功する
+    cmd_pull(_ns(tmp_path, id=None, command="pull"))
     assert (docs / "NewTitle.md").exists()
     assert not (docs / "OldTitle.md").exists()
     mapping = _json.loads((ids_dir / "mapping.json").read_text())
@@ -248,6 +249,28 @@ def test_pull_each_old_file_missing_new_exists_skips(MockClient, tmp_path, capsy
     mapping = _json.loads((ids_dir / "mapping.json").read_text())
     assert "OldTitle.md" in mapping
     assert (ids_dir / "OldTitle.md.hash").exists()
+
+
+# スキップ時に画像ダウンロードが呼ばれないことを確認
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_each_skip_no_image_download(MockClient, tmp_path):
+    cfg, docs = _write_config(tmp_path, mode="each")
+    (docs / "Doc1.md").write_text("original", encoding="utf-8")
+    ids_dir = tmp_path / ".elab-sync-ids"
+    ids_dir.mkdir(exist_ok=True)
+    import json as _json
+    (ids_dir / "mapping.json").write_text(_json.dumps({"Doc1.md": 1}))
+    client = MockClient.return_value
+    client.get_item.return_value = {
+        "id": 1, "title": "Doc1",
+        "body": '<p><img src="https://elab.example.com/app/download.php?f=abc.png&name=photo.png&storage=1" alt="pic"></p>',
+    }
+    cmd_pull(_ns(tmp_path, id=None, command="pull"))
+    # スキップされたので list_uploads / download_upload は呼ばれない
+    client.list_uploads.assert_not_called()
+    client.download_upload.assert_not_called()
+    # images/ ディレクトリも作られない
+    assert not (docs / "images").exists()
 
 
 # ── cmd_clone (CLI-20 ~ CLI-26) ──────────────────────────
