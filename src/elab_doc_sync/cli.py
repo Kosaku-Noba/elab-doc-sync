@@ -296,10 +296,16 @@ def cmd_pull(args):
                             old_hp = syncer.hash_dir / f"{old_filename}{suffix}"
                             old_hp.unlink(missing_ok=True)
                         mapping.pop(old_filename, None)
+                    elif old_path.exists():
+                        # リネーム先が既に存在: 旧ファイル名を維持、状態は触らない
+                        print(f"  [{title}] ⚠ リネーム先 {filename} が既に存在するためリネームをスキップ")
+                        filename = old_filename
                     else:
-                        if old_path.exists():
-                            print(f"  [{title}] ⚠ リネーム先 {filename} が既に存在するためリネームをスキップ")
-                        filename = old_filename  # 既存ファイル名を維持
+                        # 旧ファイルが欠損: 新タイトル名で新規作成扱い
+                        mapping.pop(old_filename, None)
+                        for suffix in (".hash", ".remote_hash", ".meta_hash"):
+                            old_hp = syncer.hash_dir / f"{old_filename}{suffix}"
+                            old_hp.unlink(missing_ok=True)
 
                 filepath = docs_dir / filename
                 is_rename = old_filename is not None and old_filename != filename
