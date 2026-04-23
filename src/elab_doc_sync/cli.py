@@ -285,6 +285,7 @@ def cmd_pull(args):
                 old_filename = reverse_mapping.get(eid)
 
                 # タイトル変更によるファイルリネーム
+                stale_old_filename = None  # 旧ファイル欠損時のクリーンアップ用
                 if old_filename and old_filename != filename:
                     old_path = docs_dir / old_filename
                     new_path = docs_dir / filename
@@ -302,10 +303,8 @@ def cmd_pull(args):
                         filename = old_filename
                     else:
                         # 旧ファイルが欠損: 新タイトル名で新規作成扱い
-                        mapping.pop(old_filename, None)
-                        for suffix in (".hash", ".remote_hash", ".meta_hash"):
-                            old_hp = syncer.hash_dir / f"{old_filename}{suffix}"
-                            old_hp.unlink(missing_ok=True)
+                        # mapping/hash の削除はファイル作成成功後に行う
+                        stale_old_filename = old_filename
                         old_filename = None  # 新規作成扱いにリセット
 
                 filepath = docs_dir / filename
@@ -316,6 +315,13 @@ def cmd_pull(args):
                     continue
 
                 filepath.write_text(body_md + "\n", encoding="utf-8")
+
+                # 旧ファイル欠損時のクリーンアップ（ファイル作成成功後）
+                if stale_old_filename:
+                    mapping.pop(stale_old_filename, None)
+                    for suffix in (".hash", ".remote_hash", ".meta_hash"):
+                        old_hp = syncer.hash_dir / f"{stale_old_filename}{suffix}"
+                        old_hp.unlink(missing_ok=True)
 
                 # mapping を更新
                 mapping[filename] = eid
