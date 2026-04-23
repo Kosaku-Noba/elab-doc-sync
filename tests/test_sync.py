@@ -176,6 +176,36 @@ def test_sync_skip_no_change(tmp_path, mock_client):
     assert result is False
 
 
+# S-19a: 本文変更なしでもメタデータ変更があれば push される
+def test_sync_meta_change_triggers_push(tmp_path, mock_client):
+    target = TargetConfig(title="Test", docs_dir="docs/", id_file=str(tmp_path / ".ids" / "default.id"),
+                          category="OldCat", tags=["tag1"])
+    docs = tmp_path / "docs"
+    docs.mkdir(exist_ok=True)
+    syncer = DocsSyncer(mock_client, target, tmp_path)
+    (docs / "a.md").write_text("same", encoding="utf-8")
+    syncer.save_hash("same")
+    syncer.save_item_id(5)
+    # 初回の meta_hash を保存（旧メタデータ）
+    syncer._save_meta_hash("Test", "OtherCat", ["old-tag"])
+    mock_client.get_item.return_value = {"id": 5, "body": "<p>same</p>"}
+    result = syncer.sync()
+    assert result is True
+    # タイトル更新が呼ばれている
+    mock_client.update_item.assert_called()
+
+
+# S-19b: meta_hash 初期化（既存環境アップグレード時）
+def test_sync_skip_initializes_meta_hash(tmp_path, mock_client):
+    syncer, docs = _make_merge_syncer(tmp_path, mock_client)
+    (docs / "a.md").write_text("same", encoding="utf-8")
+    syncer.save_hash("same")
+    assert not syncer.meta_hash_file.exists()
+    syncer.sync()
+    # スキップ時に meta_hash が初期化される
+    assert syncer.meta_hash_file.exists()
+
+
 # S-20
 def test_sync_force(tmp_path, mock_client):
     syncer, docs = _make_merge_syncer(tmp_path, mock_client)
