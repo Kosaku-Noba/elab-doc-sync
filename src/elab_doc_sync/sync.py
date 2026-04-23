@@ -531,6 +531,9 @@ class DocsSyncer:
         meta_changed = self._has_meta_changed(self.target.title, self.target.category, self.target.tags)
 
         if not force and not body_changed and not meta_changed:
+            # meta_hash がまだ無ければ初期化（既存環境のアップグレード対応）
+            if not self.meta_hash_file.exists():
+                self._save_meta_hash(self.target.title, self.target.category, self.target.tags)
             print(f"  [{self.target.title}] 変更なし（スキップ）")
             return False
 
@@ -747,6 +750,9 @@ class EachDocsSyncer:
             meta_changed = self._has_meta_changed(f.name, title, self.target.category, self.target.tags)
 
             if not force and not body_changed and not meta_changed:
+                # meta_hash がまだ無ければ初期化（既存環境のアップグレード対応）
+                if not self._meta_hash_path(f.name).exists():
+                    self._save_meta_hash(f.name, title, self.target.category, self.target.tags)
                 print(f"  [{title}] 変更なし（スキップ）")
                 continue
 

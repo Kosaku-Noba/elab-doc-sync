@@ -287,9 +287,13 @@ def cmd_pull(args):
                 # タイトル変更によるファイルリネーム
                 if old_filename and old_filename != filename:
                     old_path = docs_dir / old_filename
-                    if old_path.exists():
-                        old_path.rename(docs_dir / filename)
+                    new_path = docs_dir / filename
+                    if old_path.exists() and not new_path.exists():
+                        old_path.rename(new_path)
                         print(f"  [{title}] ファイル名を変更: {old_filename} → {filename}")
+                    elif old_path.exists():
+                        print(f"  [{title}] ⚠ リネーム先 {filename} が既に存在するためリネームをスキップ")
+                        filename = old_filename  # 既存ファイル名を維持
                     # 古いハッシュファイルを削除
                     for suffix in (".hash", ".remote_hash", ".meta_hash"):
                         old_hp = syncer.hash_dir / f"{old_filename}{suffix}"
@@ -325,8 +329,10 @@ def cmd_pull(args):
                 sync_log.record(log_path, action="pull", target=title,
                                 entity=entity_type, entity_id=eid, files=[filename])
 
-            # pull 後にリモートのカテゴリ・タグを YAML に書き戻す
-            _sync_remote_metadata_to_yaml(client, config, config_path, target, entity_type, mapping)
+            # pull 後にリモートのカテゴリ・タグを YAML に書き戻す（merge モードのみ）
+            # each モードでは entity ごとにメタデータが異なるため target 単位の書き戻しは行わない
+            if target.mode != "each":
+                _sync_remote_metadata_to_yaml(client, config, config_path, target, entity_type, mapping)
 
         else:
             # merge モード: 1 エンティティ → 1 ファイル
