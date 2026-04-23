@@ -4719,3 +4719,58 @@ README のカテゴリ操作セクション拡充自体は妥当で、実験ノ�
 ### DocReview 所感
 
 > 所感: 今回の README 追記は方向性として正しく、致命的な更新漏れではありません。実験ノート用カテゴリの「別管理」と「show/set でも使える」ことを 1 行ずつ補うだけで、初見理解性はかなり安定します。
+
+## 2026-04-23T22:37 [Kiro] 双方向メタデータ同期の実装
+
+push/pull 時にタイトル・カテゴリ・タグの変更を双方向で反映する機能を追加。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| push 時メタデータ変更検知 | title/category/tags のハッシュを保存し、本文変更なしでもメタデータが変わっていればリモートを更新する（`sync.py`: `_compute_meta_hash`, `_has_meta_changed`, `_save_meta_hash` を DocsSyncer/EachDocsSyncer 両方に追加） |
+| pull 時タイトル変更→ファイルリネーム | each モードで pull 時にリモートのタイトルが変わっていたらローカルファイルをリネームし、mapping/hash を更新（`cli.py`: `cmd_pull` の each ブロック） |
+| pull 時カテゴリ・タグ→YAML 書き戻し | pull 後にリモートのカテゴリ・タグを取得して `.elab-sync.yaml` に反映（`cli.py`: `_sync_remote_metadata_to_yaml` 新規追加、best-effort） |
+| YAML 更新ヘルパー | `config.py`: `update_target_in_yaml` を追加。文字列シリアライズ後にファイル書き込みで部分書き込みを防止 |
+| カテゴリ名逆引き | `client.py`: `resolve_category_name` を追加（ID→名前） |
+
+### Kiro 所感
+
+- メタデータハッシュの初期状態（ファイルなし）は「変更なし」として扱う。初回 push 後に meta_hash が保存され、以降の変更検知が有効になる
+- `_sync_remote_metadata_to_yaml` は best-effort。API エラーや YAML シリアライズ失敗時は静かにスキップし、pull 自体は成功させる
+- 既存テスト 239 件すべて通過を確認済み
+
+
+## 2026-04-23T22:43 [CodeReview] feat: 双方向メタデータ同期（title/category/tags の変更検知・反映） に対するレビュー
+
+対象コミットはメタデータ同期の方向性自体はコミット説明に沿っていますが、each モードの pull と既存同期済み環境で仕様上の危険があります。テストは `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` で `239 passed in 0.53s` でした。
+
+### CodeReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| pull 時リネームで既存ファイル・mapping を上書きし得る | [cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py:287) で旧ファイルを新タイトル名へ `rename` しますが、宛先 `filename` が既存ファイルや別 entity の mapping と衝突する場合の確認がありません。POSIX では既存ファイルを置換し得るため、リモートタイトル変更だけでローカル本文や別 entity の mapping が失われる可能性があります。 | 高 |
+| each モードの tags/category 書き戻しが target 全体へ拡散する | [cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py:166) で全 entity のタグを集約し、[cli.py](/home/user/elab-doc-sync/src/elab_doc_sync/cli.py:187) で最初のカテゴリを target の YAML に書き戻しています。一方 push 側は target の `tags/category` を各ファイルに適用するため、ある 1 件のリモートタグ・カテゴリが次回 push で同一 target の全 entity に反映される可能性があります。これが仕様なら明文化が必要で、通常の「各 entity のメタデータ双方向同期」とは挙動がずれます。 | 中 |
+| 既存同期済み環境では初回のメタデータのみ変更が検知されない | [sync.py](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py:463) は `.meta_hash` が無い場合に変更なし扱いにし、[sync.py](/home/user/elab-doc-sync/src/elab_doc_sync/sync.py:533) で本文変更も無ければ skip します。既存ユーザーがアップグレード後に category/tags/title だけ変更しても、最初の 1 回は push されず `.meta_hash` も作られないため、コミットの「本文変更なしでもメタデータ変更を反映」という意図を満たせません。 | 中 |
+
+### CodeReview 所感
+
+> 所感として、機能の狙いは妥当ですが、target 単位の設定と entity 単位のメタデータを混ぜる設計境界がまだ不安定です。特に pull 側はローカルファイル・YAML を自動変更するため、衝突時の保護と回帰テストを先に固めた方が安全です。
+
+
+## 2026-04-23T22:43 [DocReview] feat: 双方向メタデータ同期（title/category/tags の変更検知・反映） に対するレビュー
+
+README の一部が今回の双方向メタデータ同期に追随しておらず、push/pull の実際の副作用と説明にずれがあります。テストは `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` で 239 件通過しています。
+
+### DocReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| README のカテゴリ同期説明が古い | `README.md:219` に「本文に変更がない場合はスキップ」「後からカテゴリを設定する場合は --force」とありますが、今回の変更で `title/category/tags` の差分だけでも push 対象になります。 | 中 |
+| pull による YAML 書き戻しが未説明 | pull 後にリモートの `tags`/`category` が `.elab-sync.yaml` に書き戻される新挙動が README にありません。特に best-effort、each モードでタグを集約すること、カテゴリの扱いを明記した方がよいです。 | 中 |
+| pull 時のタイトル変更によるリネームが未説明 | each モードでリモートタイトル変更時にローカル Markdown ファイル名が変更される挙動が README にありません。初見ユーザーには pull がファイルをリネームする副作用として見えるため、pull または each モード説明に追記が必要です。 | 中 |
+| 複雑なメタデータ書き戻し仕様のコメントが薄い | `_sync_remote_metadata_to_yaml` のコメントは「タグ・カテゴリを書き戻す」だけで、複数エンティティ時の集約・カテゴリ選択・例外時に静かにスキップする方針が読み取れません。 | 低 |
+
+### DocReview 所感
+
+> 所感: 機能追加自体に対応するコメントは最低限ありますが、README が利用者向けの操作期待をまだ更新できていません。特に「pull が設定ファイルを書き換える」点は明示した方が混乱を防げます。

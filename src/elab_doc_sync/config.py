@@ -111,3 +111,19 @@ def load_config(config_path: Path) -> Config:
         )
 
     return Config(url=url, api_key=api_key, verify_ssl=verify_ssl, targets=targets)
+
+
+def update_target_in_yaml(config_path: Path, target_index: int, **fields) -> None:
+    """YAML ファイル内の指定ターゲットのフィールドを更新する。
+
+    fields に渡されたキーのみ上書きする。存在しないキーは追加される。
+    書き込みは文字列にシリアライズしてからファイルに書く（部分書き込み防止）。
+    """
+    raw = yaml.safe_load(_read_yaml_text(config_path)) or {}
+    targets = raw.get("targets", [])
+    if target_index < 0 or target_index >= len(targets):
+        return
+    for k, v in fields.items():
+        targets[target_index][k] = v
+    content = yaml.dump(raw, default_flow_style=False, allow_unicode=True)
+    config_path.write_text(content, encoding="utf-8")
