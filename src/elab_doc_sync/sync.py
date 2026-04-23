@@ -58,6 +58,13 @@ def _compute_hash(body: str) -> str:
     return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
 
 
+def _compute_meta_hash(title: str, category, tags: list[str]) -> str:
+    """タイトル・カテゴリ・タグからメタデータハッシュを計算する。"""
+    data = json.dumps({"title": title, "category": category, "tags": sorted(tags or [])},
+                      ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(data.encode("utf-8")).hexdigest()[:16]
+
+
 def _count_local_images(body: str) -> int:
     return sum(1 for m in IMAGE_RE.finditer(body) if not m.group(2).startswith(("http://", "https://")))
 
@@ -449,6 +456,20 @@ class DocsSyncer:
         self.remote_hash_file.parent.mkdir(parents=True, exist_ok=True)
         self.remote_hash_file.write_text(_compute_hash(remote_body) + "\n")
 
+    @property
+    def meta_hash_file(self) -> Path:
+        return self.id_file.with_suffix(".meta_hash")
+
+    def _has_meta_changed(self, title: str, category, tags: list[str]) -> bool:
+        new_hash = _compute_meta_hash(title, category, tags)
+        if self.meta_hash_file.exists():
+            return self.meta_hash_file.read_text().strip() != new_hash
+        return False
+
+    def _save_meta_hash(self, title: str, category, tags: list[str]) -> None:
+        self.meta_hash_file.parent.mkdir(parents=True, exist_ok=True)
+        self.meta_hash_file.write_text(_compute_meta_hash(title, category, tags) + "\n")
+
     def read_item_id(self) -> int | None:
         if self.id_file.exists():
             text = self.id_file.read_text().strip()
@@ -506,7 +527,10 @@ class DocsSyncer:
     def sync(self, force: bool = False) -> bool:
         raw_body = self.collect_docs()
 
-        if not force and not self.has_changed(raw_body):
+        body_changed = self.has_changed(raw_body)
+        meta_changed = self._has_meta_changed(self.target.title, self.target.category, self.target.tags)
+
+        if not force and not body_changed and not meta_changed:
             print(f"  [{self.target.title}] 変更なし（スキップ）")
             return False
 
@@ -528,25 +552,30 @@ class DocsSyncer:
             self.save_item_id(item_id)
             print(f"  [{self.target.title}] {entity_label} #{item_id} を新規作成しました")
 
-        body = _rewrite_images(raw_body, self.entity, item_id, self.client, self.docs_dir, self.project_root)
-        if self.target.body_format == "md":
-            self._update_entity(item_id, body=body, title=self.target.title)
-        else:
-            html = _md_to_html(body)
-            self._update_entity(item_id, body=html, title=self.target.title)
-        self.save_hash(raw_body)
+        if body_changed or force or item_id is not None:
+            body = _rewrite_images(raw_body, self.entity, item_id, self.client, self.docs_dir, self.project_root)
+            if self.target.body_format == "md":
+                self._update_entity(item_id, body=body, title=self.target.title)
+            else:
+                html = _md_to_html(body)
+                self._update_entity(item_id, body=html, title=self.target.title)
+            self.save_hash(raw_body)
 
-        # push 後のリモート body ハッシュを保存（競合検出用）
-        try:
-            remote_data = self._get_entity(item_id)
-            self.save_remote_hash(remote_data.get("body", "") or "")
-        except Exception as e:
-            print(f"  [{self.target.title}] ⚠ リモートハッシュの保存に失敗（次回の競合検出が不正確になる可能性があります）: {e}")
+            # push 後のリモート body ハッシュを保存（競合検出用）
+            try:
+                remote_data = self._get_entity(item_id)
+                self.save_remote_hash(remote_data.get("body", "") or "")
+            except Exception as e:
+                print(f"  [{self.target.title}] ⚠ リモートハッシュの保存に失敗（次回の競合検出が不正確になる可能性があります）: {e}")
+        elif meta_changed:
+            # 本文変更なし・メタデータのみ変更: タイトルだけ更新
+            self._update_entity(item_id, title=self.target.title)
 
         print(f"  [{self.target.title}] {entity_label} #{item_id} を更新しました")
 
         _sync_tags(self.client, self.entity, item_id, self.target.tags)
         _sync_category(self.client, self.entity, item_id, self.target.category)
+        self._save_meta_hash(self.target.title, self.target.category, self.target.tags)
 
         if self.target.attachments_dir:
             _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, item_id, self.client, force=force)
@@ -632,6 +661,21 @@ class EachDocsSyncer:
         hp.parent.mkdir(parents=True, exist_ok=True)
         hp.write_text(_compute_hash(remote_body) + "\n")
 
+    def _meta_hash_path(self, filename: str) -> Path:
+        return self.hash_dir / f"{filename}.meta_hash"
+
+    def _has_meta_changed(self, filename: str, title: str, category, tags: list[str]) -> bool:
+        hp = self._meta_hash_path(filename)
+        new_hash = _compute_meta_hash(title, category, tags)
+        if hp.exists():
+            return hp.read_text().strip() != new_hash
+        return False
+
+    def _save_meta_hash(self, filename: str, title: str, category, tags: list[str]) -> None:
+        hp = self._meta_hash_path(filename)
+        hp.parent.mkdir(parents=True, exist_ok=True)
+        hp.write_text(_compute_meta_hash(title, category, tags) + "\n")
+
     def _get_entity(self, eid: int) -> dict:
         if self.entity == "experiments":
             return self.client.get_experiment(eid)
@@ -699,7 +743,10 @@ class EachDocsSyncer:
             title = f.stem
             raw_body = f.read_text(encoding="utf-8").strip()
 
-            if not force and not self._has_changed(f.name, raw_body):
+            body_changed = self._has_changed(f.name, raw_body)
+            meta_changed = self._has_meta_changed(f.name, title, self.target.category, self.target.tags)
+
+            if not force and not body_changed and not meta_changed:
                 print(f"  [{title}] 変更なし（スキップ）")
                 continue
 
@@ -721,25 +768,30 @@ class EachDocsSyncer:
                 self._save_mapping(mapping)
                 print(f"  [{title}] {entity_label} #{eid} を新規作成しました")
 
-            body = _rewrite_images(raw_body, self.entity, eid, self.client, self.docs_dir, self.project_root)
-            if self.target.body_format == "md":
-                self._update_entity(eid, body=body, title=title)
-            else:
-                html = _md_to_html(body)
-                self._update_entity(eid, body=html, title=title)
-            self._save_hash(f.name, raw_body)
+            if body_changed or force:
+                body = _rewrite_images(raw_body, self.entity, eid, self.client, self.docs_dir, self.project_root)
+                if self.target.body_format == "md":
+                    self._update_entity(eid, body=body, title=title)
+                else:
+                    html = _md_to_html(body)
+                    self._update_entity(eid, body=html, title=title)
+                self._save_hash(f.name, raw_body)
 
-            # push 後のリモート body ハッシュを保存（競合検出用）
-            try:
-                remote_data = self._get_entity(eid)
-                self._save_remote_hash(f.name, remote_data.get("body", "") or "")
-            except Exception as e:
-                print(f"  [{title}] ⚠ リモートハッシュの保存に失敗: {e}")
+                # push 後のリモート body ハッシュを保存（競合検出用）
+                try:
+                    remote_data = self._get_entity(eid)
+                    self._save_remote_hash(f.name, remote_data.get("body", "") or "")
+                except Exception as e:
+                    print(f"  [{title}] ⚠ リモートハッシュの保存に失敗: {e}")
+            elif meta_changed:
+                # 本文変更なし・メタデータのみ変更: タイトルだけ更新
+                self._update_entity(eid, title=title)
 
             print(f"  [{title}] {entity_label} #{eid} を更新しました")
 
             _sync_tags(self.client, self.entity, eid, self.target.tags)
             _sync_category(self.client, self.entity, eid, self.target.category)
+            self._save_meta_hash(f.name, title, self.target.category, self.target.tags)
 
             if self.target.attachments_dir:
                 _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, eid, self.client, force=force)

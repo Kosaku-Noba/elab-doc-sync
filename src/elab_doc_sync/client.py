@@ -191,6 +191,13 @@ class ELabFTWClient:
                 return cat["id"]
         raise ValueError(f"カテゴリ「{category}」が見つかりません")
 
+    def resolve_category_name(self, entity_type: str, category_id: int) -> str | None:
+        """カテゴリ ID を名前に解決する。見つからなければ None。"""
+        for cat in self.list_categories(entity_type):
+            if cat.get("id") == category_id:
+                return cat.get("title")
+        return None
+
     # ── tags ─────────────────────────────────────────────────
 
     def get_tags(self, entity_type: str, entity_id: int) -> list[dict]:

@@ -11,7 +11,7 @@ import yaml
 from markdownify import markdownify as html_to_md
 
 from .client import ELabFTWClient
-from .config import load_config, BODY_FORMAT_INIT, _read_yaml_text
+from .config import load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml
 from .sync import DocsSyncer, EachDocsSyncer, ConflictError, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments
 from . import sync_log
 
@@ -154,6 +154,53 @@ def _ensure_target_in_config(config_path: Path, entity: str, config: "Config"):
     return load_config(config_path)
 
 
+def _sync_remote_metadata_to_yaml(client, config, config_path, target, entity_type, mapping):
+    """pull 後にリモートのタグ・カテゴリを YAML に書き戻す。best-effort。"""
+    if not mapping:
+        return
+    try:
+        target_index = config.targets.index(target)
+    except ValueError:
+        return
+
+    # 全エンティティのタグを集約（重複排除）
+    all_tags = set()
+    category_name = None
+    for eid in mapping.values():
+        try:
+            remote_tags = client.get_tags(entity_type, eid)
+            all_tags.update(t.get("tag") for t in remote_tags if t.get("tag"))
+        except Exception:
+            pass
+        try:
+            entity_data = client.get_entity(entity_type, eid)
+            cat_id = entity_data.get("category")
+            if cat_id and category_name is None:
+                category_name = client.resolve_category_name(entity_type, cat_id)
+        except Exception:
+            pass
+
+    updates = {}
+    new_tags = sorted(all_tags)
+    if new_tags != sorted(target.tags or []):
+        updates["tags"] = new_tags
+    if category_name is not None and category_name != target.category:
+        updates["category"] = category_name
+    elif category_name is None and target.category is not None:
+        updates["category"] = None
+
+    if updates:
+        try:
+            update_target_in_yaml(config_path, target_index, **updates)
+        except Exception:
+            return
+        for k, v in updates.items():
+            if k == "tags":
+                print(f"    YAML 更新: tags → {v}")
+            elif k == "category":
+                print(f"    YAML 更新: category → {v or '(なし)'}")
+
+
 def cmd_pull(args):
     """eLabFTW からエンティティを取得してローカルに Markdown として保存する。"""
     if args.id and not getattr(args, "entity", None):
@@ -219,6 +266,9 @@ def cmd_pull(args):
                 print(f"  [{target.docs_dir}] --id を指定してください（初回 pull には ID が必要です）")
                 continue
 
+            # mapping の逆引き（eid → filename）
+            reverse_mapping = {v: k for k, v in mapping.items()}
+
             for eid in entities:
                 try:
                     data = get_fn(eid)
@@ -232,9 +282,25 @@ def cmd_pull(args):
                 body_md = _download_images(body_md, entity_type, eid, client, docs_dir)
 
                 filename = f"{title}.md"
-                filepath = docs_dir / filename
+                old_filename = reverse_mapping.get(eid)
 
-                if not args.force and filepath.exists():
+                # タイトル変更によるファイルリネーム
+                if old_filename and old_filename != filename:
+                    old_path = docs_dir / old_filename
+                    if old_path.exists():
+                        old_path.rename(docs_dir / filename)
+                        print(f"  [{title}] ファイル名を変更: {old_filename} → {filename}")
+                    # 古いハッシュファイルを削除
+                    for suffix in (".hash", ".remote_hash", ".meta_hash"):
+                        old_hp = syncer.hash_dir / f"{old_filename}{suffix}"
+                        old_hp.unlink(missing_ok=True)
+                    # mapping から古いエントリを削除
+                    mapping.pop(old_filename, None)
+
+                filepath = docs_dir / filename
+                is_rename = old_filename is not None and old_filename != filename
+
+                if not args.force and filepath.exists() and not is_rename:
                     print(f"  [{title}] 既にローカルに存在（スキップ、--force で上書き）")
                     continue
 
@@ -243,6 +309,7 @@ def cmd_pull(args):
                 # mapping を更新
                 mapping[filename] = eid
                 syncer._save_mapping(mapping)
+                reverse_mapping[eid] = filename
                 # hash を保存して次回 push 時に差分なしと判定されるようにする
                 syncer._save_hash(filename, body_md)
                 # リモート body のハッシュを保存（競合検出用）
@@ -257,6 +324,9 @@ def cmd_pull(args):
                 log_path = project_root / sync_log.DEFAULT_LOG_PATH
                 sync_log.record(log_path, action="pull", target=title,
                                 entity=entity_type, entity_id=eid, files=[filename])
+
+            # pull 後にリモートのカテゴリ・タグを YAML に書き戻す
+            _sync_remote_metadata_to_yaml(client, config, config_path, target, entity_type, mapping)
 
         else:
             # merge モード: 1 エンティティ → 1 ファイル
@@ -306,6 +376,9 @@ def cmd_pull(args):
             log_path = project_root / sync_log.DEFAULT_LOG_PATH
             sync_log.record(log_path, action="pull", target=target.title,
                             entity=entity_type, entity_id=eid, files=[filename])
+
+            # pull 後にリモートのカテゴリ・タグを YAML に書き戻す
+            _sync_remote_metadata_to_yaml(client, config, config_path, target, entity_type, {filename: eid})
 
     print(f"\n完了: {pulled} 件取得しました")
 
