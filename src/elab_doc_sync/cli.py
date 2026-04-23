@@ -306,6 +306,7 @@ def cmd_pull(args):
                         for suffix in (".hash", ".remote_hash", ".meta_hash"):
                             old_hp = syncer.hash_dir / f"{old_filename}{suffix}"
                             old_hp.unlink(missing_ok=True)
+                        old_filename = None  # 新規作成扱いにリセット
 
                 filepath = docs_dir / filename
                 is_rename = old_filename is not None and old_filename != filename
