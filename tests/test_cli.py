@@ -1149,6 +1149,26 @@ def test_pull_merge_downloads_images(MockClient, tmp_path):
     assert "images/items_1_fig.png" in md
 
 
+# CLI-61a: merge モードのスキップ時に画像DLが呼ばれない
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_merge_skip_no_image_download(MockClient, tmp_path):
+    cfg, docs = _write_config(tmp_path, mode="merge")
+    (docs / "T.md").write_text("existing\n", encoding="utf-8")
+    ids_dir = tmp_path / ".elab-sync-ids"
+    ids_dir.mkdir(exist_ok=True)
+    (ids_dir / "default.id").write_text("1\n")
+    client = MockClient.return_value
+    client.get_item.return_value = {
+        "id": 1, "title": "T",
+        "body": '<p><img src="https://elab.example.com/app/download.php?f=xyz.png&name=fig.png&storage=1" alt="f"></p>',
+    }
+    cmd_pull(_ns(tmp_path, id=None, command="pull"))
+    # スキップされたので list_uploads / download_upload は呼ばれない
+    client.list_uploads.assert_not_called()
+    client.download_upload.assert_not_called()
+    assert not (docs / "images").exists()
+
+
 # ── diff 画像正規化 (CLI-62) ────────────────────────────
 
 # CLI-62: diff でリモート画像 URL が正規化され、ローカルと一致すれば差分なし
