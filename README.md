@@ -23,7 +23,7 @@ Markdown ドキュメントを eLabFTW に同期する CLI ツール。`esync` �
 ### ① ツールをインストール
 
 ```bash
-uv pip install git+https://github.com/Kosaku-Noba/elab-doc-sync.git
+ uv tool install --force git+https://github.com/Kosaku-Noba/elab-doc-sync.git
 ```
 
 ### ② 設定ファイルを作る（質問に答えるだけ）
