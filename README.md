@@ -29,7 +29,7 @@ Markdown ドキュメントを eLabFTW に同期する CLI ツール。`esync` �
 ### ② 設定ファイルを作る（質問に答えるだけ）
 
 ```bash
-uv run elab-doc-sync init
+esync
 
 === elab-doc-sync セットアップ ===
 
