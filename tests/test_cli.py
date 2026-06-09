@@ -1390,3 +1390,27 @@ def test_pull_dir_same_as_docs_dir_with_slash(MockClient, tmp_path):
     import json as _json
     mapping = _json.loads(mapping_file.read_text(encoding="utf-8"))
     assert mapping.get("Same.md") == 20
+
+
+# DIR-06: --dir で末尾スラッシュなし指定 → 2番目のターゲットが正しく解決される
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_dir_resolves_second_target_normalized(MockClient, tmp_path):
+    data = {
+        "elabftw": {"url": "https://elab.example.com", "api_key": "key", "verify_ssl": False},
+        "targets": [
+            {"title": "A", "docs_dir": "dir_a/", "pattern": "*.md", "mode": "each", "entity": "items"},
+            {"title": "B", "docs_dir": "dir_b/", "pattern": "*.md", "mode": "each", "entity": "items"},
+        ],
+    }
+    (tmp_path / ".elab-sync.yaml").write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    MockClient.return_value.get_item.return_value = {"id": 30, "title": "Norm", "body": "<p>n</p>"}
+    # "dir_b" (スラッシュなし) で設定の "dir_b/" ターゲットが選ばれる
+    cmd_pull(_ns(tmp_path, id=[30], entity="items", command="pull", dir="dir_b"))
+    assert (tmp_path / "dir_b" / "Norm.md").exists()
+    # 状態も更新される（一時エクスポートではない）
+    ids_dir = tmp_path / ".elab-sync-ids"
+    mapping_file = ids_dir / "mapping.json"
+    assert mapping_file.exists()
+    import json as _json
+    mapping = _json.loads(mapping_file.read_text(encoding="utf-8"))
+    assert mapping.get("Norm.md") == 30
