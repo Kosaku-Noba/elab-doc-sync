@@ -1373,3 +1373,20 @@ def test_pull_dir_temp_export_no_state_update(MockClient, tmp_path):
         import json as _json
         mapping = _json.loads(mapping_file.read_text(encoding="utf-8"))
         assert "Temp.md" not in mapping
+
+
+# DIR-05: --dir が docs_dir と末尾スラッシュ差で同一 → 一時エクスポートにならない
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_dir_same_as_docs_dir_with_slash(MockClient, tmp_path):
+    cfg, docs = _write_config(tmp_path, mode="each")
+    MockClient.return_value.get_item.return_value = {"id": 20, "title": "Same", "body": "<p>s</p>"}
+    # config の docs_dir は "docs/" だが --dir "docs" で指定（末尾スラッシュなし）
+    cmd_pull(_ns(tmp_path, id=[20], entity="items", command="pull", dir="docs"))
+    assert (docs / "Same.md").exists()
+    # 同一ディレクトリなので mapping は更新される
+    ids_dir = tmp_path / ".elab-sync-ids"
+    mapping_file = ids_dir / "mapping.json"
+    assert mapping_file.exists()
+    import json as _json
+    mapping = _json.loads(mapping_file.read_text(encoding="utf-8"))
+    assert mapping.get("Same.md") == 20

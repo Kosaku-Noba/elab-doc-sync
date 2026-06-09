@@ -257,7 +257,9 @@ def cmd_pull(args):
                             print("エラー: 無効な入力です", file=sys.stderr)
                             sys.exit(1)
                 if pull_dir:
-                    resolved = [t for t in matched if t.docs_dir == pull_dir]
+                    pull_dir_resolved = (project_root / pull_dir).resolve()
+                    resolved = [t for t in matched
+                                if (project_root / t.docs_dir).resolve() == pull_dir_resolved]
             matched = resolved if resolved else matched[:1]
         targets = matched
 
@@ -272,7 +274,9 @@ def cmd_pull(args):
         docs_dir = project_root / (pull_dir_override or target.docs_dir)
         docs_dir.mkdir(parents=True, exist_ok=True)
         # --dir がターゲットの docs_dir と異なる場合は一時エクスポート（状態更新スキップ）
-        is_temp_export = pull_dir_override is not None and str(pull_dir_override) != target.docs_dir
+        is_temp_export = (pull_dir_override is not None
+                         and (project_root / pull_dir_override).resolve()
+                         != (project_root / target.docs_dir).resolve())
         entity_label = "実験ノート" if target.entity == "experiments" else "リソース"
         # --entity が指定されていれば上書き
         entity_type = _normalize_entity(getattr(args, "entity", None) or target.entity)
