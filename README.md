@@ -93,6 +93,17 @@ $ esync pull --id 42 --entity items
 完了: 1 件取得しました
 ```
 
+保存先ディレクトリを指定する場合は `--dir`:
+
+```bash
+$ esync pull --id 42 --entity items --dir experiments/
+  [実験メモ] リソース #42 → experiments/実験メモ.md
+
+完了: 1 件取得しました
+```
+
+> **Tip:** `--dir` がターゲットの `docs_dir` と異なる場合は一時エクスポート扱いとなり、mapping/hash は更新されません。複数の `docs_dir` が設定にあり `--dir` を省略した場合、対話的に保存先を選択するプロンプトが表示されます。
+
 2回目以降は ID を覚えているのでそのまま:
 
 ```bash
@@ -349,6 +360,7 @@ $ esync link 42
 | `esync pull` | eLabFTW → ローカルに取得（既存同期済み ID を再取得） |
 | `esync pull --id 42 --entity items` | 指定 ID のリソースを取得 |
 | `esync pull --id 42 --id 43 --entity items` | 複数 ID を一括取得 |
+| `esync pull --id 42 --entity items --dir path/` | 保存先ディレクトリを指定して取得 |
 | `esync pull --id 42 --entity experiments` | 実験ノートとして取得 |
 | `esync diff` | ローカルと eLabFTW の差分を表示 |
 | `esync status` | 同期状態を確認 |
