@@ -12,13 +12,13 @@ Markdown で書いた実験ノートやリソースを eLabFTW に自動同期�
 ### ① インストール
 
 ```bash
-uv pip install git+https://github.com/Kosaku-Noba/elab-doc-sync.git
+uv tool install --force git+https://github.com/Kosaku-Noba/elab-doc-sync.git
 ```
 
 ### ② 初期設定（質問に答えるだけ）
 
 ```bash
-uv run esync init
+esync init
 ```
 
 eLabFTW の URL、同期モード、送信先を聞かれるので入力してください。
@@ -84,6 +84,7 @@ uv run esync
 | メッセージ | やること |
 |---|---|
 | `API キーが設定されていません` | 上の③をやる |
+| `設定ファイルが見つかりません` | `esync init` を実行 |
 | `設定ファイルが見つかりません` | `esync init` を実行 |
 | `ファイルがありません` | `docs/` に `.md` ファイルを置く |
 | `--id を指定してください` | `esync pull --id <番号> --entity items` で ID を指定 |
