@@ -33,7 +33,7 @@ def _write_config(tmp_path, mode="merge", entity="items"):
 
 
 def _ns(tmp_path, **kw):
-    defaults = {"config": str(tmp_path / ".elab-sync.yaml"), "target": None, "force": False, "dry_run": False, "entity": None}
+    defaults = {"config": str(tmp_path / ".elab-sync.yaml"), "target": None, "force": False, "dry_run": False, "entity": None, "dir": None}
     defaults.update(kw)
     return Namespace(**defaults)
 
@@ -372,8 +372,8 @@ def test_pull_same_entity_multi_target(MockClient, tmp_path):
     (tmp_path / "beta").mkdir()
     client = MockClient.return_value
     client.get_item.return_value = {"id": 5, "title": "X", "body": "<p>x</p>"}
-    cmd_pull(_ns(tmp_path, id=[5], entity="items", command="pull"))
-    # alpha にだけ保存される（最初のターゲット）
+    cmd_pull(_ns(tmp_path, id=[5], entity="items", command="pull", dir="alpha/"))
+    # alpha にだけ保存される（--dir で指定）
     assert (tmp_path / "alpha" / "X.md").exists()
     # beta には保存されない
     assert not (tmp_path / "beta" / "X.md").exists()
@@ -1317,3 +1317,42 @@ def test_cmd_category_set_without_id_exits(tmp_path):
         with pytest.raises(SystemExit) as exc_info:
             main()
     assert exc_info.value.code == 2
+
+
+# ── pull --dir (DIR-01 ~ DIR-03) ─────────────────────────
+
+# DIR-01: --dir でカスタムディレクトリに保存
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_dir_override(MockClient, tmp_path):
+    cfg, docs = _write_config(tmp_path, mode="each")
+    MockClient.return_value.get_item.return_value = {"id": 99, "title": "Hello", "body": "<p>hi</p>"}
+    custom_dir = tmp_path / "custom_output"
+    cmd_pull(_ns(tmp_path, id=[99], entity="items", command="pull", dir=str(custom_dir)))
+    assert (custom_dir / "Hello.md").exists()
+    assert not (docs / "Hello.md").exists()
+
+
+# DIR-02: 複数 docs_dir + --dir 未指定でインタラクティブ選択
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_multiple_dirs_interactive(MockClient, tmp_path, monkeypatch):
+    data = {
+        "elabftw": {"url": "https://elab.example.com", "api_key": "key", "verify_ssl": False},
+        "targets": [
+            {"title": "A", "docs_dir": "dir_a/", "pattern": "*.md", "mode": "each", "entity": "items"},
+            {"title": "B", "docs_dir": "dir_b/", "pattern": "*.md", "mode": "each", "entity": "items"},
+        ],
+    }
+    (tmp_path / ".elab-sync.yaml").write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    MockClient.return_value.get_item.return_value = {"id": 1, "title": "Doc1", "body": "<p>x</p>"}
+    monkeypatch.setattr("builtins.input", lambda _: "2")
+    cmd_pull(_ns(tmp_path, id=[1], entity="items", command="pull", dir=None))
+    assert (tmp_path / "dir_b" / "Doc1.md").exists()
+
+
+# DIR-03: 単一 docs_dir + --dir 未指定はプロンプトなしで通常動作
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_single_dir_no_prompt(MockClient, tmp_path):
+    cfg, docs = _write_config(tmp_path, mode="each")
+    MockClient.return_value.get_item.return_value = {"id": 5, "title": "Only", "body": "<p>ok</p>"}
+    cmd_pull(_ns(tmp_path, id=[5], entity="items", command="pull", dir=None))
+    assert (docs / "Only.md").exists()
