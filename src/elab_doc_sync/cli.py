@@ -236,14 +236,39 @@ def cmd_pull(args):
                     mapping = syncer._load_mapping()
                     if id_set & set(mapping.values()):
                         resolved.append(t)
+            if not resolved:
+                # mapping で解決できない場合: --dir またはインタラクティブ選択
+                pull_dir = getattr(args, "dir", None)
+                if not pull_dir:
+                    unique_dirs = list(dict.fromkeys(t.docs_dir for t in matched))
+                    if len(unique_dirs) > 1:
+                        print("保存先ディレクトリを選択してください:")
+                        for i, d in enumerate(unique_dirs, 1):
+                            print(f"  {i}. {d}")
+                        try:
+                            choice = input("番号を入力: ").strip()
+                            idx = int(choice) - 1
+                            if 0 <= idx < len(unique_dirs):
+                                pull_dir = unique_dirs[idx]
+                            else:
+                                print("エラー: 無効な番号です", file=sys.stderr)
+                                sys.exit(1)
+                        except (ValueError, EOFError):
+                            print("エラー: 無効な入力です", file=sys.stderr)
+                            sys.exit(1)
+                if pull_dir:
+                    resolved = [t for t in matched if t.docs_dir == pull_dir]
             matched = resolved if resolved else matched[:1]
         targets = matched
+
+    # --dir 指定時は保存先ディレクトリを上書き
+    pull_dir_override = Path(args.dir) if getattr(args, "dir", None) else None
 
     for target in targets:
         if args.target and target.title != args.target:
             continue
 
-        docs_dir = project_root / target.docs_dir
+        docs_dir = project_root / (pull_dir_override or target.docs_dir)
         docs_dir.mkdir(parents=True, exist_ok=True)
         entity_label = "実験ノート" if target.entity == "experiments" else "リソース"
         # --entity が指定されていれば上書き
@@ -1135,6 +1160,7 @@ def main():
     pull_parser.add_argument("--id", type=int, action="append", default=None, help="取得するエンティティ ID（複数指定可）")
     pull_parser.add_argument("--entity", default=None, choices=["items", "experiments", "resources"],
                              help="エンティティ種別（resources は items のエイリアス）")
+    pull_parser.add_argument("--dir", default=None, help="保存先ディレクトリ（未指定時は docs_dir を使用）")
 
     log_parser = sub.add_parser("log", help="同期ログを表示", parents=[common])
     log_parser.add_argument("--limit", "-l", type=int, default=20, help="表示件数（デフォルト: 20）")

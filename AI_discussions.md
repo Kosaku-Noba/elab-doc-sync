@@ -5212,3 +5212,57 @@ README とテンプレート README に、初見理解を妨げる重複と実�
 ### DocReview 所感
 
 > 所感: テストは `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` を実行しましたが、`pytest` が見つからず起動できませんでした。今回の差分は文書のみのため、主な修正対象は重複削除とコマンド表記の統一です。
+
+
+## 2026-06-09T14:10 [Kiro] pull --dir 引数追加
+
+pull コマンドに `--dir` オプションを追加。複数の `docs_dir` が設定にある場合、`--dir` 未指定時はインタラクティブに保存先を選択できるようにした。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| `src/elab_doc_sync/cli.py` | pull_parser に `--dir` 引数追加。ターゲット解決時に `--dir` またはインタラクティブ選択で保存先を決定するロジック追加 |
+| `tests/test_cli.py` | `_ns` にデフォルト `dir=None` 追加。DIR-01〜DIR-03 テスト3件追加。既存テスト1件を `--dir` 指定に修正 |
+
+### テスト結果
+
+250 passed in 0.61s
+
+### Kiro 所感
+
+- 既存の「mapping で解決→最初のターゲットにフォールバック」のロジックを拡張し、フォールバック前にユーザーに選択を求めるようにした
+- `--dir` が指定された場合は `pull_dir_override` として `docs_dir` を完全に上書きする
+
+
+## 2026-06-09T14:10 [CodeReview] feat: pull --dir 引数追加（複数docs_dir時のインタラクティブ選択対応） に対するレビュー
+
+コミット内容は概ねメッセージ通りですが、`--dir` 指定時の保存先と同期状態ファイルの保存先が分離しており、後続運用で誤動作する可能性があります。前回の AI_discussions は README/template 周りの指摘で、今回差分への直接影響は限定的です。
+
+### CodeReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| `--dir` 保存先と mapping/hash/id_file の保存先が不整合 | [cli.py](/home/user/noba/elab-doc-sync/src/elab_doc_sync/cli.py:264) で `docs_dir` だけを `args.dir` に上書きしていますが、[cli.py](/home/user/noba/elab-doc-sync/src/elab_doc_sync/cli.py:281) の `EachDocsSyncer` や merge 用 `DocsSyncer` は元の `target.docs_dir` / `target.id_file` を使います。そのため `esync pull --dir custom` で本文は `custom/` に保存される一方、mapping/hash/ID は設定上のターゲット側に保存されます。後続の通常 `sync` / `pull` では設定上の `docs_dir` を見るため、同じ ID のファイルが別ディレクトリに再作成されたり、状態ファイルだけ更新済みになる可能性があります。`--dir` が一時エクスポート用途なのか、ターゲットの `docs_dir` 上書きなのか前提が必要です。 | 中 |
+| 指定テストコマンドがそのままでは再現不能 | `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` は `error: Failed to spawn: pytest / No such file or directory` で失敗しました。`pyproject.toml` では pytest が optional extra の `test` にのみ定義されているため、標準手順と依存定義がずれています。参考として `UV_CACHE_DIR=/tmp/uv-cache uv run --extra test pytest -q` は `250 passed in 0.56s` で通過しました。 | 低 |
+
+### CodeReview 所感
+
+> 所感: 実装の主な論点は `--dir` を「保存先だけの一時指定」とするか「同期ターゲットの実効 docs_dir」とするかの仕様固定です。後者なら syncer に渡す target も同じ docs_dir に揃える必要があります。
+
+
+## 2026-06-09T14:10 [DocReview] feat: pull --dir 引数追加（複数docs_dir時のインタラクティブ選択対応） に対するレビュー
+
+`pull --dir` と複数 `docs_dir` 時の対話選択が追加されていますが、README の pull 説明・コマンド一覧には反映されていません。テストは `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` で実行し、250件通過しました。
+
+### DocReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| README 更新漏れ | `README.md` の pull セクションとコマンド一覧に `esync pull --id ... --dir ...` の説明がなく、新規追加された保存先指定機能を初見ユーザーが把握できません。 | 中 |
+| 仕様説明不足 | 複数の `docs_dir` が候補になる場合に、`--dir` 未指定だと保存先ディレクトリを対話選択する挙動が README に説明されていません。CI や非対話環境では `--dir` 指定が必要になる点も明記するとよいです。 | 中 |
+| エラーケース説明不足 | 対話選択で無効な番号・無効入力・EOF の場合にエラー終了する制約が、README やユーザー向け説明にありません。 | 低 |
+
+### DocReview 所感
+
+> 所感: コード内コメントは追加ロジックの意図を最低限説明できています。主な不足は README 側の新オプション・対話挙動・非対話利用時の注意点です。
