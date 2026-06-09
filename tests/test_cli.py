@@ -1356,3 +1356,20 @@ def test_pull_single_dir_no_prompt(MockClient, tmp_path):
     MockClient.return_value.get_item.return_value = {"id": 5, "title": "Only", "body": "<p>ok</p>"}
     cmd_pull(_ns(tmp_path, id=[5], entity="items", command="pull", dir=None))
     assert (docs / "Only.md").exists()
+
+
+# DIR-04: --dir が docs_dir と異なる場合は mapping/hash を更新しない（一時エクスポート）
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_dir_temp_export_no_state_update(MockClient, tmp_path):
+    cfg, docs = _write_config(tmp_path, mode="each")
+    MockClient.return_value.get_item.return_value = {"id": 10, "title": "Temp", "body": "<p>tmp</p>"}
+    custom_dir = tmp_path / "export"
+    cmd_pull(_ns(tmp_path, id=[10], entity="items", command="pull", dir=str(custom_dir)))
+    assert (custom_dir / "Temp.md").exists()
+    # mapping は更新されない
+    ids_dir = tmp_path / ".elab-sync-ids"
+    mapping_file = ids_dir / "mapping.json"
+    if mapping_file.exists():
+        import json as _json
+        mapping = _json.loads(mapping_file.read_text(encoding="utf-8"))
+        assert "Temp.md" not in mapping

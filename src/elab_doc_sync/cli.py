@@ -262,6 +262,7 @@ def cmd_pull(args):
         targets = matched
 
     # --dir 指定時は保存先ディレクトリを上書き
+    # ターゲットの docs_dir と一致しない場合は一時エクスポート扱い（状態ファイル更新なし）
     pull_dir_override = Path(args.dir) if getattr(args, "dir", None) else None
 
     for target in targets:
@@ -270,6 +271,8 @@ def cmd_pull(args):
 
         docs_dir = project_root / (pull_dir_override or target.docs_dir)
         docs_dir.mkdir(parents=True, exist_ok=True)
+        # --dir がターゲットの docs_dir と異なる場合は一時エクスポート（状態更新スキップ）
+        is_temp_export = pull_dir_override is not None and str(pull_dir_override) != target.docs_dir
         entity_label = "実験ノート" if target.entity == "experiments" else "リソース"
         # --entity が指定されていれば上書き
         entity_type = _normalize_entity(getattr(args, "entity", None) or target.entity)
@@ -344,20 +347,21 @@ def cmd_pull(args):
                 filepath.write_text(body_md + "\n", encoding="utf-8")
 
                 # 旧ファイル欠損時のクリーンアップ（ファイル作成成功後）
-                if stale_old_filename:
+                if stale_old_filename and not is_temp_export:
                     mapping.pop(stale_old_filename, None)
                     for suffix in (".hash", ".remote_hash", ".meta_hash"):
                         old_hp = syncer.hash_dir / f"{stale_old_filename}{suffix}"
                         old_hp.unlink(missing_ok=True)
 
-                # mapping を更新
-                mapping[filename] = eid
-                syncer._save_mapping(mapping)
-                reverse_mapping[eid] = filename
-                # hash を保存して次回 push 時に差分なしと判定されるようにする
-                syncer._save_hash(filename, body_md)
-                # リモート body のハッシュを保存（競合検出用）
-                syncer._save_remote_hash(filename, body_html)
+                # mapping を更新（一時エクスポート時はスキップ）
+                if not is_temp_export:
+                    mapping[filename] = eid
+                    syncer._save_mapping(mapping)
+                    reverse_mapping[eid] = filename
+                    # hash を保存して次回 push 時に差分なしと判定されるようにする
+                    syncer._save_hash(filename, body_md)
+                    # リモート body のハッシュを保存（競合検出用）
+                    syncer._save_remote_hash(filename, body_html)
 
                 print(f"  [{title}] {entity_label} #{eid} → {filepath}")
                 pulled += 1
@@ -409,11 +413,12 @@ def cmd_pull(args):
 
             filepath.write_text(body_md + "\n", encoding="utf-8")
 
-            # ID とハッシュを保存
-            syncer.save_item_id(eid)
-            syncer.save_hash(body_md)
-            # リモート body のハッシュを保存（競合検出用）
-            syncer.save_remote_hash(body_html)
+            # ID とハッシュを保存（一時エクスポート時はスキップ）
+            if not is_temp_export:
+                syncer.save_item_id(eid)
+                syncer.save_hash(body_md)
+                # リモート body のハッシュを保存（競合検出用）
+                syncer.save_remote_hash(body_html)
 
             print(f"  [{target.title}] {entity_label} #{eid} → {filepath}")
             pulled += 1
