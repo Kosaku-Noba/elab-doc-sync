@@ -1,7 +1,6 @@
 # elab-doc-sync
 
 Markdown ドキュメントを eLabFTW に同期する CLI ツール。`esync` エイリアスでも使えます。
-Markdown ドキュメントを eLabFTW に同期する CLI ツール。`esync` エイリアスでも使えます。
 
 ## 特徴
 
@@ -50,9 +49,7 @@ Markdown ファイルを置くディレクトリ（空欄で docs/）:
 ```
 
 ### ③ API キーを設定する
-### ③ API キーを設定する
 
-eLabFTW → ユーザー設定 → API Keys でキーを作成し、`.elab-sync.yaml` の `api_key` にキーを貼ってください:
 eLabFTW → ユーザー設定 → API Keys でキーを作成し、`.elab-sync.yaml` の `api_key` にキーを貼ってください:
 
 ```yaml
@@ -436,7 +433,6 @@ targets:
 | キー | 必須 | デフォルト | 説明 |
 |------|------|-----------|------|
 | `elabftw.url` | ✅ | — | eLabFTW の URL |
-| `elabftw.api_key` | ✅ | — | API キー（環境変数 `ELABFTW_API_KEY` が優先） |
 | `elabftw.api_key` | ✅ | — | API キー（環境変数 `ELABFTW_API_KEY` が優先） |
 | `elabftw.verify_ssl` | — | `true` | SSL 検証 |
 | `targets[].title` | merge時✅ | — | エンティティのタイトル |
