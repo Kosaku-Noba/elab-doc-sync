@@ -33,7 +33,7 @@ def _write_config(tmp_path, mode="merge", entity="items"):
 
 
 def _ns(tmp_path, **kw):
-    defaults = {"config": str(tmp_path / ".elab-sync.yaml"), "target": None, "force": False, "dry_run": False, "entity": None, "dir": None}
+    defaults = {"config": str(tmp_path / ".elab-sync.yaml"), "target": None, "force": False, "dry_run": False, "entity": None, "dir": None, "prune_attachments": False}
     defaults.update(kw)
     return Namespace(**defaults)
 
@@ -48,7 +48,7 @@ def test_sync_normal(MockSyncer, MockClient, tmp_path):
     (docs / "a.md").write_text("hello", encoding="utf-8")
     MockSyncer.return_value.sync.return_value = True
     cmd_sync(_ns(tmp_path))
-    MockSyncer.return_value.sync.assert_called_once_with(force=False)
+    MockSyncer.return_value.sync.assert_called_once_with(force=False, prune_attachments=False)
 
 
 # CLI-02
@@ -68,7 +68,7 @@ def test_sync_force(MockSyncer, MockClient, tmp_path):
     (docs / "a.md").write_text("hello", encoding="utf-8")
     MockSyncer.return_value.sync.return_value = True
     cmd_sync(_ns(tmp_path, force=True))
-    MockSyncer.return_value.sync.assert_called_once_with(force=True)
+    MockSyncer.return_value.sync.assert_called_once_with(force=True, prune_attachments=False)
 
 
 # CLI-04

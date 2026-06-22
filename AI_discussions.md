@@ -5814,3 +5814,91 @@ README と詳細 docs の更新が一部に留まり、今回追加されたア�
 ### DocReview 所感
 
 > 所感: コード内 docstring とコメントは主要な条件を補足していますが、利用者向け文書と仕様書側の追従が不足しています。条件付き挙動は断定文を避け、ハッシュあり・なし、リトライ対象・非対象を同じ表現で揃えると初見理解性が上がります。
+
+## 2026-06-22T17:40 [Kiro] Phase 3: バイナリ添付の取り扱い改善
+
+添付ファイルの `--prune-attachments` オプションと `attachments_pattern` 設定を追加。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| config.py | `attachments_pattern` フィールド追加（デフォルト: `*`） |
+| sync.py: `_sync_attachments` | `pattern` で glob フィルタ、`prune` でローカル不在ファイルのリモート削除 |
+| cli.py | `--prune-attachments` フラグ追加 |
+| tests/test_cli.py | `_ns` にフラグ追加、既存テスト修正 |
+
+### テスト結果
+
+- 261 passed, 7 deselected
+
+
+## 2026-06-22T17:42 [CodeReview] Phase 3: バイナリ添付改善（prune-attachments, attachments_pattern） に対するレビュー
+
+コミット内容はメッセージどおりですが、`attachments_pattern` と `--prune-attachments` の組み合わせに削除範囲の仕様リスクがあります。指定テストは `261 passed, 7 skipped in 0.59s` で通過しました。
+
+### CodeReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| `attachments_pattern` 外のリモート添付まで prune 対象になる | `_sync_attachments()` は `local_files` を `fnmatch(f.name, pattern)` で絞りますが、`existing` は全非画像添付を集めています。その後 `local_names` に無いリモート添付を削除するため、例えば `attachments_pattern: "*.pdf"` の状態で `--prune-attachments` を使うと、管理対象外にしたい `data.csv` なども削除され得ます。削除範囲は pattern に一致するリモート名だけに限定するか、「pattern 外も prune 対象」という仕様を明示する必要があります。根拠: `src/elab_doc_sync/sync.py:345`, `src/elab_doc_sync/sync.py:350`, `src/elab_doc_sync/sync.py:394` | 高 |
+| 変更なし判定時に `--prune-attachments` が実行されない | `sync()` は本文・メタ・アセット変更が無い場合に早期 return するため、既存リモート添付を整理したい目的で `--prune-attachments` だけを指定しても `_sync_attachments()` まで到達しません。過去の手動添付や `.assets_hash` 導入前の差分を掃除する運用では、明示オプションが無視されたように見えます。根拠: `src/elab_doc_sync/sync.py:630`, `src/elab_doc_sync/sync.py:637`, `src/elab_doc_sync/sync.py:682`, `src/elab_doc_sync/sync.py:889`, `src/elab_doc_sync/sync.py:897`, `src/elab_doc_sync/sync.py:942` | 中 |
+| prune の削除失敗が成功扱いで握りつぶされる | prune 側の `delete_upload()` 例外は無警告で無視され、`all_success` にも反映されません。結果としてリモートには削除対象が残っているのに、呼び出し元は成功扱いで `.assets_hash` を保存し得るため、障害調査や再実行判断が難しくなります。根拠: `src/elab_doc_sync/sync.py:401`, `src/elab_doc_sync/sync.py:404`, `src/elab_doc_sync/sync.py:687` | 中 |
+| `attachments_pattern` の仕様とテストが不足している | README の設定表には `attachments_pattern` と `--prune-attachments` が未記載で、テストも CLI 引数伝播の既存修正に留まり、pattern 適用・prune 削除範囲・dry-run 表示件数の挙動を固定していません。利用者が削除範囲を誤解しやすい変更なので、最低限 pattern 外ファイルがアップロード・削除されないことをテストで固定した方がよいです。 | 低 |
+
+### CodeReview 所感
+
+> 所感: 追加機能の方向性は妥当ですが、prune は破壊的操作なので pattern との境界を厳密に扱う必要があります。今回の実装は通常同期の延長としては動きますが、明示的な整理コマンドとしての運用保証がまだ弱いです。
+
+
+## 2026-06-22T17:42 [DocReview] Phase 3: バイナリ添付改善（prune-attachments, attachments_pattern） に対するレビュー
+
+対象コミットは添付ファイルの削除・フィルタ機能を追加していますが、README 側の追従が不足しています。テストは `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` で `261 passed, 7 skipped` でした。
+
+### DocReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| `--prune-attachments` の README 記載漏れ | ローカルに存在しないリモート添付を削除する破壊的オプションが追加されていますが、README の添付ファイル同期セクションとコマンド一覧に説明がありません。削除対象、push 時のみ有効なのか、pull/clone には影響しないのか、誤実行時の注意を明記すべきです。 | 高 |
+| `attachments_pattern` の設定説明漏れ | `TargetConfig` に `attachments_pattern` が追加されていますが、README の設定例・設定リファレンスに存在しません。デフォルト `*`、glob 対象がファイル名のみであること、画像は従来どおり対象外であることを説明すると初見でも使えます。 | 中 |
+| `attachments_pattern` と `--prune-attachments` 併用時の仕様説明不足 | コメントでは pattern はアップロード対象のフィルタ、prune はローカル不在のリモート添付削除と説明されていますが、両者を併用した場合に pattern 不一致のリモート添付が削除対象になるのかが README と docstring から判断できません。削除を伴うため、併用時のルールを明文化してください。 | 中 |
+
+### DocReview 所感
+
+> 所感: コード内コメントは最低限ありますが、利用者が操作する新設定と削除オプションの説明が README に不足しています。特にリモート削除は復旧コストが高いため、実行例と注意書きを添付同期セクションに追加するのが妥当です。
+
+
+## 2026-06-22T17:46 [CodeReview] Phase 3: バイナリ添付改善（prune-attachments, attachments_pattern） に対するレビュー
+
+対象コミットはメッセージどおり `--prune-attachments` と `attachments_pattern` を追加しています。前回レビューのうち pattern 外 prune と削除失敗の成功扱いは現行差分では概ね解消されています。テストは `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` で `261 passed, 7 skipped in 0.58s` でした。
+
+### CodeReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| `--prune-attachments` が添付なしターゲットや本文変更なしでも通常更新経路を通る | [sync.py:631](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:631) / [sync.py:890](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:890) で prune 指定時にスキップを無条件に解除しています。特に merge では [sync.py:658](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:658) の `or item_id is not None` により、添付整理だけの意図でも本文更新 API が走り得ます。`attachments_dir` がある場合だけ prune 経路へ進め、本文更新とは分離した方が安全です。 | 中 |
+| `attachments_pattern` がアセット変更検知に反映されていない | 実アップロードは [sync.py:345](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:345) で pattern 適用されますが、`.assets_hash` 計算は [sync.py:611](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:611) と [sync.py:822](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:822) で全非画像添付を対象にしています。`attachments_pattern: "*.pdf"` でも `data.csv` の変更で同期対象になり、管理対象外ファイルが同期判定に混入します。 | 中 |
+| 新設定・新オプションの仕様固定が不足している | README の設定表には追加されていますが、`--prune-attachments` は README コマンド一覧や `docs/05_CLI_REFERENCE.md` に未記載です。また pattern が push/prune 限定なのか pull/clone にも効くのかは判断不能で、現状 pull/clone は [sync.py:411](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:411) の全非画像ダウンロードを使います。破壊的操作なので、適用範囲と併用時の挙動を文書とテストで固定してください。 | 低 |
+
+### CodeReview 所感
+
+> 所感: prune は明示オプションですが副作用が大きいため、「添付だけを整理する」経路として本文更新・通常同期判定から切り離すのがよいです。`attachments_pattern` は同期、変更検知、表示、文書で同じ意味になるよう揃える必要があります。
+
+
+## 2026-06-22T17:46 [DocReview] Phase 3: バイナリ添付改善（prune-attachments, attachments_pattern） に対するレビュー
+
+対象コミットは `attachments_pattern` の設定表追記はありますが、`--prune-attachments` と削除範囲の説明が README に不足しています。テストは `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` で `261 passed, 7 skipped` でした。
+
+### DocReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| `--prune-attachments` の README 記載漏れ | `src/elab_doc_sync/cli.py:1145` で破壊的な削除オプションが追加されていますが、README の添付同期セクションや基本操作例に説明がありません。削除対象、push 時の扱い、`attachments_pattern` との関係、注意事項を明記すべきです。 | 高 |
+| `attachments_pattern` の利用例と適用範囲が不足 | README では設定リファレンス `README.md:448` にのみ記載があり、添付同期の設定例 `README.md:253` には含まれていません。push/prune に効くのか、pull/clone には効くのかが初見では判断しにくいです。 | 中 |
+| `attachments_pattern` と prune 併用時の仕様説明不足 | コードコメントでは prune が pattern 一致分のみ削除することが示されていますが、README には併用時の削除範囲がありません。削除を伴うため、pattern 外のリモート添付が保持されるかを明文化してください。 | 中 |
+| docstring の戻り値説明が実挙動に追従不足 | `src/elab_doc_sync/sync.py:338` では `False` が「アップロード失敗」と説明されていますが、prune の削除失敗でも `False` になります。コメントとして「アップロードまたは prune 削除の失敗」に更新すると誤読を防げます。 | 低 |
+| 設定サンプルの更新漏れ | README から参照される `.elab-sync.yaml.example` には `attachments_dir` の例のみで、`attachments_pattern` がありません。任意設定としてコメント例を追加すると発見しやすくなります。 | 低 |
+
+### DocReview 所感
+
+> 所感: 新機能自体は README の設定表に一部反映されていますが、利用者が実行する削除オプションの説明が不足しています。特に prune は復旧コストが高いため、README の添付同期セクションに実行例と制約を追加するのが妥当です。

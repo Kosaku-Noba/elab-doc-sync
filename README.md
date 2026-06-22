@@ -445,6 +445,7 @@ targets:
 | `targets[].category` | — | — | push 時に自動設定するカテゴリ（名前または ID） |
 | `targets[].body_format` | — | `html` | `md`（Markdown のまま送信）/ `html`（HTML に変換して送信） |
 | `targets[].attachments_dir` | — | — | 添付ファイルディレクトリ（画像以外のファイルを自動アップロード・ダウンロード） |
+| `targets[].attachments_pattern` | — | `*` | 添付ファイルの glob フィルタ（ファイル名に対して適用、画像は常に除外） |
 
 > **Note:** `attachments_dir` を `mode: each` で使用すると、同じディレクトリの添付ファイルが各エンティティに複製されます。エンティティごとに異なる添付が必要な場合は、ターゲットを分けてください。pull 時に複数エンティティから同名の添付ファイルがダウンロードされた場合、後のファイルで上書きされます。
 
