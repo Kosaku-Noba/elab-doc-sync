@@ -33,3 +33,49 @@ demo.elabftw.net に対する実 API テストスクリプトを作成し、現�
 ## Phase 4: esync update 修正
 
 `cmd_update` を `uv tool install --force` 方式に修正する。
+
+---
+
+## 実装後の仕様サマリー（Phase 1〜4 完了）
+
+### 画像（Markdown 本文内 `![](...)` 参照）
+
+| 操作 | 動作 |
+|------|------|
+| push | ローカル画像を検知 → アップロード → 本文中 URL を eLabFTW URL に書き換え |
+| pull | eLabFTW URL を検知 → ダウンロード(`images/`) → 相対パスに書き換え |
+| 差分検知 | サイズ + SHA-256（リモートに hash フィールドがある場合）。なければサイズ一致で再利用 |
+| リトライ | Timeout / ConnectionError / 5xx で1回自動リトライ。4xx は即失敗 |
+
+### バイナリ添付ファイル（`attachments_dir` 内の非画像ファイル）
+
+| 操作 | 動作 |
+|------|------|
+| push | `attachments_dir` 内の `attachments_pattern` に一致するファイルをアップロード |
+| pull / clone | リモートの非画像添付を `attachments_dir` にダウンロード |
+| 差分検知 | サイズ + SHA-256（リモート hash があれば比較、なければサイズ一致で再利用） |
+| `--force` | 差分なしでも再アップロード |
+| `--prune-attachments` | ローカルに存在しない＋pattern に一致するリモート添付を削除 |
+
+### アセット変更検知（`.assets_hash`）
+
+- 画像・添付ファイルの内容ハッシュを `.assets_hash` に保存
+- 本文未変更でも画像/添付だけ差し替えた場合に同期対象になる
+- アップロード失敗時はハッシュを保存しない → 次回再試行される
+- 初回（ハッシュファイル不在時）は変更扱いしない（初期化のみ）
+
+### 設定例
+
+```yaml
+targets:
+  - title: "実験レポート"
+    docs_dir: "docs/"
+    attachments_dir: "attachments/"
+    attachments_pattern: "*.csv"  # 省略時: * (全ファイル)
+    entity: items
+```
+
+### esync update
+
+- `uv tool install --force git+https://github.com/Kosaku-Noba/elab-doc-sync.git` を実行
+- 失敗時は手動コマンドを案内して終了
