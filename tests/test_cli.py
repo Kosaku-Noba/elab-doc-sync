@@ -568,7 +568,7 @@ def test_update(mock_run, tmp_path):
     mock_run.return_value = MagicMock(returncode=0)
     cmd_update(Namespace())
     args, kwargs = mock_run.call_args
-    assert args[0] == ["uv", "pip", "install", "--upgrade", REPO_URL]
+    assert args[0] == ["uv", "tool", "install", "--force", REPO_URL]
     assert kwargs.get("check") is True
     mock_run.assert_called_once()
 
