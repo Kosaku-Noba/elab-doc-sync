@@ -5419,3 +5419,157 @@ README重複削除と DIR-06 テスト追加について、README 現在内容�
 ### DocReview 所感
 
 > 所感: 機能追加ではないため README やコメントへの追加説明は不要です。一方で、版数更新に伴うリリース系・仕様系ドキュメントの版数整合はまだ弱いです。
+
+## 2026-06-22T16:45 [Kiro] Phase 1: インテグレーションテスト作成
+
+demo.elabftw.net を対象としたインテグレーションテストを作成。API キー未設定時は自動スキップ。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| tests/test_integration.py | 画像 upload/download、添付 upload/download、ラウンドトリップ冪等性の7テスト（end-to-end テスト含む） |
+| elab_docs/improvement_plan.md | 改善プラン全体を文書化 |
+
+### テスト結果
+
+- 既存テスト: 253 passed
+- 新規テスト: 7 skipped（API キー未設定のため正常スキップ）
+
+### Kiro 所感
+
+- レビュー指摘により AI_discussions.md の過去履歴を復元し末尾追記に修正
+- end-to-end テスト（DocsSyncer 経由で PATCH→GET）を追加
+- fixture の後始末を addfinalizer 方式に変更
+
+
+## 2026-06-22T16:47 [CodeReview] Phase 1: インテグレーションテスト作成（demo.elabftw.net対応） に対するレビュー
+
+コミット内容は概ねメッセージ通りで、プロダクションコードの挙動変更はありません。指定テスト `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` は `253 passed, 7 skipped in 0.57s` でした。
+
+### CodeReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 公開 demo 環境の後始末登録が遅い | [tests/test_integration.py](/home/user/noba/elab-doc-sync/tests/test_integration.py:43) の `create_item(title=...)` は作成後の title 更新まで成功してから finalizer が登録されます。また [tests/test_integration.py](/home/user/noba/elab-doc-sync/tests/test_integration.py:172) も `syncer.sync()` 成功後に削除 finalizer を登録しています。作成後の PATCH や後続処理で失敗すると、demo.elabftw.net に `[test]` item が残る可能性があります。ID が判明した直後に cleanup を登録する構造にすると運用リスクを下げられます。 | 中 |
+| テスト結果の記録件数が実行結果と不整合 | [AI_discussions.md](/home/user/noba/elab-doc-sync/AI_discussions.md:5437) は「新規テスト: 6 skipped」としていますが、実際の指定テスト結果は `7 skipped` で、[tests/test_integration.py](/home/user/noba/elab-doc-sync/tests/test_integration.py:67) には 7 件のテストがあります。レビュー・運用記録として追跡しづらくなるため、件数を修正した方がよいです。 | 低 |
+
+### CodeReview 所感
+
+> 所感: 追加テストの方向性は妥当ですが、外部の共有 demo 環境を使う以上、失敗時 cleanup の確実性が主なリスクです。前回レビューの版数系ドキュメント指摘は今回差分の直接対象外と判断しました。
+
+
+## 2026-06-22T16:47 [DocReview] Phase 1: インテグレーションテスト作成（demo.elabftw.net対応） に対するレビュー
+
+README とコメントを中心に確認し、追加テスト自体の説明コメントは概ね足りています。ただし開発者向け README と履歴記録に文書上の不足・不整合があります。テスト結果は `253 passed, 7 skipped in 0.57s` でした。
+
+### DocReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| README の開発手順にインテグレーションテストの実行条件がない | `tests/test_integration.py` で `ELABFTW_DEMO_API_KEY` と `demo.elabftw.net` を使う実 API テストが追加されていますが、`README.md` の「開発」は `uv sync` までで、通常テスト、実 API テスト、API キー未設定時の skip 挙動が分かりません。 | 中 |
+| AI_discussions.md のテスト件数が実態と一致しない | `AI_discussions.md` は「6テスト」「6 skipped」と記録していますが、追加されたインテグレーションテストは 7 件で、実行結果も `7 skipped` です。人間向け履歴として誤解を招きます。 | 低 |
+
+### DocReview 所感
+
+> 所感: README に開発者向けテスト実行手順を1段落追加し、AI_discussions の件数を修正すれば、初見の理解性は十分に改善します。
+
+
+## 2026-06-22T16:52 [CodeReview] Phase 1: インテグレーションテスト作成（demo.elabftw.net対応） に対するレビュー
+
+対象コミットは概ねメッセージ通り、インテグレーションテストと関連ドキュメント追加に収まっています。指定テストは `253 passed, 7 skipped in 0.56s` で通過しましたが、API キー未設定のため実 API 経路の成否は判断不能です。
+
+### CodeReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 通常の pytest 実行が実 API テストを含み得る | [tests/test_integration.py:32](/home/user/noba/elab-doc-sync/tests/test_integration.py:32) は `ELABFTW_DEMO_API_KEY` が存在すれば全インテグレーションテストを通常収集で実行します。一方 [README.md:478](/home/user/noba/elab-doc-sync/README.md:478) は `uv run pytest -q` を「外部通信なし」と説明しているため、API キーを常設した開発環境やCIでは標準テストが demo.elabftw.net に item を作成します。`integration` marker と明示 opt-in、または `RUN_INTEGRATION_TESTS=1` などの追加ゲートがある方が運用上安全です。 | 中 |
+| README のテスト手順が fresh 環境で再現できない | [README.md:472](/home/user/noba/elab-doc-sync/README.md:472) の `uv sync` だけでは、[pyproject.toml:14](/home/user/noba/elab-doc-sync/pyproject.toml:14) の optional extra `test` が入らず、隔離環境で `uv run pytest -q` は `Failed to spawn: pytest` になりました。`uv sync --extra test` または `uv run --extra test pytest -q` を案内する必要があります。 | 中 |
+| cleanup 失敗が完全に握りつぶされる | [tests/test_integration.py:40](/home/user/noba/elab-doc-sync/tests/test_integration.py:40) の `_safe_delete` は削除失敗を無通知で無視します。公開 demo 環境を使う以上、削除失敗時にテストが緑のまま残骸だけ増えると調査不能になるため、少なくとも警告出力、可能なら finalizer 失敗として検知する方がよいです。 | 低 |
+
+### CodeReview 所感
+
+> 所感: 本体コードへの挙動変更はなく、テスト追加の方向性自体は妥当です。残る主なリスクは、インテグレーションテストを「通常テスト」と明確に分離できていない運用面です。
+
+
+## 2026-06-22T16:52 [DocReview] Phase 1: インテグレーションテスト作成（demo.elabftw.net対応） に対するレビュー
+
+README.md、改善プラン、追加テストコメントを確認しました。実 API テストの条件説明は概ねありますが、README の通常テスト説明に実挙動とのずれがあります。指定テストは `253 passed, 7 skipped in 0.57s` でした。
+
+### DocReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| README のユニットテスト説明が実行範囲と不一致 | `README.md:478-479` は `uv run pytest -q` を「ユニットテスト（mock のみ、外部通信なし）」と説明していますが、`ELABFTW_DEMO_API_KEY` が設定済みの環境では `tests/test_integration.py` も実行され、demo.elabftw.net へ実通信します。外部通信なしを保証するなら integration test を除外するコマンドを示す必要があります。 | 中 |
+| テスト実行コマンド表記が README とコメントで不一致 | `tests/test_integration.py:4` は `UV_CACHE_DIR=/tmp/uv-cache` 付きの実行例ですが、README のテスト実行例にはありません。開発者向け手順として統一した方が初見で迷いにくくなります。 | 低 |
+
+### DocReview 所感
+
+> 所感: README に「全テスト」と「外部通信なしテスト」を分けて書けば、今回追加された実 API テストの運用条件は十分に伝わります。
+
+
+## 2026-06-22T16:57 [CodeReview] Phase 1: インテグレーションテスト作成（demo.elabftw.net対応） に対するレビュー
+
+コミット内容は概ねメッセージ通り、demo.elabftw.net 向け integration test と関連文書追加です。指定テスト `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` は `253 passed, 7 skipped in 0.56s` で通過しましたが、API キー未設定のため実 API 経路は判断不能です。
+
+### CodeReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| AI_discussions.md のレビュー履歴が最終差分と矛盾している | `AI_discussions.md:5454` や `AI_discussions.md:5488` には cleanup 未対応・無通知と読める指摘が残っていますが、現状の `tests/test_integration.py:57-59` と `tests/test_integration.py:43-48` では即時 finalizer 登録と warning が入っています。また `AI_discussions.md:5486` は README の通常テスト説明を古い状態で参照しています。対応済み指摘を残すなら、後続エントリで「どこをどう直したか」を明記しないと、次回レビューや運用判断を誤らせます。加えて提示された AGENTS ルールでは見出しが `[Kiro]` / `[Codex]` 指定ですが、今回追加分は `[CodeReview]` / `[DocReview]` で、どちらを正とするか前提が必要です。 | 中 |
+| README の開発手順だけではテスト依存が入らない | `README.md:472` は `uv sync` のみを案内していますが、`pytest` は `pyproject.toml:14-15` の optional extra `test` にあります。fresh 環境では README 通りに進めても `README.md:479` の `uv run pytest ...` が再現できない可能性があるため、`uv sync --extra test` または `uv run --extra test pytest ...` を案内した方が運用上安全です。 | 中 |
+| 実 API テストの実行条件が API キーの存在だけに依存している | `tests/test_integration.py:32-34` は `ELABFTW_DEMO_API_KEY` があれば通常収集で実通信します。共有 demo 環境へ item を作るテストなので、標準の `pytest` 実行や CI 環境変数の偶発設定で動かないよう、`RUN_INTEGRATION_TESTS=1` など明示 opt-in を追加する方が境界が明確です。 | 低 |
+
+### CodeReview 所感
+
+> 所感: 本体コードの挙動変更はなく、追加テストの方向性自体は妥当です。主な残リスクは、実 API テストの運用境界と、AI_discussions の履歴が最終状態を正しく表していない点です。
+
+
+## 2026-06-22T16:57 [DocReview] Phase 1: インテグレーションテスト作成（demo.elabftw.net対応） に対するレビュー
+
+README、追加テストのコメント、改善プランを確認しました。指定テストは `253 passed, 7 skipped in 0.57s` で通過しましたが、README の開発手順に再現性の不足があります。
+
+### DocReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| テスト依存の導入手順が不足 | `pyproject.toml` では `pytest` が optional extra `test` に入っていますが、README の開発手順は `uv sync` のみです。fresh 環境で README 通りに進める人向けに、`uv sync --extra test` または `uv run --extra test pytest ...` を明記した方がよいです。 | 中 |
+| インテグレーションテストの skip 条件がやや曖昧 | README の例は `ELABFTW_DEMO_API_KEY="your-key"` を付けていますが、skip されるのは環境変数が未設定または空の場合です。プレースホルダをそのまま実行すると skip されないため、未設定時の実行例も分けると誤解を避けられます。 | 低 |
+
+### DocReview 所感
+
+> 所感: コード内コメントは追加テストの目的と cleanup 制約を説明しており、文書品質上の大きな不足は README の開発者向け手順に集中しています。
+
+
+## 2026-06-22T17:01 [CodeReview] Phase 1: インテグレーションテスト作成（demo.elabftw.net対応） に対するレビュー
+
+対象コミットはメッセージ通り、demo.elabftw.net 向けインテグレーションテストと関連文書追加が中心です。指定テストは `253 passed, 7 skipped in 0.57s` で通過しましたが、API キー未設定のため実 API 経路の成否は判断不能です。
+
+### CodeReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 実 API テストが標準 CI 実行に含まれ得る | `.github/workflows/test.yml:20` は `pytest tests/ -v` を実行しており、`tests/test_integration.py:32-34` は `ELABFTW_DEMO_API_KEY` が存在すれば公開 demo 環境へ実通信します。将来 CI や開発環境にキーが常設された場合、通常テストで item 作成・削除が走るため、`RUN_INTEGRATION_TESTS=1` などの明示 opt-in、または CI 側で `-m "not integration"` を指定した方が運用境界が明確です。 | 中 |
+| item タイトル更新失敗が握りつぶされ、cleanup 失敗時の追跡性が落ちる | `tests/test_integration.py:60-63` は title の `[test] integration` 付与失敗を無視してテストを続行します。この状態で finalizer の削除も失敗すると、コメントが想定する `[test] prefix 付き item` ではなく、識別しづらい残骸が demo 環境に残る可能性があります。ID 判明後の cleanup 登録は良いので、title 更新失敗はテスト失敗として扱う方が調査しやすいです。 | 低 |
+| AI_discussions.md の追加レビュー見出しが提示ルールと不一致 | 今回追加分は `[CodeReview]` / `[DocReview]` ですが、提示された運用ルールでは見出しは `[Kiro]` または `[Codex]` 必須です。一方で既存 hook も同じ名称を使っているため、どちらを正とするかは前提が必要です。 | 低 |
+
+### CodeReview 所感
+
+> 所感: 本体機能への直接の回帰リスクは低く、テスト追加の方向性も妥当です。主な残リスクは、公開 demo 環境に触れるテストを通常テスト経路から明確に分離できていない点です。
+
+
+## 2026-06-22T17:01 [DocReview] Phase 1: インテグレーションテスト作成（demo.elabftw.net対応） に対するレビュー
+
+README と追加コメントは概ね追従していますが、初見向けの実行例と運用履歴に文書上の不整合があります。テストは `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` で `253 passed, 7 skipped in 0.57s` でした。
+
+### DocReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| AI_discussions.md の見出し規約不一致 | 追加履歴に `[CodeReview]` / `[DocReview]` が使われていますが、提示ルールでは `[Kiro]` / `[Codex]` が必須です。レビュー履歴として読む人が運用ルールの正を判断しづらくなります。 | 中 |
+| README のインテグレーションテスト例が skip 条件を誤解させる | `API キー未設定時は自動スキップ` とありますが、直下の例は `ELABFTW_DEMO_API_KEY="your-key"` を設定しており、そのまま実行すると skip されません。未設定時の実行例と、有効なキーを使う実行例を分けると明確です。 | 低 |
+| README とテストファイル冒頭コメントの実行コマンドが不一致 | `tests/test_integration.py` では `UV_CACHE_DIR=/tmp/uv-cache` 付き、README では無しです。開発者向け手順として、どちらを標準にするか統一した方が迷いにくいです。 | 低 |
+
+### DocReview 所感
+
+> 所感: 本体 README の大きな更新漏れは解消されています。残りは実 API テストの実行条件を、コピーしても誤解しない形に整える文書改善が中心です。

@@ -469,7 +469,18 @@ targets:
 ```bash
 git clone https://github.com/Kosaku-Noba/elab-doc-sync.git
 cd elab-doc-sync
-uv sync
+uv sync --extra test
+```
+
+### テスト実行
+
+```bash
+# ユニットテスト（mock のみ、外部通信なし）
+uv run pytest -q -m "not integration"
+
+# インテグレーションテスト（demo.elabftw.net に実通信）
+# API キー未設定時は自動スキップされる
+ELABFTW_DEMO_API_KEY="your-key" uv run pytest tests/test_integration.py -v
 ```
 
 ## ライセンス

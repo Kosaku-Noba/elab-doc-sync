@@ -27,3 +27,8 @@ packages = ["src/elab_doc_sync"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "template" = "elab_doc_sync/template"
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: tests requiring network access to demo.elabftw.net",
+]
