@@ -5902,3 +5902,48 @@ README と詳細 docs の更新が一部に留まり、今回追加されたア�
 ### DocReview 所感
 
 > 所感: 新機能自体は README の設定表に一部反映されていますが、利用者が実行する削除オプションの説明が不足しています。特に prune は復旧コストが高いため、README の添付同期セクションに実行例と制約を追加するのが妥当です。
+
+## 2026-06-22T17:50 [Kiro] Phase 4: esync update 修正
+
+`cmd_update` を `uv pip install` → `uv tool install --force` に修正。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| cli.py: `cmd_update` | `uv tool install --force` に変更、CalledProcessError 時のエラーメッセージ追加 |
+| tests/test_cli.py | テストのアサーションを新コマンドに更新 |
+
+### テスト結果
+
+- 261 passed, 7 deselected
+
+
+## 2026-06-22T17:51 [CodeReview] Phase 4: esync update を uv tool install --force に修正 に対するレビュー
+
+対象コミットはメッセージ通り `esync update` の更新方式を `uv tool install --force` に変更しています。テストは `261 passed, 7 skipped in 0.58s` で通過しました。uv 公式 docs でも tool install / tool 環境の再作成用途を確認済みです: https://docs.astral.sh/uv/guides/tools/ / https://docs.astral.sh/uv/concepts/tools/
+
+### CodeReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 指摘事項なし | — | — |
+
+### CodeReview 所感
+
+> 所感: 差分は小さく、更新コマンド変更と失敗時メッセージ追加に収まっています。CalledProcessError の扱いも運用上の調査導線として妥当です。
+
+
+## 2026-06-22T17:51 [DocReview] Phase 4: esync update を uv tool install --force に修正 に対するレビュー
+
+対象コミットは `esync update` の更新方式を `uv tool install --force` に揃える変更で、README の初回インストール手順とは概ね整合しています。テストは `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` で `261 passed, 7 skipped in 0.59s` でした。
+
+### DocReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| README の実行方法メモが混在 | [README.md](/home/user/noba/elab-doc-sync/README.md:25) は `uv tool install --force` 前提ですが、[README.md](/home/user/noba/elab-doc-sync/README.md:391) では `uv run esync` の実行を促しています。初見ユーザーには tool install 後も `uv run` が必要なのか曖昧なため、通常利用は `esync` / `elab-doc-sync`、開発環境だけ `uv run` のように分けるとよいです。 | 低 |
+
+### DocReview 所感
+
+> 所感: `cmd_update` の docstring と失敗時メッセージは今回の変更範囲に対して過不足ありません。README の実行方法だけ表現を揃えると、インストールから更新までの導線がより明確になります。

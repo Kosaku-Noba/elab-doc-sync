@@ -740,10 +740,14 @@ def cmd_update(args):
     import subprocess
     print("elab-doc-sync を最新版に更新しています...")
     try:
-        subprocess.run(["uv", "pip", "install", "--upgrade", REPO_URL], check=True)
+        subprocess.run(["uv", "tool", "install", "--force", REPO_URL], check=True)
         print("\n✅ 更新が完了しました")
     except FileNotFoundError:
         print("エラー: uv が見つかりません。https://docs.astral.sh/uv/ からインストールしてください", file=sys.stderr)
+        sys.exit(1)
+    except subprocess.CalledProcessError:
+        print("⚠ 自動更新に失敗しました。手動で実行してください:", file=sys.stderr)
+        print(f"  uv tool install --force {REPO_URL}", file=sys.stderr)
         sys.exit(1)
 
 
