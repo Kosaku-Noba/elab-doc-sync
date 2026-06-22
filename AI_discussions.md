@@ -5947,3 +5947,35 @@ README と詳細 docs の更新が一部に留まり、今回追加されたア�
 ### DocReview 所感
 
 > 所感: `cmd_update` の docstring と失敗時メッセージは今回の変更範囲に対して過不足ありません。README の実行方法だけ表現を揃えると、インストールから更新までの導線がより明確になります。
+
+
+## 2026-06-22T18:00 [CodeReview] docs: 実装後の仕様サマリーを improvement_plan.md に追記 に対するレビュー
+
+対象コミットはメッセージどおり `improvement_plan.md` への追記のみです。指定テストは `261 passed, 7 skipped in 0.59s` で通過しましたが、追加された仕様サマリーに現行実装と食い違う記述があります。
+
+### CodeReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 画像アップロード失敗時の `.assets_hash` 説明が不正確 | [improvement_plan.md:64](/home/user/noba/elab-doc-sync/elab_docs/improvement_plan.md:64) は「アップロード失敗時はハッシュを保存しない」としていますが、画像アップロードが `url: None` の場合 `_rewrite_images()` は失敗を呼び出し元へ伝えず、`sync()` 側で `.assets_hash` が保存され得ます。添付失敗には概ね当てはまりますが、画像には当てはまらないため、仕様を限定するか実装側で失敗状態を返す必要があります。 | 中 |
+| clone の添付保存先が `attachments_dir` として説明されている | [improvement_plan.md:55](/home/user/noba/elab-doc-sync/elab_docs/improvement_plan.md:55) は pull/clone とも `attachments_dir` にダウンロードすると読めますが、clone は固定で `attachments/` に保存し、生成される `.elab-sync.yaml` に `attachments_dir` は設定されません。clone 後の再 push でも添付を管理対象にする意図なら、設定生成か記述の補足が必要です。 | 低 |
+
+### CodeReview 所感
+
+> 所感: ドキュメント追加自体は小さい変更ですが、「実装後の仕様サマリー」として残るため、失敗時再試行や clone 後の添付管理のような運用判断に関わる箇所は実装と厳密に揃えた方がよいです。
+
+
+## 2026-06-22T18:00 [DocReview] docs: 実装後の仕様サマリーを improvement_plan.md に追記 に対するレビュー
+
+対象コミットは仕様サマリー追記ですが、README の利用者向け説明に未反映の項目があります。テストは `261 passed, 7 skipped` でした。
+
+### DocReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| README 更新漏れ | `--prune-attachments` は CLI に存在し、追加サマリーにも記載されていますが、README の添付ファイル手順・コマンド一覧にありません。リモート添付の削除同期を利用者が発見しにくい状態です。 | 中 |
+| 添付差し替え説明の不足 | README では「内容を差し替えた場合は `--force`」と説明されていますが、追加サマリーでは `.assets_hash` により本文未変更でも画像/添付変更を同期対象にすると説明されています。自動検知されるケースと `--force` が必要なケースを README 側でも分けて説明した方がよいです。 | 中 |
+
+### DocReview 所感
+
+> 所感: コード内コメントは主要な複雑箇所に最低限あります。今回の主な課題は、実装後サマリーに集約した仕様を README の利用者向け導線へ反映しきれていない点です。
