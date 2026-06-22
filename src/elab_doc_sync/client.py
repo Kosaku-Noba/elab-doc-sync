@@ -103,15 +103,30 @@ class ELabFTWClient:
     # ── uploads ──────────────────────────────────────────────
 
     def upload_file(self, entity_type: str, entity_id: int, filepath: str, comment: str = "") -> dict:
-        """ファイルをアップロードする。
+        """ファイルをアップロードする（Timeout/ConnectionError/5xx で1回リトライ）。
 
         filepath の basename が eLabFTW 上の real_name として保存される。
         entity_type は 'items' または 'experiments'。
+
+        リトライ対象: requests.exceptions.Timeout, ConnectionError, HTTPError(5xx)
+        4xx は即失敗。POST が非冪等なため、リトライで重複が生じた場合は
+        同名ファイルの最新を採用し、古い重複は呼び出し元で掃除される前提。
         """
         url = f"/api/v2/{entity_type}/{entity_id}/uploads"
-        with open(filepath, "rb") as f:
-            self._req("POST", url, headers=self._auth_headers,
-                      files={"file": f}, data={"comment": comment}, timeout=60)
+        for attempt in range(2):
+            try:
+                with open(filepath, "rb") as f:
+                    self._req("POST", url, headers=self._auth_headers,
+                              files={"file": f}, data={"comment": comment}, timeout=60)
+                break
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+                if attempt == 0:
+                    continue
+                raise
+            except requests.exceptions.HTTPError as e:
+                if e.response is not None and e.response.status_code >= 500 and attempt == 0:
+                    continue
+                raise
         uploads = self._req("GET", url).json()
         filename = Path(filepath).name
         for upload in reversed(uploads):

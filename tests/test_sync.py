@@ -1243,3 +1243,93 @@ def test_sync_category_failure_is_best_effort(mock_client, capsys):
     mock_client.resolve_category_id.side_effect = Exception("API error")
     _sync_category(mock_client, "items", 42, "bad")
     assert "カテゴリ同期に失敗" in capsys.readouterr().out
+
+
+# ── Phase 2: ハッシュベース差分検知テスト ────────────────────
+
+
+# S-45: 同名・同サイズ・異ハッシュの画像は再アップロードされる
+def test_rewrite_images_hash_mismatch_reuploads(tmp_path):
+    from elab_doc_sync.sync import _compute_file_hash
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    img_data = b"\x89PNG_new_content"
+    (docs / "photo.png").write_bytes(img_data)
+    local_hash = _compute_file_hash(docs / "photo.png")
+
+    client = MagicMock()
+    client.base_url = "https://elab.example.com"
+    # Remote has same size but different hash
+    client.list_uploads.return_value = [{
+        "real_name": "photo.png",
+        "long_name": "abc123",
+        "storage": "1",
+        "filesize": len(img_data),
+        "id": 5,
+        "hash": "different_hash_value",
+    }]
+    client.upload_file.return_value = {"url": "https://elab.example.com/dl/new", "id": 6}
+    client.delete_upload.return_value = None
+
+    result = _rewrite_images("![p](photo.png)", "items", 1, client, docs, tmp_path)
+    # Should upload because hash differs
+    client.upload_file.assert_called_once()
+    assert "dl/new" in result
+
+
+# S-46: 同名・同サイズ・同ハッシュの画像は再利用される
+def test_rewrite_images_hash_match_reuses(tmp_path):
+    from elab_doc_sync.sync import _compute_file_hash
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    img_data = b"\x89PNG_same"
+    (docs / "photo.png").write_bytes(img_data)
+    local_hash = _compute_file_hash(docs / "photo.png")
+
+    client = MagicMock()
+    client.base_url = "https://elab.example.com"
+    client.list_uploads.return_value = [{
+        "real_name": "photo.png",
+        "long_name": "abc123",
+        "storage": "1",
+        "filesize": len(img_data),
+        "id": 5,
+        "hash": local_hash,
+    }]
+
+    result = _rewrite_images("![p](photo.png)", "items", 1, client, docs, tmp_path)
+    # Should NOT upload
+    client.upload_file.assert_not_called()
+    assert "download.php" in result
+
+
+# S-47: _compute_file_hash produces consistent results
+def test_compute_file_hash(tmp_path):
+    from elab_doc_sync.sync import _compute_file_hash
+    f = tmp_path / "test.bin"
+    f.write_bytes(b"hello world")
+    h1 = _compute_file_hash(f)
+    h2 = _compute_file_hash(f)
+    assert h1 == h2
+    assert len(h1) == 64  # SHA-256 hex
+
+
+# S-48: _sync_attachments with hash mismatch triggers re-upload
+def test_sync_attachments_hash_mismatch(tmp_path):
+    from elab_doc_sync.sync import _sync_attachments, _compute_file_hash
+    att_dir = tmp_path / "att"
+    att_dir.mkdir()
+    data = b"csv,data\n1,2\n"
+    (att_dir / "data.csv").write_bytes(data)
+
+    client = MagicMock()
+    client.list_uploads.return_value = [{
+        "real_name": "data.csv",
+        "filesize": len(data),
+        "id": 10,
+        "hash": "old_hash_different",
+    }]
+    client.upload_file.return_value = {"url": "https://elab/dl/data.csv", "id": 11}
+
+    _sync_attachments(att_dir, "items", 1, client, force=False)
+    client.upload_file.assert_called_once()
