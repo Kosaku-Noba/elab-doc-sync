@@ -326,12 +326,14 @@ def _count_local_attachments(attachments_dir: Path | None) -> int:
     return sum(1 for f in attachments_dir.iterdir() if f.is_file() and not _is_image(f.name))
 
 
-def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int, client: ELabFTWClient, *, force: bool = False) -> bool:
+def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int, client: ELabFTWClient, *, force: bool = False, pattern: str = "*", prune: bool = False) -> bool:
     """attachments_dir 内の非画像ファイルをリモートにアップロードする。
 
     差分検知: サイズ一致 → リモートに hash/sha256 フィールドがあれば
     ローカル SHA-256 と比較。hash 不在時はサイズ一致のみで再利用。
     force=True の場合は一致でも再アップロードする。
+    pattern: glob パターンでアップロード対象をフィルタ。
+    prune: True の場合、ローカルに存在しないリモート添付を削除する。
 
     Returns:
         True: 全ファイル同期成功（またはスキップ）
@@ -339,8 +341,10 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
     """
     if not attachments_dir or not attachments_dir.is_dir():
         return True
-    local_files = [f for f in sorted(attachments_dir.iterdir()) if f.is_file() and not _is_image(f.name)]
-    if not local_files:
+    from fnmatch import fnmatch
+    local_files = [f for f in sorted(attachments_dir.iterdir())
+                   if f.is_file() and not _is_image(f.name) and fnmatch(f.name, pattern)]
+    if not local_files and not prune:
         return True
 
     existing: dict[str, list[dict]] = {}
@@ -386,6 +390,21 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
                 client.delete_upload(entity, entity_id, e["id"])
             except Exception:
                 pass
+
+    # prune: ローカルに存在しないリモート添付を削除（pattern に一致するもののみ）
+    if prune:
+        local_names = {f.name for f in local_files}
+        for rn, entries in existing.items():
+            if rn not in local_names and fnmatch(rn, pattern):
+                for e in entries:
+                    if e.get("id") is not None:
+                        try:
+                            client.delete_upload(entity, entity_id, e["id"])
+                            print(f"    🗑 {rn}（リモートから削除）")
+                        except Exception as exc:
+                            print(f"    ⚠ {rn} の削除に失敗: {exc}")
+                            all_success = False
+
     return all_success
 
 
@@ -602,14 +621,14 @@ class DocsSyncer:
         asset_hash_file.parent.mkdir(parents=True, exist_ok=True)
         asset_hash_file.write_text(self._compute_assets_hash(raw_body) + "\n")
 
-    def sync(self, force: bool = False) -> bool:
+    def sync(self, force: bool = False, prune_attachments: bool = False) -> bool:
         raw_body = self.collect_docs()
 
         body_changed = self.has_changed(raw_body)
         meta_changed = self._has_meta_changed(self.target.title, self.target.category, self.target.tags)
         assets_changed = self._assets_changed(raw_body) if not force else False
 
-        if not force and not body_changed and not meta_changed and not assets_changed:
+        if not force and not body_changed and not meta_changed and not assets_changed and not prune_attachments:
             # meta_hash / assets_hash がまだ無ければ初期化（既存環境のアップグレード対応）
             if not self.meta_hash_file.exists():
                 self._save_meta_hash(self.target.title, self.target.category, self.target.tags)
@@ -662,7 +681,7 @@ class DocsSyncer:
         self._save_meta_hash(self.target.title, self.target.category, self.target.tags)
 
         if self.target.attachments_dir:
-            att_ok = _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, item_id, self.client, force=force)
+            att_ok = _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, item_id, self.client, force=force, pattern=self.target.attachments_pattern, prune=prune_attachments)
         else:
             att_ok = True
 
@@ -847,7 +866,7 @@ class EachDocsSyncer:
             })
         return results
 
-    def sync(self, force: bool = False) -> int:
+    def sync(self, force: bool = False, prune_attachments: bool = False) -> int:
         """各ファイルを個別に同期。更新した件数を返す。"""
         md_files = self.collect_files()
         if not md_files:
@@ -868,7 +887,7 @@ class EachDocsSyncer:
             meta_changed = self._has_meta_changed(f.name, title, self.target.category, self.target.tags)
             assets_changed = self._assets_changed(f.name, raw_body) if not force else False
 
-            if not force and not body_changed and not meta_changed and not assets_changed:
+            if not force and not body_changed and not meta_changed and not assets_changed and not prune_attachments:
                 # meta_hash / assets_hash がまだ無ければ初期化（既存環境のアップグレード対応）
                 if not self._meta_hash_path(f.name).exists():
                     self._save_meta_hash(f.name, title, self.target.category, self.target.tags)
@@ -922,7 +941,7 @@ class EachDocsSyncer:
             self._save_meta_hash(f.name, title, self.target.category, self.target.tags)
 
             if self.target.attachments_dir:
-                att_ok = _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, eid, self.client, force=force)
+                att_ok = _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, eid, self.client, force=force, pattern=self.target.attachments_pattern, prune=prune_attachments)
             else:
                 att_ok = True
 

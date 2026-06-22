@@ -33,6 +33,7 @@ class TargetConfig:
     tags: list[str] = None    # push 時に自動設定するタグ
     body_format: str = BODY_FORMAT_DEFAULT
     attachments_dir: str | None = None  # 添付ファイルディレクトリ（画像以外）
+    attachments_pattern: str = "*"  # 添付ファイルの glob フィルタ
     category: str | int | None = None   # push 時に自動設定するカテゴリ（ID or 名前）
 
     def __post_init__(self):
@@ -101,6 +102,7 @@ def load_config(config_path: Path) -> Config:
             tags=t.get("tags", []),
             body_format=body_format,
             attachments_dir=t.get("attachments_dir"),
+            attachments_pattern=t.get("attachments_pattern", "*"),
             category=t.get("category"),
         ))
 

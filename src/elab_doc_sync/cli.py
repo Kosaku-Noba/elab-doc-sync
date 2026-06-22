@@ -84,9 +84,9 @@ def cmd_sync(args):
 
         try:
             if isinstance(syncer, EachDocsSyncer):
-                updated += syncer.sync(force=args.force)
+                updated += syncer.sync(force=args.force, prune_attachments=args.prune_attachments)
             else:
-                if syncer.sync(force=args.force):
+                if syncer.sync(force=args.force, prune_attachments=args.prune_attachments):
                     updated += 1
         except ConflictError as e:
             print(f"  ⚠ 競合検出: {e}", file=sys.stderr)
@@ -1142,6 +1142,7 @@ def main():
     common.add_argument("--target", "-t", default=None, help="同期するターゲット名（指定しない場合は全ターゲット）")
     common.add_argument("--force", "-f", action="store_true", help="変更がなくても強制同期 / pull 時は既存ファイルを上書き")
     common.add_argument("--dry-run", "-n", action="store_true", help="実行せずに同期内容を確認")
+    common.add_argument("--prune-attachments", action="store_true", help="ローカルに存在しないリモート添付を削除")
 
     from importlib.metadata import version as _pkg_version
     try:
