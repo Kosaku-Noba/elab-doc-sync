@@ -213,6 +213,15 @@ def _normalize_remote_image_urls(body: str, entity: str, entity_id: int, client:
     return IMAGE_RE.sub(replace_match, body)
 
 
+def _compute_file_hash(filepath: Path) -> str:
+    """ファイルの SHA-256 ハッシュを計算する。"""
+    h = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path) -> str:
     """Markdown 内のローカル画像を eLabFTW にアップロードし URL に書き換える。
 
@@ -231,6 +240,7 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
                     "url": f"{client.base_url}/app/download.php?f={ln}&name={rn}&storage={st}",
                     "size": int(u.get("filesize", 0) or 0),
                     "id": u.get("id"),
+                    "hash": u.get("hash") or u.get("sha256") or None,
                 })
         # id 昇順でソートし、最小 id の添付を正本として安定させる
         for entries in existing.values():
@@ -254,10 +264,19 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
         real_name = _parse_image_local_name(img_path.name) or img_path.name
         entries = existing.get(real_name, [])
         local_size = img_path.stat().st_size
-        # NOTE: 同名・同サイズ・別内容のケースは再利用される（ハッシュ比較はコスト回避のため省略）
-        reuse = next((e for e in entries if e["size"] and e["size"] == local_size), None)
+        local_hash = _compute_file_hash(img_path)
+        # サイズ一致 → ハッシュでも確認（同名・同サイズ・別内容を検出）
+        reuse = None
+        for e in entries:
+            if e["size"] and e["size"] == local_size:
+                # リモートのハッシュフィールドがあれば使う、なければサイズ一致で再利用
+                remote_hash = e.get("hash")
+                if remote_hash and remote_hash != local_hash:
+                    continue
+                reuse = e
+                break
         if reuse:
-            # サイズ一致の1件を再利用し、残りの重複は削除予約
+            # サイズ（+ハッシュ）一致の1件を再利用し、残りの重複は削除予約
             for e in entries:
                 if e is not reuse and e.get("id") is not None:
                     stale_ids.append(e["id"])
@@ -307,17 +326,22 @@ def _count_local_attachments(attachments_dir: Path | None) -> int:
     return sum(1 for f in attachments_dir.iterdir() if f.is_file() and not _is_image(f.name))
 
 
-def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int, client: ELabFTWClient, *, force: bool = False) -> None:
+def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int, client: ELabFTWClient, *, force: bool = False) -> bool:
     """attachments_dir 内の非画像ファイルをリモートにアップロードする。
 
-    サイズ比較で差分検知し、同名・同サイズなら再利用する。
-    force=True の場合はサイズ一致でも再アップロードする。
+    差分検知: サイズ一致 → リモートに hash/sha256 フィールドがあれば
+    ローカル SHA-256 と比較。hash 不在時はサイズ一致のみで再利用。
+    force=True の場合は一致でも再アップロードする。
+
+    Returns:
+        True: 全ファイル同期成功（またはスキップ）
+        False: 1件以上のアップロードに失敗
     """
     if not attachments_dir or not attachments_dir.is_dir():
-        return
+        return True
     local_files = [f for f in sorted(attachments_dir.iterdir()) if f.is_file() and not _is_image(f.name)]
     if not local_files:
-        return
+        return True
 
     existing: dict[str, list[dict]] = {}
     try:
@@ -330,10 +354,20 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
     except Exception:
         pass
 
+    all_success = True
     for f in local_files:
         entries = existing.get(f.name, [])
         local_size = f.stat().st_size
-        reuse = None if force else next((e for e in entries if int(e.get("filesize", 0) or 0) == local_size), None)
+        local_hash = _compute_file_hash(f) if not force else None
+        reuse = None
+        if not force:
+            for e in entries:
+                if int(e.get("filesize", 0) or 0) == local_size:
+                    remote_hash = e.get("hash") or e.get("sha256")
+                    if remote_hash and remote_hash != local_hash:
+                        continue
+                    reuse = e
+                    break
         if reuse:
             print(f"    ✓ {f.name}（既存添付を再利用）")
             stale = [e for e in entries if e is not reuse and e.get("id") is not None]
@@ -346,11 +380,13 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
             else:
                 print(f"    ✗ アップロード失敗: {f.name}")
                 stale = []
+                all_success = False
         for e in stale:
             try:
                 client.delete_upload(entity, entity_id, e["id"])
             except Exception:
                 pass
+    return all_success
 
 
 def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, attachments_dir: Path) -> None:
@@ -377,8 +413,17 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
             continue
         dest = attachments_dir / safe_name
         remote_size = int(u.get("filesize", 0) or 0)
-        if dest.exists() and remote_size and dest.stat().st_size == remote_size:
-            continue
+        if dest.exists() and remote_size:
+            local_size = dest.stat().st_size
+            if local_size == remote_size:
+                # サイズ一致 → ハッシュも確認（リモートにハッシュがある場合）
+                remote_hash = u.get("hash") or u.get("sha256")
+                if remote_hash:
+                    local_hash = _compute_file_hash(dest)
+                    if local_hash == remote_hash:
+                        continue
+                else:
+                    continue
         try:
             overwriting = dest.exists()
             orig_mode = dest.stat().st_mode & 0o777 if overwriting else None
@@ -524,16 +569,52 @@ class DocsSyncer:
                 "→ esync pull で先にリモート変更を取り込むか、--force で強制上書きしてください"
             )
 
+    def _assets_changed(self, raw_body: str) -> bool:
+        """画像・添付ファイルの変更を検知する（副作用なし）。"""
+        asset_hash_file = self.id_file.with_suffix(".assets_hash")
+        new_hash = self._compute_assets_hash(raw_body)
+        if asset_hash_file.exists():
+            return asset_hash_file.read_text().strip() != new_hash
+        # 初回: ハッシュファイルなし → 変更とみなさない
+        return False
+
+    def _compute_assets_hash(self, raw_body: str) -> str:
+        parts = []
+        for m in IMAGE_RE.finditer(raw_body):
+            src = m.group(2)
+            if src.startswith(("http://", "https://")):
+                continue
+            img_path = (self.docs_dir / src).resolve()
+            if not img_path.exists():
+                img_path = (self.project_root / src).resolve()
+            if img_path.exists():
+                parts.append(_compute_file_hash(img_path))
+        if self.target.attachments_dir:
+            att_dir = self.project_root / self.target.attachments_dir
+            if att_dir.is_dir():
+                for f in sorted(att_dir.iterdir()):
+                    if f.is_file() and not _is_image(f.name):
+                        parts.append(f"{f.name}:{_compute_file_hash(f)}")
+        return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
+
+    def _save_assets_hash(self, raw_body: str) -> None:
+        asset_hash_file = self.id_file.with_suffix(".assets_hash")
+        asset_hash_file.parent.mkdir(parents=True, exist_ok=True)
+        asset_hash_file.write_text(self._compute_assets_hash(raw_body) + "\n")
+
     def sync(self, force: bool = False) -> bool:
         raw_body = self.collect_docs()
 
         body_changed = self.has_changed(raw_body)
         meta_changed = self._has_meta_changed(self.target.title, self.target.category, self.target.tags)
+        assets_changed = self._assets_changed(raw_body) if not force else False
 
-        if not force and not body_changed and not meta_changed:
-            # meta_hash がまだ無ければ初期化（既存環境のアップグレード対応）
+        if not force and not body_changed and not meta_changed and not assets_changed:
+            # meta_hash / assets_hash がまだ無ければ初期化（既存環境のアップグレード対応）
             if not self.meta_hash_file.exists():
                 self._save_meta_hash(self.target.title, self.target.category, self.target.tags)
+            if not self.id_file.with_suffix(".assets_hash").exists():
+                self._save_assets_hash(raw_body)
             print(f"  [{self.target.title}] 変更なし（スキップ）")
             return False
 
@@ -555,7 +636,7 @@ class DocsSyncer:
             self.save_item_id(item_id)
             print(f"  [{self.target.title}] {entity_label} #{item_id} を新規作成しました")
 
-        if body_changed or force or item_id is not None:
+        if body_changed or assets_changed or force or item_id is not None:
             body = _rewrite_images(raw_body, self.entity, item_id, self.client, self.docs_dir, self.project_root)
             if self.target.body_format == "md":
                 self._update_entity(item_id, body=body, title=self.target.title)
@@ -581,7 +662,12 @@ class DocsSyncer:
         self._save_meta_hash(self.target.title, self.target.category, self.target.tags)
 
         if self.target.attachments_dir:
-            _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, item_id, self.client, force=force)
+            att_ok = _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, item_id, self.client, force=force)
+        else:
+            att_ok = True
+
+        if att_ok:
+            self._save_assets_hash(raw_body)
 
         log_path = self.project_root / sync_log.DEFAULT_LOG_PATH
         files = [f.name for f in self.collect_files()]
@@ -695,6 +781,38 @@ class EachDocsSyncer:
         else:
             self.client.update_item(eid, **fields)
 
+    def _assets_changed(self, filename: str, raw_body: str) -> bool:
+        """画像・添付ファイルの変更を検知する（副作用なし）。"""
+        asset_hash_file = self.hash_dir / f"{filename}.assets_hash"
+        new_hash = self._compute_assets_hash(raw_body)
+        if asset_hash_file.exists():
+            return asset_hash_file.read_text().strip() != new_hash
+        return False
+
+    def _compute_assets_hash(self, raw_body: str) -> str:
+        parts = []
+        for m in IMAGE_RE.finditer(raw_body):
+            src = m.group(2)
+            if src.startswith(("http://", "https://")):
+                continue
+            img_path = (self.docs_dir / src).resolve()
+            if not img_path.exists():
+                img_path = (self.project_root / src).resolve()
+            if img_path.exists():
+                parts.append(_compute_file_hash(img_path))
+        if self.target.attachments_dir:
+            att_dir = self.project_root / self.target.attachments_dir
+            if att_dir.is_dir():
+                for f in sorted(att_dir.iterdir()):
+                    if f.is_file() and not _is_image(f.name):
+                        parts.append(f"{f.name}:{_compute_file_hash(f)}")
+        return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
+
+    def _save_assets_hash(self, filename: str, raw_body: str) -> None:
+        asset_hash_file = self.hash_dir / f"{filename}.assets_hash"
+        asset_hash_file.parent.mkdir(parents=True, exist_ok=True)
+        asset_hash_file.write_text(self._compute_assets_hash(raw_body) + "\n")
+
     def _check_remote_conflict(self, filename: str, eid: int) -> None:
         """前回同期時のリモートハッシュと現在のリモート body を比較。"""
         hp = self._remote_hash_path(filename)
@@ -748,11 +866,15 @@ class EachDocsSyncer:
 
             body_changed = self._has_changed(f.name, raw_body)
             meta_changed = self._has_meta_changed(f.name, title, self.target.category, self.target.tags)
+            assets_changed = self._assets_changed(f.name, raw_body) if not force else False
 
-            if not force and not body_changed and not meta_changed:
-                # meta_hash がまだ無ければ初期化（既存環境のアップグレード対応）
+            if not force and not body_changed and not meta_changed and not assets_changed:
+                # meta_hash / assets_hash がまだ無ければ初期化（既存環境のアップグレード対応）
                 if not self._meta_hash_path(f.name).exists():
                     self._save_meta_hash(f.name, title, self.target.category, self.target.tags)
+                asset_hash_file = self.hash_dir / f"{f.name}.assets_hash"
+                if not asset_hash_file.exists():
+                    self._save_assets_hash(f.name, raw_body)
                 print(f"  [{title}] 変更なし（スキップ）")
                 continue
 
@@ -774,7 +896,7 @@ class EachDocsSyncer:
                 self._save_mapping(mapping)
                 print(f"  [{title}] {entity_label} #{eid} を新規作成しました")
 
-            if body_changed or force:
+            if body_changed or assets_changed or force:
                 body = _rewrite_images(raw_body, self.entity, eid, self.client, self.docs_dir, self.project_root)
                 if self.target.body_format == "md":
                     self._update_entity(eid, body=body, title=title)
@@ -800,7 +922,12 @@ class EachDocsSyncer:
             self._save_meta_hash(f.name, title, self.target.category, self.target.tags)
 
             if self.target.attachments_dir:
-                _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, eid, self.client, force=force)
+                att_ok = _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, eid, self.client, force=force)
+            else:
+                att_ok = True
+
+            if att_ok:
+                self._save_assets_hash(f.name, raw_body)
 
             log_path = self.project_root / sync_log.DEFAULT_LOG_PATH
             sync_log.record(log_path, action="push", target=title,

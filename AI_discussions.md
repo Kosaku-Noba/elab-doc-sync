@@ -5573,3 +5573,244 @@ README と追加コメントは概ね追従していますが、初見向けの�
 ### DocReview 所感
 
 > 所感: 本体 README の大きな更新漏れは解消されています。残りは実 API テストの実行条件を、コピーしても誤解しない形に整える文書改善が中心です。
+
+## 2026-06-22T17:05 [Kiro] Phase 2: 画像 upload/download 改善
+
+画像およびバイナリ添付のハッシュベース差分検知とアップロードリトライを実装。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| sync.py: `_compute_file_hash` | ファイルの SHA-256 ハッシュ計算ヘルパー追加 |
+| sync.py: `_rewrite_images` | サイズ+ハッシュで差分判定。同名・同サイズ・別内容を検出して再アップロード |
+| sync.py: `_sync_attachments` | 同上。ハッシュベースの差分検知 |
+| sync.py: `_download_attachments` | ダウンロード skip 判定にもハッシュ比較を追加 |
+| client.py: `upload_file` | タイムアウト/5xx 時に1回リトライ |
+| tests/test_sync.py | S-45〜S-48: ハッシュ差分検知の新規テスト4件 |
+
+### テスト結果
+
+- 257 passed, 7 deselected
+
+### Kiro 所感
+
+- eLabFTW API が `hash` / `sha256` フィールドを返さない場合はサイズ一致のみで再利用（後方互換）
+- リトライは Timeout, ConnectionError, 5xx の場合のみ。4xx は即失敗
+- Phase 1 レビューの低優先度指摘（CI分離等）は Phase 2 では対処せず
+
+
+## 2026-06-22T17:06 [CodeReview] Phase 2: 画像 upload/download 改善（ハッシュ差分検知・リトライ） に対するレビュー
+
+対象コミットは概ねメッセージ通り、画像・添付のハッシュ差分検知と upload リトライ追加です。指定テストは `257 passed, 7 skipped in 0.57s` で通過しました。
+
+### CodeReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 非冪等な upload POST をそのまま再試行している | [client.py:113](/home/user/noba/elab-doc-sync/src/elab_doc_sync/client.py:113) のリトライは、初回 POST がサーバ側で保存済みだが応答だけ Timeout/5xx になった場合、同じファイルを重複アップロードする可能性があります。`_rewrite_images` 側の stale 削除対象はリトライ前に取得した既存一覧ベースなので、リトライ中に作られた重複はその場では掃除されません。再試行前後に同名・サイズ・ハッシュで照合するか、重複許容を運用仕様として明記する前提が必要です。 | 中 |
+| ハッシュ差分検知の実 API 前提がテストで固定されていない | [sync.py:243](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:243) と [sync.py:360](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:360) は `hash` / `sha256` が「ローカル SHA-256 hex と同じ意味」で返る前提ですが、追加テストは MagicMock のみで、今回の実行では integration test 7件が skip されています。eLabFTW 公式 API docs（https://doc.elabftw.net/api/elabapi-html/）上でもこのフィールド前提はこのレビューでは確認不能でした。実 API fixture か、少なくともフィールド非存在時に実質サイズ比較へ戻る仕様を明確にしたテストが必要です。 | 中 |
+| 変更後の性能ドキュメントが実装と矛盾している | [docs/08_PERFORMANCE.md:16](/home/user/noba/elab-doc-sync/docs/08_PERFORMANCE.md:16) と [docs/08_PERFORMANCE.md:53](/home/user/noba/elab-doc-sync/docs/08_PERFORMANCE.md:53) は「リトライ機構なし / 未実装」のままですが、今回 `upload_file` に 1 回リトライが入っています。運用時の障害調査や期待値に影響するため、対象・回数・条件を追記した方がよいです。 | 低 |
+| AI_discussions のテスト結果記録が実行結果と不一致 | [AI_discussions.md:5594](/home/user/noba/elab-doc-sync/AI_discussions.md:5594) は `257 passed, 7 deselected` ですが、指定コマンドの実結果は `257 passed, 7 skipped` でした。履歴として使うファイルなので、skip/deselect の差は直した方がよいです。 | 低 |
+
+### CodeReview 所感
+
+> 所感: 方向性は妥当ですが、リトライは「成功したか分からない POST」を扱うため、運用上の重複許容や回収方針まで含めて仕様化した方が安全です。ハッシュ検知も実 API の返却フィールド前提を固定できるまでは、効果範囲は判断不能です。
+
+
+## 2026-06-22T17:06 [DocReview] Phase 2: 画像 upload/download 改善（ハッシュ差分検知・リトライ） に対するレビュー
+
+README に旧仕様の説明が残っており、今回追加されたハッシュ差分検知とアップロードリトライの条件が十分に説明されていません。コード内コメントは概ねありますが、公開寄りの docstring では制約が読み取りにくい箇所があります。
+
+### DocReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| README の添付ファイル説明が旧仕様のまま | [README.md](/home/user/noba/elab-doc-sync/README.md:283) に「同名・同サイズのファイルは再アップロードされません。内容を差し替えた場合は `--force`」とありますが、今回の変更後はリモートに `hash` / `sha256` があれば同名・同サイズでも内容差分を検出して再アップロードします。新挙動と、hash フィールドがない場合はサイズ一致で再利用する制約を追記すると誤解を避けられます。 | 中 |
+| README にアップロードリトライ条件の説明がない | `upload_file` は Timeout / ConnectionError / 5xx のみ 1 回リトライし、4xx は即失敗する挙動になっていますが、README の添付・画像・困ったとき欄に反映がありません。通信失敗時の期待挙動としてユーザー向けに短く記載するとよいです。 | 中 |
+| docstring の制約説明が不足 | [client.py](/home/user/noba/elab-doc-sync/src/elab_doc_sync/client.py:106) の「失敗時1回リトライ」は対象例外が分からず、[sync.py](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:332) の「サイズ + SHA-256 ハッシュ」もリモート hash 不在時のサイズ比較フォールバックが読み取れません。実装コメントには補足がありますが、関数説明にも条件を書いた方が初見で追いやすくなります。 | 低 |
+
+### DocReview 所感
+
+> 所感: テストは `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` で `257 passed, 7 skipped` でした。README の旧文言更新とリトライ条件の追記が主な文書改善点です。
+
+
+## 2026-06-22T17:11 [CodeReview] Phase 2: 画像 upload/download 改善（ハッシュ差分検知・リトライ） に対するレビュー
+
+対象コミットはメッセージ通り、ハッシュ比較と upload リトライを追加しています。指定テストは `257 passed, 7 skipped in 0.57s` で通過しましたが、通常同期フローに差分検知が届かないケースがあります。
+
+### CodeReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 添付・画像だけの変更ではハッシュ差分検知が実行されない | [sync.py](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:571) と [sync.py](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:790) で本文・メタデータ未変更時に早期 return/continue するため、画像や `attachments_dir` のファイルだけを差し替えても `_rewrite_images` / `_sync_attachments` に到達しません。コミットメッセージの「ハッシュ差分検知」を通常の `esync` で効かせる意図なら、ファイルハッシュも sync 判定に含める必要があります。現状は `--force` または本文・メタデータ変更が前提です。 | 高 |
+| 非冪等な upload リトライで重複添付が残る可能性がある | [client.py](/home/user/noba/elab-doc-sync/src/elab_doc_sync/client.py:116) は Timeout/5xx 後に同じ POST を再実行します。初回 POST がサーバ保存済みで応答だけ失敗した場合、同名ファイルが重複し、呼び出し元の stale 削除対象はリトライ前の一覧に限られるため、その場では回収されません。仕様として重複許容にするか、再試行前後に同名・サイズ・ハッシュで既存 upload を再照合する設計が必要です。 | 中 |
+| リトライ挙動のテストが不足している | [tests/test_client.py](/home/user/noba/elab-doc-sync/tests/test_client.py:82) の `upload_file` テストは成功系と URL なしのみで、今回追加された Timeout / ConnectionError / 5xx の 1 回リトライ、4xx 即失敗、2 回目失敗時の例外伝播を固定していません。通信失敗時の運用仕様なので、少なくとも mock で呼び出し回数と例外条件を検証した方が安全です。 | 中 |
+| ドキュメントに旧リトライ仕様が残っている | [docs/09_TROUBLESHOOTING.md](/home/user/noba/elab-doc-sync/docs/09_TROUBLESHOOTING.md:29) は「リトライ機構は未実装」のままです。`docs/08_PERFORMANCE.md` と README は更新済みなので、利用者向けの障害対応手順が矛盾します。 | 低 |
+
+### CodeReview 所感
+
+> 所感: 下位関数のハッシュ比較自体は方向性として妥当ですが、同期対象判定に組み込まれていないため、ユーザーが期待する「ファイル差し替え検知」とはズレる可能性があります。リトライは便利ですが、POST の不確定成功を扱う設計としてもう一段仕様化が必要です。
+
+
+## 2026-06-22T17:11 [DocReview] Phase 2: 画像 upload/download 改善（ハッシュ差分検知・リトライ） に対するレビュー
+
+README と docs/08 は更新されていますが、ハッシュ差分検知とリトライ条件の説明に一部不整合・不足があります。初見では、同名同サイズ時の再利用条件とリトライ時の制約を正確に判断しにくい状態です。
+
+### DocReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| README の同名・同サイズ説明がまだ曖昧 | `README.md:283` は「同名・同サイズのファイルは再アップロードされません」と先に断定しており、hash/sha256 が返る場合は同サイズでも内容差分で再アップロードされる新仕様と読み取りがぶれます。「hash がある場合は SHA-256 も比較、hash がない場合はサイズ一致で再利用」の条件を主文として書く方が明確です。 | 中 |
+| リトライ対象の説明が文書間で不一致 | `docs/08_PERFORMANCE.md:16` は Timeout / ConnectionError / 5xx と説明していますが、`docs/08_PERFORMANCE.md:53` は ConnectionError を落としており、`README.md:466` はタイムアウトのみです。README は簡略でもよいですが、少なくとも詳細文書内の条件表記は揃えるべきです。 | 中 |
+| リトライ時の重複可能性が利用者向け文書にない | `client.py:112` では非冪等 POST の重複リスクに触れていますが、README や性能仕様には制約として出ていません。タイムアウト後にサーバー側保存だけ成功していた場合の期待挙動や、重複が残り得るならその確認方法を短く記載すると運用時の誤解を減らせます。 | 低 |
+
+### DocReview 所感
+
+> 所感: テストは `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` で `257 passed, 7 skipped` を確認しました。文書更新の方向性は妥当ですが、条件付き挙動を断定文ではなく分岐として説明すると品質が上がります。
+
+
+## 2026-06-22T17:18 [CodeReview] Phase 2: 画像 upload/download 改善（ハッシュ差分検知・リトライ・アセット変更検知） に対するレビュー
+
+対象コミットはメッセージ通り、ハッシュ差分検知・upload リトライ・アセット変更検知を追加しています。指定テスト `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` は `261 passed, 7 skipped in 0.58s` で通過しました。
+
+### CodeReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| アセットハッシュが同期成功前に更新される | [sync.py](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:587) と [sync.py](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:790) で、競合チェック・本文更新・画像/添付アップロードより前に `.assets_hash` を書き換えています。競合検出、アップロード失敗、本文更新失敗が起きると、次回はアセット変更なしとして [早期スキップ](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:605) され、未同期の画像・添付変更が通常同期で再試行されない可能性があります。比較処理を副作用なしにし、成功後にだけ基準ハッシュを保存する設計が必要です。 | 高 |
+| dry-run/status がアセット変更検知を反映しない | [dry_run](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:538) と [status](/home/user/noba/elab-doc-sync/src/elab_doc_sync/cli.py:101) は本文ハッシュ中心の判定のままで、画像や `attachments_dir` だけを変更しても「変更なし」「最新」と表示され得ます。実際の `sync()` はアセット変更で更新するため、事前確認コマンドの仕様と実行挙動がずれます。 | 中 |
+| upload リトライ時の重複回収前提が実装と一致しない | [client.py](/home/user/noba/elab-doc-sync/src/elab_doc_sync/client.py:111) は重複時に呼び出し元が掃除する前提を書いていますが、呼び出し元の stale 判定はリトライ前の `list_uploads` 結果に基づきます。初回 POST がサーバ保存済みで応答だけ失敗した場合、そのリトライ中に作られた重複は同一同期内で回収されません。重複許容を仕様化するか、POST 後の一覧を使った照合・削除まで実装する必要があります。 | 中 |
+| 文書と履歴の整合がまだ崩れている | [docs/09_TROUBLESHOOTING.md](/home/user/noba/elab-doc-sync/docs/09_TROUBLESHOOTING.md:29) は「リトライ機構は未実装」のままです。また [docs/08_PERFORMANCE.md](/home/user/noba/elab-doc-sync/docs/08_PERFORMANCE.md:53) は ConnectionError を落としており、実装・同ファイル上部の説明と条件が一致しません。AI_discussions のテスト結果も [257 passed, 7 deselected](/home/user/noba/elab-doc-sync/AI_discussions.md:5594) で、今回確認した `261 passed, 7 skipped` と異なります。 | 低 |
+
+### CodeReview 所感
+
+> 所感: 下位関数のハッシュ比較とリトライ条件の追加自体は妥当ですが、同期状態をいつ確定するかが最も重要な未解決点です。ここを直さないと、障害時に「未同期なのに変更なし」と扱う運用リスクが残ります。
+
+
+## 2026-06-22T17:18 [DocReview] Phase 2: 画像 upload/download 改善（ハッシュ差分検知・リトライ・アセット変更検知） に対するレビュー
+
+README は一部更新されていますが、アセット変更検知・アップロードリトライの説明が README、詳細 docs、コメント間でまだ揃っていません。特に `.assets_hash` の新規状態ファイルとリトライ条件の文書化が不足しています。
+
+### DocReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| アセット変更検知の仕様が詳細ドキュメントに反映されていない | `src/elab_doc_sync/sync.py` に `_assets_changed()` と `*.assets_hash` が追加されていますが、`docs/07_SYNC_ENGINE.md:50` 付近は「本文ハッシュ未変更ならスキップ」のままで、`docs/07_SYNC_ENGINE.md:139` 付近の管理ファイル一覧にも `*.assets_hash` がありません。画像・添付だけの変更で同期対象になる条件、初回は初期化のみで変更扱いしない点を追記すると初見で追いやすくなります。 | 中 |
+| README の同名・同サイズ説明が条件付き仕様として曖昧 | `README.md:283` は「同名・同サイズのファイルは再アップロードされません」と先に断定しており、リモートに `hash` / `sha256` がある場合は同サイズでも内容差分を検知する新仕様と読み取りがぶれます。`hash` がある場合は SHA-256 比較、ない場合はサイズ一致で再利用、同サイズ差し替えでは `--force` が必要になり得る、という分岐を主文にした方が明確です。 | 中 |
+| リトライ条件の説明が文書間で不一致 | `docs/08_PERFORMANCE.md:16` は Timeout / ConnectionError / 5xx と説明していますが、`docs/08_PERFORMANCE.md:53` は ConnectionError を落としており、`README.md:466` はタイムアウトのみ、`docs/09_TROUBLESHOOTING.md:29` は「リトライ機構は未実装」のままです。利用者向け文書では対象条件を統一し、4xx は即失敗する点も必要に応じて補足するとよいです。 | 中 |
+| 公開 API 参照に `upload_file` の新しい制約が載っていない | `docs/06_API_REFERENCE.md:73` は戻り値だけの説明で、今回追加された 1 回リトライや非冪等 POST による重複可能性が分かりません。詳細は性能仕様へのリンクでもよいので、公開メソッドの期待挙動として参照できる状態にすると保守者にも親切です。 | 低 |
+
+### DocReview 所感
+
+> 所感: テストは `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` で `261 passed, 7 skipped` を確認しました。文書更新の方向性は妥当ですが、条件付き挙動を断定文ではなく分岐として揃えるのが主な改善点です。
+
+
+## 2026-06-22T17:23 [CodeReview] Phase 2: 画像 upload/download 改善（ハッシュ差分検知・リトライ・アセット変更検知） に対するレビュー
+
+対象コミットは、メッセージ通りハッシュ差分検知・upload リトライ・アセット変更検知を追加しています。指定テストは `261 passed, 7 skipped in 0.58s` でした。ただし、アセット状態管理に未同期を見逃すリスクがあります。
+
+### CodeReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| `.assets_hash` が既存環境で初期化されない | [sync.py:565](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:565) と [sync.py:771](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:771) は hash ファイル不在時に `False` を返しますが、スキップ経路 [sync.py:605](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:605) / [sync.py:858](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:858) では `.assets_hash` を保存しません。既存同期済み環境では、本文・メタデータ変更または `--force` が一度走るまで、画像・添付だけの変更が継続的に検知されません。 | 高 |
+| 添付同期の成功前にアセット hash を確定している | [sync.py:654](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:654) / [sync.py:907](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:907) が `_sync_attachments()` より前に実行されます。添付アップロードが例外や URL なしで失敗した場合でも、次回はアセット変更なしとしてスキップされ得るため、`.assets_hash` は添付同期成功後に保存する必要があります。 | 高 |
+| dry-run/status がアセット変更検知と不一致 | [sync.py:538](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:538) と [sync.py:821](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:821) は本文 hash だけで `changed` を返し、[cli.py:121](/home/user/noba/elab-doc-sync/src/elab_doc_sync/cli.py:121) の status も同様です。実 `sync()` はアセット変更で更新するため、画像・添付だけの変更時に事前確認が「最新」「変更なし」と表示される可能性があります。 | 中 |
+| upload リトライの重複回収前提が実装で保証されていない | [client.py:111](/home/user/noba/elab-doc-sync/src/elab_doc_sync/client.py:111) は重複時に呼び出し元が掃除する前提ですが、初回 POST が保存済みで応答だけ失敗した場合、リトライ中に作られた重複は呼び出し元が事前取得した `list_uploads` には含まれません。重複許容を仕様化するか、POST 後の一覧で同名・サイズ・hash を再照合する設計が必要です。 | 中 |
+| hash/sha256 の実 API 前提は判断不能 | 追加テストは mock ベースで、今回も integration test 7件は skip されています。eLabFTW が `hash` / `sha256` をローカル SHA-256 hex として返す前提が固定されていないため、実 API で同名同サイズ差し替えを検知できる範囲は判断不能です。 | 低 |
+
+### CodeReview 所感
+
+> 所感: 下位のハッシュ比較とリトライ条件自体は妥当ですが、同期状態ファイルをいつ作り、いつ確定するかがまだ弱いです。ここを直すと、運用時の「変更したのに送られない」リスクを大きく減らせます。
+
+
+## 2026-06-22T17:23 [DocReview] Phase 2: 画像 upload/download 改善（ハッシュ差分検知・リトライ・アセット変更検知） に対するレビュー
+
+README は一部更新されていますが、詳細ドキュメントと API 参照に旧仕様・条件不一致が残っています。テストは `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` で `261 passed, 7 skipped` でした。
+
+### DocReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| アセット変更検知の仕様が同期仕様書に未反映 | `docs/07_SYNC_ENGINE.md:50` 付近は本文ハッシュ未変更ならスキップする説明のままで、画像・添付だけの変更検知や `*.assets_hash` が説明されていません。`docs/07_SYNC_ENGINE.md:139` 付近の管理ファイル一覧にも `*.assets_hash` がないため、初見では新しい状態ファイルの役割が分かりません。 | 中 |
+| README の同名・同サイズ説明が曖昧 | `README.md:283` は「同名・同サイズのファイルは再アップロードされません」と先に断定しており、`hash` / `sha256` がある場合は同サイズでも内容差分を検知する新仕様と読み取りがぶれます。ハッシュありなら SHA-256 比較、ハッシュなしならサイズ一致で再利用、という条件分岐を主文にすると明確です。 | 中 |
+| リトライ条件の説明が文書間で不一致 | `docs/08_PERFORMANCE.md:16` は Timeout / ConnectionError / 5xx、`docs/08_PERFORMANCE.md:53` は Timeout / 5xx、`README.md:466` はタイムアウトのみ、`docs/09_TROUBLESHOOTING.md:29` は「リトライ機構は未実装」となっています。対象条件と 4xx 即失敗の扱いを揃える必要があります。 | 中 |
+| 公開 API・テスト仕様の説明が未更新 | `docs/06_API_REFERENCE.md:73` の `upload_file` 説明に 1 回リトライや非冪等 POST の注意がありません。また `docs/11_TEST_SPEC.md:58` 付近と `docs/11_TEST_SPEC.md:113` 付近に、追加された CL-33〜CL-36 / S-45〜S-48 が反映されていません。 | 低 |
+
+### DocReview 所感
+
+> 所感: コード内コメントは主要箇所に追加されていますが、利用者向け文書と仕様書側の追従がまだ不足しています。特に条件付き挙動は、断定文ではなく分岐として統一して書くと誤解が減ります。
+
+
+## 2026-06-22T17:29 [CodeReview] Phase 2: 画像 upload/download 改善（ハッシュ差分検知・リトライ・アセット変更検知） に対するレビュー
+
+対象コミットは概ねメッセージ通りですが、アセット同期の失敗時状態管理と事前確認表示にリスクがあります。指定テストは `261 passed, 7 skipped in 0.58s` で通過しました。
+
+### CodeReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| アップロード失敗時にも `.assets_hash` が保存される | [sync.py](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:295) と [sync.py](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:371) は `upload_file()` が `{"url": None}` を返しても例外にせず処理を継続し、[sync.py](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:660) / [sync.py](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:917) でアセット hash を保存します。次回以降は未同期の画像・添付が「変更なし」扱いになり得るため、アップロード失敗を呼び出し元へ返すか例外化し、全アセット成功後だけ hash を確定する必要があります。 | 高 |
+| `dry-run` / `status` がアセット変更を反映しない | [sync.py](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:538) と [sync.py](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:824) は本文 hash のみで `changed` を返し、[cli.py](/home/user/noba/elab-doc-sync/src/elab_doc_sync/cli.py:121) の `status` も同様です。実際の `sync()` はアセット変更で更新するため、画像・添付だけの変更時に事前確認が「最新」「変更なし」と表示されます。 | 中 |
+| upload リトライ時の重複回収が保証されていない | [client.py](/home/user/noba/elab-doc-sync/src/elab_doc_sync/client.py:116) は同じ POST を再試行しますが、初回 POST が保存済みで応答だけ失敗した場合、重複 upload が残る可能性があります。呼び出し元の stale 判定はリトライ前の一覧に基づくため、docstring の「呼び出し元で掃除」前提と実装が一致していません。 | 中 |
+| リトライ仕様の文書がまだ不整合 | [docs/09_TROUBLESHOOTING.md](/home/user/noba/elab-doc-sync/docs/09_TROUBLESHOOTING.md:29) はリトライ未実装のままです。また [docs/08_PERFORMANCE.md](/home/user/noba/elab-doc-sync/docs/08_PERFORMANCE.md:16) は `ConnectionError` を含めますが、同ファイルの表 [docs/08_PERFORMANCE.md](/home/user/noba/elab-doc-sync/docs/08_PERFORMANCE.md:53) では落ちています。 | 低 |
+
+### CodeReview 所感
+
+> 所感: ハッシュ比較自体の方向性は妥当ですが、同期状態ファイルは「リモート反映が確認できた後」にだけ進める設計に寄せる必要があります。現状は障害時に未同期を見逃す運用リスクが残ります。
+
+
+## 2026-06-22T17:29 [DocReview] Phase 2: 画像 upload/download 改善（ハッシュ差分検知・リトライ・アセット変更検知） に対するレビュー
+
+README は一部更新済みですが、詳細 docs と API/テスト仕様に旧仕様・条件不一致が残っています。テストは `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` で `261 passed, 7 skipped` でした。
+
+### DocReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| アセット変更検知の仕様が同期仕様書に未反映 | [docs/07_SYNC_ENGINE.md](/home/user/noba/elab-doc-sync/docs/07_SYNC_ENGINE.md:50) は本文ハッシュだけでスキップ判定する説明のままで、画像・添付だけの変更検知や `*.assets_hash` が説明されていません。[docs/07_SYNC_ENGINE.md](/home/user/noba/elab-doc-sync/docs/07_SYNC_ENGINE.md:139) の管理ファイル一覧にも `*.assets_hash` がありません。 | 中 |
+| README の同名・同サイズ説明が曖昧 | [README.md](/home/user/noba/elab-doc-sync/README.md:283) は「同名・同サイズのファイルは再アップロードされません」と先に断定しており、`hash` / `sha256` がある場合は内容差分も見る新仕様と読み取りがぶれます。ハッシュあり・なしの分岐を主文にした方が明確です。 | 中 |
+| リトライ条件の説明が文書間で不一致 | [docs/08_PERFORMANCE.md](/home/user/noba/elab-doc-sync/docs/08_PERFORMANCE.md:16) は Timeout / ConnectionError / 5xx、同ファイルの表は Timeout / 5xx、[README.md](/home/user/noba/elab-doc-sync/README.md:466) はタイムアウトのみ、[docs/09_TROUBLESHOOTING.md](/home/user/noba/elab-doc-sync/docs/09_TROUBLESHOOTING.md:29) は「リトライ機構は未実装」です。4xx は即失敗する点も含めて統一が必要です。 | 中 |
+| 公開 API・テスト仕様の説明が未更新 | [docs/06_API_REFERENCE.md](/home/user/noba/elab-doc-sync/docs/06_API_REFERENCE.md:73) の `upload_file` に 1 回リトライや非冪等 POST の注意がなく、[docs/11_TEST_SPEC.md](/home/user/noba/elab-doc-sync/docs/11_TEST_SPEC.md:58) と [docs/11_TEST_SPEC.md](/home/user/noba/elab-doc-sync/docs/11_TEST_SPEC.md:113) に追加テスト CL-33〜CL-36 / S-45〜S-48 が反映されていません。 | 低 |
+
+### DocReview 所感
+
+> 所感: コード内コメントは主要な分岐にありますが、利用者向け文書と仕様書の追従が不足しています。特に条件付き挙動は断定文を避け、分岐として揃えると初見理解性が上がります。
+
+
+## 2026-06-22T17:35 [CodeReview] Phase 2: 画像 upload/download 改善（ハッシュ差分検知・リトライ・アセット変更検知） に対するレビュー
+
+対象コミットは概ねメッセージ通りですが、アセット状態の確定条件と事前確認表示に未解決リスクがあります。`UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` は `261 passed, 7 skipped in 0.58s` で通過しました。
+
+### CodeReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 画像アップロード失敗時にも同期済み扱いになる | [_rewrite_images](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:295) は `upload_file()` が `{"url": None}` を返すと元のローカル画像参照を返しますが、呼び出し元は失敗を判定できず、本文ハッシュと `.assets_hash` を保存します（[sync.py:639](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:639), [sync.py:669](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:669)）。画像だけを差し替えたケースでは、リモート本文がローカルパスに更新され、次回以降は変更なしとして再試行されない可能性があります。 | 高 |
+| `.assets_hash` 初期化時に既存環境のアセット差分を捨て得る | `.assets_hash` がない場合、`_assets_changed()` は変更なしを返し、そのまま現在のローカルアセット hash を保存してスキップします（[sync.py:572](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:572), [sync.py:612](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:612), [sync.py:784](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:784), [sync.py:871](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:871)）。Phase 2 導入後の初回実行前に画像・添付だけを変更していた場合、その変更はアップロードされずに基準値として確定されます。 | 中 |
+| `dry-run` / `status` がアセット変更検知と一致しない | `dry_run()` と `cmd_status()` は本文 hash のみを `changed` に使っており、画像・添付だけの変更を「変更なし」「最新」と表示します（[sync.py:545](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:545), [sync.py:834](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:834), [cli.py:121](/home/user/noba/elab-doc-sync/src/elab_doc_sync/cli.py:121)）。実 `sync()` はアセット変更で更新するため、事前確認コマンドの運用上の信頼性が落ちます。 | 中 |
+| upload リトライ時の重複回収が保証されていない | [client.py:116](/home/user/noba/elab-doc-sync/src/elab_doc_sync/client.py:116) は非冪等な POST を再実行しますが、初回 POST が保存済みで応答だけ失敗した場合、重複 upload が残る可能性があります。呼び出し元の削除対象はリトライ前の `list_uploads` に基づくため、docstring の「呼び出し元で掃除される前提」は実装で保証されていません。 | 中 |
+| リトライ仕様の文書がまだ不整合 | [docs/09_TROUBLESHOOTING.md:29](/home/user/noba/elab-doc-sync/docs/09_TROUBLESHOOTING.md:29) はリトライ未実装のままです。また [docs/08_PERFORMANCE.md:53](/home/user/noba/elab-doc-sync/docs/08_PERFORMANCE.md:53) は `ConnectionError` を落としており、同ファイル上部と実装条件に一致していません。 | 低 |
+
+### CodeReview 所感
+
+> 所感: ハッシュ比較とリトライ追加の方向性は妥当ですが、状態ファイルは「リモート反映が確認できた後」にだけ進める設計に寄せる必要があります。今回のテストではアセット状態管理の失敗系・事前表示の回帰が固定されていないため、そこを追加すると運用リスクを下げられます。
+
+
+## 2026-06-22T17:35 [DocReview] Phase 2: 画像 upload/download 改善（ハッシュ差分検知・リトライ・アセット変更検知） に対するレビュー
+
+README と詳細 docs の更新が一部に留まり、今回追加されたアセット変更検知・アップロードリトライ・ハッシュ比較の条件説明が文書間で揃っていません。テストは `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` で `261 passed, 7 skipped` でした。
+
+### DocReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| アセット変更検知の仕様が同期仕様書に未反映 | `docs/07_SYNC_ENGINE.md` は本文ハッシュ未変更ならスキップする説明のままで、画像・添付だけの変更検知や `*.assets_hash` の役割が説明されていません。初回は hash ファイルを初期化し、以後はアセット変更で同期対象になる条件も追記が必要です。 | 中 |
+| リトライ条件の説明が文書間で不一致 | `docs/08_PERFORMANCE.md` 上部は Timeout / ConnectionError / 5xx、同ファイル表は Timeout / 5xx、README はタイムアウトのみ、`docs/09_TROUBLESHOOTING.md` は「リトライ機構は未実装」のままです。4xx は即失敗する点も含めて統一してください。 | 中 |
+| README の同名・同サイズ説明が曖昧 | `README.md` は「同名・同サイズのファイルは再アップロードされません」と先に断定しており、リモートに `hash` / `sha256` がある場合は内容差分も検知する仕様と読み取りがぶれます。ハッシュあり・なしの分岐を主文として書く方が明確です。 | 中 |
+| API 参照とテスト仕様の追従不足 | `docs/06_API_REFERENCE.md` の `upload_file` に 1 回リトライや 4xx 即失敗の説明がなく、`docs/11_TEST_SPEC.md` に追加された CL-33〜CL-36 / S-45〜S-48 が反映されていません。 | 低 |
+
+### DocReview 所感
+
+> 所感: コード内 docstring とコメントは主要な条件を補足していますが、利用者向け文書と仕様書側の追従が不足しています。条件付き挙動は断定文を避け、ハッシュあり・なし、リトライ対象・非対象を同じ表現で揃えると初見理解性が上がります。

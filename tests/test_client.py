@@ -386,3 +386,64 @@ def test_resolve_category_id_not_found(mock_req, client):
     mock_req.return_value = _mock_response([{"id": 1, "title": "試薬"}])
     with pytest.raises(ValueError, match="見つかりません"):
         client.resolve_category_id("items", "存在しない")
+
+
+# ── Phase 2: upload リトライテスト ──────────────────────────
+
+
+# CL-33: Timeout → 1回リトライして成功
+@patch("elab_doc_sync.client.requests.request")
+def test_upload_file_retries_on_timeout(mock_req, client, tmp_path):
+    from requests.exceptions import Timeout
+    img = tmp_path / "retry.png"
+    img.write_bytes(b"\x89PNG")
+    # First call: POST → Timeout, Second call: POST → success, Third: GET list
+    post_success = _mock_response()
+    list_resp = _mock_response([{"real_name": "retry.png", "long_name": "abc", "storage": "1", "id": 50}])
+    mock_req.side_effect = [Timeout("timeout"), post_success, list_resp]
+    result = client.upload_file("items", 1, str(img))
+    assert result["url"] is not None
+    assert mock_req.call_count == 3  # POST(fail) + POST(success) + GET
+
+
+# CL-34: 5xx → 1回リトライして成功
+@patch("elab_doc_sync.client.requests.request")
+def test_upload_file_retries_on_5xx(mock_req, client, tmp_path):
+    from requests.exceptions import HTTPError
+    img = tmp_path / "retry5xx.png"
+    img.write_bytes(b"\x89PNG")
+    resp_500 = MagicMock()
+    resp_500.status_code = 500
+    resp_500.raise_for_status.side_effect = HTTPError(response=resp_500)
+    post_success = _mock_response()
+    list_resp = _mock_response([{"real_name": "retry5xx.png", "long_name": "def", "storage": "1", "id": 51}])
+    mock_req.side_effect = [resp_500, post_success, list_resp]
+    result = client.upload_file("items", 1, str(img))
+    assert result["url"] is not None
+
+
+# CL-35: 4xx は即失敗（リトライしない）
+@patch("elab_doc_sync.client.requests.request")
+def test_upload_file_no_retry_on_4xx(mock_req, client, tmp_path):
+    from requests.exceptions import HTTPError
+    img = tmp_path / "fail4xx.png"
+    img.write_bytes(b"\x89PNG")
+    resp_403 = MagicMock()
+    resp_403.status_code = 403
+    resp_403.raise_for_status.side_effect = HTTPError(response=resp_403)
+    mock_req.side_effect = [resp_403]
+    with pytest.raises(HTTPError):
+        client.upload_file("items", 1, str(img))
+    assert mock_req.call_count == 1  # No retry
+
+
+# CL-36: 2回目も失敗 → 例外伝播
+@patch("elab_doc_sync.client.requests.request")
+def test_upload_file_raises_after_second_timeout(mock_req, client, tmp_path):
+    from requests.exceptions import Timeout
+    img = tmp_path / "fail2.png"
+    img.write_bytes(b"\x89PNG")
+    mock_req.side_effect = [Timeout("t1"), Timeout("t2")]
+    with pytest.raises(Timeout):
+        client.upload_file("items", 1, str(img))
+    assert mock_req.call_count == 2
