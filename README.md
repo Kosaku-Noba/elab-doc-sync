@@ -21,7 +21,7 @@ Markdown ドキュメントを eLabFTW に同期する CLI ツール。`esync` �
 uv tool install --force git+https://github.com/Kosaku-Noba/elab-doc-sync.git
 ```
 
-### 初期設定（質問に答えるだけ）
+### 初期設定（質問に答える）
 
 ```bash
 esync init
@@ -37,7 +37,7 @@ eLabFTW → ユーザー設定 → API Keys でキーを作成し、`.elab-sync.
 elabftw:
   url: "https://your-elabftw.example.com"
   api_key: "ここにキーを貼る"
-  verify_ssl: true
+  verify_ssl: false
 ```
 
 あるいは環境変数でもOK:
@@ -77,13 +77,18 @@ esync --dry-run
 esync pull
 ```
 
-新しいエンティティを取得:
+eLabFTW 上の特定の記事をローカルに持ってくる:
 
 ```bash
 esync pull --id 42 --entity items
 ```
 
-複数まとめて:
+- `--id` は eLabFTW の記事番号です（URL の末尾やタイトル横に表示される `#42` のような数字）
+- `--entity` は記事の種類です:
+  - `items`（= リソース）: 試薬、プロトコル、機器情報など
+  - `experiments`（= 実験ノート）: 実験記録
+
+複数まとめて取得:
 
 ```bash
 esync pull --id 42 --id 43 --id 44 --entity items
@@ -219,6 +224,7 @@ $$\frac{\partial f}{\partial x} = 2x + 1$$
 4. **判定できない** → 対話で選択 or `--auto` で最高スコアを採用
 
 スコアリング:
+
 - `title_pattern` (glob) マッチ: +10
 - `category` 一致: +10
 - `tags` の包含率: 最大 5 + 特異性ボーナス
@@ -235,34 +241,34 @@ esync pull --id 42 --entity items --auto
 
 ## 同期モード
 
-| モード | 動作 | 使いどころ |
-|--------|------|-----------|
+| モード    | 動作                                    | 使いどころ                           |
+| --------- | --------------------------------------- | ------------------------------------ |
 | `merge` | 複数 md を結合して 1 エンティティに送信 | プロジェクトドキュメントをまとめたい |
-| `each` | 1 ファイル = 1 エンティティ | 実験ノートを個別に管理したい |
+| `each`  | 1 ファイル = 1 エンティティ             | 実験ノートを個別に管理したい         |
 
 ---
 
 ## コマンド一覧
 
-| コマンド | やること |
-|---------|---------|
-| `esync` | push（ローカル → eLabFTW） |
-| `esync pull` | pull（eLabFTW → ローカル） |
-| `esync pull --id 42 --entity items` | 指定 ID を取得 |
-| `esync diff` | 差分表示 |
-| `esync status` | 同期状態を確認 |
-| `esync list` | リモート一覧 |
-| `esync clone` | プロジェクトを構築 |
-| `esync tag list/add/remove` | タグ操作 |
-| `esync category list/show/set` | カテゴリ操作 |
-| `esync profile list/add/remove` | 接続プロファイル管理 |
-| `esync link <ID>` | 手動紐付け |
-| `esync verify` | 整合性チェック |
-| `esync init` | 初期設定 |
-| `esync update` | ツール更新 |
-| `esync --dry-run` | 実行せず確認 |
-| `esync --force` | 強制同期 |
-| `esync -t "名前"` | 特定ターゲットだけ |
+| コマンド                              | やること                    |
+| ------------------------------------- | --------------------------- |
+| `esync`                             | push（ローカル → eLabFTW） |
+| `esync pull`                        | pull（eLabFTW → ローカル） |
+| `esync pull --id 42 --entity items` | 指定 ID を取得              |
+| `esync diff`                        | 差分表示                    |
+| `esync status`                      | 同期状態を確認              |
+| `esync list`                        | リモート一覧                |
+| `esync clone`                       | プロジェクトを構築          |
+| `esync tag list/add/remove`         | タグ操作                    |
+| `esync category list/show/set`      | カテゴリ操作                |
+| `esync profile list/add/remove`     | 接続プロファイル管理        |
+| `esync link <ID>`                   | 手動紐付け                  |
+| `esync verify`                      | 整合性チェック              |
+| `esync init`                        | 初期設定                    |
+| `esync update`                      | ツール更新                  |
+| `esync --dry-run`                   | 実行せず確認                |
+| `esync --force`                     | 強制同期                    |
+| `esync -t "名前"`                   | 特定ターゲットだけ          |
 
 ---
 
@@ -293,31 +299,31 @@ profiles:
 
 ### ターゲット設定
 
-| キー | 必須 | デフォルト | 説明 |
-|------|------|-----------|------|
-| `docs_dir` | ✅ | — | Markdown ディレクトリ |
-| `title` | merge時✅ | — | エンティティのタイトル |
-| `pattern` | — | `*.md` | Glob パターン |
-| `mode` | — | `merge` | `merge` / `each` |
-| `entity` | — | `items` | `items` / `experiments` |
-| `profile` | — | `default` | 使用する接続プロファイル |
-| `tags` | — | `[]` | push 時に自動追加するタグ（pull 振り分けにも使用） |
-| `category` | — | — | push 時のカテゴリ（pull 振り分けにも使用） |
-| `title_pattern` | — | — | pull 振り分け用タイトル glob |
-| `body_format` | — | `html` | `md` / `html` |
-| `attachments_dir` | — | — | 添付ファイルディレクトリ |
-| `attachments_pattern` | — | `*` | 添付ファイル glob フィルタ |
+| キー                    | 必須      | デフォルト  | 説明                                               |
+| ----------------------- | --------- | ----------- | -------------------------------------------------- |
+| `docs_dir`            | ✅        | —          | Markdown ディレクトリ                              |
+| `title`               | merge時✅ | —          | エンティティのタイトル                             |
+| `pattern`             | —        | `*.md`    | Glob パターン                                      |
+| `mode`                | —        | `merge`   | `merge` / `each`                               |
+| `entity`              | —        | `items`   | `items` / `experiments`                        |
+| `profile`             | —        | `default` | 使用する接続プロファイル                           |
+| `tags`                | —        | `[]`      | push 時に自動追加するタグ（pull 振り分けにも使用） |
+| `category`            | —        | —          | push 時のカテゴリ（pull 振り分けにも使用）         |
+| `title_pattern`       | —        | —          | pull 振り分け用タイトル glob                       |
+| `body_format`         | —        | `html`    | `md` / `html`                                  |
+| `attachments_dir`     | —        | —          | 添付ファイルディレクトリ                           |
+| `attachments_pattern` | —        | `*`       | 添付ファイル glob フィルタ                         |
 
 ---
 
 ## トラブルシューティング
 
-| メッセージ | やること |
-|-----------|---------|
-| `API キーが設定されていません` | `.elab-sync.yaml` の api_key を確認 |
-| `設定ファイルが見つかりません` | `esync init` を実行 |
-| `ファイルがありません` | `docs_dir` に `.md` ファイルを置く |
-| タイムアウト | 自動で1回リトライされます |
+| メッセージ                       | やること                               |
+| -------------------------------- | -------------------------------------- |
+| `API キーが設定されていません` | `.elab-sync.yaml` の api_key を確認  |
+| `設定ファイルが見つかりません` | `esync init` を実行                  |
+| `ファイルがありません`         | `docs_dir` に `.md` ファイルを置く |
+| タイムアウト                     | 自動で1回リトライされます              |
 
 ---
 
