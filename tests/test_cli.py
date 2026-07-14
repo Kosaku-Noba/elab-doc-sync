@@ -1665,3 +1665,114 @@ def test_append_target_to_yaml(tmp_path):
     assert len(raw["targets"]) == 2
     assert raw["targets"][1]["docs_dir"] == "new/"
     assert raw["targets"][1]["tags"] == ["new"]
+
+
+# ── profile command (PROF-10 ~ PROF-15) ──────────────────
+
+# PROF-10: profile list — elabftw セクションを default として表示
+def test_cmd_profile_list_legacy(tmp_path, capsys):
+    from elab_doc_sync.cli import cmd_profile
+    data = {
+        "elabftw": {"url": "https://elab.example.com", "api_key": "key123", "verify_ssl": False},
+        "targets": [{"docs_dir": "docs/", "mode": "each", "entity": "items"}],
+    }
+    p = tmp_path / ".elab-sync.yaml"
+    p.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    args = Namespace(config=str(p), target=None, force=False, profile_action="list")
+    cmd_profile(args)
+    out = capsys.readouterr().out
+    assert "default" in out
+    assert "elab.example.com" in out
+    assert "✓" in out  # API キーあり
+
+
+# PROF-11: profile list — profiles セクション
+def test_cmd_profile_list_profiles_section(tmp_path, capsys):
+    from elab_doc_sync.cli import cmd_profile
+    data = {
+        "profiles": {
+            "main": {"url": "https://a.com", "api_key": "ka", "verify_ssl": True},
+            "team-b": {"url": "https://b.com", "api_key": "", "verify_ssl": False},
+        },
+        "targets": [{"docs_dir": "docs/", "mode": "each", "entity": "items"}],
+    }
+    p = tmp_path / ".elab-sync.yaml"
+    p.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    args = Namespace(config=str(p), target=None, force=False, profile_action="list")
+    cmd_profile(args)
+    out = capsys.readouterr().out
+    assert "main" in out
+    assert "team-b" in out
+    assert "✗" in out  # team-b の api_key が空
+
+
+# PROF-12: profile add — 新規追加
+def test_cmd_profile_add(tmp_path, capsys):
+    from elab_doc_sync.cli import cmd_profile
+    data = {
+        "elabftw": {"url": "https://elab.example.com", "api_key": "key", "verify_ssl": True},
+        "targets": [{"docs_dir": "docs/", "mode": "each", "entity": "items"}],
+    }
+    p = tmp_path / ".elab-sync.yaml"
+    p.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    args = Namespace(config=str(p), target=None, force=False, profile_action="add",
+                     profile_name="team-x", url="https://x.com", api_key="key-x", no_verify=False)
+    cmd_profile(args)
+    out = capsys.readouterr().out
+    assert "team-x" in out
+    # YAML に追記されている
+    raw = yaml.safe_load(p.read_text(encoding="utf-8"))
+    assert "team-x" in raw["profiles"]
+    assert raw["profiles"]["team-x"]["url"] == "https://x.com"
+    assert raw["profiles"]["team-x"]["api_key"] == "key-x"
+
+
+# PROF-13: profile add — api_key なしでも追加可能（後から設定）
+def test_cmd_profile_add_no_key(tmp_path, capsys):
+    from elab_doc_sync.cli import cmd_profile
+    data = {"targets": [{"docs_dir": "docs/", "mode": "each", "entity": "items"}]}
+    p = tmp_path / ".elab-sync.yaml"
+    p.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    args = Namespace(config=str(p), target=None, force=False, profile_action="add",
+                     profile_name="new", url="https://new.com", api_key=None, no_verify=True)
+    cmd_profile(args)
+    out = capsys.readouterr().out
+    assert "API キーを設定してください" in out
+    raw = yaml.safe_load(p.read_text(encoding="utf-8"))
+    assert raw["profiles"]["new"]["verify_ssl"] is False
+
+
+# PROF-14: profile remove — 削除
+def test_cmd_profile_remove(tmp_path, capsys):
+    from elab_doc_sync.cli import cmd_profile
+    data = {
+        "profiles": {
+            "default": {"url": "https://a.com", "api_key": "ka", "verify_ssl": True},
+            "old": {"url": "https://old.com", "api_key": "ko", "verify_ssl": True},
+        },
+        "targets": [{"docs_dir": "docs/", "mode": "each", "entity": "items"}],
+    }
+    p = tmp_path / ".elab-sync.yaml"
+    p.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    args = Namespace(config=str(p), target=None, force=False, profile_action="remove", profile_name="old")
+    cmd_profile(args)
+    out = capsys.readouterr().out
+    assert "削除しました" in out
+    raw = yaml.safe_load(p.read_text(encoding="utf-8"))
+    assert "old" not in raw["profiles"]
+    assert "default" in raw["profiles"]
+
+
+# PROF-15: profile remove — 存在しないプロファイル
+def test_cmd_profile_remove_not_found(tmp_path, capsys):
+    from elab_doc_sync.cli import cmd_profile
+    data = {
+        "profiles": {"default": {"url": "https://a.com", "api_key": "ka"}},
+        "targets": [{"docs_dir": "docs/", "mode": "each", "entity": "items"}],
+    }
+    p = tmp_path / ".elab-sync.yaml"
+    p.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    args = Namespace(config=str(p), target=None, force=False, profile_action="remove", profile_name="ghost")
+    cmd_profile(args)
+    out = capsys.readouterr().out
+    assert "見つかりません" in out
