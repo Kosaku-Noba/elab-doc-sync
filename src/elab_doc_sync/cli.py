@@ -11,7 +11,7 @@ import yaml
 from markdownify import markdownify as html_to_md
 
 from .client import ELabFTWClient
-from .config import load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml
+from .config import load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, append_target_to_yaml
 from .sync import DocsSyncer, EachDocsSyncer, ConflictError, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments
 from . import sync_log
 
@@ -38,22 +38,165 @@ def _entity_label(entity_type: str) -> str:
     return "実験ノート" if entity_type == "experiments" else "リソース"
 
 
+def _make_client_for_target(config, target):
+    """ターゲットのプロファイルに基づいて ELabFTWClient を生成する。"""
+    url, api_key, verify_ssl = get_client_for_target(config, target)
+    return ELabFTWClient(url, api_key, verify_ssl)
+
+
 def _make_syncer(client, target, project_root):
     if target.mode == "each":
         return EachDocsSyncer(client, target, project_root)
     return DocsSyncer(client, target, project_root)
 
 
+def _score_target_match(target, remote_tags: list[str], remote_category: str | None, remote_title: str) -> float:
+    """リモートエンティティとターゲットのマッチスコアを計算する。
+
+    スコアリングルール:
+    - title_pattern (glob) がマッチ: +10
+    - category が一致: +10
+    - タグの包含率: (一致タグ数 / ターゲットのタグ数) × 5
+      ※ターゲットにタグ設定がない場合は加算なし
+    """
+    from fnmatch import fnmatch
+    score = 0.0
+
+    # title_pattern マッチ
+    if target.title_pattern and remote_title:
+        if fnmatch(remote_title, target.title_pattern):
+            score += 10.0
+
+    # カテゴリ一致
+    if target.category and remote_category:
+        cat_str = str(target.category)
+        if cat_str == str(remote_category):
+            score += 10.0
+
+    # タグ包含率: ターゲットのタグがリモートにどれだけ含まれるか
+    # タグ数が多いターゲットほどスコアが高くなる（特異性ボーナス）
+    if target.tags and remote_tags:
+        target_tags_set = set(target.tags)
+        remote_tags_set = set(remote_tags)
+        matched = target_tags_set & remote_tags_set
+        if target_tags_set:
+            inclusion_rate = len(matched) / len(target_tags_set)
+            score += inclusion_rate * 5.0
+            # 特異性ボーナス: マッチしたタグが多いほど加算（より特定的なルールを優先）
+            score += len(matched) * 0.5
+
+    return score
+
+
+def _find_best_target(config, entity_type: str, remote_tags: list[str],
+                      remote_category: str | None, remote_title: str,
+                      exclude_entity_ids: set[int] | None = None):
+    """リモートエンティティに最もマッチするターゲットを返す。
+
+    Returns:
+        (target, score) or (None, 0.0)
+    """
+    candidates = []
+    for target in config.targets:
+        if target.entity != entity_type:
+            continue
+        score = _score_target_match(target, remote_tags, remote_category, remote_title)
+        candidates.append((target, score))
+
+    if not candidates:
+        return None, 0.0
+
+    # スコア降順
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    best_target, best_score = candidates[0]
+
+    # 曖昧さチェック: 最高スコアが0の場合はマッチなし
+    if best_score == 0.0:
+        return None, 0.0
+
+    # 差がない（同点）場合は曖昧
+    if len(candidates) > 1 and candidates[1][1] > 0 and (best_score - candidates[1][1]) < 0.01:
+        return None, -1.0  # -1 = 曖昧
+
+    return best_target, best_score
+
+
+def _resolve_pull_target_interactive(config, entity_type: str, remote_title: str) -> "TargetConfig | None":
+    """対話的にターゲットを選択させる。非対話環境では None を返す。"""
+    matched = [t for t in config.targets if t.entity == entity_type]
+    if not matched:
+        return None
+
+    print(f"  [{remote_title}] ⚠ 振り分け先が不明:")
+    for i, t in enumerate(matched, 1):
+        print(f"    {i}. {t.docs_dir}")
+    print(f"    {len(matched) + 1}. 新規ディレクトリを作成")
+
+    try:
+        choice = input("  選択: ").strip()
+        idx = int(choice) - 1
+        if 0 <= idx < len(matched):
+            return matched[idx]
+        elif idx == len(matched):
+            return None  # 新規作成シグナル
+        else:
+            print("  無効な番号です。スキップします。")
+            return "SKIP"
+    except (ValueError, EOFError):
+        return "SKIP"
+
+
+def _is_entity_already_tracked(config, project_root: Path, entity_type: str, entity_id: int) -> str | None:
+    """指定 entity_id が既にどこかの mapping に存在するか確認する。
+
+    Returns:
+        存在する場合は docs_dir を返す。なければ None。
+    """
+    for target in config.targets:
+        if target.entity != entity_type:
+            continue
+        if target.mode != "each":
+            continue
+        mapping_file = (project_root / target.id_file).parent / "mapping.json"
+        if mapping_file.exists():
+            import json
+            mapping = json.loads(mapping_file.read_text(encoding="utf-8"))
+            if entity_id in mapping.values():
+                return target.docs_dir
+    return None
+
+
+def _find_target_by_mapping(config, project_root: Path, entity_type: str, entity_id: int):
+    """mapping から entity_id が紐付いているターゲットを返す。なければ None。"""
+    for target in config.targets:
+        if target.entity != entity_type:
+            continue
+        if target.mode == "each":
+            mapping_file = (project_root / target.id_file).parent / "mapping.json"
+            if mapping_file.exists():
+                mapping = json.loads(mapping_file.read_text(encoding="utf-8"))
+                if entity_id in mapping.values():
+                    return target
+        else:
+            # merge モード: id_file に保存された ID と照合
+            id_file = project_root / target.id_file
+            if id_file.exists():
+                text = id_file.read_text().strip()
+                if text.isdigit() and int(text) == entity_id:
+                    return target
+    return None
+
+
 def cmd_sync(args):
     config_path = Path(args.config)
     project_root = config_path.parent or Path(".")
     config = load_config(config_path)
-    client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
 
     updated = 0
     for target in config.targets:
         if args.target and target.title != args.target:
             continue
+        client = _make_client_for_target(config, target)
         syncer = _make_syncer(client, target, project_root)
 
         if args.dry_run:
@@ -104,7 +247,7 @@ def cmd_status(args):
     config = load_config(config_path)
 
     for target in config.targets:
-        client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
+        client = _make_client_for_target(config, target)
         syncer = _make_syncer(client, target, project_root)
         entity_label = "実験ノート" if target.entity == "experiments" else "リソース"
 
@@ -215,229 +358,352 @@ def cmd_pull(args):
     if args.id and args.entity:
         config = _ensure_target_in_config(config_path, args.entity, config)
 
-    client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
-
     pulled = 0
-    targets = config.targets
-    # --id + --entity 指定時: mapping から ID が紐付いているターゲットを自動解決
-    # 見つからなければ該当 entity の最初のターゲットにフォールバック
-    if args.id and args.entity:
-        entity_norm = _normalize_entity(args.entity)
-        matched = [t for t in targets if t.entity == entity_norm]
-        if args.target:
-            matched = [t for t in matched if t.title == args.target]
-        elif len(matched) > 1:
-            # mapping から ID が既に紐付いているターゲットを探す
-            id_set = set(args.id)
-            resolved = []
-            for t in matched:
-                if t.mode == "each":
-                    syncer = EachDocsSyncer(client, t, project_root)
-                    mapping = syncer._load_mapping()
-                    if id_set & set(mapping.values()):
-                        resolved.append(t)
-            if not resolved:
-                # mapping で解決できない場合: --dir またはインタラクティブ選択
-                pull_dir = getattr(args, "dir", None)
-                if not pull_dir:
-                    unique_dirs = list(dict.fromkeys(t.docs_dir for t in matched))
-                    if len(unique_dirs) > 1:
-                        print("保存先ディレクトリを選択してください:")
-                        for i, d in enumerate(unique_dirs, 1):
-                            print(f"  {i}. {d}")
-                        try:
-                            choice = input("番号を入力: ").strip()
-                            idx = int(choice) - 1
-                            if 0 <= idx < len(unique_dirs):
-                                pull_dir = unique_dirs[idx]
-                            else:
-                                print("エラー: 無効な番号です", file=sys.stderr)
-                                sys.exit(1)
-                        except (ValueError, EOFError):
-                            print("エラー: 無効な入力です", file=sys.stderr)
-                            sys.exit(1)
-                if pull_dir:
-                    pull_dir_resolved = (project_root / pull_dir).resolve()
-                    resolved = [t for t in matched
-                                if (project_root / t.docs_dir).resolve() == pull_dir_resolved]
-            matched = resolved if resolved else matched[:1]
-        targets = matched
+    use_auto_dispatch = getattr(args, "auto", False)
 
     # --dir 指定時は保存先ディレクトリを上書き
-    # ターゲットの docs_dir と一致しない場合は一時エクスポート扱い（状態ファイル更新なし）
     pull_dir_override = Path(args.dir) if getattr(args, "dir", None) else None
 
-    for target in targets:
-        if args.target and target.title != args.target:
-            continue
+    if args.id and args.entity:
+        # ID 指定 pull: エンティティごとに最適なターゲットを振り分ける
+        entity_norm = _normalize_entity(args.entity)
+        # default プロファイルの client を使ってリモート情報を取得
+        default_client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
+        get_fn = default_client.get_experiment if entity_norm == "experiments" else default_client.get_item
+        entity_label = _entity_label(entity_norm)
 
-        docs_dir = project_root / (pull_dir_override or target.docs_dir)
-        docs_dir.mkdir(parents=True, exist_ok=True)
-        # --dir がターゲットの docs_dir と異なる場合は一時エクスポート（状態更新スキップ）
-        is_temp_export = (pull_dir_override is not None
-                         and (project_root / pull_dir_override).resolve()
-                         != (project_root / target.docs_dir).resolve())
-        entity_label = "実験ノート" if target.entity == "experiments" else "リソース"
-        # --entity が指定されていれば上書き
-        entity_type = _normalize_entity(getattr(args, "entity", None) or target.entity)
-        get_fn = client.get_experiment if entity_type == "experiments" else client.get_item
-        list_fn = client.list_experiments if entity_type == "experiments" else client.list_items
-        entity_label = "実験ノート" if entity_type == "experiments" else "リソース"
+        for eid in args.id:
+            # 1. mapping から既に紐付けがあるターゲットを探す
+            mapped_target = _find_target_by_mapping(config, project_root, entity_norm, eid)
 
-        if target.mode == "each":
-            syncer = EachDocsSyncer(client, target, project_root)
-            mapping = syncer._load_mapping()
-
-            if args.id:
-                # 指定 ID を pull
-                entities = set(args.id)
-            elif mapping:
-                # 既存 mapping の ID を pull（再同期）
-                entities = set(mapping.values())
-            else:
-                print(f"  [{target.docs_dir}] --id を指定してください（初回 pull には ID が必要です）")
-                continue
-
-            # mapping の逆引き（eid → filename）
-            reverse_mapping = {v: k for k, v in mapping.items()}
-
-            for eid in entities:
+            if mapped_target and not pull_dir_override:
+                # 既に tracking 済み → そのターゲットへ再同期
+                client = _make_client_for_target(config, mapped_target)
+                get_fn_t = client.get_experiment if entity_norm == "experiments" else client.get_item
                 try:
-                    data = get_fn(eid)
+                    data = get_fn_t(eid)
                 except Exception as e:
                     print(f"  {entity_label} #{eid} の取得に失敗: {e}", file=sys.stderr)
                     continue
-
-                title = data.get("title", f"untitled_{eid}")
-                body_html = data.get("body", "") or ""
-                body_md = html_to_md(body_html, **_MD_OPTS).strip()
-
-                filename = f"{title}.md"
-                old_filename = reverse_mapping.get(eid)
-
-                # タイトル変更によるファイルリネーム
-                stale_old_filename = None  # 旧ファイル欠損時のクリーンアップ用
-                if old_filename and old_filename != filename:
-                    old_path = docs_dir / old_filename
-                    new_path = docs_dir / filename
-                    if old_path.exists() and not new_path.exists():
-                        old_path.rename(new_path)
-                        print(f"  [{title}] ファイル名を変更: {old_filename} → {filename}")
-                        # リネーム成功時のみ古いハッシュファイルを削除・mapping 更新
-                        for suffix in (".hash", ".remote_hash", ".meta_hash"):
-                            old_hp = syncer.hash_dir / f"{old_filename}{suffix}"
-                            old_hp.unlink(missing_ok=True)
-                        mapping.pop(old_filename, None)
-                    elif old_path.exists():
-                        # リネーム先が既に存在: 旧ファイル名を維持、状態は触らない
-                        print(f"  [{title}] ⚠ リネーム先 {filename} が既に存在するためリネームをスキップ")
-                        filename = old_filename
-                    else:
-                        # 旧ファイルが欠損: 新タイトル名で新規作成扱い
-                        # mapping/hash の削除はファイル作成成功後に行う
-                        stale_old_filename = old_filename
-                        old_filename = None  # 新規作成扱いにリセット
-
-                filepath = docs_dir / filename
-                is_rename = old_filename is not None and old_filename != filename
-
-                if not args.force and filepath.exists() and not is_rename:
-                    print(f"  [{title}] 既にローカルに存在（スキップ、--force で上書き）")
-                    continue
-
-                # 画像ダウンロードはスキップ判定後に実行（副作用防止）
-                body_md = _download_images(body_md, entity_type, eid, client, docs_dir)
-
-                filepath.write_text(body_md + "\n", encoding="utf-8")
-
-                # 旧ファイル欠損時のクリーンアップ（ファイル作成成功後）
-                if stale_old_filename and not is_temp_export:
-                    mapping.pop(stale_old_filename, None)
-                    for suffix in (".hash", ".remote_hash", ".meta_hash"):
-                        old_hp = syncer.hash_dir / f"{stale_old_filename}{suffix}"
-                        old_hp.unlink(missing_ok=True)
-
-                # mapping を更新（一時エクスポート時はスキップ）
-                if not is_temp_export:
-                    mapping[filename] = eid
-                    syncer._save_mapping(mapping)
-                    reverse_mapping[eid] = filename
-                    # hash を保存して次回 push 時に差分なしと判定されるようにする
-                    syncer._save_hash(filename, body_md)
-                    # リモート body のハッシュを保存（競合検出用）
-                    syncer._save_remote_hash(filename, body_html)
-
-                print(f"  [{title}] {entity_label} #{eid} → {filepath}")
-                pulled += 1
-
-                if target.attachments_dir:
-                    _download_attachments(entity_type, eid, client, project_root / target.attachments_dir)
-
-                log_path = project_root / sync_log.DEFAULT_LOG_PATH
-                sync_log.record(log_path, action="pull", target=title,
-                                entity=entity_type, entity_id=eid, files=[filename])
-
-            # pull 後にリモートのカテゴリ・タグを YAML に書き戻す（merge モードのみ）
-            # each モードでは entity ごとにメタデータが異なるため target 単位の書き戻しは行わない
-            if target.mode != "each":
-                _sync_remote_metadata_to_yaml(client, config, config_path, target, entity_type, mapping)
-
-        else:
-            # merge モード: 1 エンティティ → 1 ファイル
-            syncer = DocsSyncer(client, target, project_root)
-            eid = syncer.read_item_id()
-
-            if args.id:
-                if len(args.id) > 1:
-                    print(f"  [{target.title}] ⚠ merge モードでは最初の ID のみ使用します（{args.id[0]}）")
-                eid = args.id[0]
-
-            if eid is None:
-                print(f"  [{target.title}] 同期先の ID が不明です（--id で指定してください）")
+                pulled += _pull_entity_to_target(
+                    client, config, config_path, mapped_target, project_root,
+                    eid, data, entity_norm, args.force, None)
                 continue
 
+            # 2. 重複チェック（mapping にはないが別の形で存在しないか）
+            existing_dir = _is_entity_already_tracked(config, project_root, entity_norm, eid)
+            if existing_dir and not args.force:
+                print(f"  {entity_label} #{eid} は既に {existing_dir} で管理されています（スキップ）")
+                continue
+
+            # 3. リモートからエンティティ情報を取得
             try:
                 data = get_fn(eid)
             except Exception as e:
-                print(f"  [{target.title}] {entity_label} #{eid} の取得に失敗: {e}", file=sys.stderr)
+                print(f"  {entity_label} #{eid} の取得に失敗: {e}", file=sys.stderr)
                 continue
 
-            body_html = data.get("body", "") or ""
-            body_md = html_to_md(body_html, **_MD_OPTS).strip()
+            remote_title = data.get("title", f"untitled_{eid}")
+            remote_tags = [t.get("tag", "") for t in data.get("tags", []) if t.get("tag")]
+            remote_category = data.get("category_title") or data.get("category")
 
-            filename = f"{target.title or 'pulled'}.md"
-            filepath = docs_dir / filename
+            # 4. ターゲット決定
+            if pull_dir_override:
+                target = _find_target_by_dir(config, entity_norm, project_root, pull_dir_override)
+                if not target:
+                    # --dir が既存ターゲットと一致しない場合: 最初の同じ entity ターゲットを使い、
+                    # pull_dir_override で一時エクスポートとして扱う
+                    entity_targets = [t for t in config.targets if t.entity == entity_norm]
+                    target = entity_targets[0] if entity_targets else None
+                    if not target:
+                        target = _find_or_create_target_for_pull(
+                            config, config_path, project_root, entity_norm,
+                            str(pull_dir_override), remote_tags, remote_category, remote_title)
+                        config = load_config(config_path)
+            elif args.target:
+                target = next((t for t in config.targets if t.title == args.target and t.entity == entity_norm), None)
+                if not target:
+                    print(f"  エラー: ターゲット '{args.target}' が見つかりません", file=sys.stderr)
+                    continue
+            else:
+                # 自動振り分け: 同じ entity のターゲットが1つだけなら直接使う
+                entity_targets = [t for t in config.targets if t.entity == entity_norm]
+                if len(entity_targets) == 1:
+                    target = entity_targets[0]
+                elif len(entity_targets) > 1:
+                    target, score = _find_best_target(config, entity_norm, remote_tags, remote_category, remote_title)
+                    if target is None:
+                        # スコア0 or 曖昧: 対話で解決
+                        if use_auto_dispatch:
+                            candidates = [(t, _score_target_match(t, remote_tags, remote_category, remote_title))
+                                          for t in config.targets if t.entity == entity_norm]
+                            candidates.sort(key=lambda x: x[1], reverse=True)
+                            target = candidates[0][0] if candidates else None
+                        else:
+                            result = _resolve_pull_target_interactive(config, entity_norm, remote_title)
+                            if result == "SKIP":
+                                continue
+                            target = result
+                    if target is None:
+                        # 新規ターゲット作成
+                        target = _create_target_from_remote(
+                            config, config_path, project_root, entity_norm,
+                            remote_tags, remote_category, remote_title)
+                        config = load_config(config_path)
+                else:
+                    # entity_targets が空: 新規ターゲット作成
+                    target = _create_target_from_remote(
+                        config, config_path, project_root, entity_norm,
+                        remote_tags, remote_category, remote_title)
+                    config = load_config(config_path)
 
-            if not args.force and filepath.exists():
-                print(f"  [{target.title}] 既にローカルに存在（スキップ、--force で上書き）")
-                continue
+            # ターゲットが確定 → pull 実行
+            client = _make_client_for_target(config, target)
+            pulled += _pull_entity_to_target(
+                client, config, config_path, target, project_root,
+                eid, data, entity_norm, args.force, pull_dir_override)
 
-            # 画像ダウンロードはスキップ判定後に実行（副作用防止）
-            body_md = _download_images(body_md, entity_type, eid, client, docs_dir)
+    else:
+        # ID 未指定: 既存 mapping の再同期
+        targets = config.targets
+        if args.target:
+            targets = [t for t in targets if t.title == args.target]
 
-            filepath.write_text(body_md + "\n", encoding="utf-8")
+        for target in targets:
+            client = _make_client_for_target(config, target)
+            entity_type = _normalize_entity(target.entity)
+            entity_label = _entity_label(entity_type)
+            get_fn = client.get_experiment if entity_type == "experiments" else client.get_item
+            docs_dir = project_root / (pull_dir_override or target.docs_dir)
+            docs_dir.mkdir(parents=True, exist_ok=True)
+            is_temp_export = (pull_dir_override is not None
+                             and (project_root / pull_dir_override).resolve()
+                             != (project_root / target.docs_dir).resolve())
 
-            # ID とハッシュを保存（一時エクスポート時はスキップ）
-            if not is_temp_export:
-                syncer.save_item_id(eid)
-                syncer.save_hash(body_md)
-                # リモート body のハッシュを保存（競合検出用）
-                syncer.save_remote_hash(body_html)
+            if target.mode == "each":
+                syncer = EachDocsSyncer(client, target, project_root)
+                mapping = syncer._load_mapping()
+                if not mapping:
+                    continue
+                reverse_mapping = {v: k for k, v in mapping.items()}
 
-            print(f"  [{target.title}] {entity_label} #{eid} → {filepath}")
-            pulled += 1
-
-            if target.attachments_dir:
-                _download_attachments(entity_type, eid, client, project_root / target.attachments_dir)
-
-            log_path = project_root / sync_log.DEFAULT_LOG_PATH
-            sync_log.record(log_path, action="pull", target=target.title,
-                            entity=entity_type, entity_id=eid, files=[filename])
-
-            # pull 後にリモートのカテゴリ・タグを YAML に書き戻す
-            _sync_remote_metadata_to_yaml(client, config, config_path, target, entity_type, {filename: eid})
+                for eid in set(mapping.values()):
+                    try:
+                        data = get_fn(eid)
+                    except Exception as e:
+                        print(f"  {entity_label} #{eid} の取得に失敗: {e}", file=sys.stderr)
+                        continue
+                    pulled += _pull_each_entity(
+                        client, syncer, target, project_root, docs_dir,
+                        mapping, reverse_mapping, eid, data, entity_type,
+                        args.force, is_temp_export)
+                syncer._save_mapping(mapping)
+            else:
+                syncer = DocsSyncer(client, target, project_root)
+                eid = syncer.read_item_id()
+                if eid is None:
+                    print(f"  [{target.title}] 同期先の ID が不明です（--id で指定してください）")
+                    continue
+                try:
+                    data = get_fn(eid)
+                except Exception as e:
+                    print(f"  [{target.title}] {entity_label} #{eid} の取得に失敗: {e}", file=sys.stderr)
+                    continue
+                pulled += _pull_merge_entity(
+                    client, syncer, target, project_root, docs_dir,
+                    eid, data, entity_type, args.force, is_temp_export)
+                _sync_remote_metadata_to_yaml(client, config, config_path, target, entity_type, {f"{target.title or 'pulled'}.md": eid})
 
     print(f"\n完了: {pulled} 件取得しました")
+
+def _find_target_by_dir(config, entity_type: str, project_root: Path, pull_dir: Path):
+    """指定ディレクトリに一致するターゲットを探す。"""
+    pull_dir_resolved = (project_root / pull_dir).resolve()
+    for t in config.targets:
+        if t.entity == entity_type and (project_root / t.docs_dir).resolve() == pull_dir_resolved:
+            return t
+    return None
+
+
+def _find_or_create_target_for_pull(config, config_path, project_root, entity_type,
+                                    docs_dir, remote_tags, remote_category, remote_title):
+    """pull 先のターゲットを探し、なければ作成して YAML に追記する。"""
+    # 既存ターゲットで docs_dir が一致するものがあれば使う
+    for t in config.targets:
+        if t.entity == entity_type and t.docs_dir == docs_dir:
+            return t
+    # 新規作成
+    return _create_target_from_remote(
+        config, config_path, project_root, entity_type,
+        remote_tags, remote_category, remote_title, docs_dir_override=docs_dir)
+
+
+def _create_target_from_remote(config, config_path, project_root, entity_type,
+                               remote_tags, remote_category, remote_title,
+                               docs_dir_override=None):
+    """リモート情報から新しいターゲットを作成し YAML に追記する。"""
+    if docs_dir_override:
+        new_docs_dir = docs_dir_override
+    else:
+        # タイトルやカテゴリから適切なディレクトリ名を生成
+        if remote_category:
+            dir_name = str(remote_category).replace(" ", "_").replace("/", "_")
+        elif remote_tags:
+            dir_name = remote_tags[0].replace(" ", "_").replace("/", "_")
+        else:
+            dir_name = f"pulled_{entity_type}"
+        new_docs_dir = f"{dir_name}/"
+
+    # ディレクトリ作成
+    (project_root / new_docs_dir).mkdir(parents=True, exist_ok=True)
+
+    new_target = {
+        "docs_dir": new_docs_dir,
+        "pattern": "*.md",
+        "mode": "each",
+        "entity": entity_type,
+        "title": "",
+    }
+    if remote_tags:
+        new_target["tags"] = list(remote_tags)
+    if remote_category:
+        new_target["category"] = str(remote_category)
+
+    append_target_to_yaml(config_path, new_target)
+    print(f"  ℹ 新規ターゲットを追加: docs_dir={new_docs_dir}")
+
+    # reload して新しいターゲットを返す
+    new_config = load_config(config_path)
+    for t in new_config.targets:
+        if t.docs_dir == new_docs_dir and t.entity == entity_type:
+            return t
+    return new_config.targets[-1]
+
+
+def _pull_entity_to_target(client, config, config_path, target, project_root,
+                           eid, data, entity_type, force, pull_dir_override):
+    """1つのエンティティを指定ターゲットに pull する。返り値は pull 成功数(0 or 1)。"""
+    docs_dir = project_root / (pull_dir_override or Path(target.docs_dir))
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    is_temp_export = (pull_dir_override is not None
+                     and (project_root / pull_dir_override).resolve()
+                     != (project_root / target.docs_dir).resolve())
+
+    if target.mode == "merge":
+        syncer = DocsSyncer(client, target, project_root)
+        return _pull_merge_entity(
+            client, syncer, target, project_root, docs_dir,
+            eid, data, entity_type, force, is_temp_export)
+
+    syncer = EachDocsSyncer(client, target, project_root)
+    mapping = syncer._load_mapping()
+    reverse_mapping = {v: k for k, v in mapping.items()}
+
+    result = _pull_each_entity(
+        client, syncer, target, project_root, docs_dir,
+        mapping, reverse_mapping, eid, data, entity_type,
+        force, is_temp_export)
+
+    if result > 0:
+        syncer._save_mapping(mapping)
+    return result
+
+
+def _pull_each_entity(client, syncer, target, project_root, docs_dir,
+                      mapping, reverse_mapping, eid, data, entity_type,
+                      force, is_temp_export):
+    """each モードで1エンティティを pull する。返り値は 0 or 1。"""
+    entity_label = _entity_label(entity_type)
+    title = data.get("title", f"untitled_{eid}")
+    body_html = data.get("body", "") or ""
+    body_md = html_to_md(body_html, **_MD_OPTS).strip()
+
+    filename = f"{title}.md"
+    old_filename = reverse_mapping.get(eid)
+
+    # タイトル変更によるファイルリネーム
+    stale_old_filename = None
+    if old_filename and old_filename != filename:
+        old_path = docs_dir / old_filename
+        new_path = docs_dir / filename
+        if old_path.exists() and not new_path.exists():
+            old_path.rename(new_path)
+            print(f"  [{title}] ファイル名を変更: {old_filename} → {filename}")
+            for suffix in (".hash", ".remote_hash", ".meta_hash"):
+                old_hp = syncer.hash_dir / f"{old_filename}{suffix}"
+                old_hp.unlink(missing_ok=True)
+            mapping.pop(old_filename, None)
+        elif old_path.exists():
+            print(f"  [{title}] ⚠ リネーム先 {filename} が既に存在するためリネームをスキップ")
+            filename = old_filename
+        else:
+            stale_old_filename = old_filename
+            old_filename = None
+
+    filepath = docs_dir / filename
+    is_rename = old_filename is not None and old_filename != filename
+
+    if not force and filepath.exists() and not is_rename:
+        print(f"  [{title}] 既にローカルに存在（スキップ、--force で上書き）")
+        return 0
+
+    body_md = _download_images(body_md, entity_type, eid, client, docs_dir)
+    filepath.write_text(body_md + "\n", encoding="utf-8")
+
+    if stale_old_filename and not is_temp_export:
+        mapping.pop(stale_old_filename, None)
+        for suffix in (".hash", ".remote_hash", ".meta_hash"):
+            old_hp = syncer.hash_dir / f"{stale_old_filename}{suffix}"
+            old_hp.unlink(missing_ok=True)
+
+    if not is_temp_export:
+        mapping[filename] = eid
+        reverse_mapping[eid] = filename
+        syncer._save_hash(filename, body_md)
+        syncer._save_remote_hash(filename, body_html)
+
+    print(f"  [{title}] {entity_label} #{eid} → {filepath}")
+
+    if target.attachments_dir:
+        _download_attachments(entity_type, eid, client, project_root / target.attachments_dir)
+
+    log_path = project_root / sync_log.DEFAULT_LOG_PATH
+    sync_log.record(log_path, action="pull", target=title,
+                    entity=entity_type, entity_id=eid, files=[filename])
+    return 1
+
+
+def _pull_merge_entity(client, syncer, target, project_root, docs_dir,
+                       eid, data, entity_type, force, is_temp_export):
+    """merge モードで1エンティティを pull する。返り値は 0 or 1。"""
+    entity_label = _entity_label(entity_type)
+    body_html = data.get("body", "") or ""
+    body_md = html_to_md(body_html, **_MD_OPTS).strip()
+
+    filename = f"{target.title or 'pulled'}.md"
+    filepath = docs_dir / filename
+
+    if not force and filepath.exists():
+        print(f"  [{target.title}] 既にローカルに存在（スキップ、--force で上書き）")
+        return 0
+
+    body_md = _download_images(body_md, entity_type, eid, client, docs_dir)
+    filepath.write_text(body_md + "\n", encoding="utf-8")
+
+    if not is_temp_export:
+        syncer.save_item_id(eid)
+        syncer.save_hash(body_md)
+        syncer.save_remote_hash(body_html)
+
+    print(f"  [{target.title}] {entity_label} #{eid} → {filepath}")
+
+    if target.attachments_dir:
+        _download_attachments(entity_type, eid, client, project_root / target.attachments_dir)
+
+    log_path = project_root / sync_log.DEFAULT_LOG_PATH
+    sync_log.record(log_path, action="pull", target=target.title,
+                    entity=entity_type, entity_id=eid, files=[filename])
+    return 1
 
 
 def _show_diff(title, local_text, remote_text):
@@ -461,13 +727,13 @@ def cmd_diff(args):
     config_path = Path(args.config)
     project_root = config_path.parent or Path(".")
     config = load_config(config_path)
-    client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
 
     has_diff = False
     for target in config.targets:
         if args.target and target.title != args.target:
             continue
 
+        client = _make_client_for_target(config, target)
         docs_dir = project_root / target.docs_dir
         get_fn = client.get_experiment if target.entity == "experiments" else client.get_item
 
@@ -1053,6 +1319,81 @@ def cmd_verify(args):
         print(f"\n  ✅ 接続チェックに問題はありません（内容の一致は esync status で確認）")
 
 
+def cmd_profile(args):
+    """プロファイルの管理（add / list / remove）。"""
+    config_path = Path(args.config)
+
+    if args.profile_action == "list":
+        if not config_path.exists():
+            print("  設定ファイルがありません")
+            return
+        raw = yaml.safe_load(_read_yaml_text(config_path)) or {}
+        profiles = raw.get("profiles", {})
+        # elabftw セクションがあれば default として表示
+        elab = raw.get("elabftw", {})
+        if "default" not in profiles and elab.get("url"):
+            profiles["default"] = {"url": elab["url"], "api_key": elab.get("api_key", ""),
+                                   "verify_ssl": elab.get("verify_ssl", True)}
+        if not profiles:
+            print("  プロファイルがありません")
+            return
+        for name, pdata in profiles.items():
+            url = pdata.get("url", "?")
+            has_key = "✓" if pdata.get("api_key") else "✗"
+            ssl = "SSL検証あり" if pdata.get("verify_ssl", True) else "SSL検証なし"
+            print(f"  {name}: {url} (API キー: {has_key}, {ssl})")
+
+    elif args.profile_action == "add":
+        name = args.profile_name
+        url = args.url
+        api_key = args.api_key or ""
+        verify_ssl = not args.no_verify
+
+        raw = {}
+        if config_path.exists():
+            raw = yaml.safe_load(_read_yaml_text(config_path)) or {}
+
+        profiles = raw.setdefault("profiles", {})
+        if name in profiles:
+            ans = input(f"  プロファイル '{name}' は既に存在します。上書きしますか？ [y/N]: ").strip().lower()
+            if ans != "y":
+                print("  中止しました")
+                return
+
+        profiles[name] = {"url": url, "api_key": api_key, "verify_ssl": verify_ssl}
+
+        content = yaml.dump(raw, default_flow_style=False, allow_unicode=True)
+        config_path.write_text(content, encoding="utf-8")
+        print(f"  ✅ プロファイル '{name}' を追加しました")
+        if not api_key:
+            print(f"     API キーを設定してください: .elab-sync.yaml の profiles.{name}.api_key")
+
+    elif args.profile_action == "remove":
+        name = args.profile_name
+        if not config_path.exists():
+            print("  設定ファイルがありません")
+            return
+        raw = yaml.safe_load(_read_yaml_text(config_path)) or {}
+        profiles = raw.get("profiles", {})
+        if name not in profiles:
+            print(f"  プロファイル '{name}' が見つかりません")
+            return
+        # 使用中チェック
+        using_targets = [t.get("docs_dir", "?") for t in raw.get("targets", []) if t.get("profile") == name]
+        if using_targets:
+            print(f"  ⚠ プロファイル '{name}' は以下のターゲットで使用中です:")
+            for d in using_targets:
+                print(f"    - {d}")
+            ans = input("  削除しますか？ [y/N]: ").strip().lower()
+            if ans != "y":
+                print("  中止しました")
+                return
+        del profiles[name]
+        content = yaml.dump(raw, default_flow_style=False, allow_unicode=True)
+        config_path.write_text(content, encoding="utf-8")
+        print(f"  ✅ プロファイル '{name}' を削除しました")
+
+
 def cmd_entity_status(args):
     """エンティティのステータスを表示または変更する。"""
     config_path = Path(args.config)
@@ -1174,7 +1515,8 @@ def main():
     pull_parser.add_argument("--id", type=int, action="append", default=None, help="取得するエンティティ ID（複数指定可）")
     pull_parser.add_argument("--entity", default=None, choices=["items", "experiments", "resources"],
                              help="エンティティ種別（resources は items のエイリアス）")
-    pull_parser.add_argument("--dir", default=None, help="保存先ディレクトリ（未指定時は docs_dir を使用）")
+    pull_parser.add_argument("--dir", default=None, help="保存先ディレクトリ（未指定時は自動振り分け）")
+    pull_parser.add_argument("--auto", action="store_true", help="曖昧な振り分けもスコア最大で自動決定")
 
     log_parser = sub.add_parser("log", help="同期ログを表示", parents=[common])
     log_parser.add_argument("--limit", "-l", type=int, default=20, help="表示件数（デフォルト: 20）")
@@ -1238,6 +1580,17 @@ def main():
 
     sub.add_parser("verify", help="ローカルとリモートの整合性チェック", parents=[common])
 
+    profile_parser = sub.add_parser("profile", help="接続プロファイルを管理", parents=[common])
+    profile_sub = profile_parser.add_subparsers(dest="profile_action")
+    profile_sub.add_parser("list", help="プロファイル一覧を表示")
+    profile_add_p = profile_sub.add_parser("add", help="プロファイルを追加")
+    profile_add_p.add_argument("profile_name", help="プロファイル名")
+    profile_add_p.add_argument("--url", required=True, help="eLabFTW の URL")
+    profile_add_p.add_argument("--api-key", default=None, help="API キー")
+    profile_add_p.add_argument("--no-verify", action="store_true", help="SSL 検証を無効化")
+    profile_rm_p = profile_sub.add_parser("remove", help="プロファイルを削除")
+    profile_rm_p.add_argument("profile_name", help="削除するプロファイル名")
+
     estatus_sub = estatus_parser.add_subparsers(dest="status_action")
     estatus_sub.add_parser("show", help="現在のステータスを表示")
     estatus_set_p = estatus_sub.add_parser("set", help="ステータスを変更")
@@ -1277,6 +1630,8 @@ def main():
         cmd_link(args)
     elif args.command == "verify":
         cmd_verify(args)
+    elif args.command == "profile":
+        cmd_profile(args)
     elif args.command in (None, "push"):
         cmd_sync(args)
     else:
