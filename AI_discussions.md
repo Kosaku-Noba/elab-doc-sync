@@ -5979,3 +5979,69 @@ README と詳細 docs の更新が一部に留まり、今回追加されたア�
 ### DocReview 所感
 
 > 所感: コード内コメントは主要な複雑箇所に最低限あります。今回の主な課題は、実装後サマリーに集約した仕様を README の利用者向け導線へ反映しきれていない点です。
+
+## 2026-07-14T10:30 [Kiro] esync pull 自動ディレクトリ振り分け + profiles 対応
+
+pull 時にリモートのタグ/カテゴリ/タイトルに基づいて適切な `docs_dir` に自動振り分けする機能と、複数 API キー（チーム横断）を扱う profiles 機能を実装。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| config.py: ProfileConfig | 接続プロファイル（url, api_key, verify_ssl）の dataclass を追加。YAML の `profiles` セクションをパース |
+| config.py: TargetConfig 拡張 | `title_pattern`（glob パターン）と `profile`（使用するプロファイル名）フィールドを追加 |
+| config.py: 後方互換 | 既存の `elabftw` セクションは `default` プロファイルとして自動的に扱われる |
+| config.py: append_target_to_yaml | 新規ターゲットを YAML に追記するヘルパー |
+| cli.py: _make_client_for_target | ターゲットの profile に基づいて ELabFTWClient を生成 |
+| cli.py: _score_target_match | tags 包含率 + 特異性ボーナス + category 一致 + title_pattern マッチでスコアリング |
+| cli.py: _find_best_target | スコア最大のターゲットを返す。同点なら曖昧判定 |
+| cli.py: _find_target_by_mapping | 既存 mapping/id_file から紐付け済みターゲットを検索（merge/each 両対応） |
+| cli.py: _resolve_pull_target_interactive | 曖昧時の対話選択。新規作成も選択肢に含む |
+| cli.py: _create_target_from_remote | リモートのメタデータから新ターゲットを生成し YAML 追記 |
+| cli.py: cmd_pull リファクタ | ID 指定時は per-entity で振り分け → _pull_entity_to_target。ID 未指定時は既存 mapping の再同期 |
+| cli.py: --auto フラグ | 曖昧な振り分けもスコア最大で自動決定（非対話用） |
+| テスト | 新規12件追加。全273件パス（既存261 + 新規12） |
+
+### 振り分けロジックの流れ
+
+1. mapping から既に紐付いているターゲットを検索 → 見つかればそこへ再同期
+2. mapping にない場合、リモートのタグ/カテゴリ/タイトルを取得
+3. ターゲットが1つだけ → そのターゲットへ直接保存
+4. 複数ターゲット → スコアリングで最適なものを選択
+5. スコア0 or 同点 → 対話で選択 or `--auto` フラグで最大を採用
+6. 対話で「新規」選択 or ターゲットなし → リモート情報から新ターゲット自動生成 + YAML 追記
+
+### Kiro 所感
+
+- 「同じ記事は1つだけ」制約は mapping 横断チェック `_is_entity_already_tracked()` で実現
+- スコアリングの特異性ボーナス（マッチタグ数 × 0.5）で「タグが多い＝より特定的なルール」を優先する設計
+- `--dir` 指定時は一時エクスポート扱い（状態更新なし）を維持
+- profiles は AWS CLI の credentials ファイルに近いメンタルモデル。環境変数 `ELABFTW_API_KEY` は default プロファイルを上書き
+
+## 2026-07-14T10:38 [Kiro] esync profile add/list/remove + README ユースケースベース化
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| cli.py: cmd_profile | `esync profile add <name> --url <url> --api-key <key>` でプロファイル追加。`list` で一覧、`remove` で削除 |
+| cli.py: argparse | profile サブコマンドの引数定義追加 |
+| テスト | PROF-10〜15 の6件追加。全279件パス |
+| README.md | 機能列挙からユースケースベースに全面書き直し |
+
+### README の構成変更
+
+旧: コマンドリファレンス中心
+新: ユーザーのストーリー順
+1. まず使えるようにする（初回セットアップ）
+2. 日常の使い方（push / pull / diff）
+3. 応用: こういう場面ではこうする（clone, 複数dir, profiles, タグ, 添付, 数式）
+4. pull の自動振り分け（仕組みの解説）
+5. コマンド一覧（リファレンス）
+6. 設定リファレンス
+
+### Kiro 所感
+
+- `esync init` はシンプルなまま維持。profiles は後から `esync profile add` で追加する設計
+- README は「何ができるか」ではなく「こういう場面でこう使う」のストーリーで書いた
+- pull 振り分けの学習的自動設定（対話結果を記憶）は将来的に追加可能だが今回はスコープ外
