@@ -23,6 +23,15 @@ def _read_yaml_text(path: Path) -> str:
 
 
 @dataclass
+class ProfileConfig:
+    """接続プロファイル（サーバー + 認証情報）。"""
+    name: str
+    url: str
+    api_key: str
+    verify_ssl: bool = True
+
+
+@dataclass
 class TargetConfig:
     title: str
     docs_dir: str
@@ -35,6 +44,8 @@ class TargetConfig:
     attachments_dir: str | None = None  # 添付ファイルディレクトリ（画像以外）
     attachments_pattern: str = "*"  # 添付ファイルの glob フィルタ
     category: str | int | None = None   # push 時に自動設定するカテゴリ（ID or 名前）
+    title_pattern: str | None = None    # pull 時のタイトルマッチング用 glob パターン
+    profile: str = "default"  # 使用するプロファイル名
 
     def __post_init__(self):
         if self.tags is None:
@@ -47,11 +58,34 @@ class Config:
     api_key: str
     verify_ssl: bool
     targets: list[TargetConfig]
+    profiles: dict[str, ProfileConfig] = None  # name → ProfileConfig
+
+    def __post_init__(self):
+        if self.profiles is None:
+            self.profiles = {}
 
 
 def _abort(msg: str) -> None:
     print(f"エラー: {msg}", file=sys.stderr)
     sys.exit(1)
+
+
+def _parse_profiles(raw: dict) -> dict[str, ProfileConfig]:
+    """YAML の profiles セクションをパースする。"""
+    profiles_raw = raw.get("profiles", {})
+    if not profiles_raw or not isinstance(profiles_raw, dict):
+        return {}
+    profiles = {}
+    for name, pdata in profiles_raw.items():
+        if not isinstance(pdata, dict):
+            continue
+        url = pdata.get("url", "")
+        api_key = pdata.get("api_key", "").strip()
+        verify_ssl = pdata.get("verify_ssl", True)
+        profiles[name] = ProfileConfig(
+            name=name, url=url, api_key=api_key, verify_ssl=verify_ssl
+        )
+    return profiles
 
 
 def load_config(config_path: Path) -> Config:
@@ -63,23 +97,56 @@ def load_config(config_path: Path) -> Config:
 
     raw = yaml.safe_load(_read_yaml_text(config_path))
 
+    # profiles セクションをパース
+    profiles = _parse_profiles(raw)
+
+    # 後方互換: elabftw セクションがあれば default プロファイルとして扱う
     elab = raw.get("elabftw", {})
     url = elab.get("url", "")
-    if not url:
-        _abort(
-            "eLabFTW の URL が設定されていません\n"
-            "→ .elab-sync.yaml の elabftw.url を確認してください"
-        )
-
     api_key = os.environ.get("ELABFTW_API_KEY", "").strip() or elab.get("api_key", "").strip()
+    verify_ssl = elab.get("verify_ssl", True)
+
+    # elabftw セクションから default プロファイルを構築（profiles に default がなければ）
+    if "default" not in profiles and url:
+        profiles["default"] = ProfileConfig(
+            name="default", url=url, api_key=api_key, verify_ssl=verify_ssl
+        )
+    elif "default" in profiles:
+        # profiles.default が存在する場合、環境変数は default プロファイルの api_key を上書き
+        env_key = os.environ.get("ELABFTW_API_KEY", "").strip()
+        if env_key:
+            profiles["default"] = ProfileConfig(
+                name="default",
+                url=profiles["default"].url,
+                api_key=env_key,
+                verify_ssl=profiles["default"].verify_ssl,
+            )
+
+    # url / api_key のバリデーション（default プロファイルベース）
+    default_profile = profiles.get("default")
+    if not default_profile or not default_profile.url:
+        # profiles に何らかの定義があればURL未設定エラーを出さない
+        if not profiles:
+            _abort(
+                "eLabFTW の URL が設定されていません\n"
+                "→ .elab-sync.yaml の elabftw.url を確認してください"
+            )
+        # profiles があるが default がない場合、最初のプロファイルを使う
+        default_profile = next(iter(profiles.values()))
+        url = default_profile.url
+        api_key = default_profile.api_key
+        verify_ssl = default_profile.verify_ssl
+    else:
+        url = default_profile.url
+        api_key = default_profile.api_key
+        verify_ssl = default_profile.verify_ssl
+
     if not api_key:
         _abort(
             "API キーが設定されていません\n"
             "→ .elab-sync.yaml の elabftw.api_key に設定するか、\n"
             '  環境変数を設定してください: export ELABFTW_API_KEY="your_key"'
         )
-
-    verify_ssl = elab.get("verify_ssl", True)
 
     targets = []
     for t in raw.get("targets", []):
@@ -104,6 +171,8 @@ def load_config(config_path: Path) -> Config:
             attachments_dir=t.get("attachments_dir"),
             attachments_pattern=t.get("attachments_pattern", "*"),
             category=t.get("category"),
+            title_pattern=t.get("title_pattern"),
+            profile=t.get("profile", "default"),
         ))
 
     if not targets:
@@ -112,7 +181,22 @@ def load_config(config_path: Path) -> Config:
             "→ .elab-sync.yaml の targets を確認してください"
         )
 
-    return Config(url=url, api_key=api_key, verify_ssl=verify_ssl, targets=targets)
+    return Config(url=url, api_key=api_key, verify_ssl=verify_ssl,
+                  targets=targets, profiles=profiles)
+
+
+def get_client_for_target(config: Config, target: TargetConfig):
+    """ターゲットのプロファイルに基づいて ELabFTWClient を生成する。
+
+    返り値は (url, api_key, verify_ssl) のタプル。
+    client のインスタンス化は呼び出し元で行う（循環 import 回避）。
+    """
+    profile_name = target.profile
+    profile = config.profiles.get(profile_name)
+    if profile:
+        return profile.url, profile.api_key, profile.verify_ssl
+    # フォールバック: config のデフォルト値
+    return config.url, config.api_key, config.verify_ssl
 
 
 def update_target_in_yaml(config_path: Path, target_index: int, **fields) -> None:
@@ -127,5 +211,13 @@ def update_target_in_yaml(config_path: Path, target_index: int, **fields) -> Non
         return
     for k, v in fields.items():
         targets[target_index][k] = v
+    content = yaml.dump(raw, default_flow_style=False, allow_unicode=True)
+    config_path.write_text(content, encoding="utf-8")
+
+
+def append_target_to_yaml(config_path: Path, target_data: dict) -> None:
+    """YAML ファイルに新しいターゲットを追記する。"""
+    raw = yaml.safe_load(_read_yaml_text(config_path)) or {}
+    raw.setdefault("targets", []).append(target_data)
     content = yaml.dump(raw, default_flow_style=False, allow_unicode=True)
     config_path.write_text(content, encoding="utf-8")

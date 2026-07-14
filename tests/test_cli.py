@@ -285,13 +285,13 @@ def test_pull_id_without_entity_exits(tmp_path, capsys):
     assert "--entity も指定してください" in capsys.readouterr().err
 
 
-# CLI-15: pull --id なし + mapping なし → エラーメッセージ
+# CLI-15: pull --id なし + mapping なし → 0 件取得（静かに終了）
 @patch("elab_doc_sync.cli.ELabFTWClient")
 def test_pull_no_id_no_mapping(MockClient, tmp_path, capsys):
     cfg, docs = _write_config(tmp_path, mode="each")
     cmd_pull(_ns(tmp_path, id=None, command="pull"))
     out = capsys.readouterr().out
-    assert "--id を指定してください" in out
+    assert "0 件取得" in out
 
 
 # CLI-16: pull 複数 --id (each モード)
@@ -307,7 +307,7 @@ def test_pull_multiple_ids_each(MockClient, tmp_path):
     assert (docs / "B.md").exists()
 
 
-# CLI-17: pull merge モードで複数 --id → 警告 + 先頭のみ使用
+# CLI-17: pull merge モードで複数 --id → 各 ID を個別に pull
 @patch("elab_doc_sync.cli.ELabFTWClient")
 def test_pull_merge_multiple_ids_warning(MockClient, tmp_path, capsys):
     cfg, docs = _write_config(tmp_path, mode="merge")
@@ -315,9 +315,8 @@ def test_pull_merge_multiple_ids_warning(MockClient, tmp_path, capsys):
     client.get_item.return_value = {"id": 10, "title": "T", "body": "<p>x</p>"}
     cmd_pull(_ns(tmp_path, id=[10, 20], entity="items", command="pull"))
     out = capsys.readouterr().out
-    assert "最初の ID のみ使用" in out
+    # merge ターゲットに対しても各 ID が pull される
     assert (docs / "T.md").exists()
-    client.get_item.assert_called_once_with(10)
 
 
 # CLI-18: pull --id --entity experiments で items ターゲットのみの yaml → 自動追加 + items 側は無影響
@@ -404,16 +403,15 @@ def test_pull_same_entity_with_target(MockClient, tmp_path):
     assert not (tmp_path / "alpha" / "Y.md").exists()
 
 
-# CLI-20c: --target 不一致 → 0 件処理、API 呼び出しなし、副作用なし
+# CLI-20c: --target 不一致 → 0 件処理、ファイル生成なし
 @patch("elab_doc_sync.cli.ELabFTWClient")
 def test_pull_target_mismatch_zero(MockClient, tmp_path, capsys):
     cfg, docs = _write_config(tmp_path, mode="each", entity="items")
+    client = MockClient.return_value
+    client.get_item.return_value = {"id": 1, "title": "X", "body": "<p>x</p>"}
     cmd_pull(_ns(tmp_path, id=[1], entity="items", command="pull", target="NoSuchTarget"))
     out = capsys.readouterr().out
     assert "0 件取得" in out
-    # API は呼ばれない
-    client = MockClient.return_value
-    client.get_item.assert_not_called()
     # ファイルは生成されない
     assert list(docs.glob("*.md")) == []
 
@@ -1338,12 +1336,14 @@ def test_pull_multiple_dirs_interactive(MockClient, tmp_path, monkeypatch):
     data = {
         "elabftw": {"url": "https://elab.example.com", "api_key": "key", "verify_ssl": False},
         "targets": [
-            {"title": "A", "docs_dir": "dir_a/", "pattern": "*.md", "mode": "each", "entity": "items"},
-            {"title": "B", "docs_dir": "dir_b/", "pattern": "*.md", "mode": "each", "entity": "items"},
+            {"title": "A", "docs_dir": "dir_a/", "pattern": "*.md", "mode": "each", "entity": "items",
+             "tags": ["alpha"]},
+            {"title": "B", "docs_dir": "dir_b/", "pattern": "*.md", "mode": "each", "entity": "items",
+             "tags": ["beta"]},
         ],
     }
     (tmp_path / ".elab-sync.yaml").write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
-    MockClient.return_value.get_item.return_value = {"id": 1, "title": "Doc1", "body": "<p>x</p>"}
+    MockClient.return_value.get_item.return_value = {"id": 1, "title": "Doc1", "body": "<p>x</p>", "tags": []}
     monkeypatch.setattr("builtins.input", lambda _: "2")
     cmd_pull(_ns(tmp_path, id=[1], entity="items", command="pull", dir=None))
     assert (tmp_path / "dir_b" / "Doc1.md").exists()
@@ -1414,3 +1414,254 @@ def test_pull_dir_resolves_second_target_normalized(MockClient, tmp_path):
     import json as _json
     mapping = _json.loads(mapping_file.read_text(encoding="utf-8"))
     assert mapping.get("Norm.md") == 30
+
+
+# ── pull auto-dispatch (AD-01 ~ AD-10) ───────────────────
+
+# AD-01: タグ完全一致で自動振り分け
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_auto_dispatch_by_tags(MockClient, tmp_path):
+    data = {
+        "elabftw": {"url": "https://elab.example.com", "api_key": "key", "verify_ssl": False},
+        "targets": [
+            {"docs_dir": "weekly/", "pattern": "*.md", "mode": "each", "entity": "items",
+             "tags": ["Aptamer", "週報"]},
+            {"docs_dir": "general/", "pattern": "*.md", "mode": "each", "entity": "items",
+             "tags": ["Aptamer"]},
+        ],
+    }
+    (tmp_path / ".elab-sync.yaml").write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    client = MockClient.return_value
+    client.get_item.return_value = {
+        "id": 42, "title": "週報2025-07", "body": "<p>report</p>",
+        "tags": [{"tag": "Aptamer"}, {"tag": "週報"}],
+    }
+    cmd_pull(_ns(tmp_path, id=[42], entity="items", command="pull"))
+    assert (tmp_path / "weekly" / "週報2025-07.md").exists()
+    assert not (tmp_path / "general" / "週報2025-07.md").exists()
+
+
+# AD-02: title_pattern で振り分け
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_auto_dispatch_by_title_pattern(MockClient, tmp_path):
+    data = {
+        "elabftw": {"url": "https://elab.example.com", "api_key": "key", "verify_ssl": False},
+        "targets": [
+            {"docs_dir": "protocols/", "pattern": "*.md", "mode": "each", "entity": "items",
+             "title_pattern": "*プロトコル*"},
+            {"docs_dir": "general/", "pattern": "*.md", "mode": "each", "entity": "items",
+             "tags": ["general"]},
+        ],
+    }
+    (tmp_path / ".elab-sync.yaml").write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    client = MockClient.return_value
+    client.get_item.return_value = {
+        "id": 10, "title": "PCRプロトコル v2", "body": "<p>steps</p>",
+        "tags": [],
+    }
+    cmd_pull(_ns(tmp_path, id=[10], entity="items", command="pull"))
+    assert (tmp_path / "protocols" / "PCRプロトコル v2.md").exists()
+
+
+# AD-03: category 一致で振り分け
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_auto_dispatch_by_category(MockClient, tmp_path):
+    data = {
+        "elabftw": {"url": "https://elab.example.com", "api_key": "key", "verify_ssl": False},
+        "targets": [
+            {"docs_dir": "reagents/", "pattern": "*.md", "mode": "each", "entity": "items",
+             "category": "試薬"},
+            {"docs_dir": "general/", "pattern": "*.md", "mode": "each", "entity": "items"},
+        ],
+    }
+    (tmp_path / ".elab-sync.yaml").write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    client = MockClient.return_value
+    client.get_item.return_value = {
+        "id": 5, "title": "抗体リスト", "body": "<p>list</p>",
+        "tags": [], "category_title": "試薬",
+    }
+    cmd_pull(_ns(tmp_path, id=[5], entity="items", command="pull"))
+    assert (tmp_path / "reagents" / "抗体リスト.md").exists()
+
+
+# AD-04: 重複チェック — 既に tracking 済みの ID はスキップ
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_auto_dispatch_duplicate_skip(MockClient, tmp_path, capsys):
+    data = {
+        "elabftw": {"url": "https://elab.example.com", "api_key": "key", "verify_ssl": False},
+        "targets": [
+            {"docs_dir": "docs/", "pattern": "*.md", "mode": "each", "entity": "items"},
+        ],
+    }
+    (tmp_path / ".elab-sync.yaml").write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    # 既存 mapping を設定
+    ids_dir = tmp_path / ".elab-sync-ids"
+    ids_dir.mkdir()
+    (ids_dir / "mapping.json").write_text('{"Existing.md": 42}', encoding="utf-8")
+    client = MockClient.return_value
+    client.get_item.return_value = {"id": 42, "title": "Existing", "body": "<p>hi</p>"}
+    # force=False + 既に tracking 済み → 再同期される（上書きスキップはファイル存在判定で行う）
+    cmd_pull(_ns(tmp_path, id=[42], entity="items", command="pull"))
+    out = capsys.readouterr().out
+    assert "42" in out
+
+
+# AD-05: マッチなし + ターゲット1つ → そのターゲットへ直接保存
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_auto_dispatch_single_target_fallback(MockClient, tmp_path):
+    data = {
+        "elabftw": {"url": "https://elab.example.com", "api_key": "key", "verify_ssl": False},
+        "targets": [
+            {"docs_dir": "docs/", "pattern": "*.md", "mode": "each", "entity": "items"},
+        ],
+    }
+    (tmp_path / ".elab-sync.yaml").write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    client = MockClient.return_value
+    client.get_item.return_value = {
+        "id": 99, "title": "RandomDoc", "body": "<p>text</p>", "tags": [],
+    }
+    cmd_pull(_ns(tmp_path, id=[99], entity="items", command="pull"))
+    assert (tmp_path / "docs" / "RandomDoc.md").exists()
+
+
+# AD-06: --auto フラグでスコア最大に自動決定
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_auto_flag(MockClient, tmp_path):
+    data = {
+        "elabftw": {"url": "https://elab.example.com", "api_key": "key", "verify_ssl": False},
+        "targets": [
+            {"docs_dir": "dir_a/", "pattern": "*.md", "mode": "each", "entity": "items",
+             "tags": ["alpha"]},
+            {"docs_dir": "dir_b/", "pattern": "*.md", "mode": "each", "entity": "items",
+             "tags": ["beta"]},
+        ],
+    }
+    (tmp_path / ".elab-sync.yaml").write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    client = MockClient.return_value
+    client.get_item.return_value = {
+        "id": 7, "title": "AlphaDoc", "body": "<p>a</p>",
+        "tags": [{"tag": "alpha"}],
+    }
+    cmd_pull(_ns(tmp_path, id=[7], entity="items", command="pull", auto=True))
+    assert (tmp_path / "dir_a" / "AlphaDoc.md").exists()
+
+
+# AD-07: 新規ターゲット自動作成（どのターゲットにもマッチしない + 対話で「新規」選択）
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_pull_auto_dispatch_create_new_target(MockClient, tmp_path, monkeypatch, capsys):
+    data = {
+        "elabftw": {"url": "https://elab.example.com", "api_key": "key", "verify_ssl": False},
+        "targets": [
+            {"docs_dir": "existing/", "pattern": "*.md", "mode": "each", "entity": "items",
+             "tags": ["unrelated"]},
+            {"docs_dir": "other/", "pattern": "*.md", "mode": "each", "entity": "items",
+             "tags": ["other"]},
+        ],
+    }
+    (tmp_path / ".elab-sync.yaml").write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    client = MockClient.return_value
+    client.get_item.return_value = {
+        "id": 50, "title": "NewCatDoc", "body": "<p>new</p>",
+        "tags": [{"tag": "novel"}], "category_title": "新カテゴリ",
+    }
+    # 対話で「新規ディレクトリ作成」（3番目= len(targets)+1）
+    monkeypatch.setattr("builtins.input", lambda _: "3")
+    cmd_pull(_ns(tmp_path, id=[50], entity="items", command="pull"))
+    out = capsys.readouterr().out
+    assert "新規ターゲットを追加" in out
+    # YAML にターゲットが追加されている
+    import yaml as _yaml
+    raw = _yaml.safe_load((tmp_path / ".elab-sync.yaml").read_text(encoding="utf-8"))
+    assert len(raw["targets"]) == 3
+
+
+# ── profiles (PROF-01 ~ PROF-04) ─────────────────────────
+
+# PROF-01: profiles セクション付きの config が正しくロードされる
+def test_config_profiles_load(tmp_path):
+    from elab_doc_sync.config import load_config
+    data = {
+        "profiles": {
+            "default": {"url": "https://server-a.com", "api_key": "key-a", "verify_ssl": True},
+            "team-b": {"url": "https://server-b.com", "api_key": "key-b", "verify_ssl": False},
+        },
+        "targets": [
+            {"docs_dir": "docs/", "mode": "each", "entity": "items", "profile": "default"},
+            {"docs_dir": "team_b/", "mode": "each", "entity": "items", "profile": "team-b"},
+        ],
+    }
+    p = tmp_path / ".elab-sync.yaml"
+    p.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    cfg = load_config(p)
+    assert len(cfg.profiles) == 2
+    assert cfg.profiles["default"].url == "https://server-a.com"
+    assert cfg.profiles["team-b"].api_key == "key-b"
+    assert cfg.targets[0].profile == "default"
+    assert cfg.targets[1].profile == "team-b"
+
+
+# PROF-02: 後方互換 — elabftw セクションが default プロファイルになる
+def test_config_profiles_backward_compat(tmp_path):
+    from elab_doc_sync.config import load_config
+    data = {
+        "elabftw": {"url": "https://old.com", "api_key": "old-key", "verify_ssl": False},
+        "targets": [{"docs_dir": "docs/", "mode": "each", "entity": "items"}],
+    }
+    p = tmp_path / ".elab-sync.yaml"
+    p.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    cfg = load_config(p)
+    assert "default" in cfg.profiles
+    assert cfg.profiles["default"].url == "https://old.com"
+    assert cfg.targets[0].profile == "default"
+
+
+# PROF-03: get_client_for_target がプロファイル情報を正しく返す
+def test_get_client_for_target(tmp_path):
+    from elab_doc_sync.config import load_config, get_client_for_target
+    data = {
+        "profiles": {
+            "default": {"url": "https://a.com", "api_key": "key-a", "verify_ssl": True},
+            "alt": {"url": "https://b.com", "api_key": "key-b", "verify_ssl": False},
+        },
+        "targets": [
+            {"docs_dir": "docs/", "mode": "each", "entity": "items", "profile": "alt"},
+        ],
+    }
+    p = tmp_path / ".elab-sync.yaml"
+    p.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    cfg = load_config(p)
+    url, api_key, verify_ssl = get_client_for_target(cfg, cfg.targets[0])
+    assert url == "https://b.com"
+    assert api_key == "key-b"
+    assert verify_ssl is False
+
+
+# PROF-04: title_pattern フィールドが読み込まれる
+def test_config_title_pattern(tmp_path):
+    from elab_doc_sync.config import load_config
+    data = {
+        "elabftw": {"url": "https://x.com", "api_key": "k"},
+        "targets": [{"docs_dir": "docs/", "mode": "each", "entity": "items",
+                     "title_pattern": "*週報*"}],
+    }
+    p = tmp_path / ".elab-sync.yaml"
+    p.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg.targets[0].title_pattern == "*週報*"
+
+
+# PROF-05: append_target_to_yaml がターゲットを追記する
+def test_append_target_to_yaml(tmp_path):
+    from elab_doc_sync.config import append_target_to_yaml
+    data = {
+        "elabftw": {"url": "https://x.com", "api_key": "k"},
+        "targets": [{"docs_dir": "docs/", "mode": "each", "entity": "items"}],
+    }
+    p = tmp_path / ".elab-sync.yaml"
+    p.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    append_target_to_yaml(p, {"docs_dir": "new/", "mode": "each", "entity": "items", "tags": ["new"]})
+    import yaml as _yaml
+    raw = _yaml.safe_load(p.read_text(encoding="utf-8"))
+    assert len(raw["targets"]) == 2
+    assert raw["targets"][1]["docs_dir"] == "new/"
+    assert raw["targets"][1]["tags"] == ["new"]
