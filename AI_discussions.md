@@ -6017,3 +6017,31 @@ pull 時にリモートのタグ/カテゴリ/タイトルに基づいて適切�
 - スコアリングの特異性ボーナス（マッチタグ数 × 0.5）で「タグが多い＝より特定的なルール」を優先する設計
 - `--dir` 指定時は一時エクスポート扱い（状態更新なし）を維持
 - profiles は AWS CLI の credentials ファイルに近いメンタルモデル。環境変数 `ELABFTW_API_KEY` は default プロファイルを上書き
+
+## 2026-07-14T10:38 [Kiro] esync profile add/list/remove + README ユースケースベース化
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| cli.py: cmd_profile | `esync profile add <name> --url <url> --api-key <key>` でプロファイル追加。`list` で一覧、`remove` で削除 |
+| cli.py: argparse | profile サブコマンドの引数定義追加 |
+| テスト | PROF-10〜15 の6件追加。全279件パス |
+| README.md | 機能列挙からユースケースベースに全面書き直し |
+
+### README の構成変更
+
+旧: コマンドリファレンス中心
+新: ユーザーのストーリー順
+1. まず使えるようにする（初回セットアップ）
+2. 日常の使い方（push / pull / diff）
+3. 応用: こういう場面ではこうする（clone, 複数dir, profiles, タグ, 添付, 数式）
+4. pull の自動振り分け（仕組みの解説）
+5. コマンド一覧（リファレンス）
+6. 設定リファレンス
+
+### Kiro 所感
+
+- `esync init` はシンプルなまま維持。profiles は後から `esync profile add` で追加する設計
+- README は「何ができるか」ではなく「こういう場面でこう使う」のストーリーで書いた
+- pull 振り分けの学習的自動設定（対話結果を記憶）は将来的に追加可能だが今回はスコープ外

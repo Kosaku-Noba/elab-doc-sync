@@ -1319,6 +1319,81 @@ def cmd_verify(args):
         print(f"\n  ✅ 接続チェックに問題はありません（内容の一致は esync status で確認）")
 
 
+def cmd_profile(args):
+    """プロファイルの管理（add / list / remove）。"""
+    config_path = Path(args.config)
+
+    if args.profile_action == "list":
+        if not config_path.exists():
+            print("  設定ファイルがありません")
+            return
+        raw = yaml.safe_load(_read_yaml_text(config_path)) or {}
+        profiles = raw.get("profiles", {})
+        # elabftw セクションがあれば default として表示
+        elab = raw.get("elabftw", {})
+        if "default" not in profiles and elab.get("url"):
+            profiles["default"] = {"url": elab["url"], "api_key": elab.get("api_key", ""),
+                                   "verify_ssl": elab.get("verify_ssl", True)}
+        if not profiles:
+            print("  プロファイルがありません")
+            return
+        for name, pdata in profiles.items():
+            url = pdata.get("url", "?")
+            has_key = "✓" if pdata.get("api_key") else "✗"
+            ssl = "SSL検証あり" if pdata.get("verify_ssl", True) else "SSL検証なし"
+            print(f"  {name}: {url} (API キー: {has_key}, {ssl})")
+
+    elif args.profile_action == "add":
+        name = args.profile_name
+        url = args.url
+        api_key = args.api_key or ""
+        verify_ssl = not args.no_verify
+
+        raw = {}
+        if config_path.exists():
+            raw = yaml.safe_load(_read_yaml_text(config_path)) or {}
+
+        profiles = raw.setdefault("profiles", {})
+        if name in profiles:
+            ans = input(f"  プロファイル '{name}' は既に存在します。上書きしますか？ [y/N]: ").strip().lower()
+            if ans != "y":
+                print("  中止しました")
+                return
+
+        profiles[name] = {"url": url, "api_key": api_key, "verify_ssl": verify_ssl}
+
+        content = yaml.dump(raw, default_flow_style=False, allow_unicode=True)
+        config_path.write_text(content, encoding="utf-8")
+        print(f"  ✅ プロファイル '{name}' を追加しました")
+        if not api_key:
+            print(f"     API キーを設定してください: .elab-sync.yaml の profiles.{name}.api_key")
+
+    elif args.profile_action == "remove":
+        name = args.profile_name
+        if not config_path.exists():
+            print("  設定ファイルがありません")
+            return
+        raw = yaml.safe_load(_read_yaml_text(config_path)) or {}
+        profiles = raw.get("profiles", {})
+        if name not in profiles:
+            print(f"  プロファイル '{name}' が見つかりません")
+            return
+        # 使用中チェック
+        using_targets = [t.get("docs_dir", "?") for t in raw.get("targets", []) if t.get("profile") == name]
+        if using_targets:
+            print(f"  ⚠ プロファイル '{name}' は以下のターゲットで使用中です:")
+            for d in using_targets:
+                print(f"    - {d}")
+            ans = input("  削除しますか？ [y/N]: ").strip().lower()
+            if ans != "y":
+                print("  中止しました")
+                return
+        del profiles[name]
+        content = yaml.dump(raw, default_flow_style=False, allow_unicode=True)
+        config_path.write_text(content, encoding="utf-8")
+        print(f"  ✅ プロファイル '{name}' を削除しました")
+
+
 def cmd_entity_status(args):
     """エンティティのステータスを表示または変更する。"""
     config_path = Path(args.config)
@@ -1505,6 +1580,17 @@ def main():
 
     sub.add_parser("verify", help="ローカルとリモートの整合性チェック", parents=[common])
 
+    profile_parser = sub.add_parser("profile", help="接続プロファイルを管理", parents=[common])
+    profile_sub = profile_parser.add_subparsers(dest="profile_action")
+    profile_sub.add_parser("list", help="プロファイル一覧を表示")
+    profile_add_p = profile_sub.add_parser("add", help="プロファイルを追加")
+    profile_add_p.add_argument("profile_name", help="プロファイル名")
+    profile_add_p.add_argument("--url", required=True, help="eLabFTW の URL")
+    profile_add_p.add_argument("--api-key", default=None, help="API キー")
+    profile_add_p.add_argument("--no-verify", action="store_true", help="SSL 検証を無効化")
+    profile_rm_p = profile_sub.add_parser("remove", help="プロファイルを削除")
+    profile_rm_p.add_argument("profile_name", help="削除するプロファイル名")
+
     estatus_sub = estatus_parser.add_subparsers(dest="status_action")
     estatus_sub.add_parser("show", help="現在のステータスを表示")
     estatus_set_p = estatus_sub.add_parser("set", help="ステータスを変更")
@@ -1544,6 +1630,8 @@ def main():
         cmd_link(args)
     elif args.command == "verify":
         cmd_verify(args)
+    elif args.command == "profile":
+        cmd_profile(args)
     elif args.command in (None, "push"):
         cmd_sync(args)
     else:
