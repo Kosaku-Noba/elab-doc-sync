@@ -702,7 +702,7 @@ def _sync_tags(client: ELabFTWClient, entity_type: str, entity_id: int, desired_
         return
     try:
         remote = client.get_tags(entity_type, entity_id)
-        remote_names = {t.get("tag") for t in remote}
+        remote_names = {(t.get("tag") if isinstance(t, dict) else str(t)) for t in remote}
         for tag in desired_tags:
             if tag not in remote_names:
                 client.add_tag(entity_type, entity_id, tag)
