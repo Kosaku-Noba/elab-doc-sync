@@ -312,7 +312,11 @@ def _sync_remote_metadata_to_yaml(client, config, config_path, target, entity_ty
     for eid in mapping.values():
         try:
             remote_tags = client.get_tags(entity_type, eid)
-            all_tags.update(t.get("tag") for t in remote_tags if t.get("tag"))
+            all_tags.update(
+                (t.get("tag") if isinstance(t, dict) else str(t))
+                for t in remote_tags
+                if (t.get("tag") if isinstance(t, dict) else t)
+            )
         except Exception:
             pass
         try:
@@ -404,7 +408,16 @@ def cmd_pull(args):
                 continue
 
             remote_title = data.get("title", f"untitled_{eid}")
-            remote_tags = [t.get("tag", "") for t in data.get("tags", []) if t.get("tag")]
+            raw_tags = data.get("tags", [])
+            if isinstance(raw_tags, str):
+                # "tag1|tag2" のようなパイプ区切り文字列
+                remote_tags = [t.strip() for t in raw_tags.split("|") if t.strip()]
+            else:
+                remote_tags = [
+                    (t.get("tag", "") if isinstance(t, dict) else str(t))
+                    for t in raw_tags
+                    if (t.get("tag") if isinstance(t, dict) else t)
+                ]
             remote_category = data.get("category_title") or data.get("category")
 
             # 4. ターゲット決定
@@ -1090,7 +1103,7 @@ def _tag_action(client, args, entity_type, entity_id):
     label = f"{_entity_label(entity_type)} #{entity_id}"
     if args.tag_action == "list":
         tags = client.get_tags(entity_type, entity_id)
-        tag_names = [t.get("tag", "?") for t in tags]
+        tag_names = [(t.get("tag", "?") if isinstance(t, dict) else str(t)) for t in tags]
         print(f"  {label}: {', '.join(tag_names) if tag_names else '(タグなし)'}")
     elif args.tag_action == "add":
         client.add_tag(entity_type, entity_id, args.tag_name)
