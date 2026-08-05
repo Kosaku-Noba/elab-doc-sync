@@ -447,3 +447,51 @@ def test_upload_file_raises_after_second_timeout(mock_req, client, tmp_path):
     with pytest.raises(Timeout):
         client.upload_file("items", 1, str(img))
     assert mock_req.call_count == 2
+
+
+# ─────────────────────────────────────────────────────────────
+# User Info / Team 関連テスト
+# ─────────────────────────────────────────────────────────────
+
+# CL-37: get_user_info は /api/v2/users/me を呼ぶ
+@patch("elab_doc_sync.client.requests.request")
+def test_get_user_info(mock_req, client):
+    user_data = {"userid": 2, "firstname": "Test", "lastname": "User", "team": 1, "teams": [{"id": 1, "name": "CellStats"}]}
+    mock_req.return_value = _mock_response(user_data)
+    result = client.get_user_info()
+    assert result["userid"] == 2
+    assert result["team"] == 1
+    assert mock_req.call_args[0] == ("GET", "https://elab.example.com/api/v2/users/me")
+
+
+# CL-38: get_active_team はアクティブチームの (id, name) を返す
+@patch("elab_doc_sync.client.requests.request")
+def test_get_active_team(mock_req, client):
+    user_data = {"userid": 2, "team": 12, "teams": [
+        {"id": 1, "name": "CellStats"},
+        {"id": 12, "name": "高耐久膜チーム"},
+    ]}
+    mock_req.return_value = _mock_response(user_data)
+    team_id, team_name = client.get_active_team()
+    assert team_id == 12
+    assert team_name == "高耐久膜チーム"
+
+
+# CL-39: get_active_team - teams にアクティブチームが見つからない場合は (id, None)
+@patch("elab_doc_sync.client.requests.request")
+def test_get_active_team_name_not_found(mock_req, client):
+    user_data = {"userid": 2, "team": 99, "teams": [{"id": 1, "name": "CellStats"}]}
+    mock_req.return_value = _mock_response(user_data)
+    team_id, team_name = client.get_active_team()
+    assert team_id == 99
+    assert team_name is None
+
+
+# CL-40: get_active_team - team フィールドがない場合は (0, None)
+@patch("elab_doc_sync.client.requests.request")
+def test_get_active_team_no_team_field(mock_req, client):
+    user_data = {"userid": 2, "teams": []}
+    mock_req.return_value = _mock_response(user_data)
+    team_id, team_name = client.get_active_team()
+    assert team_id == 0
+    assert team_name is None

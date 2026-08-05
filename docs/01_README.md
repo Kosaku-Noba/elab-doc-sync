@@ -8,9 +8,13 @@
 
 - SHA-256 差分検知で変更があるファイルだけ更新
 - 画像の自動アップロード・URL 書き換え
+- 添付ファイル（PDF・CSV 等）の自動アップロード
 - 2 つの同期モード: `merge`（全結合→1エンティティ）/ `each`（1ファイル=1エンティティ）
 - リソース (`items`) と実験ノート (`experiments`) の両方に対応
 - Pull（eLabFTW → ローカル）・差分表示（diff）に対応
+- Pull 時のタグ/カテゴリ/タイトルによる自動振り分け
+- 複数サーバー対応（プロファイル機能）
+- `body_format: md` で Markdown のまま送信可能（MathJax 対応）
 - Windows / Linux 両対応
 - `elab-doc-sync` と `esync` の 2 つのコマンド名で実行可能
 
@@ -21,7 +25,7 @@
 | 対象 | 研究者・技術者（CLI 操作に抵抗がない層） |
 | 対応 OS | Linux / Windows |
 | Python | 3.10 以上 |
-| インストール | `uv pip install`（Git リポジトリから） |
+| インストール | `uv tool install`（Git リポジトリから） |
 
 ## ドキュメント一覧
 
@@ -38,3 +42,4 @@
 | [09_TROUBLESHOOTING.md](09_TROUBLESHOOTING.md) | よくある問題と対処法 |
 | [10_REQUIREMENTS.md](10_REQUIREMENTS.md) | 要求仕様・ロードマップ |
 | [11_TEST_SPEC.md](11_TEST_SPEC.md) | テスト仕様 |
+| [12_DESIGN_DECISIONS.md](12_DESIGN_DECISIONS.md) | 設計判断記録 |

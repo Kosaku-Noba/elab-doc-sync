@@ -203,3 +203,122 @@ def test_config_category(tmp_path):
 def test_config_category_default(tmp_path):
     cfg = load_config(_write_config(tmp_path, _base_data()))
     assert cfg.targets[0].category is None
+
+
+# ─────────────────────────────────────────────────────────────
+# Team フィールド関連テスト
+# ─────────────────────────────────────────────────────────────
+
+# C-19: target に team フィールドを指定できる
+def test_config_target_team(tmp_path):
+    data = _base_data()
+    data["targets"][0]["team"] = "CellStats"
+    cfg = load_config(_write_config(tmp_path, data))
+    assert cfg.targets[0].team == "CellStats"
+
+
+# C-20: target の team フィールド省略時は None
+def test_config_target_team_default(tmp_path):
+    cfg = load_config(_write_config(tmp_path, _base_data()))
+    assert cfg.targets[0].team is None
+
+
+# C-21: target の team に数値IDを指定できる
+def test_config_target_team_id(tmp_path):
+    data = _base_data()
+    data["targets"][0]["team"] = 12
+    cfg = load_config(_write_config(tmp_path, data))
+    assert cfg.targets[0].team == 12
+
+
+# C-22: profiles に team フィールドを指定できる
+def test_config_profile_team(tmp_path):
+    data = {
+        "profiles": {
+            "cellstats": {
+                "url": "https://elab.example.com",
+                "api_key": "key-cs",
+                "team": "CellStats",
+            }
+        },
+        "targets": [{"title": "T", "docs_dir": "docs/"}],
+    }
+    cfg = load_config(_write_config(tmp_path, data))
+    assert cfg.profiles["cellstats"].team == "CellStats"
+
+
+# C-23: get_client_for_target - team 指定でプロファイル自動選択
+def test_get_client_for_target_team_match(tmp_path):
+    from elab_doc_sync.config import get_client_for_target, Config, ProfileConfig, TargetConfig
+    profiles = {
+        "default": ProfileConfig(name="default", url="https://a.com", api_key="key-a", team="TeamA"),
+        "teamb": ProfileConfig(name="teamb", url="https://b.com", api_key="key-b", team="TeamB"),
+    }
+    config = Config(url="https://a.com", api_key="key-a", verify_ssl=False, targets=[], profiles=profiles)
+    target = TargetConfig(title="", docs_dir="docs", id_file="x", team="TeamB")
+    url, api_key, _ = get_client_for_target(config, target)
+    assert api_key == "key-b"
+    assert url == "https://b.com"
+
+
+# C-24: get_client_for_target - team 指定（数値ID）でプロファイル自動選択
+def test_get_client_for_target_team_match_by_id(tmp_path):
+    from elab_doc_sync.config import get_client_for_target, Config, ProfileConfig, TargetConfig
+    profiles = {
+        "default": ProfileConfig(name="default", url="https://a.com", api_key="key-a", team=1),
+        "membrane": ProfileConfig(name="membrane", url="https://a.com", api_key="key-m", team=12),
+    }
+    config = Config(url="https://a.com", api_key="key-a", verify_ssl=False, targets=[], profiles=profiles)
+    target = TargetConfig(title="", docs_dir="docs", id_file="x", team=12)
+    url, api_key, _ = get_client_for_target(config, target)
+    assert api_key == "key-m"
+
+
+# C-25: get_client_for_target - team 数値文字列と int の混在マッチ
+def test_get_client_for_target_team_match_mixed_types(tmp_path):
+    from elab_doc_sync.config import get_client_for_target, Config, ProfileConfig, TargetConfig
+    profiles = {
+        "default": ProfileConfig(name="default", url="https://a.com", api_key="key-a", team="12"),
+    }
+    config = Config(url="https://a.com", api_key="key-a", verify_ssl=False, targets=[], profiles=profiles)
+    target = TargetConfig(title="", docs_dir="docs", id_file="x", team=12)
+    url, api_key, _ = get_client_for_target(config, target)
+    assert api_key == "key-a"
+
+
+# C-26: get_client_for_target - profile 明示指定は team より優先
+def test_get_client_for_target_profile_overrides_team(tmp_path):
+    from elab_doc_sync.config import get_client_for_target, Config, ProfileConfig, TargetConfig
+    profiles = {
+        "default": ProfileConfig(name="default", url="https://a.com", api_key="key-a", team="TeamA"),
+        "teamb": ProfileConfig(name="teamb", url="https://b.com", api_key="key-b", team="TeamB"),
+        "special": ProfileConfig(name="special", url="https://s.com", api_key="key-s", team="TeamA"),
+    }
+    config = Config(url="https://a.com", api_key="key-a", verify_ssl=False, targets=[], profiles=profiles)
+    # team=TeamB だが profile=special を明示 → special が優先
+    target = TargetConfig(title="", docs_dir="docs", id_file="x", team="TeamB", profile="special")
+    url, api_key, _ = get_client_for_target(config, target)
+    assert api_key == "key-s"
+    assert url == "https://s.com"
+
+
+# C-27: get_client_for_target - team 不一致時は default にフォールバック + 警告
+def test_get_client_for_target_team_no_match_fallback(tmp_path, capsys):
+    from elab_doc_sync.config import get_client_for_target, Config, ProfileConfig, TargetConfig
+    profiles = {
+        "default": ProfileConfig(name="default", url="https://a.com", api_key="key-a", team="TeamA"),
+    }
+    config = Config(url="https://a.com", api_key="key-a", verify_ssl=False, targets=[], profiles=profiles)
+    target = TargetConfig(title="", docs_dir="docs", id_file="x", team="NonExistentTeam")
+    url, api_key, _ = get_client_for_target(config, target)
+    assert api_key == "key-a"  # fallback to default
+    captured = capsys.readouterr()
+    assert "NonExistentTeam" in captured.err
+
+
+# C-28: _team_matches - 大文字小文字を無視したマッチ
+def test_team_matches_case_insensitive():
+    from elab_doc_sync.config import _team_matches
+    assert _team_matches("CellStats", "cellstats") is True
+    assert _team_matches("FLAIRS", "flairs") is True
+    assert _team_matches("TeamA", "TeamB") is False

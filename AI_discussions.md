@@ -6135,3 +6135,21 @@ API 応答形式の互換性修正であり、README・仕様説明・コメン�
 ### DocReview 所感
 
 > READMEを含む既存ドキュメントと対象コミットの間に不整合はありません。
+
+
+## 2026-08-05T10:38 [DocReview] add docs に対するレビュー
+
+今回の文書更新は広範ですが、追加された `team` による送信先選択の正式な仕様が不足しています。テスト仕様の件数も実態と一致しません。
+
+### DocReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| `team` 設定の正式説明が欠落 | `.elab-sync.yaml.example` にしか `profiles.<name>.team` と `targets[].team` がなく、README・設定/API リファレンスに記載がありません。文字列/ID の照合、優先順、未一致時は default プロファイルへ警告付きでフォールバックすること、`profile add` 後は `team` を YAML へ手動追記する必要があることを明記してください。誤ったチームへの送信につながります。 | 高 |
+| `whoami` と公開 API の説明が実装に追随していない | `whoami` は全プロファイルの接続結果、アクティブチーム、他の所属チームを表示し、個別の接続失敗を継続しますが、CLI リファレンスは単一の「現在の API キー」の説明に留まっています。`docs/06_API_REFERENCE.md` にも `get_user_info()` と `get_active_team()` がありません。 | 中 |
+| テスト仕様の数値と方針が不正確 | `docs/01_README.md` と `docs/11_TEST_SPEC.md` は合計 279 件としていますが、実際は通常テスト 293 件、統合テストを含めて 300 件です。`config.py` は 28 件、`client.py` は 44 件に更新し、「全 API 通信を mock」と統合テストの実サーバー利用の記述も整合させてください。 | 中 |
+| README の SSL 設定例が安全上の条件を示していない | 初期設定例で `n` を選び、設定例でも `verify_ssl: false` を示しています。自己署名証明書など必要な場合に限ることと、通常は `true` を維持することを同じ箇所に明記してください。 | 中 |
+
+### DocReview 所感
+
+> 所感: 追加コードのコメントと docstring は概ね目的を説明しています。`UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` は **293 passed, 7 skipped** でした。

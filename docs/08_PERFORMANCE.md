@@ -9,7 +9,7 @@
 | 操作 | タイムアウト | 備考 |
 |---|---|---|
 | 通常 API リクエスト（GET/PATCH/POST/DELETE） | 30 秒 | `_req()` のデフォルト |
-| ファイルアップロード | 60 秒 | 画像サイズに応じて延長 |
+| ファイルアップロード（画像・添付） | 60 秒 | ファイルサイズに応じて延長 |
 
 ### リトライ
 
@@ -30,8 +30,10 @@
 | 実験更新 | PATCH | `/api/v2/experiments/{id}` |
 | 実験削除 | DELETE | `/api/v2/experiments/{id}` |
 | ファイルアップロード | POST | `/api/v2/{entity_type}/{entity_id}/uploads` |
+| タグ一覧 | GET | `/api/v2/{entity_type}/{entity_id}/tags` |
 | タグ追加 | POST | `/api/v2/{entity_type}/{entity_id}/tags` |
 | タグ削除 | DELETE | `/api/v2/{entity_type}/{entity_id}/tags/{tag_id}` |
+| タグ解除 | PATCH | `/api/v2/{entity_type}/{entity_id}/tags/{tag_id}` |
 | メタデータ更新 | PATCH | `/api/v2/{entity_type}/{entity_id}` |
 
 ### 認証
@@ -52,12 +54,4 @@
 | 双方向同期 | 非対応（push と pull は独立操作） |
 | リトライ | アップロードのみ1回自動リトライ（Timeout/5xx） |
 | レート制限 | 未実装（eLabFTW 側の制限に依存） |
-
-## 将来の改善候補
-
-| 項目 | 概要 |
-|---|---|
-| 並列アップロード | 画像アップロードの並列化による高速化 |
-| リトライ機構 | 指数バックオフ付きリトライ |
-| レート制限対応 | 429 レスポンス時の自動待機 |
-| 増分 pull | 最終同期以降の変更のみ取得 |
+| プロファイル切替 | ターゲット単位（コマンド単位での切替は未対応） |

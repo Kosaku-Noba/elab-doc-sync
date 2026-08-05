@@ -37,6 +37,31 @@ class ELabFTWClient:
         except Exception:
             return int(loc.split("/")[-1])
 
+    # ── user info ────────────────────────────────────────────
+
+    def get_user_info(self) -> dict:
+        """現在の API キーに紐づくユーザー情報を取得する。
+
+        返り値には userid, firstname, lastname, email, team (アクティブチームID),
+        teams (所属チーム一覧) などが含まれる。
+        """
+        return self._req("GET", "/api/v2/users/me").json()
+
+    def get_active_team(self) -> tuple[int, str | None]:
+        """APIキーのアクティブチーム (id, name) を返す。
+
+        name が解決できない場合は (id, None) を返す。
+        """
+        user = self.get_user_info()
+        active_team_id = user.get("team")
+        if not active_team_id:
+            return (0, None)
+        teams = user.get("teams", [])
+        for t in teams:
+            if t.get("id") == active_team_id:
+                return (active_team_id, t.get("name"))
+        return (active_team_id, None)
+
     # ── items ────────────────────────────────────────────────
 
     def list_items(self) -> list[dict]:

@@ -11,26 +11,22 @@
 | `esync pull --id 42 --entity items` | 指定 ID のリソースを取得 |
 | `esync diff` | ローカルと eLabFTW の差分を表示 |
 | `esync status` | 同期状態を確認 |
-| `esync tag list` | リモートのタグ一覧を表示 |
-| `esync tag add "タグ"` | タグを追加 |
-| `esync tag remove "タグ"` | タグを外す |
-| `esync metadata get` | メタデータを表示 |
-| `esync metadata set k=v` | メタデータを設定 |
-| `esync entity-status show` | エンティティのステータスを表示 |
-| `esync entity-status set <ID>` | ステータスを変更 |
-| `esync list` | リモートのリソース一覧を表示 |
-| `esync list --entity experiments` | 実験ノート一覧を表示 |
-| `esync link <ID>` | 既存リモートエンティティとローカルを紐付け |
-| `esync verify` | ローカルとリモートの整合性チェック |
-| `esync whoami` | 現在のユーザー情報を表示 |
-| `esync new --list` | テンプレート一覧を表示 |
-| `esync new --template-id <ID>` | テンプレートからファイル作成 |
+| `esync tag list/add/remove` | タグ操作 |
+| `esync category list/show/set` | カテゴリ操作 |
+| `esync metadata get/set` | メタデータ操作 |
+| `esync entity-status show/set` | エンティティステータス操作 |
+| `esync list` | リモートのリソース/実験ノート一覧 |
+| `esync link <ID>` | 手動紐付け |
+| `esync verify` | 整合性チェック |
+| `esync profile list/add/remove` | 接続プロファイル管理 |
+| `esync whoami` | 現在のユーザー情報 |
+| `esync new` | テンプレートからファイル作成 |
+| `esync clone` | eLabFTW からプロジェクト構築 |
+| `esync log` | 同期ログ表示 |
 | `esync init` | 対話的に設定ファイルを作成 |
 | `esync update` | ツールを最新版に更新 |
-| `esync log` | 同期ログを表示 |
-| `esync clone` | eLabFTW からプロジェクトを構築 |
 
-> `esync` は `elab-doc-sync` のエイリアス。uv の場合は `uv run esync`。
+> `esync` は `elab-doc-sync` のエイリアス。
 
 ## グローバルオプション
 
@@ -40,6 +36,8 @@
 | `--target` | `-t` | string | 全ターゲット | 同期対象のターゲット名 |
 | `--force` | `-f` | flag | false | 変更がなくても強制同期 / pull 時は上書き |
 | `--dry-run` | `-n` | flag | false | 実行せずに同期内容を確認 |
+| `--prune-attachments` | — | flag | false | ローカルに存在しないリモート添付を削除 |
+| `--version` | `-V` | flag | — | バージョン表示 |
 
 ## コマンド詳細
 
@@ -54,7 +52,7 @@ esync --dry-run          # プレビュー
 esync --force            # 強制同期
 ```
 
-処理フロー: ファイル収集 → 差分検知 → 画像アップロード → HTML 変換 → API 送信。
+処理フロー: ファイル収集 → 差分検知 → 画像アップロード → 変換 → API 送信 → 添付ファイルアップロード。
 詳細は [同期エンジン](07_SYNC_ENGINE.md) を参照。
 
 ### `esync pull`
@@ -62,18 +60,36 @@ esync --force            # 強制同期
 eLabFTW のエンティティをローカルに Markdown として保存する。
 
 ```bash
+esync pull                              # 既存の同期済み ID を再取得
 esync pull --id 42 --entity items       # 指定 ID を取得（--entity 必須）
 esync pull --id 42 --id 43 --entity items  # 複数 ID を取得
-esync pull --id 42 --entity experiments  # 実験ノートとして取得
-esync pull                            # 既存の同期済み ID を再取得（初回は --id 必須）
-esync pull --force                    # 既存ファイルを上書き
+esync pull --id 42 --entity items --auto   # 振り分けを自動決定
+esync pull --id 42 --entity items --dir output/  # 保存先を明示指定
+esync pull --force                      # 既存ファイルを上書き
 ```
 
-- 初回 pull には `--id` が必須（全件ダウンロードは行わない）
-- `--id` 指定時は `--entity` も必須（items / experiments の混在を防止）
-- 2回目以降は mapping/ID ファイルから対象を自動決定
-- each モード: 複数 `--id` で一括取得可能
-- merge モード: 最初の `--id` を使用
+| オプション | 説明 |
+|---|---|
+| `--id` | 取得するエンティティ ID（複数指定可） |
+| `--entity` | `items` / `experiments` / `resources` |
+| `--dir` | 保存先ディレクトリ（未指定時は自動振り分け） |
+| `--auto` | 曖昧な振り分けもスコア最大で自動決定 |
+
+#### pull の自動振り分け
+
+`--id` で新しいエンティティを取得する際、以下の順で保存先を決定:
+
+1. **既に紐付け済み** → そのディレクトリへ再同期
+2. **ターゲットが1つだけ** → そのターゲットの `docs_dir` へ
+3. **複数ターゲット** → タグ/カテゴリ/タイトルでスコアリング
+4. **判定できない** → 対話で選択 or `--auto` で最高スコアを採用
+
+スコアリング:
+- `title_pattern` (glob) マッチ: +10
+- `category` 一致: +10
+- `tags` の包含率: 最大 5 + 特異性ボーナス
+
+マッチするターゲットがない場合、リモートのメタデータから新しいターゲットが `.elab-sync.yaml` に自動追記される。
 
 ### `esync diff`
 
@@ -92,12 +108,6 @@ esync diff -t "名前"     # 特定ターゲット
 esync status
 ```
 
-出力例:
-```
-  [My Docs] 変更あり（リソース #42）
-  [API Ref] 最新（リソース #43）
-```
-
 ### `esync init`
 
 対話形式で `.elab-sync.yaml` を生成する。テンプレートファイルも展開する。
@@ -111,10 +121,6 @@ esync status
 esync log                # 直近 20 件
 esync log --limit 50     # 件数指定
 ```
-
-| オプション | 短縮 | デフォルト | 説明 |
-|---|---|---|---|
-| `--limit` | `-l` | 20 | 表示件数 |
 
 ### `esync clone`
 
@@ -131,22 +137,28 @@ esync clone --url https://elab.example.com --id 42 --entity experiments --no-ver
 | `--url` | ✅ | — | eLabFTW の URL |
 | `--id` | ✅ | — | エンティティ ID（複数指定可） |
 | `--dir` | — | `elab-clone-{id}` | プロジェクトディレクトリ名 |
-| `--entity` | — | `items` | `items` / `experiments` |
+| `--entity` | — | `items` | `items` / `experiments` / `resources` |
 | `--no-verify` | — | false | SSL 検証を無効化 |
-
-### `esync update`
-
-ツール自体を最新版に更新する。`uv` で Git リポジトリから最新版をインストールする。
 
 ### `esync tag`
 
 エンティティのタグを管理する。
 
 ```bash
-esync tag list                # 全ターゲットのタグ一覧
-esync tag add "実験"          # タグを追加
-esync tag remove "古いタグ"   # タグを外す（エンティティから解除、タグ自体は削除しない）
-esync tag add "実験" --id 42  # 特定エンティティに追加
+esync tag list                         # 全ターゲットのタグ一覧
+esync tag list --id 42 --entity items  # 特定エンティティのタグ
+esync tag add "実験" --id 42 --entity items
+esync tag remove "古いタグ" --id 42 --entity items
+```
+
+### `esync category`
+
+エンティティのカテゴリを管理する。
+
+```bash
+esync category list --entity items           # カテゴリ一覧
+esync category show --id 42 --entity items   # 現在のカテゴリ
+esync category set "試薬" --id 42 --entity items  # カテゴリ設定
 ```
 
 ### `esync metadata`
@@ -168,8 +180,6 @@ esync entity-status set 3             # ステータス ID を指定して変更
 esync entity-status set 3 --id 42     # 特定エンティティのみ変更
 ```
 
-複数エンティティが対象の場合は確認プロンプトが表示される。
-
 ### `esync list`
 
 リモートのリソース/実験ノート一覧を表示する。
@@ -190,8 +200,6 @@ esync link 42 --file exp1.md          # each モード: ファイルと ID を�
 esync link 42 -t "実験記録"           # 特定ターゲットに紐付け
 ```
 
-紐付け時にリモートの body を取得し、競合検出のベースライン（remote_hash）を初期化する。
-
 ### `esync verify`
 
 ローカルとリモートの接続状態を検証する。
@@ -201,15 +209,25 @@ esync verify                          # 全ターゲット
 esync verify -t "名前"               # 特定ターゲット
 ```
 
-検証内容: ID/mapping の存在、リモートへのアクセス可否。内容の一致は `esync status` で確認。
+### `esync profile`
+
+接続プロファイルを管理する。
+
+```bash
+esync profile list                    # プロファイル一覧
+esync profile add team-b --url https://elab.example.com --api-key "key"
+esync profile remove team-b           # プロファイル削除
+```
+
+| サブコマンド | 説明 |
+|---|---|
+| `list` | 登録済みプロファイル一覧 |
+| `add <name> --url <url> [--api-key <key>] [--no-verify]` | プロファイル追加 |
+| `remove <name>` | プロファイル削除 |
 
 ### `esync whoami`
 
 現在の API キーに紐づくユーザー情報を表示する。
-
-```bash
-esync whoami
-```
 
 ### `esync new`
 
@@ -221,9 +239,6 @@ esync new --template-id 1             # テンプレートからファイル生�
 esync new --template-id 1 --title "実験A" --output exp_a.md
 ```
 
-| オプション | 説明 |
-|---|---|
-| `--list` | テンプレート一覧を表示 |
-| `--template-id` | テンプレート ID |
-| `--title` | ファイルタイトル（省略時はテンプレート名） |
-| `--output` / `-o` | 出力ファイルパス |
+### `esync update`
+
+ツール自体を最新版に更新する。`uv tool install --force` で Git リポジトリから再インストールする。

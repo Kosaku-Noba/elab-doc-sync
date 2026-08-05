@@ -829,7 +829,8 @@ def test_cmd_whoami(MockClient, tmp_path, capsys):
         json=MagicMock(return_value={
             "firstname": "太郎", "lastname": "田中",
             "email": "taro@example.com", "userid": 1,
-            "teams": [{"name": "Lab A"}],
+            "team": 1,
+            "teams": [{"id": 1, "name": "Lab A"}],
         })
     )
     args = Namespace(config=str(cfg), target=None, force=False)
