@@ -163,10 +163,17 @@ def load_config(config_path: Path) -> Config:
         body_format = t.get("body_format", BODY_FORMAT_DEFAULT)
         if body_format not in ("md", "html"):
             _abort(f"body_format は 'md' または 'html' を指定してください（現在: {body_format!r}）")
+        # id_file のデフォルト: docs_dir からユニークなサブディレクトリを生成
+        # これにより mapping.json / hash ファイルもターゲットごとに分離される
+        # 例: docs_dir="elab_docs" → ".elab-sync-ids/elab_docs/default.id"
+        #     docs_dir="elab_weekly_reports/" → ".elab-sync-ids/elab_weekly_reports/default.id"
+        docs_dir_name = t["docs_dir"].rstrip("/").replace("/", "_").replace("\\", "_")
+        default_id_file = f".elab-sync-ids/{docs_dir_name}/default.id"
+
         targets.append(TargetConfig(
             title=title,
             docs_dir=t["docs_dir"],
-            id_file=t.get("id_file", ".elab-sync-ids/default.id"),
+            id_file=t.get("id_file", default_id_file),
             pattern=t.get("pattern", "*.md"),
             mode=mode,
             entity=entity,
