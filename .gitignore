@@ -1,8 +1,38 @@
+# Python
 .venv/
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# ユーザー固有の同期データ（APIキー含む）
+.elab-sync.yaml
 .elab-sync-ids/
+
+# ユーザーのローカルドキュメント
+elab_docs/
+elab_weekly_reports/
+elab_attachments/
+
+# テスト・開発用
 .tool/
 docs/test.md
-.elab-sync.yaml
-elab_weekly_reports/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 環境変数
+.env
+.env.*
+
+# OS 固有
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
