@@ -7,18 +7,18 @@
 - Python 3.10 以上
 - [uv](https://docs.astral.sh/uv/) （パッケージ管理・実行に使用）
 
-> **pip からの移行:** `pip uninstall elab-doc-sync` で削除してから下記の手順で再インストールしてください。設定ファイル（`.elab-sync.yaml`）はそのまま使えます。
-
 ## ① インストール
 
 ```bash
-uv pip install git+https://github.com/Kosaku-Noba/elab-doc-sync.git
+uv tool install --force git+https://github.com/Kosaku-Noba/elab-doc-sync.git
 ```
+
+これにより `esync` と `elab-doc-sync` コマンドがパスに追加される。
 
 ## ② 設定ファイルを作る
 
 ```bash
-uv run elab-doc-sync init
+esync init
 ```
 
 対話形式で以下を入力する:
@@ -58,10 +58,10 @@ elabftw:
 
 ```bash
 # プレビュー（実際には同期しない）
-uv run esync --dry-run
+esync --dry-run
 
 # 同期実行
-uv run esync
+esync
 ```
 
 ## 開発環境セットアップ
@@ -69,15 +69,16 @@ uv run esync
 ```bash
 git clone https://github.com/Kosaku-Noba/elab-doc-sync.git
 cd elab-doc-sync
-uv sync
+uv sync --extra test
+uv run pytest -q -m "not integration"
 ```
 
 ## ツールの更新
 
 ```bash
-uv run esync update
+esync update
 ```
 
-`uv` で Git リポジトリから最新版をインストールする。
+`uv tool install --force` で Git リポジトリから最新版をインストールする。
 
 設定ファイルの詳細は [設定リファレンス](04_CONFIGURATION.md) を参照。

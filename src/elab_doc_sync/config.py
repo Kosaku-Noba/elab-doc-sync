@@ -29,6 +29,7 @@ class ProfileConfig:
     url: str
     api_key: str
     verify_ssl: bool = True
+    team: str | int | None = None  # チーム名 or ID（宣言的。起動時に検証可能）
 
 
 @dataclass
@@ -46,6 +47,7 @@ class TargetConfig:
     category: str | int | None = None   # push 時に自動設定するカテゴリ（ID or 名前）
     title_pattern: str | None = None    # pull 時のタイトルマッチング用 glob パターン
     profile: str = "default"  # 使用するプロファイル名
+    team: str | int | None = None  # 送信先チーム名 or ID（profileを自動選択）
 
     def __post_init__(self):
         if self.tags is None:
@@ -82,8 +84,10 @@ def _parse_profiles(raw: dict) -> dict[str, ProfileConfig]:
         url = pdata.get("url", "")
         api_key = pdata.get("api_key", "").strip()
         verify_ssl = pdata.get("verify_ssl", True)
+        team = pdata.get("team")  # str (名前) or int (ID) or None
         profiles[name] = ProfileConfig(
-            name=name, url=url, api_key=api_key, verify_ssl=verify_ssl
+            name=name, url=url, api_key=api_key, verify_ssl=verify_ssl,
+            team=team,
         )
     return profiles
 
@@ -173,6 +177,7 @@ def load_config(config_path: Path) -> Config:
             category=t.get("category"),
             title_pattern=t.get("title_pattern"),
             profile=t.get("profile", "default"),
+            team=t.get("team"),
         ))
 
     if not targets:
@@ -190,13 +195,45 @@ def get_client_for_target(config: Config, target: TargetConfig):
 
     返り値は (url, api_key, verify_ssl) のタプル。
     client のインスタンス化は呼び出し元で行う（循環 import 回避）。
+
+    target.team が指定されている場合:
+      - profiles の中から同じ team 値を持つプロファイルを自動選択
+      - target.profile が明示的に指定されている場合は profile を優先
     """
-    profile_name = target.profile
-    profile = config.profiles.get(profile_name)
+    # profile が明示的に指定されている場合はそれを優先
+    if target.profile != "default":
+        profile = config.profiles.get(target.profile)
+        if profile:
+            return profile.url, profile.api_key, profile.verify_ssl
+
+    # team が指定されている場合、profiles から対応するものを探す
+    if target.team is not None and config.profiles:
+        for profile in config.profiles.values():
+            if profile.team is not None and _team_matches(profile.team, target.team):
+                return profile.url, profile.api_key, profile.verify_ssl
+        # team 指定があるが対応するプロファイルが見つからない場合はエラー情報を出す
+        print(
+            f"警告: ターゲット '{target.docs_dir}' の team '{target.team}' に対応する"
+            f"プロファイルが見つかりません。default プロファイルを使用します。",
+            file=sys.stderr,
+        )
+
+    # フォールバック: profile 名で検索 → config のデフォルト値
+    profile = config.profiles.get(target.profile)
     if profile:
         return profile.url, profile.api_key, profile.verify_ssl
-    # フォールバック: config のデフォルト値
     return config.url, config.api_key, config.verify_ssl
+
+
+def _team_matches(profile_team: str | int, target_team: str | int) -> bool:
+    """プロファイルの team とターゲットの team が一致するか判定する。
+
+    両方が int に変換可能なら数値比較、そうでなければ文字列比較（大文字小文字無視）。
+    """
+    try:
+        return int(profile_team) == int(target_team)
+    except (ValueError, TypeError):
+        return str(profile_team).lower() == str(target_team).lower()
 
 
 def update_target_in_yaml(config_path: Path, target_index: int, **fields) -> None:

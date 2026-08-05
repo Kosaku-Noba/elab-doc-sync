@@ -25,6 +25,39 @@
 #     entity: experiments    # 実験ノートとして送信
 #
 # ─────────────────────────────────────────────
+# 複数チームへの送信（profiles + team 指定）:
+#
+# APIキーはチームごとに発行する必要があります。
+# profiles に team を紐付けておけば、targets で team 名を指定するだけで
+# 対応するAPIキーが自動的に選ばれます。
+#
+# profiles:
+#   cellstats:
+#     url: "https://your-elabftw.example.com"
+#     api_key: "59-xxxx..."
+#     team: "CellStats"           # このキーが紐づくチーム
+#   membrane:
+#     url: "https://your-elabftw.example.com"
+#     api_key: "60-yyyy..."
+#     team: "高耐久膜チーム"
+#
+# targets:
+#   - docs_dir: "docs/"
+#     pattern: "*.md"
+#     mode: each
+#     entity: items
+#     team: "CellStats"           # ← チーム名で送信先を指定
+#
+#   - docs_dir: "membrane_docs/"
+#     pattern: "*.md"
+#     mode: each
+#     entity: items
+#     team: "高耐久膜チーム"       # ← 別チームへ送信
+#
+# ※ team はチーム名（文字列）または ID（数値）で指定可能
+# ※ esync whoami で各APIキーのアクティブチームを確認できます
+#
+# ─────────────────────────────────────────────
 # 複数ターゲットの組み合わせ例:
 #
 # elabftw:

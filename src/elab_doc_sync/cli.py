@@ -1157,15 +1157,53 @@ def cmd_whoami(args):
     """現在の API キーに紐づくユーザー情報を表示する。"""
     config_path = Path(args.config)
     config = load_config(config_path)
-    client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
-    user = client._req("GET", "/api/v2/users/me").json()
-    print(f"  ユーザー: {user.get('firstname', '')} {user.get('lastname', '')}")
-    print(f"  メール: {user.get('email', '不明')}")
-    print(f"  ユーザーID: {user.get('userid', '不明')}")
-    teams = user.get("teams", [])
-    if teams:
-        team_names = [t.get("name", "?") for t in teams]
-        print(f"  チーム: {', '.join(team_names)}")
+
+    # プロファイルごとに表示
+    profiles_to_show = list(config.profiles.values()) if config.profiles else []
+    if not profiles_to_show:
+        # プロファイル未定義の場合はデフォルト接続情報で表示
+        profiles_to_show = [None]
+
+    for profile in profiles_to_show:
+        if profile:
+            url, api_key, verify_ssl = profile.url, profile.api_key, profile.verify_ssl
+            print(f"[profile: {profile.name}]")
+        else:
+            url, api_key, verify_ssl = config.url, config.api_key, config.verify_ssl
+            print("[default]")
+
+        client = ELabFTWClient(url, api_key, verify_ssl)
+        try:
+            user = client._req("GET", "/api/v2/users/me").json()
+        except Exception as e:
+            print(f"  エラー: API接続失敗 ({e})")
+            print()
+            continue
+
+        print(f"  ユーザー: {user.get('firstname', '')} {user.get('lastname', '')}")
+        print(f"  メール: {user.get('email', '不明')}")
+        print(f"  ユーザーID: {user.get('userid', '不明')}")
+
+        # 現在のAPIキーが紐づくチーム（アクティブチーム）
+        active_team_id = user.get("team")
+        teams = user.get("teams", [])
+        active_team_name = None
+        if active_team_id and teams:
+            for t in teams:
+                if t.get("id") == active_team_id:
+                    active_team_name = t.get("name")
+                    break
+        if active_team_name:
+            print(f"  現在のチーム: {active_team_name} (id={active_team_id})")
+        elif active_team_id:
+            print(f"  現在のチーム: id={active_team_id}")
+
+        # 所属チーム一覧
+        if teams:
+            other_teams = [t.get("name", "?") for t in teams if t.get("id") != active_team_id]
+            if other_teams:
+                print(f"  その他の所属チーム: {', '.join(other_teams)}")
+        print()
 
 
 def cmd_new(args):

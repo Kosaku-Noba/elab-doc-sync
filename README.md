@@ -27,11 +27,43 @@ uv tool install --force git+https://github.com/Kosaku-Noba/elab-doc-sync.git
 esync init
 ```
 
+```
+=== elab-doc-sync セットアップ ===
+
+eLabFTW の URL: https://aws-elabftw.konicaminolta.org/
+SSL 証明書を検証しますか？ [Y/n]: n
+Markdown ファイルを置くディレクトリ（空欄で docs/）:<好きな場所>
+同期する Markdown のファイルパターン（空欄で *.md）:
+同期モード — merge: 全ファイルを1つに結合 / each: 1ファイル=1ノート [merge]:
+送信先 — items(resources): リソース / experiments: 実験ノート [items]:
+送信形式 — md: Markdown のまま / html: HTML に変換 [md]:
+eLabFTW リソースのタイトル:
+
+```
+
 URL、同期モード、送信先を聞かれるので順に答えると `.elab-sync.yaml` が生成されます。
 
 ### API キーを設定する
 
 eLabFTW → ユーザー設定 → API Keys でキーを作成し、`.elab-sync.yaml` に貼る:
+
+#### APIキーの設定場所(elabFTW側)
+
+![alt text](images/image.png/image.png)
+
+左上ボタンから設定をクリック
+
+![alt text](images/image.png/image-1.png)
+
+設定内のAPIキーから名前を入力
+
+![alt text](images/image.png/image-2.png)
+
+アクセス権限を読み書きに変更
+
+![alt text](images/image.png/image-3.png)
+
+でてきた文字列をコピー(このときしか出ないので注意)
 
 ```yaml
 elabftw:

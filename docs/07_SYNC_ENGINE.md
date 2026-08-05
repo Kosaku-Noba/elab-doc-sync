@@ -53,10 +53,15 @@ each モードでは `mapping.json` でファイル名 → エンティティ ID
 6. 競合検出: リモート body のハッシュを前回保存値と比較
 7. ID なし or エンティティ不在 → 新規作成
 8. ローカル画像をアップロード・URL 書き換え
-9. Markdown → HTML 変換
+9. body_format に応じて変換:
+   - html: Markdown → HTML 変換
+   - md: Markdown のまま送信
 10. eLabFTW に PATCH で更新
-11. ローカルハッシュ・リモートハッシュを保存
-12. 同期ログに記録
+11. タグ同期（追記のみ、best-effort）
+12. カテゴリ同期（best-effort）
+13. 添付ファイルアップロード（attachments_dir 指定時）
+14. ローカルハッシュ・リモートハッシュを保存
+15. 同期ログに記録
 ```
 
 ### each モード
@@ -70,22 +75,35 @@ each モードでは `mapping.json` でファイル名 → エンティティ ID
    c. 競合検出
    d. マッピングに ID なし or エンティティ不在 → 新規作成
    e. 画像アップロード・URL 書き換え
-   f. Markdown → HTML 変換
+   f. body_format に応じて変換
    g. eLabFTW に PATCH で更新
-   h. ハッシュ・マッピングを保存
-   i. 同期ログに記録
+   h. タグ同期・カテゴリ同期
+   i. 添付ファイルアップロード
+   j. ハッシュ・マッピングを保存
+   k. 同期ログに記録
 ```
 
 ## Pull フロー
 
 ```
 1. 対象エンティティを特定（--id / mapping / 全件取得）
-2. eLabFTW から HTML body を取得
-3. HTML → Markdown に変換（markdownify, heading_style="ATX"）
-4. ローカルにファイル保存
-5. ID マッピング・ハッシュを保存（次回 push 時の不要更新を防止）
-6. 同期ログに記録
+2. --id 指定時: 自動振り分けで保存先ターゲットを決定
+   - 既紐付け → そのディレクトリ
+   - スコアリング（tags/category/title_pattern）
+   - --auto: 最高スコアで自動決定
+   - マッチなし: 対話選択 or 新規ターゲット自動追記
+3. eLabFTW から HTML body を取得
+4. HTML → Markdown に変換（markdownify, heading_style="ATX"）
+5. ローカルにファイル保存
+6. ID マッピング・ハッシュを保存（次回 push 時の不要更新を防止）
+7. 同期ログに記録
 ```
+
+## 添付ファイル
+
+`attachments_dir` が設定されている場合、push 時に指定ディレクトリ内のファイルを `attachments_pattern` でフィルタしてアップロードする。
+
+`--prune-attachments` フラグを指定すると、ローカルに存在しないリモートの添付ファイルを削除する。
 
 ## 競合検出
 
@@ -124,6 +142,8 @@ push 前にリモートの body ハッシュを前回同期時の保存値と比
 
 ## Markdown 変換
 
+`body_format: html` の場合に使用する拡張:
+
 | 拡張 | 機能 |
 |---|---|
 | `tables` | テーブル記法 |
@@ -131,6 +151,8 @@ push 前にリモートの body ハッシュを前回同期時の保存値と比
 | `codehilite` | コードハイライト |
 | `toc` | 目次生成 |
 | `nl2br` | 改行保持 |
+
+`body_format: md` の場合は変換せず Markdown のまま送信する。
 
 ## ファイル管理
 
