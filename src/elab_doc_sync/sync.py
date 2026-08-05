@@ -740,6 +740,19 @@ class EachDocsSyncer:
     def _load_mapping(self) -> dict:
         if self.mapping_file.exists():
             return json.loads(self.mapping_file.read_text(encoding="utf-8"))
+        # マイグレーション: 旧共有 mapping.json からターゲット固有のエントリを分離
+        legacy_mapping_file = self.project_root / ".elab-sync-ids" / "mapping.json"
+        if legacy_mapping_file.exists() and legacy_mapping_file != self.mapping_file:
+            legacy = json.loads(legacy_mapping_file.read_text(encoding="utf-8"))
+            if legacy:
+                # このターゲットの docs_dir に存在するファイルだけ抽出
+                migrated = {}
+                for fname, eid in legacy.items():
+                    if (self.docs_dir / fname).exists():
+                        migrated[fname] = eid
+                if migrated:
+                    self._save_mapping(migrated)
+                    return migrated
         return {}
 
     def _save_mapping(self, mapping: dict) -> None:

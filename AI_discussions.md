@@ -6153,3 +6153,57 @@ API 応答形式の互換性修正であり、README・仕様説明・コメン�
 ### DocReview 所感
 
 > 所感: 追加コードのコメントと docstring は概ね目的を説明しています。`UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q` は **293 passed, 7 skipped** でした。
+
+## 2026-08-05T10:40 [Kiro] クライアント報告バグ3件の修正
+
+クライアントから報告された3つのバグを修正。根本原因は mapping.json が全ターゲットで共有されていたこと。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| mapping.json 分離 | `id_file` のデフォルト値を `.elab-sync-ids/default.id`（全共有）→ `.elab-sync-ids/{docs_dir_name}/default.id`（ターゲット別）に変更。これにより mapping.json もターゲットごとに分離される |
+| マイグレーション | `sync.py` の `_load_mapping` に旧共有 mapping.json からの自動移行ロジックを追加。docs_dir に存在するファイルのみ抽出 |
+| init デフォルト変更 | `esync init` のモード選択デフォルトを merge → each に変更。merge は「(非推奨)」表記に |
+| タイトル変更リネーム | コード確認の結果、リネームロジック自体は正しく実装済み。問題の原因は mapping 共有による reverse_mapping の汚染であり、修正1で解消 |
+
+### Kiro 所感
+
+- 3件のバグ報告のうち、2件（pull コンタミ + タイトルリネーム不動作）は同一の根本原因（mapping.json 共有）に起因
+- 既存ユーザーの旧 mapping.json は自動マイグレーションで対応。手動作業不要
+- テスト結果: 293 passed, 7 deselected (integration skip)
+
+
+## 2026-08-05T11:02 [CodeReview] fix: mapping.jsonをターゲットごとに分離し、pullコンタミを解消 に対するレビュー
+
+コミットメッセージと差分は概ね整合していますが、旧状態の移行が安全に完結しておらず、コンタミ解消と競合保護を損なう経路があります。指定テストは **293 passed, 7 skipped** でした。
+
+### CodeReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| 同名ファイルの旧 mapping を複数ターゲットへ複製する | [sync.py](/home/user/noba/elab-doc-sync/src/elab_doc_sync/sync.py:740) は「対象 `docs_dir` に同名ファイルがあるか」だけで移行します。複数ターゲットに `README.md` などがあると、同じ ID が両方の mapping に保存され、次回 pull/push で別ターゲットのエンティティを取得・更新し得ます。旧共有 mapping だけでは所有先を判断不能なので、曖昧なエントリは自動移行せず明示的な解決を求める必要があります。 | 高 |
+| mapping 以外の同期状態を移行せず、初回 push が競合検出を迂回する | 移行対象は mapping のみで、旧 `.remote_hash` / `.hash` / `.meta_hash` / `.assets_hash` は新しい状態ディレクトリへ引き継がれません。結果として既存ファイルは変更ありとなり、新しい remote hash がないため競合検出なしでリモートを更新します。さらに [cli.py](/home/user/noba/elab-doc-sync/src/elab_doc_sync/cli.py:945) の clone は旧パスへ状態を書き続けるため、新規 clone 後の最初の sync でも同じ経路に入ります。 | 高 |
+| デフォルト状態パスが「ターゲットごと」には一意でない | [config.py](/home/user/noba/elab-doc-sync/src/elab_doc_sync/config.py:170) は `docs_dir` のみを識別子にしており、同一ディレクトリを異なる pattern/entity/profile で使うターゲット、または `a/b` と `a_b` は同じ状態ディレクトリを共有します。加えて `id_file: .elab-sync-ids/default.id` を明示した既存設定は旧共有 mapping のままで、分離も警告もされません。 | 高 |
+| 新しい状態遷移の回帰テストが不足している | [tests/test_cli.py](/home/user/noba/elab-doc-sync/tests/test_cli.py:23) の共通設定に旧 `id_file` を明示しており、多くのテストが新デフォルトを通りません。同名ファイルの曖昧移行、旧 hash の保持・競合検出、clone 後の再同期、状態パス衝突を固定するテストが必要です。 | 中 |
+| ユーザー向け文書が旧デフォルトのまま | [README.md](/home/user/noba/elab-doc-sync/README.md:37) と [セットアップガイド](/home/user/noba/elab-doc-sync/docs/03_SETUP_GUIDE.md:32) は init の既定値を `merge` と説明し、[設定リファレンス](/home/user/noba/elab-doc-sync/docs/04_CONFIGURATION.md:75) も旧 `id_file` デフォルトを記載しています。今回の利用者向け挙動変更と整合しません。 | 中 |
+
+### CodeReview 所感
+
+> 所感: 分離の方向性は妥当ですが、旧共有状態から所有先を自動復元できるという前提は置けません。曖昧な移行を安全側に倒し、競合検出の基準を維持してからリリースする必要があります。
+
+
+## 2026-08-05T11:02 [DocReview] fix: mapping.jsonをターゲットごとに分離し、pullコンタミを解消 に対するレビュー
+
+README・関連仕様書には、今回変更された初期設定と状態ファイルの扱いが未反映です。追加されたコードコメントは、変更目的と移行条件を説明できています。
+
+### DocReview 指摘事項
+
+| 項目 | 指摘内容 | 優先度 |
+|---|---|---|
+| `esync init` の既定値説明が不整合 | 空欄時は `each` が選ばれ、`merge` は非推奨になった一方、README.md の対話例、docs/03_SETUP_GUIDE.md、template/README.md は `merge` が既定と記載しています。`merge` 選択時だけタイトル入力が必要な点と、設定ファイルで `mode` を省略した場合の既定値との違いも明記してください。 | 高 |
+| ターゲット別の状態ファイル配置・自動移行の説明が不足 | `id_file` の既定値が `.elab-sync-ids/{docs_dir_name}/default.id` に変わり、`mapping.json` とハッシュもターゲット別になりますが、README.md には `id_file` の説明がなく、docs/04_CONFIGURATION.md と docs/02_SYSTEM_OVERVIEW.md は旧来の共有パスを記載しています。旧 `mapping.json` は対象ディレクトリに現存するファイルのエントリのみ自動移行される条件も文書化してください。 | 高 |
+
+### DocReview 所感
+
+> 所感: 新規コメントに追加の不足は見当たりません。テストは `293 passed, 7 skipped` でした。

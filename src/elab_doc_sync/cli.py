@@ -858,7 +858,7 @@ def cmd_init(args):
     docs_dir = input("Markdown ファイルを置くディレクトリ（空欄で docs/）: ").strip() or "docs/"
     pattern = input("同期する Markdown のファイルパターン（空欄で *.md）: ").strip() or "*.md"
 
-    mode_input = input("同期モード — merge: 全ファイルを1つに結合 / each: 1ファイル=1ノート [merge]: ").strip().lower() or "merge"
+    mode_input = input("同期モード — each: 1ファイル=1ノート / merge(非推奨): 全ファイルを1つに結合 [each]: ").strip().lower() or "each"
     entity_input = input("送信先 — items(resources): リソース / experiments: 実験ノート [items]: ").strip().lower() or "items"
     entity_input = _normalize_entity(entity_input)
 

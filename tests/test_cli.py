@@ -23,7 +23,8 @@ from elab_doc_sync.sync import ConflictError
 def _write_config(tmp_path, mode="merge", entity="items"):
     data = {
         "elabftw": {"url": "https://elab.example.com", "api_key": "key", "verify_ssl": False},
-        "targets": [{"title": "T", "docs_dir": "docs/", "pattern": "*.md", "mode": mode, "entity": entity}],
+        "targets": [{"title": "T", "docs_dir": "docs/", "pattern": "*.md", "mode": mode, "entity": entity,
+                     "id_file": ".elab-sync-ids/default.id"}],
     }
     p = tmp_path / ".elab-sync.yaml"
     p.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
@@ -1410,7 +1411,7 @@ def test_pull_dir_resolves_second_target_normalized(MockClient, tmp_path):
     assert (tmp_path / "dir_b" / "Norm.md").exists()
     # 状態も更新される（一時エクスポートではない）
     ids_dir = tmp_path / ".elab-sync-ids"
-    mapping_file = ids_dir / "mapping.json"
+    mapping_file = ids_dir / "dir_b" / "mapping.json"
     assert mapping_file.exists()
     import json as _json
     mapping = _json.loads(mapping_file.read_text(encoding="utf-8"))
