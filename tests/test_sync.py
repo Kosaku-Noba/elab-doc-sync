@@ -10,6 +10,7 @@ from elab_doc_sync.sync import (
     _download_images, _normalize_remote_image_urls, _image_local_name,
     _parse_image_local_name, _is_video, _is_image,
     _rewrite_videos, _count_local_videos,
+    _rewrite_file_links, _count_local_file_links,
     LINK_RE, VIDEO_EXTENSIONS,
     ConflictError, DocsSyncer, EachDocsSyncer,
 )
@@ -1554,3 +1555,342 @@ class TestEachDocsSyncerWithVideo:
         (docs / "note.md").write_text("![v](clip.mp4)", encoding="utf-8")
         results = syncer.dry_run()
         assert results[0]["videos"] == 1
+
+
+# ── Task 4: _rewrite_file_links 関数のテスト ──────────────────────
+
+class TestRewriteFileLinks:
+    def test_pdf_link_uploaded(self, tmp_path):
+        """PDF リンクがアップロードされて URL に書き換わる"""
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "protocol.pdf").write_bytes(b"%PDF-1.4 test content")
+        client = MagicMock()
+        client.list_uploads.return_value = []
+        client.upload_file.return_value = {"url": "https://elab/dl/protocol.pdf"}
+        body = "[プロトコル](protocol.pdf)"
+        result = _rewrite_file_links(body, "items", 1, client, docs, tmp_path)
+        assert "[プロトコル](https://elab/dl/protocol.pdf)" == result
+        client.upload_file.assert_called_once()
+
+    def test_csv_link_uploaded(self, tmp_path):
+        """CSV リンクもアップロードされる"""
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "data.csv").write_text("a,b,c\n1,2,3", encoding="utf-8")
+        client = MagicMock()
+        client.list_uploads.return_value = []
+        client.upload_file.return_value = {"url": "https://elab/dl/data.csv"}
+        body = "[データ](data.csv)"
+        result = _rewrite_file_links(body, "items", 1, client, docs, tmp_path)
+        assert "[データ](https://elab/dl/data.csv)" == result
+
+    def test_image_link_not_processed(self, tmp_path):
+        """画像リンクは処理しない"""
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "photo.png").write_bytes(b"\x89PNG")
+        client = MagicMock()
+        client.list_uploads.return_value = []
+        body = "[画像](photo.png)"
+        result = _rewrite_file_links(body, "items", 1, client, docs, tmp_path)
+        assert result == body
+        client.upload_file.assert_not_called()
+
+    def test_video_link_not_processed(self, tmp_path):
+        """動画リンクは処理しない"""
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "clip.mp4").write_bytes(b"\x00" * 32)
+        client = MagicMock()
+        client.list_uploads.return_value = []
+        body = "[動画](clip.mp4)"
+        result = _rewrite_file_links(body, "items", 1, client, docs, tmp_path)
+        assert result == body
+        client.upload_file.assert_not_called()
+
+    def test_http_url_skipped(self, tmp_path):
+        """HTTP URL はスキップ"""
+        client = MagicMock()
+        client.list_uploads.return_value = []
+        body = "[ファイル](https://example.com/file.pdf)"
+        result = _rewrite_file_links(body, "items", 1, client, tmp_path, tmp_path)
+        assert result == body
+        client.upload_file.assert_not_called()
+
+    def test_reuse_existing_upload(self, tmp_path):
+        """同名・同サイズで再利用する"""
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "report.pdf").write_bytes(b"%PDF" * 25)  # 100 bytes
+        client = MagicMock()
+        client.base_url = "https://elab"
+        client.list_uploads.return_value = [
+            {"real_name": "report.pdf", "long_name": "xyz789", "storage": "1",
+             "filesize": 100, "id": 5},
+        ]
+        body = "[レポート](report.pdf)"
+        result = _rewrite_file_links(body, "items", 1, client, docs, tmp_path)
+        assert "[レポート](https://elab/app/download.php?f=xyz789&name=report.pdf&storage=1)" == result
+        client.upload_file.assert_not_called()
+
+    def test_file_not_found(self, tmp_path, capsys):
+        """存在しないファイルは警告付きでそのまま"""
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        client = MagicMock()
+        client.list_uploads.return_value = []
+        body = "[消えたファイル](missing.xlsx)"
+        result = _rewrite_file_links(body, "items", 1, client, docs, tmp_path)
+        assert result == body
+        assert "ファイルが見つかりません" in capsys.readouterr().out
+
+    def test_upload_failure(self, tmp_path, capsys):
+        """アップロード失敗時は元のリンクを保持"""
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "broken.pdf").write_bytes(b"%PDF")
+        client = MagicMock()
+        client.list_uploads.return_value = []
+        client.upload_file.return_value = {"url": None}
+        body = "[壊れた](broken.pdf)"
+        result = _rewrite_file_links(body, "items", 1, client, docs, tmp_path)
+        assert result == body
+        assert "アップロード失敗" in capsys.readouterr().out
+
+    def test_image_syntax_normalized_to_link(self, tmp_path):
+        """![alt](file.pdf) は [alt](url) に正規化される"""
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "spec.pdf").write_bytes(b"%PDF-1.4")
+        client = MagicMock()
+        client.list_uploads.return_value = []
+        client.upload_file.return_value = {"url": "https://elab/dl/spec.pdf"}
+        body = "![仕様書](spec.pdf)"
+        result = _rewrite_file_links(body, "items", 1, client, docs, tmp_path)
+        assert "[仕様書](https://elab/dl/spec.pdf)" == result
+
+    def test_project_root_fallback(self, tmp_path):
+        """docs_dir に無い場合 project_root から探す"""
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        data = tmp_path / "data"
+        data.mkdir()
+        (data / "results.csv").write_text("x,y\n1,2", encoding="utf-8")
+        client = MagicMock()
+        client.list_uploads.return_value = []
+        client.upload_file.return_value = {"url": "https://elab/dl/results.csv"}
+        body = "[結果](data/results.csv)"
+        result = _rewrite_file_links(body, "items", 1, client, docs, tmp_path)
+        assert "[結果](https://elab/dl/results.csv)" == result
+
+
+class TestCountLocalFileLinks:
+    def test_count_pdf_and_csv(self, tmp_path):
+        body = "[a](doc.pdf) [b](data.csv)"
+        assert _count_local_file_links(body, tmp_path, tmp_path) == 2
+
+    def test_image_not_counted(self, tmp_path):
+        body = "[a](photo.png) ![b](image.jpg)"
+        assert _count_local_file_links(body, tmp_path, tmp_path) == 0
+
+    def test_video_not_counted(self, tmp_path):
+        body = "[a](clip.mp4) [b](demo.webm)"
+        assert _count_local_file_links(body, tmp_path, tmp_path) == 0
+
+    def test_http_not_counted(self, tmp_path):
+        body = "[a](https://example.com/file.pdf)"
+        assert _count_local_file_links(body, tmp_path, tmp_path) == 0
+
+    def test_image_syntax_non_image_counted(self, tmp_path):
+        """![alt](file.pdf) も非画像・非動画としてカウントされる"""
+        body = "![a](report.pdf)"
+        assert _count_local_file_links(body, tmp_path, tmp_path) == 1
+
+
+
+# ── Task 5: sync フロー統合 & 結合テスト ──────────────────────────
+
+class TestSyncFlowWithFileLinks:
+    """DocsSyncer/EachDocsSyncer で _rewrite_file_links が統合されていることを確認"""
+
+    def _make_merge_syncer(self, tmp_path):
+        docs = tmp_path / "docs"
+        docs.mkdir(exist_ok=True)
+        target = TargetConfig(
+            title="テスト",
+            docs_dir="docs/",
+            pattern="*.md",
+            mode="merge",
+            entity="items",
+            id_file=".elab-sync-ids/default.id",
+            tags=[],
+            category=None,
+            body_format="md",
+            attachments_dir=None,
+        )
+        client = MagicMock()
+        client.list_uploads.return_value = []
+        client.upload_file.return_value = {"url": "https://elab/dl/uploaded"}
+        client.get_item.return_value = {"body": ""}
+        client.create_item.return_value = 42
+        client.base_url = "https://elab"
+        syncer = DocsSyncer(client, target, tmp_path)
+        return syncer, client, docs
+
+    def test_merge_sync_processes_file_links(self, tmp_path):
+        syncer, client, docs = self._make_merge_syncer(tmp_path)
+        (docs / "note.md").write_text("[データ](data.csv)", encoding="utf-8")
+        (docs / "data.csv").write_text("a,b\n1,2", encoding="utf-8")
+        syncer.sync(force=True)
+        call_args = client.update_item.call_args
+        body = call_args[1]["body"] if "body" in call_args[1] else ""
+        assert "[データ](https://elab/dl/uploaded)" == body
+
+    def test_merge_dry_run_includes_file_links(self, tmp_path):
+        syncer, client, docs = self._make_merge_syncer(tmp_path)
+        (docs / "note.md").write_text("[a](file.pdf) [b](data.csv)", encoding="utf-8")
+        info = syncer.dry_run()
+        assert info["file_links"] == 2
+
+    def test_each_sync_processes_file_links(self, tmp_path):
+        docs = tmp_path / "docs"
+        docs.mkdir(exist_ok=True)
+        target = TargetConfig(
+            title="",
+            docs_dir="docs/",
+            pattern="*.md",
+            mode="each",
+            entity="items",
+            id_file=".elab-sync-ids/each.id",
+            tags=[],
+            category=None,
+            body_format="md",
+            attachments_dir=None,
+        )
+        client = MagicMock()
+        client.list_uploads.return_value = []
+        client.upload_file.return_value = {"url": "https://elab/dl/report.pdf"}
+        client.get_item.return_value = {"body": ""}
+        client.create_item.return_value = 99
+        client.base_url = "https://elab"
+        syncer = EachDocsSyncer(client, target, tmp_path)
+        (docs / "exp.md").write_text("[レポート](report.pdf)", encoding="utf-8")
+        (docs / "report.pdf").write_bytes(b"%PDF-1.4")
+        syncer.sync(force=True)
+        call_args = client.update_item.call_args
+        body = call_args[1]["body"] if "body" in call_args[1] else ""
+        assert "[レポート](https://elab/dl/report.pdf)" == body
+
+    def test_each_dry_run_includes_file_links(self, tmp_path):
+        docs = tmp_path / "docs"
+        docs.mkdir(exist_ok=True)
+        target = TargetConfig(
+            title="",
+            docs_dir="docs/",
+            pattern="*.md",
+            mode="each",
+            entity="items",
+            id_file=".elab-sync-ids/each.id",
+            tags=[],
+            category=None,
+            body_format="md",
+            attachments_dir=None,
+        )
+        client = MagicMock()
+        client.base_url = "https://elab"
+        syncer = EachDocsSyncer(client, target, tmp_path)
+        (docs / "note.md").write_text("![spec](spec.pdf)", encoding="utf-8")
+        results = syncer.dry_run()
+        assert results[0]["file_links"] == 1
+
+
+class TestMixedContentIntegration:
+    """画像・動画・PDFが混在する Markdown で処理順序が正しく動作することを確認"""
+
+    def test_mixed_content_all_processed(self, tmp_path):
+        """画像→動画→ファイルの順で全て正しく処理される"""
+        docs = tmp_path / "docs"
+        docs.mkdir(exist_ok=True)
+        (docs / "photo.png").write_bytes(b"\x89PNG" + b"\x00" * 50)
+        (docs / "clip.mp4").write_bytes(b"\x00" * 64)
+        (docs / "data.csv").write_text("x,y\n1,2", encoding="utf-8")
+
+        target = TargetConfig(
+            title="混在テスト",
+            docs_dir="docs/",
+            pattern="*.md",
+            mode="merge",
+            entity="items",
+            id_file=".elab-sync-ids/default.id",
+            tags=[],
+            category=None,
+            body_format="md",
+            attachments_dir=None,
+        )
+        client = MagicMock()
+        client.list_uploads.return_value = []
+        # upload_file を3回呼ぶので、side_effect で異なる URL を返す
+        client.upload_file.side_effect = [
+            {"url": "https://elab/dl/photo.png"},
+            {"url": "https://elab/dl/clip.mp4"},
+            {"url": "https://elab/dl/data.csv"},
+        ]
+        client.get_item.return_value = {"body": ""}
+        client.create_item.return_value = 10
+        client.base_url = "https://elab"
+
+        syncer = DocsSyncer(client, target, tmp_path)
+        md_content = "![写真](photo.png)\n\n[動画](clip.mp4)\n\n[データ](data.csv)"
+        (docs / "mixed.md").write_text(md_content, encoding="utf-8")
+
+        syncer.sync(force=True)
+
+        call_args = client.update_item.call_args
+        body = call_args[1]["body"] if "body" in call_args[1] else ""
+        # 画像はそのまま ![alt](url)
+        assert "![写真](https://elab/dl/photo.png)" in body
+        # 動画は <video> タグ
+        assert '<video src="https://elab/dl/clip.mp4" controls>動画</video>' in body
+        # ファイルリンクは [text](url)
+        assert "[データ](https://elab/dl/data.csv)" in body
+
+    def test_force_reupload(self, tmp_path):
+        """--force 指定時はサイズ一致でも再アップロードされる
+        (force は sync() の引数で、_rewrite_* 関数自体は常にアップロードを試みる;
+         sync() がスキップしないことで全 _rewrite_* が呼ばれることを確認)"""
+        docs = tmp_path / "docs"
+        docs.mkdir(exist_ok=True)
+        (docs / "data.csv").write_text("a,b\n1,2", encoding="utf-8")
+
+        target = TargetConfig(
+            title="Force テスト",
+            docs_dir="docs/",
+            pattern="*.md",
+            mode="merge",
+            entity="items",
+            id_file=".elab-sync-ids/default.id",
+            tags=[],
+            category=None,
+            body_format="md",
+            attachments_dir=None,
+        )
+        client = MagicMock()
+        client.list_uploads.return_value = []
+        client.upload_file.return_value = {"url": "https://elab/dl/data.csv"}
+        client.get_item.return_value = {"body": ""}
+        client.create_item.return_value = 50
+        client.base_url = "https://elab"
+
+        syncer = DocsSyncer(client, target, tmp_path)
+        (docs / "note.md").write_text("[データ](data.csv)", encoding="utf-8")
+
+        # 1回目の sync
+        syncer.sync(force=True)
+        assert client.upload_file.call_count == 1
+
+        # 2回目の sync (force=True → body_changed=False でも処理される)
+        client.upload_file.reset_mock()
+        client.upload_file.return_value = {"url": "https://elab/dl/data.csv"}
+        syncer.sync(force=True)
+        assert client.upload_file.call_count == 1

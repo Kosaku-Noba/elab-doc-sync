@@ -432,6 +432,120 @@ def _count_local_videos(body: str, docs_dir: Path, project_root: Path) -> int:
     return count
 
 
+def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path) -> str:
+    """Markdown 内の非画像・非動画ファイルリンクを eLabFTW にアップロードし URL に書き換える。
+
+    対象:
+      - 通常リンク [text](file.pdf)
+      - 画像記法 ![alt](file.pdf) （画像でも動画でもないファイル → [alt](url) に正規化）
+
+    変換結果: [text](upload_url)
+    """
+    existing: dict[str, list[dict]] = {}
+    try:
+        for u in client.list_uploads(entity, entity_id):
+            rn = u.get("real_name")
+            ln = u.get("long_name")
+            st = u.get("storage")
+            if rn and ln and st:
+                existing.setdefault(rn, []).append({
+                    "url": f"{client.base_url}/app/download.php?f={ln}&name={rn}&storage={st}",
+                    "size": int(u.get("filesize", 0) or 0),
+                    "id": u.get("id"),
+                })
+        for entries in existing.values():
+            entries.sort(key=lambda e: e.get("id") or 0)
+    except Exception:
+        pass
+
+    stale_ids: list[int] = []
+
+    def _process_file_match(alt: str, src: str, full_match: str) -> str:
+        """非画像・非動画ファイルマッチを処理してリンクまたは元テキストを返す。"""
+        if src.startswith(("http://", "https://")):
+            return full_match
+        # 画像・動画はスキップ（それぞれ専用の関数で処理済み）
+        if _is_image(src) or _is_video(src):
+            return full_match
+
+        file_path = (docs_dir / src).resolve()
+        if not file_path.exists():
+            file_path = (project_root / src).resolve()
+        if not file_path.exists():
+            print(f"    ⚠ ファイルが見つかりません: {src}")
+            return full_match
+
+        real_name = file_path.name
+        entries = existing.get(real_name, [])
+        local_size = file_path.stat().st_size
+
+        reuse = next((e for e in entries if e["size"] and e["size"] == local_size), None)
+        if reuse:
+            for e in entries:
+                if e is not reuse and e.get("id") is not None:
+                    stale_ids.append(e["id"])
+            print(f"    ✓ {real_name}（既存アップロードを再利用）")
+            return f'[{alt}]({reuse["url"]})'
+
+        print(f"    ファイルをアップロード中: {real_name}")
+        result = client.upload_file(entity, entity_id, str(file_path))
+        if result.get("url"):
+            for e in entries:
+                if e.get("id") is not None:
+                    stale_ids.append(e["id"])
+            print(f"    ✓ {real_name}")
+            return f'[{alt}]({result["url"]})'
+        print(f"    ✗ アップロード失敗: {real_name}")
+        return full_match
+
+    # IMAGE_RE と LINK_RE の両方から非画像・非動画ファイルを検出。
+    matches: list[tuple[int, int, str, str, str]] = []
+    for m in IMAGE_RE.finditer(body):
+        src = m.group(2)
+        if not src.startswith(("http://", "https://")) and not _is_image(src) and not _is_video(src):
+            matches.append((m.start(), m.end(), m.group(1), src, m.group(0)))
+    for m in LINK_RE.finditer(body):
+        src = m.group(2)
+        if not src.startswith(("http://", "https://")) and not _is_image(src) and not _is_video(src):
+            matches.append((m.start(), m.end(), m.group(1), src, m.group(0)))
+
+    # 開始位置でソートし重複排除
+    matches.sort(key=lambda x: x[0])
+    unique_matches: list[tuple[int, int, str, str, str]] = []
+    last_end = -1
+    for match in matches:
+        if match[0] >= last_end:
+            unique_matches.append(match)
+            last_end = match[1]
+
+    # 後ろから置換してインデックスを壊さない
+    result = body
+    for start, end, alt, src, full in reversed(unique_matches):
+        replacement = _process_file_match(alt, src, full)
+        result = result[:start] + replacement + result[end:]
+
+    for uid in stale_ids:
+        try:
+            client.delete_upload(entity, entity_id, uid)
+        except Exception:
+            pass
+    return result
+
+
+def _count_local_file_links(body: str, docs_dir: Path, project_root: Path) -> int:
+    """本文中の非画像・非動画ローカルファイルリンク数をカウントする。"""
+    count = 0
+    for m in IMAGE_RE.finditer(body):
+        src = m.group(2)
+        if not src.startswith(("http://", "https://")) and not _is_image(src) and not _is_video(src):
+            count += 1
+    for m in LINK_RE.finditer(body):
+        src = m.group(2)
+        if not src.startswith(("http://", "https://")) and not _is_image(src) and not _is_video(src):
+            count += 1
+    return count
+
+
 def _count_local_attachments(attachments_dir: Path | None) -> int:
     if not attachments_dir or not attachments_dir.is_dir():
         return 0
@@ -631,13 +745,14 @@ class DocsSyncer:
     def dry_run(self) -> dict:
         md_files = self.collect_files()
         if not md_files:
-            return {"files": 0, "images": 0, "videos": 0, "changed": False, "item_id": self.read_item_id()}
+            return {"files": 0, "images": 0, "videos": 0, "file_links": 0, "changed": False, "item_id": self.read_item_id()}
         sections = [f.read_text(encoding="utf-8").strip() for f in md_files]
         body = "\n\n---\n\n".join(sections)
         return {
             "files": len(md_files),
             "images": _count_local_images(body),
             "videos": _count_local_videos(body, self.docs_dir, self.project_root),
+            "file_links": _count_local_file_links(body, self.docs_dir, self.project_root),
             "changed": self.has_changed(body),
             "item_id": self.read_item_id(),
         }
@@ -690,6 +805,7 @@ class DocsSyncer:
         if body_changed or force or item_id is not None:
             body = _rewrite_images(raw_body, self.entity, item_id, self.client, self.docs_dir, self.project_root)
             body = _rewrite_videos(body, self.entity, item_id, self.client, self.docs_dir, self.project_root)
+            body = _rewrite_file_links(body, self.entity, item_id, self.client, self.docs_dir, self.project_root)
             if self.target.body_format == "md":
                 self._update_entity(item_id, body=body, title=self.target.title)
             else:
@@ -858,6 +974,7 @@ class EachDocsSyncer:
                 "title": title,
                 "images": _count_local_images(body),
                 "videos": _count_local_videos(body, self.docs_dir, self.project_root),
+                "file_links": _count_local_file_links(body, self.docs_dir, self.project_root),
                 "changed": self._has_changed(f.name, body),
                 "entity_id": mapping.get(f.name),
             })
@@ -911,6 +1028,7 @@ class EachDocsSyncer:
             if body_changed or force:
                 body = _rewrite_images(raw_body, self.entity, eid, self.client, self.docs_dir, self.project_root)
                 body = _rewrite_videos(body, self.entity, eid, self.client, self.docs_dir, self.project_root)
+                body = _rewrite_file_links(body, self.entity, eid, self.client, self.docs_dir, self.project_root)
                 if self.target.body_format == "md":
                     self._update_entity(eid, body=body, title=title)
                 else:

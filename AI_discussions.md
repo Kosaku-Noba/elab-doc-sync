@@ -5447,3 +5447,27 @@ Markdown 本文中の動画リンク（通常リンク `[text](video.mp4)` と�
 - IMAGE_RE と LINK_RE の両方をスキャンして重複排除する方式で、`![alt](video.mp4)` と `[text](video.mp4)` の両パターンに対応
 - Windows 権限テスト1件のみ既存の失敗あり（本変更と無関係）
 - 次ステップ: feature/file-link-upload ブランチで非画像・非動画ファイルリンクのアップロード機能を実装予定
+
+
+## 2026-08-06T14:25 [Kiro] feat: ファイルリンクアップロード機能の実装 (feature/file-link-upload)
+
+Markdown 本文中の非画像・非動画ファイルリンク（通常リンク `[text](file.pdf)` と画像記法 `![alt](file.pdf)` の両方）を検出し、eLabFTW にアップロードした上で URL を書き換える機能を実装した。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| _rewrite_file_links() | 非画像・非動画ファイルリンクをアップロード＋URL書き換え。`![alt](file.pdf)` は `[alt](url)` に正規化 |
+| _count_local_file_links() | dry-run 用のファイルリンク数カウント |
+| DocsSyncer.sync() | _rewrite_images → _rewrite_videos → _rewrite_file_links の3段パイプライン |
+| EachDocsSyncer.sync() | 同上 |
+| dry_run() | file_links キーを追加 |
+| cli.py | dry-run 表示にリンクファイル件数を追加 |
+| テスト | 21件追加（全てパス）: ユニット15件 + 結合6件 |
+
+### Kiro 所感
+
+- _rewrite_videos と同じパターン（マッチ収集→重複排除→後ろから置換）で統一性を維持
+- 処理順序 images → videos → file_links により、各関数は自分の担当ファイル種別のみ処理（_is_image / _is_video で除外）
+- 画像記法 `![alt](file.pdf)` を `[alt](url)` に正規化することで、eLabFTW 上でクリックダウンロード可能なリンクになる
+- テスト総数: 新規追加分のみで53件（Task 1〜5 合計）。全テストパス（Windows 権限テスト1件のみ既存問題で失敗）
