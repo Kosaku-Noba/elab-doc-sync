@@ -8,7 +8,9 @@ import pytest
 from elab_doc_sync.sync import (
     _compute_hash, _count_local_images, _md_to_html, _rewrite_images,
     _download_images, _normalize_remote_image_urls, _image_local_name,
-    _parse_image_local_name,
+    _parse_image_local_name, _is_video, _is_image,
+    _rewrite_videos, _count_local_videos,
+    LINK_RE, VIDEO_EXTENSIONS,
     ConflictError, DocsSyncer, EachDocsSyncer,
 )
 from elab_doc_sync.config import TargetConfig, BODY_FORMAT_DEFAULT
@@ -1243,3 +1245,312 @@ def test_sync_category_failure_is_best_effort(mock_client, capsys):
     mock_client.resolve_category_id.side_effect = Exception("API error")
     _sync_category(mock_client, "items", 42, "bad")
     assert "カテゴリ同期に失敗" in capsys.readouterr().out
+
+
+# ── Task 1: 動画リンク検出の正規表現とヘルパー関数 ──────────────
+
+class TestIsVideo:
+    def test_mp4(self):
+        assert _is_video("sample.mp4") is True
+
+    def test_webm(self):
+        assert _is_video("experiment.webm") is True
+
+    def test_mp4_uppercase(self):
+        assert _is_video("VIDEO.MP4") is True
+
+    def test_png_not_video(self):
+        assert _is_video("photo.png") is False
+
+    def test_pdf_not_video(self):
+        assert _is_video("document.pdf") is False
+
+    def test_no_extension(self):
+        assert _is_video("noext") is False
+
+    def test_avi_not_supported(self):
+        assert _is_video("clip.avi") is False
+
+
+class TestLinkRE:
+    def test_normal_link(self):
+        m = LINK_RE.search("[text](path/to/file.pdf)")
+        assert m is not None
+        assert m.group(1) == "text"
+        assert m.group(2) == "path/to/file.pdf"
+
+    def test_image_not_matched(self):
+        """画像記法 ![alt](src) は LINK_RE にマッチしない"""
+        matches = list(LINK_RE.finditer("![alt](image.png)"))
+        assert len(matches) == 0
+
+    def test_multiple_links(self):
+        body = "[a](file1.pdf) some text [b](file2.csv)"
+        matches = list(LINK_RE.finditer(body))
+        assert len(matches) == 2
+        assert matches[0].group(2) == "file1.pdf"
+        assert matches[1].group(2) == "file2.csv"
+
+    def test_link_after_image(self):
+        """画像の後に通常リンクがある場合、通常リンクだけマッチする"""
+        body = "![img](photo.png) [doc](file.pdf)"
+        matches = list(LINK_RE.finditer(body))
+        assert len(matches) == 1
+        assert matches[0].group(2) == "file.pdf"
+
+    def test_video_link(self):
+        m = LINK_RE.search("[動画](media/sample.mp4)")
+        assert m is not None
+        assert m.group(2) == "media/sample.mp4"
+
+
+class TestVideoExtensions:
+    def test_contains_mp4_and_webm(self):
+        assert ".mp4" in VIDEO_EXTENSIONS
+        assert ".webm" in VIDEO_EXTENSIONS
+
+    def test_does_not_contain_image_extensions(self):
+        assert ".png" not in VIDEO_EXTENSIONS
+        assert ".jpg" not in VIDEO_EXTENSIONS
+
+
+# ── Task 2: _rewrite_videos 関数のテスト ──────────────────────────
+
+class TestRewriteVideos:
+    def test_link_format_upload(self, tmp_path):
+        """通常リンク [text](video.mp4) がアップロードされて <video> タグになる"""
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "sample.mp4").write_bytes(b"\x00" * 128)
+        client = MagicMock()
+        client.list_uploads.return_value = []
+        client.upload_file.return_value = {"url": "https://elab/dl/sample.mp4"}
+        body = "[実験動画](sample.mp4)"
+        result = _rewrite_videos(body, "items", 1, client, docs, tmp_path)
+        assert '<video src="https://elab/dl/sample.mp4" controls>実験動画</video>' == result
+        client.upload_file.assert_called_once()
+
+    def test_image_format_upload(self, tmp_path):
+        """画像記法 ![alt](video.mp4) でも <video> タグに変換される"""
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "demo.webm").write_bytes(b"\x00" * 64)
+        client = MagicMock()
+        client.list_uploads.return_value = []
+        client.upload_file.return_value = {"url": "https://elab/dl/demo.webm"}
+        body = "![デモ](demo.webm)"
+        result = _rewrite_videos(body, "items", 1, client, docs, tmp_path)
+        assert '<video src="https://elab/dl/demo.webm" controls>デモ</video>' == result
+
+    def test_http_url_skipped(self, tmp_path):
+        """HTTP URL の動画リンクはスキップされる"""
+        client = MagicMock()
+        client.list_uploads.return_value = []
+        body = "[動画](https://example.com/video.mp4)"
+        result = _rewrite_videos(body, "items", 1, client, tmp_path, tmp_path)
+        assert result == body
+        client.upload_file.assert_not_called()
+
+    def test_reuse_existing_upload(self, tmp_path):
+        """同名・同サイズのアップロード済みファイルは再利用する"""
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "sample.mp4").write_bytes(b"\x00" * 128)
+        client = MagicMock()
+        client.base_url = "https://elab"
+        client.list_uploads.return_value = [
+            {"real_name": "sample.mp4", "long_name": "abc123", "storage": "1",
+             "filesize": 128, "id": 10},
+        ]
+        body = "[動画](sample.mp4)"
+        result = _rewrite_videos(body, "items", 1, client, docs, tmp_path)
+        assert '<video src="https://elab/app/download.php?f=abc123&name=sample.mp4&storage=1" controls>動画</video>' == result
+        client.upload_file.assert_not_called()
+
+    def test_file_not_found(self, tmp_path, capsys):
+        """存在しないファイルへのリンクは警告付きでそのまま残る"""
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        client = MagicMock()
+        client.list_uploads.return_value = []
+        body = "[動画](nonexistent.mp4)"
+        result = _rewrite_videos(body, "items", 1, client, docs, tmp_path)
+        assert result == body
+        assert "動画が見つかりません" in capsys.readouterr().out
+
+    def test_non_video_link_not_processed(self, tmp_path):
+        """動画でないリンクは処理しない"""
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "doc.pdf").write_bytes(b"%PDF")
+        client = MagicMock()
+        client.list_uploads.return_value = []
+        body = "[ドキュメント](doc.pdf)"
+        result = _rewrite_videos(body, "items", 1, client, docs, tmp_path)
+        assert result == body
+        client.upload_file.assert_not_called()
+
+    def test_mixed_video_and_non_video(self, tmp_path):
+        """動画と非動画が混在する本文で動画のみ処理される"""
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "clip.mp4").write_bytes(b"\x00" * 50)
+        (docs / "doc.pdf").write_bytes(b"%PDF")
+        client = MagicMock()
+        client.list_uploads.return_value = []
+        client.upload_file.return_value = {"url": "https://elab/dl/clip.mp4"}
+        body = "[動画](clip.mp4)\n[文書](doc.pdf)"
+        result = _rewrite_videos(body, "items", 1, client, docs, tmp_path)
+        assert '<video src="https://elab/dl/clip.mp4" controls>動画</video>' in result
+        assert "[文書](doc.pdf)" in result
+
+    def test_upload_failure(self, tmp_path, capsys):
+        """アップロード失敗時は元のリンクを保持する"""
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "fail.mp4").write_bytes(b"\x00" * 32)
+        client = MagicMock()
+        client.list_uploads.return_value = []
+        client.upload_file.return_value = {"url": None}
+        body = "[動画](fail.mp4)"
+        result = _rewrite_videos(body, "items", 1, client, docs, tmp_path)
+        assert result == body
+        assert "アップロード失敗" in capsys.readouterr().out
+
+    def test_project_root_fallback(self, tmp_path):
+        """docs_dir に無い場合 project_root から探す"""
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        media = tmp_path / "media"
+        media.mkdir()
+        (media / "video.mp4").write_bytes(b"\x00" * 64)
+        client = MagicMock()
+        client.list_uploads.return_value = []
+        client.upload_file.return_value = {"url": "https://elab/dl/video.mp4"}
+        body = "[動画](media/video.mp4)"
+        result = _rewrite_videos(body, "items", 1, client, docs, tmp_path)
+        assert '<video src="https://elab/dl/video.mp4" controls>動画</video>' == result
+
+
+class TestRewriteImagesSkipsVideo:
+    def test_video_in_image_syntax_skipped(self, tmp_path):
+        """_rewrite_images は ![alt](video.mp4) をスキップする"""
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "clip.mp4").write_bytes(b"\x00" * 64)
+        client = MagicMock()
+        client.list_uploads.return_value = []
+        body = "![動画](clip.mp4)"
+        result = _rewrite_images(body, "items", 1, client, docs, tmp_path)
+        # _rewrite_images はスキップするので元のまま
+        assert result == body
+        client.upload_file.assert_not_called()
+
+
+class TestCountLocalVideos:
+    def test_count_link_format(self, tmp_path):
+        body = "[a](video.mp4) [b](other.webm)"
+        assert _count_local_videos(body, tmp_path, tmp_path) == 2
+
+    def test_count_image_format(self, tmp_path):
+        body = "![a](clip.mp4)"
+        assert _count_local_videos(body, tmp_path, tmp_path) == 1
+
+    def test_http_not_counted(self, tmp_path):
+        body = "[a](https://example.com/video.mp4)"
+        assert _count_local_videos(body, tmp_path, tmp_path) == 0
+
+    def test_non_video_not_counted(self, tmp_path):
+        body = "[a](file.pdf) ![b](image.png)"
+        assert _count_local_videos(body, tmp_path, tmp_path) == 0
+
+
+
+# ── Task 3: sync フロー統合テスト ──────────────────────────────
+
+class TestDocsSyncerWithVideo:
+    """DocsSyncer.sync() で動画が処理されることを確認"""
+
+    def _make_syncer(self, tmp_path, body_format="md"):
+        docs = tmp_path / "docs"
+        docs.mkdir(exist_ok=True)
+        target = TargetConfig(
+            title="テスト",
+            docs_dir="docs/",
+            pattern="*.md",
+            mode="merge",
+            entity="items",
+            id_file=".elab-sync-ids/default.id",
+            tags=[],
+            category=None,
+            body_format=body_format,
+            attachments_dir=None,
+        )
+        client = MagicMock()
+        client.list_uploads.return_value = []
+        client.upload_file.return_value = {"url": "https://elab/dl/video.mp4"}
+        client.get_item.return_value = {"body": ""}
+        client.create_item.return_value = 42
+        client.base_url = "https://elab"
+        syncer = DocsSyncer(client, target, tmp_path)
+        return syncer, client, docs
+
+    def test_sync_processes_video(self, tmp_path):
+        syncer, client, docs = self._make_syncer(tmp_path)
+        (docs / "note.md").write_text("[動画](video.mp4)", encoding="utf-8")
+        (docs / "video.mp4").write_bytes(b"\x00" * 64)
+        syncer.sync(force=True)
+        # update_item が呼ばれ、<video> タグを含む body が渡されていること
+        call_args = client.update_item.call_args
+        body = call_args[1]["body"] if "body" in call_args[1] else call_args[0][1] if len(call_args[0]) > 1 else ""
+        assert "<video" in body
+        assert "https://elab/dl/video.mp4" in body
+
+    def test_dry_run_includes_video_count(self, tmp_path):
+        syncer, client, docs = self._make_syncer(tmp_path)
+        (docs / "note.md").write_text("[動画](video.mp4)\n![clip](clip.webm)", encoding="utf-8")
+        info = syncer.dry_run()
+        assert info["videos"] == 2
+
+
+class TestEachDocsSyncerWithVideo:
+    """EachDocsSyncer.sync() で動画が処理されることを確認"""
+
+    def _make_syncer(self, tmp_path):
+        docs = tmp_path / "docs"
+        docs.mkdir(exist_ok=True)
+        target = TargetConfig(
+            title="",
+            docs_dir="docs/",
+            pattern="*.md",
+            mode="each",
+            entity="items",
+            id_file=".elab-sync-ids/each.id",
+            tags=[],
+            category=None,
+            body_format="md",
+            attachments_dir=None,
+        )
+        client = MagicMock()
+        client.list_uploads.return_value = []
+        client.upload_file.return_value = {"url": "https://elab/dl/sample.mp4"}
+        client.get_item.return_value = {"body": ""}
+        client.create_item.return_value = 100
+        client.base_url = "https://elab"
+        syncer = EachDocsSyncer(client, target, tmp_path)
+        return syncer, client, docs
+
+    def test_sync_processes_video(self, tmp_path):
+        syncer, client, docs = self._make_syncer(tmp_path)
+        (docs / "experiment.md").write_text("[実験映像](sample.mp4)", encoding="utf-8")
+        (docs / "sample.mp4").write_bytes(b"\x00" * 32)
+        syncer.sync(force=True)
+        call_args = client.update_item.call_args
+        body = call_args[1]["body"] if "body" in call_args[1] else ""
+        assert "<video" in body
+
+    def test_dry_run_includes_video_count(self, tmp_path):
+        syncer, client, docs = self._make_syncer(tmp_path)
+        (docs / "note.md").write_text("![v](clip.mp4)", encoding="utf-8")
+        results = syncer.dry_run()
+        assert results[0]["videos"] == 1

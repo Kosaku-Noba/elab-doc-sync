@@ -6,3 +6,4 @@ __pycache__/
 docs/test.md
 .elab-sync.yaml
 elab_weekly_reports/
+test_fixtures/

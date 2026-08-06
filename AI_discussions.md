@@ -5419,3 +5419,31 @@ README重複削除と DIR-06 テスト追加について、README 現在内容�
 ### DocReview 所感
 
 > 所感: 機能追加ではないため README やコメントへの追加説明は不要です。一方で、版数更新に伴うリリース系・仕様系ドキュメントの版数整合はまだ弱いです。
+
+## 2026-08-06T10:45 [Kiro] feat: 動画埋め込み機能の実装 (feature/video-embed)
+
+Markdown 本文中の動画リンク（通常リンク `[text](video.mp4)` と画像記法 `![alt](video.mp4)` の両方）を検出し、eLabFTW にアップロードした上で `<video>` タグに変換する機能を実装した。
+
+### 変更点
+
+| 項目 | 内容 |
+|---|---|
+| VIDEO_EXTENSIONS | `.mp4`, `.webm` を定義 |
+| LINK_RE | 通常リンク `[text](src)` にマッチする正規表現（画像記法を除外） |
+| _is_video() | 拡張子による動画判定ヘルパー |
+| _rewrite_videos() | 動画リンクをアップロード＋`<video>` タグに変換する関数 |
+| _count_local_videos() | dry-run 用の動画ファイル数カウント |
+| _rewrite_images 変更 | 動画ファイルはスキップ（_rewrite_videos で処理するため） |
+| DocsSyncer.sync() | _rewrite_images の後に _rewrite_videos を呼び出し |
+| EachDocsSyncer.sync() | 同上 |
+| dry_run() | videos キーを追加 |
+| cli.py | dry-run 表示に動画件数を追加 |
+| 仕様書 | docs/spec_video_and_file_link.md を作成 |
+| テスト | 32件追加（全てパス） |
+
+### Kiro 所感
+
+- 既存の _rewrite_images パターンを踏襲し、同名・同サイズ再利用ロジックも同じ方式で実装
+- IMAGE_RE と LINK_RE の両方をスキャンして重複排除する方式で、`![alt](video.mp4)` と `[text](video.mp4)` の両パターンに対応
+- Windows 権限テスト1件のみ既存の失敗あり（本変更と無関係）
+- 次ステップ: feature/file-link-upload ブランチで非画像・非動画ファイルリンクのアップロード機能を実装予定
