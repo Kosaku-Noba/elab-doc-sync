@@ -1333,3 +1333,186 @@ def test_sync_attachments_hash_mismatch(tmp_path):
 
     _sync_attachments(att_dir, "items", 1, client, force=False)
     client.upload_file.assert_called_once()
+
+
+# ── リンク変換テスト ─────────────────────────────────────────
+
+from elab_doc_sync.sync import _rewrite_local_links, _rewrite_elab_links_to_local
+
+
+# LINK-01: ローカルファイルリンクが eLabFTW URL に変換される
+def test_rewrite_local_links_basic():
+    body = "See [setup guide](./setup.md) for details."
+    mapping = {"setup.md": 42, "other.md": 99}
+    result = _rewrite_local_links(body, "items", "https://elab.example.com", mapping)
+    assert "https://elab.example.com/items.php?mode=view&id=42" in result
+    assert "[setup guide](" in result
+
+
+# LINK-02: mapping に無いファイルはそのまま残る
+def test_rewrite_local_links_unresolved():
+    body = "See [unknown](./unknown.md) for details."
+    mapping = {"setup.md": 42}
+    result = _rewrite_local_links(body, "items", "https://elab.example.com", mapping)
+    assert result == body
+
+
+# LINK-03: 外部 URL はスキップされる
+def test_rewrite_local_links_skips_external():
+    body = "See [google](https://google.com) and [setup](./setup.md)."
+    mapping = {"setup.md": 42}
+    result = _rewrite_local_links(body, "items", "https://elab.example.com", mapping)
+    assert "https://google.com" in result
+    assert "items.php?mode=view&id=42" in result
+
+
+# LINK-04: 画像リンクはスキップされる
+def test_rewrite_local_links_skips_images():
+    body = "![img](./photo.png)\n[doc](./doc.md)"
+    mapping = {"doc.md": 10}
+    result = _rewrite_local_links(body, "items", "https://elab.example.com", mapping)
+    assert "![img](./photo.png)" in result
+    assert "items.php?mode=view&id=10" in result
+
+
+# LINK-05: 非 .md ファイルリンクはスキップされる
+def test_rewrite_local_links_skips_non_md():
+    body = "[data](./data.csv)"
+    mapping = {"data.csv": 5}
+    result = _rewrite_local_links(body, "items", "https://elab.example.com", mapping)
+    assert result == body
+
+
+# LINK-06: experiments エンティティの URL が生成される
+def test_rewrite_local_links_experiments():
+    body = "[exp](./experiment1.md)"
+    mapping = {"experiment1.md": 7}
+    result = _rewrite_local_links(body, "experiments", "https://elab.example.com", mapping)
+    assert "experiments.php?mode=view&id=7" in result
+
+
+# LINK-07: eLabFTW URL → ローカルリンク逆変換
+def test_rewrite_elab_links_to_local_basic():
+    body = "See [setup](https://elab.example.com/items.php?mode=view&id=42) for details."
+    mapping = {"setup.md": 42, "other.md": 99}
+    result = _rewrite_elab_links_to_local(body, "https://elab.example.com", mapping, "items")
+    assert "[setup](./setup.md)" in result
+
+
+# LINK-08: 解決できない eLabFTW URL はそのまま残る
+def test_rewrite_elab_links_to_local_unresolved():
+    body = "See [unknown](https://elab.example.com/items.php?mode=view&id=999)."
+    mapping = {"setup.md": 42}
+    result = _rewrite_elab_links_to_local(body, "https://elab.example.com", mapping, "items")
+    assert "items.php?mode=view&id=999" in result
+
+
+# LINK-09: 外部 eLabFTW インスタンスの URL はスキップされる
+def test_rewrite_elab_links_to_local_external_elab():
+    body = "See [ext](https://other-elab.com/items.php?mode=view&id=42)."
+    mapping = {"setup.md": 42}
+    result = _rewrite_elab_links_to_local(body, "https://elab.example.com", mapping, "items")
+    assert "other-elab.com" in result
+    assert "./setup.md" not in result
+
+
+# LINK-10: push→pull ラウンドトリップが安定する
+def test_link_roundtrip():
+    original = "See [guide](./guide.md) and [ref](./ref.md)."
+    mapping = {"guide.md": 10, "ref.md": 20}
+    base_url = "https://elab.example.com"
+
+    # push: ローカル → eLabFTW URL
+    pushed = _rewrite_local_links(original, "items", base_url, mapping)
+    assert "items.php?mode=view&id=10" in pushed
+    assert "items.php?mode=view&id=20" in pushed
+
+    # pull: eLabFTW URL → ローカル
+    pulled = _rewrite_elab_links_to_local(pushed, base_url, mapping, "items")
+    assert pulled == original
+
+
+# ── リネーム検出テスト ───────────────────────────────────────
+
+# RENAME-01: 1:1 リネームが検出されてタイトルが更新される
+def test_detect_renames_single(tmp_path):
+    from elab_doc_sync.sync import EachDocsSyncer
+    from elab_doc_sync.config import TargetConfig
+
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "new_name.md").write_text("# content", encoding="utf-8")
+
+    ids_dir = tmp_path / ".ids"
+    ids_dir.mkdir()
+    target = TargetConfig(title="", docs_dir="docs/", id_file=str(ids_dir / "default.id"), mode="each")
+
+    client = MagicMock()
+    syncer = EachDocsSyncer(client, target, tmp_path)
+
+    # 旧名でマッピングがある状態
+    mapping = {"old_name.md": 42}
+    syncer._save_mapping(mapping)
+
+    md_files = [docs_dir / "new_name.md"]
+    result = syncer._detect_renames(mapping, md_files, "リソース")
+
+    assert "new_name.md" in result
+    assert "old_name.md" not in result
+    assert result["new_name.md"] == 42
+    # eLabFTW のタイトルが更新されたことを確認
+    client.update_item.assert_called_once_with(42, title="new_name")
+
+
+# RENAME-02: 複数同時リネームは警告のみ（mapping は変更しない）
+def test_detect_renames_multiple_warns(tmp_path, capsys):
+    from elab_doc_sync.sync import EachDocsSyncer
+    from elab_doc_sync.config import TargetConfig
+
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "a_new.md").write_text("# a", encoding="utf-8")
+    (docs_dir / "b_new.md").write_text("# b", encoding="utf-8")
+
+    ids_dir = tmp_path / ".ids"
+    ids_dir.mkdir()
+    target = TargetConfig(title="", docs_dir="docs/", id_file=str(ids_dir / "default.id"), mode="each")
+
+    client = MagicMock()
+    syncer = EachDocsSyncer(client, target, tmp_path)
+
+    mapping = {"a_old.md": 1, "b_old.md": 2}
+    md_files = [docs_dir / "a_new.md", docs_dir / "b_new.md"]
+    result = syncer._detect_renames(mapping, md_files, "リソース")
+
+    # mapping は変更されない
+    assert "a_old.md" in result
+    assert "b_old.md" in result
+    out = capsys.readouterr().out
+    assert "複数ファイルのリネーム" in out
+
+
+# RENAME-03: リネームなし（新規ファイル追加のみ）の場合は何もしない
+def test_detect_renames_no_rename(tmp_path):
+    from elab_doc_sync.sync import EachDocsSyncer
+    from elab_doc_sync.config import TargetConfig
+
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "existing.md").write_text("# exist", encoding="utf-8")
+    (docs_dir / "new_file.md").write_text("# new", encoding="utf-8")
+
+    ids_dir = tmp_path / ".ids"
+    ids_dir.mkdir()
+    target = TargetConfig(title="", docs_dir="docs/", id_file=str(ids_dir / "default.id"), mode="each")
+
+    client = MagicMock()
+    syncer = EachDocsSyncer(client, target, tmp_path)
+
+    mapping = {"existing.md": 10}
+    md_files = [docs_dir / "existing.md", docs_dir / "new_file.md"]
+    result = syncer._detect_renames(mapping, md_files, "リソース")
+
+    # mapping 変更なし
+    assert result == {"existing.md": 10}
+    client.patch_entity.assert_not_called()

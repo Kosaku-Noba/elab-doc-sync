@@ -316,6 +316,132 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
             shutil.rmtree(td, ignore_errors=True)
 
 
+# ── ローカルファイルリンク ↔ eLabFTW URL 変換 ───────────────
+
+# Markdown リンク（画像以外）: [text](path)
+_LINK_RE = re.compile(r"(?<!!)\[([^\]]*)\]\(([^)]+)\)")
+
+# eLabFTW の記事 URL パターン: {base_url}/{entity}.php?mode=view&id={id}
+_ELAB_URL_RE = re.compile(
+    r"(?P<base>https?://[^/]+)/(?P<entity>items|experiments)\.php\?mode=view&id=(?P<id>\d+)"
+)
+
+
+def _rewrite_local_links(body: str, entity: str, base_url: str,
+                         mapping: dict, all_mappings: list[tuple[str, str, dict]] | None = None) -> str:
+    """Markdown 本文中のローカルファイルリンクを eLabFTW の記事 URL に変換する。
+
+    対象: [text](./file.md), [text](file.md), [text](../other_dir/file.md)
+    非対象: 画像リンク (![...]()), 外部URL (http://...), アンカーリンク (#...)
+
+    Args:
+        body: Markdown 本文
+        entity: このファイルが属する entity タイプ ("items" / "experiments")
+        base_url: eLabFTW のベース URL
+        mapping: 現在のターゲットの {filename: entity_id} マッピング
+        all_mappings: 全ターゲットの [(docs_dir, entity_type, {filename: eid}), ...] リスト
+                      他ターゲットのファイルへのリンクも解決するために使用
+    """
+    def replace_link(m):
+        text, href = m.group(1), m.group(2)
+
+        # 外部 URL、アンカーリンク、非 .md ファイルはスキップ
+        if href.startswith(("http://", "https://", "#", "mailto:")):
+            return m.group(0)
+        if not href.endswith(".md"):
+            return m.group(0)
+
+        # パスからファイル名を抽出
+        target_filename = Path(href).name
+
+        # 1. 同じターゲット内の mapping を検索
+        eid = mapping.get(target_filename)
+        target_entity = entity
+        if eid is not None:
+            url = f"{base_url}/{target_entity}.php?mode=view&id={eid}"
+            return f"[{text}]({url})"
+
+        # 2. 他のターゲットの mapping を検索
+        if all_mappings:
+            for _docs_dir, other_entity, other_mapping in all_mappings:
+                eid = other_mapping.get(target_filename)
+                if eid is not None:
+                    url = f"{base_url}/{other_entity}.php?mode=view&id={eid}"
+                    return f"[{text}]({url})"
+
+        # 解決できないリンクはそのまま残す
+        return m.group(0)
+
+    return _LINK_RE.sub(replace_link, body)
+
+
+def _rewrite_elab_links_to_local(body: str, base_url: str,
+                                 mapping: dict, entity: str,
+                                 all_mappings: list[tuple[str, str, dict]] | None = None,
+                                 target_docs_dir: str = "") -> str:
+    """eLabFTW の記事 URL をローカルファイルリンクに逆変換する。
+
+    対象: [text](https://elab.example.com/items.php?mode=view&id=42)
+    → [text](./file.md)  (同一ターゲット内)
+    → [text](../other_dir/file.md)  (他ターゲット)
+
+    Args:
+        body: Markdown/HTML 本文
+        base_url: eLabFTW のベース URL
+        mapping: 現在のターゲットの {filename: entity_id}
+        entity: 現在のターゲットの entity タイプ
+        all_mappings: 全ターゲットの [(docs_dir, entity_type, {filename: eid}), ...]
+        target_docs_dir: 現在のターゲットの docs_dir（相対パス計算用）
+    """
+    # reverse mapping: entity_id → filename
+    reverse = {v: k for k, v in mapping.items()}
+
+    # 全ターゲットの reverse mapping
+    all_reverse: list[tuple[str, str, dict[int, str]]] = []
+    if all_mappings:
+        for docs_dir, other_entity, other_mapping in all_mappings:
+            all_reverse.append((docs_dir, other_entity, {v: k for k, v in other_mapping.items()}))
+
+    def replace_link(m):
+        text, href = m.group(1), m.group(2)
+
+        match = _ELAB_URL_RE.match(href)
+        if not match:
+            return m.group(0)
+
+        link_base = match.group("base")
+        link_entity = match.group("entity")
+        link_id = int(match.group("id"))
+
+        # base_url のホスト部分が一致しなければスキップ（外部 eLabFTW リンク）
+        if not base_url.startswith(link_base):
+            return m.group(0)
+
+        # 1. 同じターゲット内で解決
+        if link_entity == entity and link_id in reverse:
+            filename = reverse[link_id]
+            return f"[{text}](./{filename})"
+
+        # 2. 他ターゲットで解決
+        for docs_dir, other_entity, other_reverse in all_reverse:
+            if link_entity == other_entity and link_id in other_reverse:
+                filename = other_reverse[link_id]
+                # 相対パスを計算
+                if target_docs_dir and docs_dir != target_docs_dir:
+                    rel_path = _os.path.relpath(
+                        str(Path(docs_dir) / filename),
+                        str(Path(target_docs_dir))
+                    )
+                    return f"[{text}]({rel_path})"
+                else:
+                    return f"[{text}](./{filename})"
+
+        # 解決できない eLabFTW リンクはそのまま残す
+        return m.group(0)
+
+    return _LINK_RE.sub(replace_link, body)
+
+
 def _is_image(filename: str) -> bool:
     return Path(filename).suffix.lower() in IMAGE_EXTENSIONS
 
@@ -759,6 +885,56 @@ class EachDocsSyncer:
         self.mapping_file.parent.mkdir(parents=True, exist_ok=True)
         self.mapping_file.write_text(json.dumps(mapping, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
+    def _detect_renames(self, mapping: dict, md_files: list[Path], entity_label: str) -> dict:
+        """ファイル名変更を検出し、mapping を更新してリモートタイトルも同期する。
+
+        検出ロジック:
+        1. mapping にあるがファイルが存在しない → missing (旧ファイル候補)
+        2. ファイルが存在するが mapping に無い → new (リネーム後の候補)
+        3. missing と new が 1:1 で対応する場合のみリネームとみなす
+           (複数:複数の場合は曖昧なため自動判定しない)
+        """
+        current_files = {f.name for f in md_files}
+        mapped_files = set(mapping.keys())
+
+        missing = mapped_files - current_files  # mapping にあるがファイルが消えた
+        new = current_files - mapped_files      # ファイルはあるが mapping に無い
+
+        if not missing or not new:
+            return mapping
+
+        # 1:1 対応のみリネームとして処理
+        if len(missing) == 1 and len(new) == 1:
+            old_name = missing.pop()
+            new_name = new.pop()
+            eid = mapping.pop(old_name)
+            mapping[new_name] = eid
+            new_title = Path(new_name).stem
+
+            # eLabFTW 上のタイトルを更新
+            self._update_entity(eid, title=new_title)
+            print(f"  [{new_title}] リネーム検出: {old_name} → {new_name}（{entity_label} #{eid} のタイトルを更新）")
+
+            # ハッシュファイルもリネーム
+            for suffix in (".hash", ".remote_hash", ".meta_hash", ".assets_hash"):
+                old_hp = self.hash_dir / f"{old_name}{suffix}"
+                new_hp = self.hash_dir / f"{new_name}{suffix}"
+                if old_hp.exists():
+                    old_hp.rename(new_hp)
+
+            self._save_mapping(mapping)
+
+        elif len(missing) == len(new) and len(missing) > 1:
+            # 複数ファイルが同時にリネームされた場合: 判定不能
+            print(f"  ⚠ 複数ファイルのリネームが検出されましたが、対応関係が不明です:")
+            for name in sorted(missing):
+                print(f"    - 消失: {name}")
+            for name in sorted(new):
+                print(f"    + 新規: {name}")
+            print(f"    → 1つずつリネームして esync してください")
+
+        return mapping
+
     def _hash_path(self, filename: str) -> Path:
         return self.hash_dir / f"{filename}.hash"
 
@@ -892,6 +1068,10 @@ class EachDocsSyncer:
         entity_label = "実験ノート" if self.entity == "experiments" else "リソース"
         updated = 0
 
+        # リネーム検出: mapping にあるがファイルが消えたエントリと、
+        # ファイルはあるが mapping に無いエントリを突合する
+        mapping = self._detect_renames(mapping, md_files, entity_label)
+
         for f in md_files:
             title = f.stem
             raw_body = f.read_text(encoding="utf-8").strip()
@@ -930,6 +1110,7 @@ class EachDocsSyncer:
 
             if body_changed or assets_changed or force:
                 body = _rewrite_images(raw_body, self.entity, eid, self.client, self.docs_dir, self.project_root)
+                body = _rewrite_local_links(body, self.entity, self.client.base_url, mapping)
                 if self.target.body_format == "md":
                     self._update_entity(eid, body=body, title=title)
                 else:

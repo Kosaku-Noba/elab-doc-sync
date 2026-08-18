@@ -12,7 +12,7 @@ from markdownify import markdownify as html_to_md
 
 from .client import ELabFTWClient
 from .config import load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, append_target_to_yaml
-from .sync import DocsSyncer, EachDocsSyncer, ConflictError, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments
+from .sync import DocsSyncer, EachDocsSyncer, ConflictError, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments, _rewrite_elab_links_to_local
 from . import sync_log
 
 DEFAULT_CONFIG = ".elab-sync.yaml"
@@ -661,6 +661,10 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
         return 0
 
     body_md = _download_images(body_md, entity_type, eid, client, docs_dir)
+    # eLabFTW の記事 URL をローカルファイルリンクに逆変換
+    body_md = _rewrite_elab_links_to_local(
+        body_md, client.base_url, mapping, entity_type,
+        target_docs_dir=target.docs_dir)
     filepath.write_text(body_md + "\n", encoding="utf-8")
 
     if stale_old_filename and not is_temp_export:
@@ -701,6 +705,10 @@ def _pull_merge_entity(client, syncer, target, project_root, docs_dir,
         return 0
 
     body_md = _download_images(body_md, entity_type, eid, client, docs_dir)
+    # eLabFTW の記事 URL をローカルファイルリンクに逆変換
+    body_md = _rewrite_elab_links_to_local(
+        body_md, client.base_url, {}, entity_type,
+        target_docs_dir=target.docs_dir)
     filepath.write_text(body_md + "\n", encoding="utf-8")
 
     if not is_temp_export:
