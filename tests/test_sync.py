@@ -1565,3 +1565,139 @@ def test_detect_renames_with_edit(tmp_path):
     assert result["new_name.md"] == 42
     # タイトルの即時更新は行われない（通常syncフローに委ねる）
     client.update_item.assert_not_called()
+
+
+# ── 動画埋め込み・ファイルリンクアップロードテスト ─────────────
+
+from elab_doc_sync.sync import (
+    _is_video, _rewrite_videos, _count_local_videos,
+    _rewrite_file_links, _count_local_file_links, VIDEO_EXTENSIONS,
+)
+
+
+# VIDEO-01: _is_video が正しく判定する
+def test_is_video():
+    assert _is_video("test.mp4") is True
+    assert _is_video("test.webm") is True
+    assert _is_video("test.MP4") is True
+    assert _is_video("test.png") is False
+    assert _is_video("test.md") is False
+
+
+# VIDEO-02: _count_local_videos がローカル動画リンクを数える
+def test_count_local_videos():
+    body = "[vid](./movie.mp4)\n![alt](demo.webm)\n[ext](https://example.com/v.mp4)"
+    assert _count_local_videos(body) == 2
+
+
+# VIDEO-03: _rewrite_videos が動画リンクを <video> タグに変換する
+def test_rewrite_videos_basic(tmp_path):
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "demo.mp4").write_bytes(b"fake video data")
+
+    client = MagicMock()
+    client.base_url = "https://elab.example.com"
+    client.list_uploads.return_value = []
+    client.upload_file.return_value = {"url": "https://elab.example.com/app/download.php?f=abc&name=demo.mp4&storage=1"}
+
+    body = "[my video](demo.mp4)"
+    result = _rewrite_videos(body, "items", 1, client, docs_dir, tmp_path)
+    assert '<video src="' in result
+    assert "controls" in result
+    assert "my video</video>" in result
+
+
+# VIDEO-04: 既存アップロードを再利用する
+def test_rewrite_videos_reuse(tmp_path):
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "demo.mp4").write_bytes(b"1234567890")  # 10 bytes
+
+    client = MagicMock()
+    client.base_url = "https://elab.example.com"
+    client.list_uploads.return_value = [
+        {"real_name": "demo.mp4", "long_name": "abc123", "storage": "1", "filesize": 10, "id": 5},
+    ]
+
+    body = "[vid](demo.mp4)"
+    result = _rewrite_videos(body, "items", 1, client, docs_dir, tmp_path)
+    assert "abc123" in result
+    client.upload_file.assert_not_called()
+
+
+# VIDEO-05: 外部URLの動画リンクはスキップ
+def test_rewrite_videos_skip_external(tmp_path):
+    client = MagicMock()
+    client.list_uploads.return_value = []
+    body = "[vid](https://example.com/video.mp4)"
+    result = _rewrite_videos(body, "items", 1, client, tmp_path, tmp_path)
+    assert result == body
+
+
+# FLINK-01: _count_local_file_links が非画像・非動画リンクを数える
+def test_count_local_file_links():
+    body = "[doc](./report.pdf)\n[vid](./movie.mp4)\n![img](./photo.png)\n[link](./other.md)\n[csv](data.csv)"
+    # pdf + csv = 2（.md, .mp4, .png はスキップ）
+    assert _count_local_file_links(body) == 2
+
+
+# FLINK-02: _rewrite_file_links がファイルをアップロードしてURL書き換え
+def test_rewrite_file_links_basic(tmp_path):
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "report.pdf").write_bytes(b"PDF content")
+
+    client = MagicMock()
+    client.base_url = "https://elab.example.com"
+    client.list_uploads.return_value = []
+    client.upload_file.return_value = {"url": "https://elab.example.com/app/download.php?f=xyz&name=report.pdf&storage=1"}
+
+    body = "[論文](report.pdf)"
+    result = _rewrite_file_links(body, "items", 1, client, docs_dir, tmp_path)
+    assert "[論文](https://elab.example.com/app/download.php" in result
+    assert "report.pdf" in result
+
+
+# FLINK-03: .md ファイルリンクはスキップされる
+def test_rewrite_file_links_skips_md(tmp_path):
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+
+    client = MagicMock()
+    client.list_uploads.return_value = []
+
+    body = "[guide](./setup.md)"
+    result = _rewrite_file_links(body, "items", 1, client, docs_dir, tmp_path)
+    assert result == body
+    client.upload_file.assert_not_called()
+
+
+# FLINK-04: 画像・動画リンクはスキップされる
+def test_rewrite_file_links_skips_image_video(tmp_path):
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+
+    client = MagicMock()
+    client.list_uploads.return_value = []
+
+    body = "![img](photo.png)\n[vid](movie.mp4)"
+    result = _rewrite_file_links(body, "items", 1, client, docs_dir, tmp_path)
+    assert result == body
+
+
+# FLINK-05: ![alt](file.pdf) は [alt](url) に正規化される
+def test_rewrite_file_links_normalizes_image_syntax(tmp_path):
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "protocol.pdf").write_bytes(b"PDF")
+
+    client = MagicMock()
+    client.base_url = "https://elab.example.com"
+    client.list_uploads.return_value = []
+    client.upload_file.return_value = {"url": "https://elab.example.com/app/download.php?f=abc&name=protocol.pdf&storage=1"}
+
+    body = "![プロトコル](protocol.pdf)"
+    result = _rewrite_file_links(body, "items", 1, client, docs_dir, tmp_path)
+    assert result.startswith("[プロトコル](")
+    assert "!" not in result

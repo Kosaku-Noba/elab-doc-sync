@@ -212,8 +212,10 @@ def cmd_sync(args):
                 for r in results:
                     status = "変更あり" if r["changed"] else "変更なし（スキップ）"
                     dest = f"{entity_label} #{r['entity_id']}" if r["entity_id"] else f"新しい{entity_label}"
+                    video_str = f"  動画: {r['videos']}件" if r.get("videos") else ""
+                    flink_str = f"  リンクファイル: {r['file_links']}件" if r.get("file_links") else ""
                     print(f"  [{r['title']}] {status}")
-                    print(f"    画像: {r['images']}件{att_str}  → {dest}")
+                    print(f"    画像: {r['images']}件{video_str}{flink_str}{att_str}  → {dest}")
             else:
                 info = syncer.dry_run()
                 if not info["files"]:
@@ -221,8 +223,10 @@ def cmd_sync(args):
                     continue
                 status = "変更あり" if info["changed"] else "変更なし（スキップ）"
                 dest = f"{entity_label} #{info['item_id']}" if info["item_id"] else f"新しい{entity_label}"
+                video_str = f"  動画: {info['videos']}件" if info.get("videos") else ""
+                flink_str = f"  リンクファイル: {info['file_links']}件" if info.get("file_links") else ""
                 print(f"  [{target.title}] {status}")
-                print(f"    ファイル: {info['files']}件  画像: {info['images']}件{att_str}  → {dest}")
+                print(f"    ファイル: {info['files']}件  画像: {info['images']}件{video_str}{flink_str}{att_str}  → {dest}")
             continue
 
         try:
