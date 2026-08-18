@@ -1516,3 +1516,52 @@ def test_detect_renames_no_rename(tmp_path):
     # mapping 変更なし
     assert result == {"existing.md": 10}
     client.patch_entity.assert_not_called()
+
+
+# LINK-11: フラグメント付き eLabFTW URL が逆変換時に保持される
+def test_rewrite_elab_links_preserves_fragment():
+    body = "See [section](https://elab.example.com/items.php?mode=view&id=42#introduction)."
+    mapping = {"setup.md": 42}
+    result = _rewrite_elab_links_to_local(body, "https://elab.example.com", mapping, "items")
+    assert "[section](./setup.md#introduction)" in result
+
+
+# LINK-12: ホスト部分が似ているが異なる URL はスキップされる（完全一致判定）
+def test_rewrite_elab_links_host_exact_match():
+    body = "See [x](https://elab.example.co/items.php?mode=view&id=42)."
+    mapping = {"setup.md": 42}
+    result = _rewrite_elab_links_to_local(body, "https://elab.example.com", mapping, "items")
+    # elab.example.co ≠ elab.example.com → 変換されない
+    assert "elab.example.co" in result
+    assert "./setup.md" not in result
+
+
+# RENAME-04: リネーム+編集（ハッシュ不一致）はmapping更新のみ、タイトル即時更新しない
+def test_detect_renames_with_edit(tmp_path):
+    from elab_doc_sync.sync import EachDocsSyncer, _compute_hash
+    from elab_doc_sync.config import TargetConfig
+
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "new_name.md").write_text("# DIFFERENT content", encoding="utf-8")
+
+    ids_dir = tmp_path / ".ids"
+    ids_dir.mkdir()
+    target = TargetConfig(title="", docs_dir="docs/", id_file=str(ids_dir / "default.id"), mode="each")
+
+    client = MagicMock()
+    syncer = EachDocsSyncer(client, target, tmp_path)
+
+    # 旧ファイルのハッシュを保存（内容が異なる）
+    old_content = "# Original content"
+    syncer._save_hash("old_name.md", old_content)
+
+    mapping = {"old_name.md": 42}
+    md_files = [docs_dir / "new_name.md"]
+    result = syncer._detect_renames(mapping, md_files, "リソース")
+
+    # mapping は更新される
+    assert "new_name.md" in result
+    assert result["new_name.md"] == 42
+    # タイトルの即時更新は行われない（通常syncフローに委ねる）
+    client.update_item.assert_not_called()
