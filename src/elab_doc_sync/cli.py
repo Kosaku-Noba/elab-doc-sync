@@ -1026,6 +1026,37 @@ def cmd_log(args):
     print(sync_log.format_log(entries))
 
 
+def _check_path_priority():
+    """update 後に PATH 上の esync が .venv 内のものでないか確認する。
+
+    .venv/Scripts/esync や .venv/bin/esync が PATH 上で優先されていると、
+    uv tool でインストールした最新版ではなく .venv の古い版が実行される。
+    """
+    import subprocess
+    try:
+        if sys.platform == "win32":
+            result = subprocess.run(["where", "esync"], capture_output=True, text=True)
+        else:
+            result = subprocess.run(["which", "esync"], capture_output=True, text=True)
+        paths = [p.strip() for p in result.stdout.strip().splitlines() if p.strip()]
+        if not paths:
+            return
+
+        resolved = Path(paths[0])
+        parts_lower = [p.lower() for p in resolved.parts]
+        if ".venv" in parts_lower or "venv" in parts_lower:
+            print(f"\n⚠ 警告: PATH 上で .venv 内の esync が優先されています")
+            print(f"  実行パス: {resolved}")
+            print(f"  → .venv 内の古いバージョンが使われている可能性があります")
+            print(f"")
+            print(f"  解決方法:")
+            print(f"    1. プロジェクトディレクトリで `uv sync` を実行して .venv をクリーンアップ")
+            print(f"    2. または .venv/{'Scripts' if sys.platform == 'win32' else 'bin'}/esync を手動削除")
+            print(f"    3. 新しいターミナルを開いて `esync --version` で確認")
+    except Exception:
+        pass
+
+
 def cmd_update(args):
     """ツール自体を最新版に更新する。"""
     import subprocess
@@ -1040,6 +1071,9 @@ def cmd_update(args):
         print("⚠ 自動更新に失敗しました。手動で実行してください:", file=sys.stderr)
         print(f"  uv tool install --force {REPO_URL}", file=sys.stderr)
         sys.exit(1)
+
+    # PATH 優先度チェック: .venv 内に esync が残っていると古いバージョンが優先される
+    _check_path_priority()
 
 
 HELP_EPILOG = """\

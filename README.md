@@ -397,6 +397,26 @@ profiles:
 | `ファイルがありません`         | `docs_dir` に `.md` ファイルを置く |
 | タイムアウト                     | 自動で1回リトライされます              |
 
+### `esync update` したのにバージョンが古いまま
+
+**原因**: プロジェクトの `.venv` 内に古い `esync` が残っており、PATH 上で `uv tool` 版より優先されている。
+
+**確認方法** (PowerShell):
+```powershell
+Get-Command esync | Select-Object -ExpandProperty Source
+# .venv\Scripts\esync.exe が表示されたら PATH 優先度の問題
+```
+
+**解決方法**:
+```powershell
+# プロジェクトディレクトリで実行（.venv から孤立パッケージを削除）
+uv sync
+```
+
+その後、新しいターミナルを開いて `esync --version` で確認。
+
+**防止策**: `elab-doc-sync` をプロジェクトの `pyproject.toml` の dependencies に追加しない（ユーザーツールとして `uv tool` で管理する）。
+
 ---
 
 ## 開発

@@ -564,12 +564,12 @@ def test_init_template_files(tmp_path, monkeypatch):
 # CLI-43
 @patch("subprocess.run")
 def test_update(mock_run, tmp_path):
-    mock_run.return_value = MagicMock(returncode=0)
+    mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
     cmd_update(Namespace())
-    args, kwargs = mock_run.call_args
+    # 最初の呼び出しが uv tool install であること
+    args, kwargs = mock_run.call_args_list[0]
     assert args[0] == ["uv", "tool", "install", "--force", REPO_URL]
     assert kwargs.get("check") is True
-    mock_run.assert_called_once()
 
 
 @patch("subprocess.run", side_effect=FileNotFoundError)
