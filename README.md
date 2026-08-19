@@ -30,7 +30,7 @@ esync init
 ```
 === elab-doc-sync セットアップ ===
 
-eLabFTW の URL: https://aws-elabftw.konicaminolta.org/
+eLabFTW の URL: https://<eLabFTWへのURL>/
 SSL 証明書を検証しますか？ [Y/n]: n
 Markdown ファイルを置くディレクトリ（空欄で docs/）:<好きな場所>
 同期する Markdown のファイルパターン（空欄で *.md）:
