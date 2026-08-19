@@ -1,190 +1,132 @@
 # API リファレンス
 
-→ [CLI リファレンス](05_CLI_REFERENCE.md) | [同期エンジン](07_SYNC_ENGINE.md)
+→ [同期エンジン](07_SYNC_ENGINE.md) | [CLI リファレンス](05_CLI_REFERENCE.md)
 
-## config.py
+## モジュール構成
 
-### `ProfileConfig`
+### `elab_doc_sync.sync`
 
-```python
-@dataclass
-class ProfileConfig:
-    name: str             # プロファイル名
-    url: str              # eLabFTW の URL
-    api_key: str          # API キー
-    verify_ssl: bool = True
-```
+同期ロジックの中核。
 
-### `TargetConfig`
+#### クラス
 
-```python
-@dataclass
-class TargetConfig:
-    title: str                        # エンティティタイトル
-    docs_dir: str                     # Markdown ディレクトリ
-    id_file: str                      # ID 保存先
-    pattern: str = "*.md"             # ファイル glob
-    mode: str = "merge"               # "merge" / "each"
-    entity: str = "items"             # "items" / "experiments"
-    tags: list[str] = []              # push 時に自動追加するタグ（追記のみ）
-    body_format: str = "html"         # "md" / "html"
-    attachments_dir: str | None = None      # 添付ファイルディレクトリ
-    attachments_pattern: str = "*"          # 添付ファイル glob フィルタ
-    category: str | int | None = None       # push 時のカテゴリ（ID or 名前）
-    title_pattern: str | None = None        # pull 時のタイトルマッチング glob
-    profile: str = "default"                # 使用するプロファイル名
-```
+| クラス | 説明 |
+|---|---|
+| `EachDocsSyncer` | 1ファイル=1エンティティの同期 |
+| `ConflictError` | リモート競合時に発生する例外 |
 
-### `Config`
+#### 内部関数 — 画像・動画・ファイル処理
 
-```python
-@dataclass
-class Config:
-    url: str              # デフォルトプロファイルの URL
-    api_key: str          # デフォルトプロファイルの API キー
-    verify_ssl: bool      # SSL 検証
-    targets: list[TargetConfig]
-    profiles: dict[str, ProfileConfig] = {}  # name → ProfileConfig
-```
+| 関数 | 説明 |
+|---|---|
+| `_rewrite_images(body, entity, entity_id, client, docs_dir, project_root)` | ローカル画像をアップロードし URL に書き換え |
+| `_rewrite_videos(body, entity, entity_id, client, docs_dir, project_root)` | 動画をアップロードし `<video>` タグに変換 |
+| `_rewrite_file_links(body, entity, entity_id, client, docs_dir, project_root)` | 非画像・非動画ファイルをアップロードし URL 書き換え |
+| `_download_images(body_md, entity_type, eid, client, docs_dir)` | リモート画像をダウンロードしローカルリンクに書き換え |
+| `_download_attachments(entity_type, eid, client, attachments_dir)` | 添付ファイルをダウンロード |
+| `_normalize_remote_image_urls(body_md, entity_type, eid, client)` | リモート画像 URL を正規化 |
 
-### `load_config(config_path: Path) -> Config`
+#### 内部関数 — リンク変換
 
-YAML ファイルを読み込み `Config` を返す。UTF-8 で読み、失敗時は cp932 にフォールバック。バリデーション失敗時は日本語エラーメッセージを表示し `sys.exit(1)`。
+| 関数 | 説明 |
+|---|---|
+| `_rewrite_local_links(body, entity, base_url, mapping, all_mappings=None)` | `[text](./file.md)` → eLabFTW URL に変換 |
+| `_rewrite_elab_links_to_local(body, base_url, mapping, entity, all_mappings=None, target_docs_dir="")` | eLabFTW URL → `[text](./file.md)` に逆変換 |
+| `_hosts_match(base_url, link_base)` | ホスト完全一致判定（urlparse） |
 
-### `get_client_for_target(config: Config, target: TargetConfig) -> tuple`
+#### 内部関数 — カウント・判定
 
-ターゲットのプロファイルに基づいて `(url, api_key, verify_ssl)` を返す。
+| 関数 | 説明 |
+|---|---|
+| `_count_local_images(body)` | 本文中のローカル画像リンク数 |
+| `_count_local_videos(body)` | 本文中のローカル動画リンク数 |
+| `_count_local_file_links(body)` | 本文中の非画像・非動画ローカルファイルリンク数 |
+| `_count_local_attachments(attachments_dir)` | attachments_dir 内の非画像ファイル数 |
+| `_is_image(filename)` | 画像拡張子判定 |
+| `_is_video(filename)` | 動画拡張子判定 |
+| `_compute_hash(body)` | SHA-256 ハッシュ（先頭16文字） |
+| `_compute_file_hash(path)` | ファイルの SHA-256 ハッシュ |
+| `_compute_meta_hash(title, category, tags)` | メタデータのハッシュ |
 
-### `update_target_in_yaml(config_path, target_index, **fields)`
+#### 内部関数 — 同期補助
 
-YAML ファイル内の指定ターゲットのフィールドを更新する。
+| 関数 | 説明 |
+|---|---|
+| `_sync_tags(client, entity_type, entity_id, desired_tags)` | タグ追記同期（best-effort） |
+| `_sync_category(client, entity_type, entity_id, category)` | カテゴリ設定（best-effort） |
+| `_sync_attachments(attachments_dir, entity, entity_id, client, ...)` | 添付ファイルのサイズ差分同期 |
+| `_md_to_html(body)` | 数式保護付き Markdown → HTML 変換 |
 
-### `append_target_to_yaml(config_path, target_data: dict)`
+#### 正規表現定数
 
-YAML ファイルに新しいターゲットを追記する。
+| 定数 | パターン | 用途 |
+|---|---|---|
+| `IMAGE_RE` | `!\[...\](...)`  | 画像リンク検出 |
+| `_LINK_RE` | `(?<!!)\[...\](...)` | 通常リンク検出（画像除外） |
+| `_ELAB_URL_RE` | eLabFTW 記事 URL | pull 時の逆変換用 |
+| `UPLOAD_ID_RE` | `/uploads/{id}` | アップロード ID 抽出 |
+
+#### 定数
+
+| 定数 | 値 | 用途 |
+|---|---|---|
+| `IMAGE_EXTENSIONS` | `.png, .jpg, .jpeg, .gif, .svg, .webp, .bmp, .ico` | 画像判定 |
+| `VIDEO_EXTENSIONS` | `.mp4, .webm` | 動画判定 |
 
 ---
 
-## client.py — `ELabFTWClient`
+### `elab_doc_sync.client`
 
-### コンストラクタ
-
-```python
-ELabFTWClient(base_url: str, api_key: str, verify_ssl: bool = True)
-```
-
-### リソース操作
-
-| メソッド | 戻り値 | 説明 |
-|---|---|---|
-| `list_items()` | `list[dict]` | 全リソース取得 |
-| `get_item(item_id: int)` | `dict` | リソース取得 |
-| `create_item(title="", body="")` | `int` | リソース作成、ID を返す |
-| `update_item(item_id, **fields)` | `None` | リソース更新（PATCH） |
-| `delete_item(item_id)` | `None` | リソース削除 |
-
-### 実験操作
-
-| メソッド | 戻り値 | 説明 |
-|---|---|---|
-| `list_experiments()` | `list[dict]` | 全実験取得 |
-| `get_experiment(exp_id: int)` | `dict` | 実験取得 |
-| `create_experiment(title="", body="")` | `int` | 実験作成、ID を返す |
-| `update_experiment(exp_id, **fields)` | `None` | 実験更新 |
-| `delete_experiment(exp_id)` | `None` | 実験削除 |
-| `search_experiments(tags: list[str])` | `list[dict]` | タグで実験検索 |
-| `append_body(exp_id, text)` | `None` | body に追記 |
-| `replace_body(exp_id, body)` | `None` | body を置換 |
-
-### ファイル・タグ・メタデータ
-
-| メソッド | 戻り値 | 説明 |
-|---|---|---|
-| `upload_file(entity_type, entity_id, filepath, comment="")` | `dict` | ファイルアップロード。`{"id", "filename", "url"}` を返す |
-| `get_tags(entity_type, entity_id)` | `list[dict]` | タグ一覧取得 |
-| `add_tag(entity_type, entity_id, tag)` | `None` | タグ追加 |
-| `remove_tag(entity_type, entity_id, tag_id)` | `None` | タグ削除（ID 指定） |
-| `untag_by_name(entity_type, entity_id, tag_name)` | `bool` | タグ名指定でエンティティから解除 |
-| `get_metadata(entity_type, entity_id)` | `dict` | メタデータを dict で取得 |
-| `get_metadata_raw(entity_type, entity_id)` | `str \| None` | メタデータの生の値を返す |
-| `update_metadata(entity_type, entity_id, metadata)` | `None` | メタデータ更新 |
-
-### カテゴリ操作
-
-| メソッド | 戻り値 | 説明 |
-|---|---|---|
-| `resolve_category_id(entity_type, category_value)` | `int` | カテゴリ名/ID から ID を解決 |
-| `resolve_category_name(entity_type, cat_id)` | `str` | カテゴリ ID から名前を解決 |
-
-### 汎用エンティティ操作
-
-| メソッド | 戻り値 | 説明 |
-|---|---|---|
-| `get_entity(entity_type, entity_id)` | `dict` | 汎用エンティティ取得 |
-| `patch_entity(entity_type, entity_id, **fields)` | `None` | 汎用エンティティ更新 |
-
-### 内部メソッド
+eLabFTW API v2 クライアント。
 
 | メソッド | 説明 |
 |---|---|
-| `_req(method, path, **kwargs)` | HTTP リクエスト実行。`raise_for_status()` で例外送出 |
-| `_parse_id(resp)` | レスポンスからエンティティ ID を抽出（JSON `id` → `Location` ヘッダー） |
+| `list_items()` | リソース一覧 |
+| `get_item(item_id)` | リソース取得 |
+| `create_item(title, body)` | リソース作成 |
+| `update_item(item_id, **fields)` | リソース更新 |
+| `delete_item(item_id)` | リソース削除 |
+| `list_experiments()` | 実験ノート一覧 |
+| `get_experiment(exp_id)` | 実験ノート取得 |
+| `create_experiment(title, body)` | 実験ノート作成 |
+| `update_experiment(exp_id, **fields)` | 実験ノート更新 |
+| `delete_experiment(exp_id)` | 実験ノート削除 |
+| `get_entity(entity_type, entity_id)` | 汎用エンティティ取得 |
+| `patch_entity(entity_type, entity_id, **fields)` | 汎用エンティティ更新 |
+| `upload_file(entity_type, entity_id, filepath)` | ファイルアップロード（1回リトライ） |
+| `list_uploads(entity_type, entity_id)` | アップロード一覧 |
+| `delete_upload(entity_type, entity_id, upload_id)` | アップロード削除 |
+| `download_upload(entity_type, entity_id, upload_id)` | アップロードダウンロード |
+| `get_tags(entity_type, entity_id)` | タグ取得 |
+| `add_tag(entity_type, entity_id, tag)` | タグ追加 |
+| `untag(entity_type, entity_id, tag_id)` | タグ削除 |
+| `resolve_category_id(entity_type, category)` | カテゴリ名→ID 解決 |
+| `get_user_info()` | ユーザー情報 |
 
 ---
 
-## sync.py
+### `elab_doc_sync.config`
 
-### ユーティリティ関数
+YAML 設定読み込み・バリデーション。
 
-| 関数 | 説明 |
+| 関数/クラス | 説明 |
 |---|---|
-| `_compute_hash(body: str) -> str` | SHA-256 先頭 16 文字を返す |
-| `_count_local_images(body: str) -> int` | ローカル画像参照の数を返す |
-| `_md_to_html(text: str) -> str` | Markdown → HTML 変換 |
-| `_rewrite_images(body, entity, entity_id, client, docs_dir, project_root) -> str` | ローカル画像をアップロードし URL を書き換え |
-| `_sync_tags(client, entity_type, entity_id, desired_tags)` | 設定のタグをリモートに追記（best-effort） |
-| `_sync_category(client, entity_type, entity_id, category)` | カテゴリを設定（best-effort） |
-
-### `ConflictError`
-
-リモートが前回同期以降に変更されている場合に送出される例外。
+| `load_config(path)` | `.elab-sync.yaml` を読み込み `Config` を返す |
+| `get_client_for_target(config, target)` | ターゲットのプロファイルから接続情報を返す |
+| `update_target_in_yaml(config_path, target, key, value)` | YAML のターゲット設定を更新 |
+| `append_target_to_yaml(config_path, target_dict)` | YAML に新しいターゲットを追記 |
+| `Config` | 全体設定データクラス |
+| `TargetConfig` | ターゲット設定データクラス |
+| `ProfileConfig` | プロファイル設定データクラス |
 
 ---
 
-## sync_log.py
+### `elab_doc_sync.sync_log`
+
+同期ログの記録・表示。
 
 | 関数 | 説明 |
 |---|---|
-| `record(log_path, *, action, target, entity, entity_id, files, user=None)` | ログエントリを JSONL に追記。例外を送出しない |
-| `read_log(log_path, limit=20) -> list[dict]` | 直近 N 件のログを読み込み |
-| `format_log(entries) -> str` | ログエントリを表示用文字列に整形 |
-
----
-
-## cli.py
-
-CLI エントリポイント。`argparse` でコマンドを定義。
-
-| 関数 | 説明 |
-|---|---|
-| `main()` | argparse パーサー構築・コマンドディスパッチ |
-| `cmd_sync(args)` | push 同期の実行 |
-| `cmd_status(args)` | 同期状態の表示 |
-| `cmd_pull(args)` | eLabFTW → ローカルへの取得（自動振り分け含む） |
-| `cmd_diff(args)` | ローカルとリモートの差分表示 |
-| `cmd_init(args)` | 対話的セットアップ |
-| `cmd_clone(args)` | リモートからプロジェクト構築 |
-| `cmd_log(args)` | 同期ログ表示 |
-| `cmd_update(args)` | ツール更新 |
-| `cmd_tag(args)` | タグ管理（list/add/remove） |
-| `cmd_category(args)` | カテゴリ管理（list/show/set） |
-| `cmd_metadata(args)` | メタデータ管理（get/set） |
-| `cmd_entity_status(args)` | ステータス管理（show/set） |
-| `cmd_list(args)` | リモート一覧表示 |
-| `cmd_link(args)` | 手動紐付け |
-| `cmd_verify(args)` | 整合性チェック |
-| `cmd_whoami(args)` | ユーザー情報表示 |
-| `cmd_new(args)` | テンプレートからファイル生成 |
-| `cmd_profile(args)` | プロファイル管理（list/add/remove） |
-
-コマンドの使い方は [CLI リファレンス](05_CLI_REFERENCE.md) を参照。
+| `record(log_path, action, target, entity, entity_id, files)` | ログエントリを JSONL に追記 |
+| `read_log(log_path, limit)` | ログを読み込み |
+| `format_log(entries)` | 表示用にフォーマット |
