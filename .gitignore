@@ -11,6 +11,10 @@ build/
 .elab-sync.yaml
 .elab-sync-ids/
 
+# AI レビュー・仕様ファイル（ローカル用）
+AI_discussions.md
+SPECIFICATION.md
+
 # ユーザーのローカルドキュメント
 elab_docs/
 elab_weekly_reports/
