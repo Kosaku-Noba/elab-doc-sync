@@ -20,7 +20,7 @@ from elab_doc_sync.sync import ConflictError
 
 # ── helpers ──────────────────────────────────────────────
 
-def _write_config(tmp_path, mode="merge", entity="items"):
+def _write_config(tmp_path, mode="each", entity="items"):
     data = {
         "elabftw": {"url": "https://elab.example.com", "api_key": "key", "verify_ssl": False},
         "targets": [{"title": "T", "docs_dir": "docs/", "pattern": "*.md", "mode": mode, "entity": entity,
@@ -43,7 +43,7 @@ def _ns(tmp_path, **kw):
 
 # CLI-01
 @patch("elab_doc_sync.cli.ELabFTWClient")
-@patch("elab_doc_sync.cli.DocsSyncer")
+@patch("elab_doc_sync.cli.EachDocsSyncer")
 def test_sync_normal(MockSyncer, MockClient, tmp_path):
     cfg, docs = _write_config(tmp_path)
     (docs / "a.md").write_text("hello", encoding="utf-8")
@@ -63,7 +63,7 @@ def test_sync_dry_run(MockClient, tmp_path):
 
 # CLI-03
 @patch("elab_doc_sync.cli.ELabFTWClient")
-@patch("elab_doc_sync.cli.DocsSyncer")
+@patch("elab_doc_sync.cli.EachDocsSyncer")
 def test_sync_force(MockSyncer, MockClient, tmp_path):
     cfg, docs = _write_config(tmp_path)
     (docs / "a.md").write_text("hello", encoding="utf-8")
@@ -83,7 +83,7 @@ def test_sync_target_filter(MockClient, tmp_path):
 
 # CLI-05
 @patch("elab_doc_sync.cli.ELabFTWClient")
-@patch("elab_doc_sync.cli.DocsSyncer")
+@patch("elab_doc_sync.cli.EachDocsSyncer")
 def test_sync_conflict_error(MockSyncer, MockClient, tmp_path, capsys):
     cfg, docs = _write_config(tmp_path)
     (docs / "a.md").write_text("hello", encoding="utf-8")
@@ -108,18 +108,6 @@ def test_pull_each(MockClient, tmp_path):
     assert (ids_dir / "Doc1.md.remote_hash").exists()
 
 
-# CLI-11
-@patch("elab_doc_sync.cli.ELabFTWClient")
-def test_pull_merge(MockClient, tmp_path):
-    cfg, docs = _write_config(tmp_path, mode="merge")
-    ids_dir = tmp_path / ".elab-sync-ids"
-    ids_dir.mkdir(exist_ok=True)
-    (ids_dir / "default.id").write_text("42\n")
-    MockClient.return_value.get_item.return_value = {"id": 42, "title": "T", "body": "<p>content</p>"}
-    cmd_pull(_ns(tmp_path, id=None, command="pull"))
-    assert (docs / "T.md").exists()
-    assert (ids_dir / "default.hash").exists()
-    assert (ids_dir / "default.remote_hash").exists()
 
 
 # CLI-12
@@ -308,16 +296,6 @@ def test_pull_multiple_ids_each(MockClient, tmp_path):
     assert (docs / "B.md").exists()
 
 
-# CLI-17: pull merge モードで複数 --id → 各 ID を個別に pull
-@patch("elab_doc_sync.cli.ELabFTWClient")
-def test_pull_merge_multiple_ids_warning(MockClient, tmp_path, capsys):
-    cfg, docs = _write_config(tmp_path, mode="merge")
-    client = MockClient.return_value
-    client.get_item.return_value = {"id": 10, "title": "T", "body": "<p>x</p>"}
-    cmd_pull(_ns(tmp_path, id=[10, 20], entity="items", command="pull"))
-    out = capsys.readouterr().out
-    # merge ターゲットに対しても各 ID が pull される
-    assert (docs / "T.md").exists()
 
 
 # CLI-18: pull --id --entity experiments で items ターゲットのみの yaml → 自動追加 + items 側は無影響
@@ -535,7 +513,7 @@ def test_log_limit(tmp_path, capsys):
 # CLI-40
 def test_init_creates_config(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    inputs = iter(["https://elab.example.com", "n", "", "", "merge", "items", "md", "TestTitle"])
+    inputs = iter(["https://elab.example.com", "n", "", "", "items", "md"])
     monkeypatch.setattr("builtins.input", lambda _: next(inputs))
     cfg_path = tmp_path / ".elab-sync.yaml"
     cmd_init(Namespace(config=str(cfg_path)))
@@ -590,7 +568,8 @@ def test_diff_has_diff(MockClient, tmp_path, capsys):
     (docs / "a.md").write_text("local content", encoding="utf-8")
     ids_dir = tmp_path / ".elab-sync-ids"
     ids_dir.mkdir(exist_ok=True)
-    (ids_dir / "default.id").write_text("1\n")
+    import json as _json
+    (ids_dir / "mapping.json").write_text(_json.dumps({"a.md": 1}))
     MockClient.return_value.get_item.return_value = {"id": 1, "body": "<p>remote content</p>"}
     cmd_diff(_ns(tmp_path))
     out = capsys.readouterr().out
@@ -605,6 +584,8 @@ def test_diff_no_diff(MockClient, tmp_path, capsys):
     ids_dir = tmp_path / ".elab-sync-ids"
     ids_dir.mkdir(exist_ok=True)
     (ids_dir / "default.id").write_text("1\n")
+    import json as _json
+    (ids_dir / "mapping.json").write_text(_json.dumps({"a.md": 1}))
     from markdownify import markdownify as html_to_md
     MockClient.return_value.get_item.return_value = {"id": 1, "body": "<p>same</p>"}
     cmd_diff(_ns(tmp_path))
@@ -628,12 +609,13 @@ def test_status_up_to_date(MockClient, tmp_path, capsys):
     cfg, docs = _write_config(tmp_path)
     (docs / "a.md").write_text("content", encoding="utf-8")
     # save hash to make it "up to date"
-    from elab_doc_sync.sync import DocsSyncer, _compute_hash
+    from elab_doc_sync.sync import EachDocsSyncer, _compute_hash
     from elab_doc_sync.config import TargetConfig
-    target = TargetConfig(title="T", docs_dir="docs/", id_file=str(tmp_path / ".elab-sync-ids" / "default.id"))
-    syncer = DocsSyncer(MockClient.return_value, target, tmp_path)
-    syncer.save_hash("content")
-    syncer.save_item_id(1)
+    target = TargetConfig(title="", docs_dir="docs/", id_file=str(tmp_path / ".elab-sync-ids" / "default.id"), mode="each")
+    syncer = EachDocsSyncer(MockClient.return_value, target, tmp_path)
+    syncer._save_hash("a.md", "content")
+    mapping = {"a.md": 1}
+    syncer._save_mapping(mapping)
     cmd_status(_ns(tmp_path))
     out = capsys.readouterr().out
     assert "最新" in out
@@ -653,6 +635,8 @@ def test_cmd_tag_list(MockClient, tmp_path, capsys):
     id_dir = tmp_path / ".elab-sync-ids"
     id_dir.mkdir()
     (id_dir / "default.id").write_text("42", encoding="utf-8")
+    import json as _json
+    (id_dir / "mapping.json").write_text(_json.dumps({"a.md": 42}))
     args = Namespace(config=str(cfg), target=None, force=False, tag_action="list", id=None, entity=None)
     cmd_tag(args)
     out = capsys.readouterr().out
@@ -669,6 +653,8 @@ def test_cmd_tag_add(MockClient, tmp_path, capsys):
     id_dir = tmp_path / ".elab-sync-ids"
     id_dir.mkdir()
     (id_dir / "default.id").write_text("42", encoding="utf-8")
+    import json as _json
+    (id_dir / "mapping.json").write_text(_json.dumps({"a.md": 42}))
     args = Namespace(config=str(cfg), target=None, force=False, tag_action="add", tag_name="newtag", id=None, entity=None)
     cmd_tag(args)
     client.add_tag.assert_called_once_with("items", 42, "newtag")
@@ -684,6 +670,8 @@ def test_cmd_tag_remove(MockClient, tmp_path, capsys):
     id_dir = tmp_path / ".elab-sync-ids"
     id_dir.mkdir()
     (id_dir / "default.id").write_text("42", encoding="utf-8")
+    import json as _json
+    (id_dir / "mapping.json").write_text(_json.dumps({"a.md": 42}))
     args = Namespace(config=str(cfg), target=None, force=False, tag_action="remove", tag_name="old", id=None, entity=None)
     cmd_tag(args)
     client.untag_by_name.assert_called_once_with("items", 42, "old")
@@ -760,6 +748,8 @@ def test_cmd_metadata_get(MockClient, tmp_path, capsys):
     id_dir = tmp_path / ".elab-sync-ids"
     id_dir.mkdir()
     (id_dir / "default.id").write_text("42", encoding="utf-8")
+    import json as _json
+    (id_dir / "mapping.json").write_text(_json.dumps({"a.md": 42}))
     args = Namespace(config=str(cfg), target=None, force=False, meta_action="get", id=None)
     cmd_metadata(args)
     out = capsys.readouterr().out
@@ -777,6 +767,8 @@ def test_cmd_metadata_set(MockClient, tmp_path, capsys):
     id_dir = tmp_path / ".elab-sync-ids"
     id_dir.mkdir()
     (id_dir / "default.id").write_text("42", encoding="utf-8")
+    import json as _json
+    (id_dir / "mapping.json").write_text(_json.dumps({"a.md": 42}))
     args = Namespace(config=str(cfg), target=None, force=False, meta_action="set", keyvalues=["new=data"], id=None)
     cmd_metadata(args)
     client.update_metadata.assert_called_once()
@@ -798,6 +790,8 @@ def test_cmd_entity_status_show(MockClient, tmp_path, capsys):
     id_dir = tmp_path / ".elab-sync-ids"
     id_dir.mkdir()
     (id_dir / "default.id").write_text("42", encoding="utf-8")
+    import json as _json
+    (id_dir / "mapping.json").write_text(_json.dumps({"a.md": 42}))
     args = Namespace(config=str(cfg), target=None, force=False, status_action="show", id=None)
     cmd_entity_status(args)
     out = capsys.readouterr().out
@@ -813,6 +807,8 @@ def test_cmd_entity_status_set_single(MockClient, tmp_path, capsys):
     id_dir = tmp_path / ".elab-sync-ids"
     id_dir.mkdir()
     (id_dir / "default.id").write_text("42", encoding="utf-8")
+    import json as _json
+    (id_dir / "mapping.json").write_text(_json.dumps({"a.md": 42}))
     args = Namespace(config=str(cfg), target=None, force=False, status_action="set", status_id="3", id=42)
     cmd_entity_status(args)
     client.patch_entity.assert_called_once_with("items", 42, status=3)
@@ -961,20 +957,6 @@ def test_cmd_list_empty(MockClient, tmp_path, capsys):
 # ── FR-20 link テスト ────────────────────────────────────
 
 
-# CLI-69: link merge モード
-@patch("elab_doc_sync.cli.ELabFTWClient")
-def test_cmd_link_merge(MockClient, tmp_path, capsys):
-    cfg, docs = _write_config(tmp_path)
-    (docs / "a.md").write_text("# A\n", encoding="utf-8")
-    client = MockClient.return_value
-    client.get_entity.return_value = {"id": 99, "body": "<p>hello</p>"}
-    args = Namespace(config=str(cfg), target=None, force=False, entity_id=99, file=None)
-    cmd_link(args)
-    out = capsys.readouterr().out
-    assert "99" in out
-    id_file = tmp_path / ".elab-sync-ids" / "default.id"
-    assert id_file.exists()
-    assert id_file.read_text().strip() == "99"
 
 
 # CLI-70: link each モード
@@ -1006,21 +988,6 @@ def test_cmd_link_each_no_file(MockClient, tmp_path):
 # ── FR-21 verify テスト ──────────────────────────────────
 
 
-# CLI-72: verify 正常（merge）
-@patch("elab_doc_sync.cli.ELabFTWClient")
-def test_cmd_verify_merge_ok(MockClient, tmp_path, capsys):
-    cfg, docs = _write_config(tmp_path)
-    (docs / "a.md").write_text("# A\n", encoding="utf-8")
-    client = MockClient.return_value
-    client.get_entity.return_value = {"id": 42, "title": "T"}
-    id_dir = tmp_path / ".elab-sync-ids"
-    id_dir.mkdir()
-    (id_dir / "default.id").write_text("42", encoding="utf-8")
-    args = Namespace(config=str(cfg), target=None, force=False)
-    cmd_verify(args)
-    out = capsys.readouterr().out
-    assert "✓" in out
-    assert "問題はありません" in out
 
 
 # CLI-73: verify リモートアクセス失敗
@@ -1033,6 +1000,8 @@ def test_cmd_verify_remote_fail(MockClient, tmp_path, capsys):
     id_dir = tmp_path / ".elab-sync-ids"
     id_dir.mkdir()
     (id_dir / "default.id").write_text("42", encoding="utf-8")
+    import json as _json
+    (id_dir / "mapping.json").write_text(_json.dumps({"a.md": 42}))
     args = Namespace(config=str(cfg), target=None, force=False)
     cmd_verify(args)
     out = capsys.readouterr().out
@@ -1083,6 +1052,8 @@ def test_tag_list_shows_resource_label(MockClient, tmp_path, capsys):
     id_dir = tmp_path / ".elab-sync-ids"
     id_dir.mkdir()
     (id_dir / "default.id").write_text("1", encoding="utf-8")
+    import json as _json
+    (id_dir / "mapping.json").write_text(_json.dumps({"a.md": 1}))
     args = Namespace(config=str(cfg), target=None, force=False, tag_action="list", id=None, entity=None)
     cmd_tag(args)
     out = capsys.readouterr().out
@@ -1100,6 +1071,8 @@ def test_entity_status_shows_resource_label(MockClient, tmp_path, capsys):
     id_dir = tmp_path / ".elab-sync-ids"
     id_dir.mkdir()
     (id_dir / "default.id").write_text("1", encoding="utf-8")
+    import json as _json
+    (id_dir / "mapping.json").write_text(_json.dumps({"a.md": 1}))
     args = Namespace(config=str(cfg), target=None, force=False, status_action="show", id=None)
     cmd_entity_status(args)
     out = capsys.readouterr().out
@@ -1128,45 +1101,8 @@ def test_pull_each_downloads_images(MockClient, tmp_path):
     assert (docs / "images" / "items_1_photo.png").exists()
 
 
-# CLI-61: pull merge で画像がダウンロードされる
-@patch("elab_doc_sync.cli.ELabFTWClient")
-def test_pull_merge_downloads_images(MockClient, tmp_path):
-    cfg, docs = _write_config(tmp_path, mode="merge")
-    ids_dir = tmp_path / ".elab-sync-ids"
-    ids_dir.mkdir(exist_ok=True)
-    (ids_dir / "default.id").write_text("1\n")
-    client = MockClient.return_value
-    client.get_item.return_value = {
-        "id": 1, "title": "T",
-        "body": '<p><img src="https://elab.example.com/app/download.php?f=xyz.png&name=fig.png&storage=1" alt="f"></p>',
-    }
-    client.list_uploads.return_value = [
-        {"id": 20, "long_name": "xyz.png", "real_name": "fig.png", "storage": "1"},
-    ]
-    client.download_upload.return_value = b"\x89PNG"
-    cmd_pull(_ns(tmp_path, id=[1], entity="items", command="pull", force=True))
-    md = (docs / "T.md").read_text(encoding="utf-8")
-    assert "images/items_1_fig.png" in md
 
 
-# CLI-61a: merge モードのスキップ時に画像DLが呼ばれない
-@patch("elab_doc_sync.cli.ELabFTWClient")
-def test_pull_merge_skip_no_image_download(MockClient, tmp_path):
-    cfg, docs = _write_config(tmp_path, mode="merge")
-    (docs / "T.md").write_text("existing\n", encoding="utf-8")
-    ids_dir = tmp_path / ".elab-sync-ids"
-    ids_dir.mkdir(exist_ok=True)
-    (ids_dir / "default.id").write_text("1\n")
-    client = MockClient.return_value
-    client.get_item.return_value = {
-        "id": 1, "title": "T",
-        "body": '<p><img src="https://elab.example.com/app/download.php?f=xyz.png&name=fig.png&storage=1" alt="f"></p>',
-    }
-    cmd_pull(_ns(tmp_path, id=None, command="pull"))
-    # スキップされたので list_uploads / download_upload は呼ばれない
-    client.list_uploads.assert_not_called()
-    client.download_upload.assert_not_called()
-    assert not (docs / "images").exists()
 
 
 # ── diff 画像正規化 (CLI-62) ────────────────────────────
@@ -1179,6 +1115,8 @@ def test_diff_no_false_positive_with_images(MockClient, tmp_path, capsys):
     ids_dir = tmp_path / ".elab-sync-ids"
     ids_dir.mkdir(exist_ok=True)
     (ids_dir / "default.id").write_text("1\n")
+    import json as _json
+    (ids_dir / "mapping.json").write_text(_json.dumps({"a.md": 1}))
     client = MockClient.return_value
     client.get_item.return_value = {
         "id": 1,

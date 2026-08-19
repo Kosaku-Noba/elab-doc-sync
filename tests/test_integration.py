@@ -18,7 +18,6 @@ import yaml
 
 from elab_doc_sync.client import ELabFTWClient
 from elab_doc_sync.sync import (
-    DocsSyncer,
     _download_attachments,
     _download_images,
     _rewrite_images,
@@ -164,36 +163,7 @@ class TestAttachmentUploadDownload:
 
 
 class TestEndToEnd:
-    """Phase 1c: DocsSyncer 経由の end-to-end テスト（実際に PATCH→GET）。"""
-
-    def test_syncer_push_and_verify_remote(self, client, request, tmp_path):
-        """DocsSyncer.sync() で push し、リモート body に内容が反映されることを確認。"""
-        docs = tmp_path / "docs"
-        docs.mkdir()
-        (docs / "e2e.md").write_text("# E2E\n\nEnd to end test.", encoding="utf-8")
-
-        target = TargetConfig(
-            title="[test] e2e",
-            docs_dir="docs/",
-            id_file=str(tmp_path / ".elab-sync-ids" / "default.id"),
-            pattern="*.md",
-            mode="merge",
-            entity="items",
-        )
-        syncer = DocsSyncer(client, target, tmp_path)
-
-        # Pre-create item and register cleanup before sync
-        resp = client._req("POST", "/api/v2/items")
-        item_id = client._parse_id(resp)
-        request.addfinalizer(lambda: _safe_delete(client, item_id))
-        syncer.save_item_id(item_id)
-
-        syncer.sync(force=True)
-
-        # Verify remote body contains our content
-        remote = client.get_item(item_id)
-        body = remote.get("body", "")
-        assert "E2E" in body or "End to end" in body
+    """Phase 1c: EachDocsSyncer 経由の end-to-end テスト（実際に PATCH→GET）。"""
 
     def test_push_pull_push_idempotent(self, client, test_item, tmp_path):
         """push → remote PATCH → pull → 再 push で URL が安定する。"""

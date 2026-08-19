@@ -77,7 +77,7 @@ def test_default_mode_entity(tmp_path):
     del data["targets"][0]["mode"]
     del data["targets"][0]["entity"]
     cfg = load_config(_write_config(tmp_path, data))
-    assert cfg.targets[0].mode == "merge"
+    assert cfg.targets[0].mode == "each"
     assert cfg.targets[0].entity == "items"
 
 

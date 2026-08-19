@@ -38,7 +38,7 @@ class TargetConfig:
     docs_dir: str
     id_file: str
     pattern: str = "*.md"
-    mode: str = "merge"       # "merge" (全結合→1エンティティ) or "each" (1ファイル=1エンティティ)
+    mode: str = "each"        # "each" (1ファイル=1エンティティ)
     entity: str = "items"     # "items" or "experiments"
     tags: list[str] = None    # push 時に自動設定するタグ
     body_format: str = BODY_FORMAT_DEFAULT
@@ -154,12 +154,12 @@ def load_config(config_path: Path) -> Config:
 
     targets = []
     for t in raw.get("targets", []):
-        mode = t.get("mode", "merge")
+        mode = t.get("mode", "each")
         entity = t.get("entity", "items")
         # resources は items のエイリアス（eLabFTW Web UI の表示名）
         if entity in ("resources", "resource"):
             entity = "items"
-        title = t.get("title", "") if mode == "merge" else t.get("title", "")
+        title = t.get("title", "")
         body_format = t.get("body_format", BODY_FORMAT_DEFAULT)
         if body_format not in ("md", "html"):
             _abort(f"body_format は 'md' または 'html' を指定してください（現在: {body_format!r}）")

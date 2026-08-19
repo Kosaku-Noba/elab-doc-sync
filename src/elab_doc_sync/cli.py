@@ -12,7 +12,7 @@ from markdownify import markdownify as html_to_md
 
 from .client import ELabFTWClient
 from .config import load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, append_target_to_yaml
-from .sync import DocsSyncer, EachDocsSyncer, ConflictError, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments, _rewrite_elab_links_to_local
+from .sync import EachDocsSyncer, ConflictError, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments, _rewrite_elab_links_to_local
 from . import sync_log
 
 DEFAULT_CONFIG = ".elab-sync.yaml"
@@ -45,9 +45,7 @@ def _make_client_for_target(config, target):
 
 
 def _make_syncer(client, target, project_root):
-    if target.mode == "each":
-        return EachDocsSyncer(client, target, project_root)
-    return DocsSyncer(client, target, project_root)
+    return EachDocsSyncer(client, target, project_root)
 
 
 def _score_target_match(target, remote_tags: list[str], remote_category: str | None, remote_title: str) -> float:
@@ -171,19 +169,11 @@ def _find_target_by_mapping(config, project_root: Path, entity_type: str, entity
     for target in config.targets:
         if target.entity != entity_type:
             continue
-        if target.mode == "each":
-            mapping_file = (project_root / target.id_file).parent / "mapping.json"
-            if mapping_file.exists():
-                mapping = json.loads(mapping_file.read_text(encoding="utf-8"))
-                if entity_id in mapping.values():
-                    return target
-        else:
-            # merge モード: id_file に保存された ID と照合
-            id_file = project_root / target.id_file
-            if id_file.exists():
-                text = id_file.read_text().strip()
-                if text.isdigit() and int(text) == entity_id:
-                    return target
+        mapping_file = (project_root / target.id_file).parent / "mapping.json"
+        if mapping_file.exists():
+            mapping = json.loads(mapping_file.read_text(encoding="utf-8"))
+            if entity_id in mapping.values():
+                return target
     return None
 
 
@@ -204,37 +194,21 @@ def cmd_sync(args):
             att_dir = (project_root / target.attachments_dir) if target.attachments_dir else None
             att_count = _count_local_attachments(att_dir)
             att_str = f"  添付: {att_count}件" if att_count else ""
-            if isinstance(syncer, EachDocsSyncer):
-                results = syncer.dry_run()
-                if not results:
-                    print(f"  [each: {target.docs_dir}] ドキュメントなし")
-                    continue
-                for r in results:
-                    status = "変更あり" if r["changed"] else "変更なし（スキップ）"
-                    dest = f"{entity_label} #{r['entity_id']}" if r["entity_id"] else f"新しい{entity_label}"
-                    video_str = f"  動画: {r['videos']}件" if r.get("videos") else ""
-                    flink_str = f"  リンクファイル: {r['file_links']}件" if r.get("file_links") else ""
-                    print(f"  [{r['title']}] {status}")
-                    print(f"    画像: {r['images']}件{video_str}{flink_str}{att_str}  → {dest}")
-            else:
-                info = syncer.dry_run()
-                if not info["files"]:
-                    print(f"  [{target.title}] ドキュメントなし")
-                    continue
-                status = "変更あり" if info["changed"] else "変更なし（スキップ）"
-                dest = f"{entity_label} #{info['item_id']}" if info["item_id"] else f"新しい{entity_label}"
-                video_str = f"  動画: {info['videos']}件" if info.get("videos") else ""
-                flink_str = f"  リンクファイル: {info['file_links']}件" if info.get("file_links") else ""
-                print(f"  [{target.title}] {status}")
-                print(f"    ファイル: {info['files']}件  画像: {info['images']}件{video_str}{flink_str}{att_str}  → {dest}")
+            results = syncer.dry_run()
+            if not results:
+                print(f"  [each: {target.docs_dir}] ドキュメントなし")
+                continue
+            for r in results:
+                status = "変更あり" if r["changed"] else "変更なし（スキップ）"
+                dest = f"{entity_label} #{r['entity_id']}" if r["entity_id"] else f"新しい{entity_label}"
+                video_str = f"  動画: {r['videos']}件" if r.get("videos") else ""
+                flink_str = f"  リンクファイル: {r['file_links']}件" if r.get("file_links") else ""
+                print(f"  [{r['title']}] {status}")
+                print(f"    画像: {r['images']}件{video_str}{flink_str}{att_str}  → {dest}")
             continue
 
         try:
-            if isinstance(syncer, EachDocsSyncer):
-                updated += syncer.sync(force=args.force, prune_attachments=args.prune_attachments)
-            else:
-                if syncer.sync(force=args.force, prune_attachments=args.prune_attachments):
-                    updated += 1
+            updated += syncer.sync(force=args.force, prune_attachments=args.prune_attachments)
         except ConflictError as e:
             print(f"  ⚠ 競合検出: {e}", file=sys.stderr)
         except Exception as e:
@@ -264,17 +238,6 @@ def cmd_status(args):
                 status = "変更あり" if r["changed"] else "最新"
                 id_str = f"{entity_label} #{r['entity_id']}" if r["entity_id"] else "未作成"
                 print(f"  [{r['title']}] {status}（{id_str}）")
-        else:
-            try:
-                body = syncer.collect_docs()
-                changed = syncer.has_changed(body)
-            except FileNotFoundError as e:
-                print(f"  [{target.title}] エラー: {e}")
-                continue
-            status = "変更あり" if changed else "最新"
-            item_id = syncer.read_item_id()
-            id_str = f"{entity_label} #{item_id}" if item_id else "未作成"
-            print(f"  [{target.title}] {status}（{id_str}）")
 
 
 def _ensure_target_in_config(config_path: Path, entity: str, config: "Config"):
@@ -515,21 +478,6 @@ def cmd_pull(args):
                         mapping, reverse_mapping, eid, data, entity_type,
                         args.force, is_temp_export)
                 syncer._save_mapping(mapping)
-            else:
-                syncer = DocsSyncer(client, target, project_root)
-                eid = syncer.read_item_id()
-                if eid is None:
-                    print(f"  [{target.title}] 同期先の ID が不明です（--id で指定してください）")
-                    continue
-                try:
-                    data = get_fn(eid)
-                except Exception as e:
-                    print(f"  [{target.title}] {entity_label} #{eid} の取得に失敗: {e}", file=sys.stderr)
-                    continue
-                pulled += _pull_merge_entity(
-                    client, syncer, target, project_root, docs_dir,
-                    eid, data, entity_type, args.force, is_temp_export)
-                _sync_remote_metadata_to_yaml(client, config, config_path, target, entity_type, {f"{target.title or 'pulled'}.md": eid})
 
     print(f"\n完了: {pulled} 件取得しました")
 
@@ -605,12 +553,6 @@ def _pull_entity_to_target(client, config, config_path, target, project_root,
     is_temp_export = (pull_dir_override is not None
                      and (project_root / pull_dir_override).resolve()
                      != (project_root / target.docs_dir).resolve())
-
-    if target.mode == "merge":
-        syncer = DocsSyncer(client, target, project_root)
-        return _pull_merge_entity(
-            client, syncer, target, project_root, docs_dir,
-            eid, data, entity_type, force, is_temp_export)
 
     syncer = EachDocsSyncer(client, target, project_root)
     mapping = syncer._load_mapping()
@@ -694,43 +636,6 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
     return 1
 
 
-def _pull_merge_entity(client, syncer, target, project_root, docs_dir,
-                       eid, data, entity_type, force, is_temp_export):
-    """merge モードで1エンティティを pull する。返り値は 0 or 1。"""
-    entity_label = _entity_label(entity_type)
-    body_html = data.get("body", "") or ""
-    body_md = html_to_md(body_html, **_MD_OPTS).strip()
-
-    filename = f"{target.title or 'pulled'}.md"
-    filepath = docs_dir / filename
-
-    if not force and filepath.exists():
-        print(f"  [{target.title}] 既にローカルに存在（スキップ、--force で上書き）")
-        return 0
-
-    body_md = _download_images(body_md, entity_type, eid, client, docs_dir)
-    # eLabFTW の記事 URL をローカルファイルリンクに逆変換
-    body_md = _rewrite_elab_links_to_local(
-        body_md, client.base_url, {}, entity_type,
-        target_docs_dir=target.docs_dir)
-    filepath.write_text(body_md + "\n", encoding="utf-8")
-
-    if not is_temp_export:
-        syncer.save_item_id(eid)
-        syncer.save_hash(body_md)
-        syncer.save_remote_hash(body_html)
-
-    print(f"  [{target.title}] {entity_label} #{eid} → {filepath}")
-
-    if target.attachments_dir:
-        _download_attachments(entity_type, eid, client, project_root / target.attachments_dir)
-
-    log_path = project_root / sync_log.DEFAULT_LOG_PATH
-    sync_log.record(log_path, action="pull", target=target.title,
-                    entity=entity_type, entity_id=eid, files=[filename])
-    return 1
-
-
 def _show_diff(title, local_text, remote_text):
     """unified diff を表示。差分がなければ False を返す。"""
     local_lines = local_text.splitlines(keepends=True)
@@ -788,34 +693,6 @@ def cmd_diff(args):
                 else:
                     print(f"  [{filename}] 差分なし")
 
-        else:
-            syncer = DocsSyncer(client, target, project_root)
-            eid = syncer.read_item_id()
-            if eid is None:
-                print(f"  [{target.title}] 同期先の ID が不明です")
-                continue
-
-            try:
-                data = get_fn(eid)
-            except Exception as e:
-                print(f"  [{target.title}] eLabFTW #{eid} の取得に失敗: {e}\n", file=sys.stderr)
-                continue
-
-            try:
-                local_md = syncer.collect_docs()
-            except FileNotFoundError as e:
-                print(f"  [{target.title}] {e}\n")
-                has_diff = True
-                continue
-
-            remote_md = html_to_md(data.get("body", "") or "", **_MD_OPTS).strip()
-            remote_md = _normalize_remote_image_urls(remote_md, target.entity, eid, client)
-
-            if _show_diff(target.title, local_md, remote_md):
-                has_diff = True
-            else:
-                print(f"  [{target.title}] 差分なし")
-
     if not has_diff:
         print("\nすべて最新です")
 
@@ -870,21 +747,12 @@ def cmd_init(args):
     docs_dir = input("Markdown ファイルを置くディレクトリ（空欄で docs/）: ").strip() or "docs/"
     pattern = input("同期する Markdown のファイルパターン（空欄で *.md）: ").strip() or "*.md"
 
-    mode_input = input("同期モード — each: 1ファイル=1ノート / merge(非推奨): 全ファイルを1つに結合 [each]: ").strip().lower() or "each"
     entity_input = input("送信先 — items(resources): リソース / experiments: 実験ノート [items]: ").strip().lower() or "items"
     entity_input = _normalize_entity(entity_input)
 
     fmt_input = input(f"送信形式 — md: Markdown のまま / html: HTML に変換 [{BODY_FORMAT_INIT}]: ").strip().lower() or BODY_FORMAT_INIT
 
-    target = {"docs_dir": docs_dir, "pattern": pattern, "mode": mode_input, "entity": entity_input, "body_format": fmt_input}
-
-    if mode_input == "merge":
-        title = ""
-        while not title:
-            title = input("eLabFTW リソースのタイトル: ").strip()
-        target["title"] = title
-    else:
-        target["title"] = ""
+    target = {"docs_dir": docs_dir, "pattern": pattern, "mode": "each", "entity": entity_input, "body_format": fmt_input, "title": ""}
 
     data = {
         "elabftw": {"url": url, "api_key": "", "verify_ssl": verify_ssl},
