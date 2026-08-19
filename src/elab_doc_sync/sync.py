@@ -325,11 +325,16 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
 # Markdown リンク（画像以外）: [text](path)
 _LINK_RE = re.compile(r"(?<!!)\[([^\]]*)\]\(([^)]+)\)")
 
-# eLabFTW の記事 URL パターン: {base_url}/{entity}.php?mode=view&id={id}[#fragment]
+# eLabFTW の記事 URL パターン:
+#   items → {base_url}/database.php?mode=view&id={id}
+#   experiments → {base_url}/experiments.php?mode=view&id={id}
 # フラグメント部分もキャプチャして逆変換時に保持する
 _ELAB_URL_RE = re.compile(
-    r"(?P<base>https?://[^/]+)/(?P<entity>items|experiments)\.php\?mode=view&id=(?P<id>\d+)(?P<fragment>#[^\s)]*)?")
+    r"(?P<base>https?://[^/]+)/(?P<page>database|experiments)\.php\?mode=view&id=(?P<id>\d+)(?P<fragment>#[^\s)]*)?")
 
+# eLabFTW の entity タイプと URL ページ名の対応
+_ENTITY_TO_PAGE = {"items": "database", "experiments": "experiments"}
+_PAGE_TO_ENTITY = {"database": "items", "experiments": "experiments"}
 
 def _hosts_match(base_url: str, link_base: str) -> bool:
     """base_url と link_base のホスト部分が完全一致するか判定する。
@@ -374,7 +379,8 @@ def _rewrite_local_links(body: str, entity: str, base_url: str,
         eid = mapping.get(target_filename)
         target_entity = entity
         if eid is not None:
-            url = f"{base_url}/{target_entity}.php?mode=view&id={eid}"
+            page = _ENTITY_TO_PAGE[target_entity]
+            url = f"{base_url}/{page}.php?mode=view&id={eid}"
             return f"[{text}]({url})"
 
         # 2. 他のターゲットの mapping を検索
@@ -382,7 +388,8 @@ def _rewrite_local_links(body: str, entity: str, base_url: str,
             for _docs_dir, other_entity, other_mapping in all_mappings:
                 eid = other_mapping.get(target_filename)
                 if eid is not None:
-                    url = f"{base_url}/{other_entity}.php?mode=view&id={eid}"
+                    page = _ENTITY_TO_PAGE[other_entity]
+                    url = f"{base_url}/{page}.php?mode=view&id={eid}"
                     return f"[{text}]({url})"
 
         # 解決できないリンクはそのまま残す
@@ -428,7 +435,8 @@ def _rewrite_elab_links_to_local(body: str, base_url: str,
             return m.group(0)
 
         link_base = match.group("base")
-        link_entity = match.group("entity")
+        link_page = match.group("page")  # "database" or "experiments"
+        link_entity = _PAGE_TO_ENTITY.get(link_page, link_page)  # → "items" or "experiments"
         link_id = int(match.group("id"))
         fragment = match.group("fragment") or ""  # #section など
 

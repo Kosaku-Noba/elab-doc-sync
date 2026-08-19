@@ -1108,7 +1108,7 @@ def test_rewrite_local_links_basic():
     body = "See [setup guide](./setup.md) for details."
     mapping = {"setup.md": 42, "other.md": 99}
     result = _rewrite_local_links(body, "items", "https://elab.example.com", mapping)
-    assert "https://elab.example.com/items.php?mode=view&id=42" in result
+    assert "https://elab.example.com/database.php?mode=view&id=42" in result
     assert "[setup guide](" in result
 
 
@@ -1126,7 +1126,7 @@ def test_rewrite_local_links_skips_external():
     mapping = {"setup.md": 42}
     result = _rewrite_local_links(body, "items", "https://elab.example.com", mapping)
     assert "https://google.com" in result
-    assert "items.php?mode=view&id=42" in result
+    assert "database.php?mode=view&id=42" in result
 
 
 # LINK-04: 画像リンクはスキップされる
@@ -1135,7 +1135,7 @@ def test_rewrite_local_links_skips_images():
     mapping = {"doc.md": 10}
     result = _rewrite_local_links(body, "items", "https://elab.example.com", mapping)
     assert "![img](./photo.png)" in result
-    assert "items.php?mode=view&id=10" in result
+    assert "database.php?mode=view&id=10" in result
 
 
 # LINK-05: 非 .md ファイルリンクはスキップされる
@@ -1156,7 +1156,7 @@ def test_rewrite_local_links_experiments():
 
 # LINK-07: eLabFTW URL → ローカルリンク逆変換
 def test_rewrite_elab_links_to_local_basic():
-    body = "See [setup](https://elab.example.com/items.php?mode=view&id=42) for details."
+    body = "See [setup](https://elab.example.com/database.php?mode=view&id=42) for details."
     mapping = {"setup.md": 42, "other.md": 99}
     result = _rewrite_elab_links_to_local(body, "https://elab.example.com", mapping, "items")
     assert "[setup](./setup.md)" in result
@@ -1164,15 +1164,15 @@ def test_rewrite_elab_links_to_local_basic():
 
 # LINK-08: 解決できない eLabFTW URL はそのまま残る
 def test_rewrite_elab_links_to_local_unresolved():
-    body = "See [unknown](https://elab.example.com/items.php?mode=view&id=999)."
+    body = "See [unknown](https://elab.example.com/database.php?mode=view&id=999)."
     mapping = {"setup.md": 42}
     result = _rewrite_elab_links_to_local(body, "https://elab.example.com", mapping, "items")
-    assert "items.php?mode=view&id=999" in result
+    assert "database.php?mode=view&id=999" in result
 
 
 # LINK-09: 外部 eLabFTW インスタンスの URL はスキップされる
 def test_rewrite_elab_links_to_local_external_elab():
-    body = "See [ext](https://other-elab.com/items.php?mode=view&id=42)."
+    body = "See [ext](https://other-elab.com/database.php?mode=view&id=42)."
     mapping = {"setup.md": 42}
     result = _rewrite_elab_links_to_local(body, "https://elab.example.com", mapping, "items")
     assert "other-elab.com" in result
@@ -1187,8 +1187,8 @@ def test_link_roundtrip():
 
     # push: ローカル → eLabFTW URL
     pushed = _rewrite_local_links(original, "items", base_url, mapping)
-    assert "items.php?mode=view&id=10" in pushed
-    assert "items.php?mode=view&id=20" in pushed
+    assert "database.php?mode=view&id=10" in pushed
+    assert "database.php?mode=view&id=20" in pushed
 
     # pull: eLabFTW URL → ローカル
     pulled = _rewrite_elab_links_to_local(pushed, base_url, mapping, "items")
@@ -1283,7 +1283,7 @@ def test_detect_renames_no_rename(tmp_path):
 
 # LINK-11: フラグメント付き eLabFTW URL が逆変換時に保持される
 def test_rewrite_elab_links_preserves_fragment():
-    body = "See [section](https://elab.example.com/items.php?mode=view&id=42#introduction)."
+    body = "See [section](https://elab.example.com/database.php?mode=view&id=42#introduction)."
     mapping = {"setup.md": 42}
     result = _rewrite_elab_links_to_local(body, "https://elab.example.com", mapping, "items")
     assert "[section](./setup.md#introduction)" in result
@@ -1291,7 +1291,7 @@ def test_rewrite_elab_links_preserves_fragment():
 
 # LINK-12: ホスト部分が似ているが異なる URL はスキップされる（完全一致判定）
 def test_rewrite_elab_links_host_exact_match():
-    body = "See [x](https://elab.example.co/items.php?mode=view&id=42)."
+    body = "See [x](https://elab.example.co/database.php?mode=view&id=42)."
     mapping = {"setup.md": 42}
     result = _rewrite_elab_links_to_local(body, "https://elab.example.com", mapping, "items")
     # elab.example.co ≠ elab.example.com → 変換されない
