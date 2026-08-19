@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.5.3 (2026-08-19)
+
+### 破壊的変更
+
+#### merge モード完全削除
+- `DocsSyncer` クラスを削除（約250行削減）
+- `mode` 設定は不要に（each 固定）
+- 既存設定から `mode: merge` を削除してください
+
+### 修正
+
+#### eLabFTW 記事 URL の修正
+- items: `items.php` → `database.php?mode=view&id=XX` に修正
+- experiments: `experiments.php?mode=view&id=XX`（変更なし）
+
+### ドキュメント
+- docs/ を全面更新（新機能・内部仕様を詳細記載）
+
 ## v0.5.2 (2026-08-19)
 
 ### 修正
