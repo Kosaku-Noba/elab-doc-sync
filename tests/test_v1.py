@@ -481,3 +481,126 @@ def test_legacy_hash_migration_keeps_baseline(project):
     assert syncer.sync() == 0
     assert syncer.mapping_file.exists()
     assert client.create_item.call_count == 0
+
+
+def test_nested_document_asset_change_is_detected(project):
+    root, client, remote, syncer, args = project
+    syncer.target.pattern = '**/*.md'
+    (root / 'docs/sub').mkdir()
+    (root / 'docs/sub/a.md').write_text('![picture](photo.png)')
+    (root / 'docs/sub/photo.png').write_bytes(b'original')
+    client.upload_file.return_value = {'url': 'https://example.test/app/download.php?f=image'}
+    assert syncer.sync() == 1
+    (root / 'docs/sub/photo.png').write_bytes(b'edited')
+    assert syncer.inspect('a.md', 1)['state'] == '送信待ち'
+    assert syncer.sync() == 1
+
+
+def test_body_format_change_is_sent_without_force(project):
+    root, client, remote, syncer, args = push_note(project, '# Title')
+    syncer.target.body_format = 'html'
+    assert syncer.inspect('a.md', 1)['state'] == '送信待ち'
+    assert syncer.sync() == 1
+    assert remote[1]['content_type'] == 1
+    assert '<h1' in remote[1]['body']
+    assert syncer.inspect('a.md', 1)['state'] == '最新'
+
+
+@pytest.mark.parametrize('remote_field,changed_value', [('category', 99), ('tags', ['other-user'])])
+def test_resume_stops_after_remote_metadata_change(project, remote_field, changed_value):
+    root, client, remote, syncer, args = push_note(project)
+    (root / 'docs/a.md').write_text('local edit')
+    update = client.update_item.side_effect
+    def apply_then_fail(eid, **kw):
+        update(eid, **kw)
+        raise requests.Timeout('response lost')
+    client.update_item.side_effect = apply_then_fail
+    assert syncer.sync() == 0
+    remote[1][remote_field] = changed_value
+    client.update_item.side_effect = update
+    client.update_item.reset_mock()
+    assert syncer.sync() == 0
+    assert syncer.failures == 1
+    client.update_item.assert_not_called()
+    assert remote[1][remote_field] == changed_value
+
+
+def test_resume_stops_after_remote_attachment_change(project):
+    root, client, remote, syncer, args = push_note(project)
+    (root / 'docs/a.md').write_text('local edit')
+    update = client.update_item.side_effect
+    client.update_item.side_effect = requests.Timeout()
+    assert syncer.sync() == 0
+    client.list_uploads.return_value = [{'id': 77, 'real_name': 'external.csv', 'hash': 'changed'}]
+    client.update_item.side_effect = update
+    client.update_item.reset_mock()
+    assert syncer.sync() == 0
+    client.update_item.assert_not_called()
+
+
+@pytest.mark.parametrize('syntax', ['![image]({})', '[video]({})', '[file]({})'])
+def test_outside_asset_reference_never_uploads(project, syntax):
+    from elab_doc_sync.sync import _rewrite_images, _rewrite_videos, _rewrite_file_links
+    root, client, remote, syncer, args = project
+    suffix = '.png' if 'image' in syntax else '.mp4' if 'video' in syntax else '.txt'
+    outside = root.parent / ('outside' + suffix)
+    outside.write_bytes(b'private bytes')
+    handler = _rewrite_images if 'image' in syntax else _rewrite_videos if 'video' in syntax else _rewrite_file_links
+    try:
+        with pytest.raises(ValueError, match='プロジェクト外'):
+            handler(syntax.format('../../' + outside.name), 'items', 1, client, root / 'docs', root, strict=True)
+        client.upload_file.assert_not_called()
+    finally:
+        outside.unlink()
+
+
+def test_hidden_project_configuration_never_uploads(project):
+    from elab_doc_sync.sync import _rewrite_file_links
+    root, client, remote, syncer, args = project
+    with pytest.raises(ValueError, match='隠しファイル'):
+        _rewrite_file_links('[config](../.elab-sync.yaml)', 'items', 1, client, root / 'docs', root, strict=True)
+    client.upload_file.assert_not_called()
+
+
+def test_clone_preview_does_not_create_project(project, monkeypatch):
+    from elab_doc_sync.cli import cmd_clone
+    root, client, remote, syncer, args = push_note(project)
+    monkeypatch.setenv('ELABFTW_API_KEY', 'test-key')
+    clone_root = root / 'clone'
+    before = client.download_upload.call_count
+    with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
+        assert cmd_clone(args(url=client.base_url, id=[1], entity='items', dir=str(clone_root), no_verify=False, dry_run=True)) == 0
+    assert not clone_root.exists()
+    assert client.download_upload.call_count == before
+
+
+def test_unresolved_local_operation_cannot_be_replaced(tmp_path):
+    note = tmp_path / 'a.md'
+    note.write_text('before')
+    with pytest.raises(RuntimeError):
+        with local_transaction(tmp_path, [note], 'first'):
+            note.write_text('partial')
+            raise RuntimeError('interrupted')
+    pending = (tmp_path / RECOVERY).read_bytes()
+    with pytest.raises(RuntimeError, match='未完了'):
+        with local_transaction(tmp_path, [note], 'second'):
+            pytest.fail('must not start')
+    assert (tmp_path / RECOVERY).read_bytes() == pending
+
+
+def test_external_attachment_directory_is_rejected_before_post(project):
+    root, client, remote, syncer, args = project
+    outside = root.parent / 'external-attachments'
+    outside.mkdir(exist_ok=True)
+    note = outside / 'private.csv'
+    note.write_bytes(b'private')
+    syncer.target.attachments_dir = str(outside)
+    (root / 'docs/a.md').write_text('note')
+    try:
+        with pytest.raises(ValueError, match='プロジェクト外'):
+            syncer.sync()
+        client.create_item.assert_not_called()
+        client.upload_file.assert_not_called()
+    finally:
+        note.unlink()
+        outside.rmdir()

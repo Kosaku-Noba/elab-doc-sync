@@ -92,7 +92,8 @@ def project_command(fn):
     def wrapped(args):
         if getattr(args, "dry_run", False):
             return fn(args)
-        root = Path(args.config).resolve().parent
+        root = (Path(args.dir or f"elab-clone-{args.id[0]}").resolve() if fn.__name__ == "cmd_clone"
+                else Path(args.config).resolve().parent)
         with project_lock(root):
             if fn.__name__ != "cmd_restore" and (root / RECOVERY).exists():
                 pending = json.loads((root / RECOVERY).read_text(encoding="utf-8"))
@@ -166,8 +167,10 @@ def read_snapshot(root: Path, backup_id: str) -> dict:
 
 
 @contextmanager
-def local_transaction(root: Path, paths: list[Path], reason: str):
+def local_transaction(root: Path, paths: list[Path], reason: str, *, recovering=False):
     root = root.resolve()
+    if (root / RECOVERY).exists() and not recovering:
+        raise RuntimeError("未完了のローカル変更をrestoreしてから再実行してください")
     backup_id = snapshot(root, paths, reason)
     write_json(root / RECOVERY, {"backup": backup_id})
     print(f"  バックアップ: {backup_id}")
@@ -195,7 +198,7 @@ def restore(root: Path, backup_id: str, dry_run: bool = False) -> None:
     if dry_run:
         return
     # Preserve everything currently present before restoring an earlier state.
-    with local_transaction(root, paths, f"restore:{backup_id}"):
+    with local_transaction(root, paths, f"restore:{backup_id}", recovering=True):
         for path in paths:
             if path.is_dir():
                 shutil.rmtree(path)

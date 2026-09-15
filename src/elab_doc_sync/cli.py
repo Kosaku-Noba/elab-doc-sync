@@ -225,6 +225,8 @@ def cmd_sync(args):
             failed += 1
             label = target.title or f"each: {target.docs_dir}"
             print(f"  [{label}] エラー: {e}", file=sys.stderr)
+        if (project_root / RECOVERY).exists():
+            break
 
     if not args.dry_run:
         print(f"\n完了: {updated} 件更新、{skipped} 件スキップ、{failed} 件失敗")
@@ -729,6 +731,7 @@ def cmd_init(args):
     )
 
 
+@project_command
 def cmd_clone(args):
     """リモートの eLabFTW エンティティからローカルプロジェクトを構築する。"""
     import os as _os
@@ -756,6 +759,22 @@ def cmd_clone(args):
 
     client = ELabFTWClient(url, api_key, verify_ssl=not args.no_verify)
     get_fn = client.get_experiment if entity == "experiments" else client.get_item
+
+    if getattr(args, "dry_run", False):
+        preview_target = TargetConfig(title="", docs_dir=docs_dir, id_file=".elab-sync-ids/default.id",
+                                      entity=entity, attachments_dir="attachments")
+        preview_syncer = EachDocsSyncer(client, preview_target, project_dir)
+        failed = False
+        for eid in ids:
+            try:
+                data = get_fn(eid)
+                _pull_each_entity(client, preview_syncer, preview_target, project_dir.resolve(),
+                                  (project_dir / docs_dir).resolve(), {}, {}, eid, data, entity,
+                                  False, False, dry_run=True)
+            except Exception as exc:
+                failed = True
+                print(f"  #{eid} の確認に失敗: {exc}", file=sys.stderr)
+        return int(failed)
 
     # プロジェクトディレクトリ作成
     project_dir.mkdir(parents=True, exist_ok=True)
@@ -1183,15 +1202,16 @@ def cmd_link(args):
     print(f"  {path} → #{args.entity_id} {'紐付け予定' if dry_run else '追跡再開'}")
     if dry_run:
         return 0
+    mapping[filename] = args.entity_id
+    normalized = _normalize_remote_image_urls(_remote_markdown(data, target), target.entity, args.entity_id,
+                                              syncer.client, uploads=uploads)
+    normalized = _rewrite_elab_links_to_local(normalized, syncer.client.base_url, mapping, target.entity)
     with local_transaction(config_path.parent, [syncer.hash_dir], "link:追跡再開"):
-        mapping[filename] = args.entity_id
         syncer._save_mapping(mapping)
         write_json(syncer.hash_dir / "excluded.json", sorted(syncer._load_excluded() - {filename}))
         # A link establishes the remote baseline, not a claim that local content was pushed.
         for suffix in syncer.SUFFIXES:
             (syncer.hash_dir / f"{filename}{suffix}").unlink(missing_ok=True)
-            normalized = _normalize_remote_image_urls(_remote_markdown(data, target), target.entity, args.entity_id, syncer.client)
-        normalized = _rewrite_elab_links_to_local(normalized, syncer.client.base_url, mapping, target.entity)
         syncer._save_baseline(filename, normalized, data, uploads)
         # Keep unsent metadata visible on next push as well.
         pending = syncer._pending()

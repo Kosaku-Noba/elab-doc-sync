@@ -66,6 +66,7 @@ esync pull [--id ID] [--entity TYPE] [--dry-run] [--force] [--auto] [--dir DIR] 
 **pull 時の特別動作:**
 - eLabFTW 記事 URL → ローカルリンクに逆変換
 - タイトル変更によるファイルリネーム
+- タイトルに `/`、`\`、`:`、`?`、`*`、`<`、`>`、`"`、`|`、NULがある場合は取得を拒否します。`--force`でも回避できないため、eLabFTW側でタイトルを修正してください。
 
 ## init
 

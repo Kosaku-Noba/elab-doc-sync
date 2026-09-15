@@ -1,4 +1,3 @@
-from .safety import atomic_write, write_json, safe_path, snapshot, local_transaction
 """Diff-based docs-to-eLabFTW sync with image upload and attachment support.
 
 CLI tool — not intended for use as a library.
@@ -14,6 +13,7 @@ import markdown
 import html as _html
 from pathlib import Path
 
+from .safety import atomic_write, write_json, safe_path, snapshot, local_transaction
 from .client import ELabFTWClient
 from .config import TargetConfig
 from . import sync_log
@@ -179,10 +179,11 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
     return IMAGE_RE.sub(replace_match, body)
 
 
-def _normalize_remote_image_urls(body: str, entity: str, entity_id: int, client: ELabFTWClient) -> str:
+def _normalize_remote_image_urls(body: str, entity: str, entity_id: int, client: ELabFTWClient, uploads=None) -> str:
     """diff 比較用: リモート MD 内の eLabFTW 画像 URL をローカル相対パスに書き換える（DL なし）。"""
     try:
-        uploads = client.list_uploads(entity, entity_id)
+        if uploads is None:
+            uploads = client.list_uploads(entity, entity_id)
     except Exception as e:
         print(f"    ⚠ 添付ファイル一覧の取得に失敗（{entity} #{entity_id}、画像 URL の正規化をスキップ）: {e}")
         return body
@@ -226,6 +227,26 @@ def _compute_file_hash(filepath: Path) -> str:
     return h.hexdigest()
 
 
+def _resolve_asset_path(docs_dir: Path, project_root: Path, source: str, strict=False) -> Path:
+    root = project_root.resolve()
+    candidates = [(docs_dir / source).absolute(), (project_root / source).absolute()]
+    for index, candidate in enumerate(candidates):
+        if strict:
+            resolved = candidate.resolve()
+            if not resolved.is_relative_to(root):
+                raise ValueError(f"プロジェクト外のファイルは送信できません: {source}")
+            if any(part.startswith(".") and part not in (".", "..") for part in resolved.relative_to(root).parts):
+                raise ValueError(f"隠しファイル・設定領域は送信できません: {source}")
+            for part in (candidate, *candidate.parents):
+                if part == root:
+                    break
+                if part.is_symlink():
+                    raise ValueError(f"シンボリックリンクは送信できません: {source}")
+        if candidate.exists() or index == len(candidates) - 1:
+            return candidate.resolve()
+    raise FileNotFoundError(source)
+
+
 def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False) -> str:
     """Markdown 内のローカル画像を eLabFTW にアップロードし URL に書き換える。
 
@@ -263,9 +284,7 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
         # 動画ファイルは _rewrite_videos で処理するためスキップ
         if _is_video(src):
             return m.group(0)
-        img_path = (docs_dir / src).resolve()
-        if not img_path.exists():
-            img_path = (project_root / src).resolve()
+        img_path = _resolve_asset_path(docs_dir, project_root, src, strict)
         if not img_path.exists():
             if strict:
                 raise FileNotFoundError(f"画像が見つかりません: {src}")
@@ -524,9 +543,7 @@ def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClien
         if not _is_video(src):
             return full_match
 
-        video_path = (docs_dir / src).resolve()
-        if not video_path.exists():
-            video_path = (project_root / src).resolve()
+        video_path = _resolve_asset_path(docs_dir, project_root, src, strict)
         if not video_path.exists():
             if strict:
                 raise FileNotFoundError(f"動画が見つかりません: {src}")
@@ -646,9 +663,7 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
         if src.split("#", 1)[0].endswith(".md"):
             return full_match
 
-        file_path = (docs_dir / src).resolve()
-        if not file_path.exists():
-            file_path = (project_root / src).resolve()
+        file_path = _resolve_asset_path(docs_dir, project_root, src, strict)
         if not file_path.exists():
             if strict:
                 raise FileNotFoundError(f"ファイルが見つかりません: {src}")
@@ -740,7 +755,9 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
     """attachments_dir 内の非画像ファイルをリモートにアップロードする。
 
     差分検知: サイズ一致 → リモートに hash/sha256 フィールドがあれば
-    ローカル SHA-256 と比較。hash 不在時はサイズ一致のみで再利用。
+    ローカル SHA-256 と比較。strict=Trueではhash不在時に実体を取得して比較する。
+    strict=Falseは旧呼び出し用で、hash不在時はサイズ一致だけで再利用する。
+    strict=Trueは一覧取得エラーを伝播し、旧添付を保持する（明示pruneは別）。
     force=True の場合は一致でも再アップロードする。
     pattern: glob パターンでアップロード対象をフィルタ。
     prune: True の場合、ローカルに存在しないリモート添付を削除する。
@@ -997,6 +1014,8 @@ class EachDocsSyncer:
 
     def _has_meta_changed(self, filename, title, category, tags):
         state = self._state(filename)
+        if state and state.get("body_format", self.target.body_format) != self.target.body_format:
+            return True
         hp = self._meta_hash_path(filename)
         saved = state["meta_hash"] if state else hp.read_text().strip() if hp.exists() else None
         return saved is not None and saved != _compute_meta_hash(title, category, tags)
@@ -1017,32 +1036,32 @@ class EachDocsSyncer:
         else:
             self.client.update_item(eid, **fields)
 
-    def _compute_assets_hash(self, raw_body):
+    def _compute_assets_hash(self, raw_body, filename=None):
         parts = []
+        document_dir = self.file_path(filename).parent if filename else self.docs_dir
         for m in [*IMAGE_RE.finditer(raw_body), *_LINK_RE.finditer(raw_body)]:
             src = m.group(2)
             if src.startswith(("http://", "https://", "#")) or src.split("#")[0].endswith(".md"):
                 continue
-            path = (self.docs_dir / src).resolve()
-            if not path.exists():
-                path = (self.project_root / src).resolve()
+            path = _resolve_asset_path(document_dir, self.project_root, src, strict=True)
             parts.append(f"{src}:{_compute_file_hash(path) if path.is_file() else 'missing'}")
         if self.target.attachments_dir:
             att_dir = self.project_root / self.target.attachments_dir
             if att_dir.is_dir():
                 for f in sorted(att_dir.glob(self.target.attachments_pattern)):
                     if f.is_file() and not _is_image(f.name):
-                        parts.append(f"{f.name}:{_compute_file_hash(f)}")
+                        checked = _resolve_asset_path(self.project_root, self.project_root, str(f), strict=True)
+                        parts.append(f"{f.name}:{_compute_file_hash(checked)}")
         return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
 
     def _assets_changed(self, filename, raw_body):
         state = self._state(filename)
         hp = self.hash_dir / f"{filename}.assets_hash"
         saved = state["assets_hash"] if state else hp.read_text().strip() if hp.exists() else None
-        return saved is not None and saved != self._compute_assets_hash(raw_body)
+        return saved is not None and saved != self._compute_assets_hash(raw_body, filename)
 
     def _save_assets_hash(self, filename, raw_body):
-        atomic_write(self.hash_dir / f"{filename}.assets_hash", self._compute_assets_hash(raw_body) + "\n")
+        atomic_write(self.hash_dir / f"{filename}.assets_hash", self._compute_assets_hash(raw_body, filename) + "\n")
 
     def _remote_signature(self, data, uploads):
         return {"body": data.get("body") or "", "title": data.get("title") or "",
@@ -1057,8 +1076,8 @@ class EachDocsSyncer:
         self._save_assets_hash(filename, raw_body)
         write_json(self.hash_dir / f"{filename}.state.json", {
             "version": 1, "server": str(self.client.base_url), "entity": self.entity,
-            "profile": self.target.profile, "team": self.target.team,
-            "local_hash": _compute_hash(raw_body), "assets_hash": self._compute_assets_hash(raw_body),
+            "profile": self.target.profile, "team": self.target.team, "body_format": self.target.body_format,
+            "local_hash": _compute_hash(raw_body), "assets_hash": self._compute_assets_hash(raw_body, filename),
             "meta_hash": _compute_meta_hash(Path(filename).stem, self.target.category, self.target.tags),
             "remote": self._remote_signature(data, uploads),
         })
@@ -1211,6 +1230,7 @@ class EachDocsSyncer:
         jobs = []
         # Preflight all known destinations before creating any entities.
         for f in md_files:
+            self._compute_assets_hash(f.read_text(encoding="utf-8").strip(), f.name)
             eid = mapping.get(f.name)
             result = self.inspect(f.name, eid)
             state = result["state"]
@@ -1221,9 +1241,14 @@ class EachDocsSyncer:
             owned = pending.get(f.name, {})
             expected = owned.get("expected")
             before = owned.get("before")
-            resuming = bool(owned.get("eid") == eid and any(
+            current_guard = {k: v for k, v in self._remote_signature(result.get("data", {}), result.get("uploads", [])).items() if k not in ("body", "title", "content_type")}
+            resuming = bool(owned.get("eid") == eid and owned.get("guard") == current_guard and any(
                 version is not None and all(result["data"].get(k) == v for k, v in version.items())
                 for version in (expected, before)))
+            if not force and owned and not resuming:
+                self.failures += 1
+                print(f"  [{f.stem}] 未完了の同期後にリモート変更があります。diffで確認してから再開してください")
+                continue
             if not force and not resuming and state in ("競合", "取得待ち", "基準情報なし"):
                 self.failures += 1
                 print(f"  [{f.stem}] {state}。esync diff で確認してください")
@@ -1270,12 +1295,31 @@ class EachDocsSyncer:
                 expected = {"body": body, "title": f.stem, "content_type": 2 if self.target.body_format == "md" else 1}
                 previous = result.get("data") or self._get_entity(eid)
                 before = {key: previous.get(key) for key in expected}
-                pending[f.name] = {"eid": eid, "expected": expected, "before": before}
+                guard = {k: v for k, v in self._remote_signature(previous, self.client.list_uploads(self.entity, eid)).items() if k not in ("body", "title", "content_type")}
+                pending[f.name] = {"eid": eid, "expected": expected, "before": before, "guard": guard}
                 self._save_pending(pending)
                 self._update_entity(eid, **expected)
                 meta_changed = force or result.get("data") is None or resuming or self._has_meta_changed(f.name, f.stem, self.target.category, self.target.tags)
+                def checkpoint(allowed_fields=()):
+                    observed = self._get_entity(eid)
+                    signature = self._remote_signature(observed, self.client.list_uploads(self.entity, eid))
+                    observed_guard = {k: v for k, v in signature.items() if k not in ("body", "title", "content_type")}
+                    if any(value != pending[f.name]["guard"].get(key) for key, value in observed_guard.items() if key not in allowed_fields):
+                        raise ConflictError("同期処理中にリモートのメタデータ・添付が変更されました。diffで確認してください")
+                    pending[f.name]["guard"] = observed_guard
+                    self._save_pending(pending)
+
+                checkpoint()
                 tags_ok = _sync_tags(self.client, self.entity, eid, self.target.tags) if meta_changed else True
+                if not tags_ok:
+                    raise RuntimeError("本文更新後にタグ同期が失敗しました。リモートを確認して再実行してください")
+                if meta_changed:
+                    checkpoint(("tags",))
                 category_ok = _sync_category(self.client, self.entity, eid, self.target.category) if meta_changed else True
+                if not category_ok:
+                    raise RuntimeError("本文更新後にカテゴリ同期が失敗しました。リモートを確認して再実行してください")
+                if meta_changed:
+                    checkpoint(("category",))
                 att_ok = True
                 if self.target.attachments_dir:
                     att_ok = _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, eid, self.client,

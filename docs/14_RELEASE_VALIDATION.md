@@ -6,9 +6,9 @@
 
 | 環境 | 結果 |
 |---|---|
-| Linux / Python 3.10.20 | 354 passed、8 skipped（実機キー未設定） |
-| Linux / Python 3.12.3 | 354 passed、8 skipped（実機キー未設定） |
-| Linux / Python 3.14.3 | 354 passed、8 skipped（実機キー未設定） |
+| Linux / Python 3.10.20 | 366 passed、8 skipped（実機キー未設定） |
+| Linux / Python 3.12.3 | 366 passed、8 skipped（実機キー未設定） |
+| Linux / Python 3.14.3 | 366 passed、8 skipped（実機キー未設定） |
 | Windows / Python 3.12 | CIマトリクスに追加。ローカルでは未実行 |
 
 実機テストは既存6ケースに加え、`tests/test_integration_v1.py` の2ケース（md/html）を用意しました。wheel/sdistのビルドと、独立環境にwheelをインストールした `esync --help` の起動を確認済みです。
