@@ -66,6 +66,8 @@ uv run esync
 | メタデータを設定 | `esync metadata set key=value` |
 | テンプレートからファイル作成 | `esync new --template-id 1` |
 | 整合性チェック | `esync verify` |
+| 追跡解除 | `esync rm docs/note.md` |
+| 追跡解除とローカルファイル削除 | `esync rm docs/note.md --local` |
 | ユーザー情報を確認 | `esync whoami` |
 | ツールを更新 | `esync update` |
 

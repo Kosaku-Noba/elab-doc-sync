@@ -17,6 +17,7 @@
 | `esync entity-status show/set` | エンティティステータス操作 |
 | `esync list` | リモートのリソース/実験ノート一覧 |
 | `esync link <ID>` | 手動紐付け |
+| `esync rm <ファイルパス>` | 追跡解除（`--local` でローカルファイルも削除） |
 | `esync verify` | 整合性チェック |
 | `esync profile list/add/remove` | 接続プロファイル管理 |
 | `esync whoami` | 現在のユーザー情報 |
@@ -126,3 +127,22 @@ esync clone --url URL --entity TYPE --id ID [--dir DIR] [--no-verify]
 |---|---|
 | `--config PATH` | 設定ファイルパス（デフォルト: `.elab-sync.yaml`） |
 | `--version`, `-V` | バージョン表示 |
+
+## rm — 追跡解除
+
+```bash
+esync rm docs/note.md
+esync rm docs/a.md docs/b.md
+esync rm --id 42 --entity items
+esync rm --id 42 --id 43 --entity resources --target "T"
+esync rm docs/note.md --local
+esync rm --id 42 --entity experiments --local --dry-run
+```
+
+指定文書の ID の紐付けと同期ハッシュを削除し、以後の push・status の対象から継続的に除外します。通常の pull も解除した ID を取得しなくなります。リモートのデータは保持します。
+
+ローカルファイルは既定で保持し、`--local` 指定時だけ対象の Markdown ファイルを削除します。画像・添付ファイルは保持します。`--dry-run` は追跡解除と削除の予定を表示し、ファイルを変更しません。
+
+ファイルパスはカレントディレクトリ基準（絶対パスも可）です。ID 指定には `--entity` が必須で、`resources` は `items` と同じ意味です。複数ターゲットに一致する場合は `--target` で絞り込んでください。未追跡の指定を含む場合は変更せずエラーになります。ローカルファイルが既に消えていても、残っている追跡情報から解除できます。
+
+除外するファイル名はターゲットの `id_file` と同じディレクトリの `excluded.json` に保存します。同名ファイルを再作成しても除外は続きます。再び push 対象にするには、このリストから該当ファイル名を削除してください。既存リモートとの紐付けも戻す場合は `esync link <ID> --file <ファイル名> --target <ターゲット名>` を実行してください。明示的な `pull --id` や `link` は紐付けを作成できますが、除外リスト自体は解除しません。

@@ -1243,6 +1243,85 @@ def cmd_link(args):
         print(f"  ✅ [{target.title}] → {_entity_label(target.entity)} #{args.entity_id} を紐付けました")
 
 
+def cmd_rm(args):
+    """文書とリモートを保持し、指定文書を継続的に同期対象から外す。"""
+    def fail(message):
+        print(f"エラー: {message}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.id and not args.entity:
+        fail("--id 指定時は --entity も指定してください")
+    if args.entity and not args.id:
+        fail("--entity は --id と一緒に指定してください")
+    if not args.files and not args.id:
+        fail("ファイルパスまたは --id と --entity を指定してください")
+
+    config_path = Path(args.config).resolve()
+    config = load_config(config_path)
+    targets = [t for t in config.targets if not args.target or t.title == args.target]
+    if not targets:
+        fail(f"ターゲット '{args.target}' が見つかりません")
+    states = []
+    for target in targets:
+        syncer = _make_syncer(None, target, config_path.parent)
+        mapping = syncer._load_mapping(migrate=False)
+        excluded = syncer._load_excluded()
+        states.append((syncer, mapping, excluded, {}))
+
+    selectors = [("file", value) for value in args.files]
+    selectors += [("id", value) for value in (args.id or [])]
+    for kind, value in selectors:
+        matches = []
+        for index, (syncer, mapping, excluded, selected) in enumerate(states):
+            if kind == "id" and syncer.entity != _normalize_entity(args.entity):
+                continue
+            for name in mapping.keys() | excluded:
+                # 同期エンジンのキーはファイル名。状態ファイル由来の外部パスは扱わない。
+                if Path(name).name != name or name in ("", ".", ".."):
+                    continue
+                paths = [p for p in syncer.docs_dir.glob(syncer.target.pattern) if p.name == name]
+                if not paths:
+                    paths = [syncer.docs_dir / name]
+                if kind == "file":
+                    matching_paths = [p for p in paths if p.resolve() == Path(value).resolve()]
+                else:
+                    matching_paths = paths if mapping.get(name) == value else []
+                if matching_paths:
+                    if len(paths) > 1:
+                        fail(f"同名ファイルが複数あり追跡情報を特定できません: {name}")
+                    matches.append((index, name, matching_paths[0]))
+        if not matches:
+            fail(f"追跡対象が見つかりません: {value}")
+        if len({index for index, name, path in matches}) > 1:
+            fail(f"対象が複数のターゲットに存在します: {value}（--target で絞り込んでください）")
+        for index, name, path in matches:
+            states[index][3][name] = path
+
+    for syncer, mapping, excluded, selected in states:
+        if not selected:
+            continue
+        if args.local:
+            for name in selected:
+                path = selected[name]
+                if path.exists() and not path.is_file():
+                    fail(f"通常ファイルではありません: {path}")
+
+    for syncer, mapping, excluded, selected in states:
+        if not selected:
+            continue
+        if not args.dry_run:
+            syncer.untrack(set(selected), mapping)
+        for name in sorted(selected):
+            action = "追跡解除予定" if args.dry_run else "追跡解除しました"
+            print(f"  {action}: {selected[name]}")
+            if args.local:
+                path = selected[name]
+                if not args.dry_run:
+                    path.unlink(missing_ok=True)
+                action = "ファイル削除予定" if args.dry_run else "ファイル削除済み"
+                print(f"  {action}: {path}")
+
+
 def cmd_verify(args):
     """ローカルとリモートの整合性をチェックする。"""
     config_path = Path(args.config)
@@ -1551,6 +1630,12 @@ def main():
     link_parser.add_argument("entity_id", type=int, help="リモートエンティティ ID")
     link_parser.add_argument("--file", default=None, help="紐付けるローカルファイル名（each モード時）")
 
+    rm_parser = sub.add_parser("rm", help="文書を保持して追跡解除し、今後の同期から除外", parents=[common])
+    rm_parser.add_argument("files", nargs="*", help="解除するファイルパス（カレントディレクトリ基準、複数指定可）")
+    rm_parser.add_argument("--id", type=int, action="append", help="解除するリモート ID（複数指定可）")
+    rm_parser.add_argument("--entity", choices=["items", "experiments", "resources"], help="ID のエンティティ種別")
+    rm_parser.add_argument("--local", action="store_true", help="対象のローカル Markdown ファイルも削除する")
+
     sub.add_parser("verify", help="ローカルとリモートの整合性チェック", parents=[common])
 
     profile_parser = sub.add_parser("profile", help="接続プロファイルを管理", parents=[common])
@@ -1601,6 +1686,8 @@ def main():
         cmd_list(args)
     elif args.command == "link":
         cmd_link(args)
+    elif args.command == "rm":
+        cmd_rm(args)
     elif args.command == "verify":
         cmd_verify(args)
     elif args.command == "profile":

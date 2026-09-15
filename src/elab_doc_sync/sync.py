@@ -897,7 +897,7 @@ class EachDocsSyncer:
         self.mapping_file = (project_root / target.id_file).parent / "mapping.json"
         self.hash_dir = (project_root / target.id_file).parent
 
-    def _load_mapping(self) -> dict:
+    def _load_mapping(self, *, migrate: bool = True) -> dict:
         if self.mapping_file.exists():
             return json.loads(self.mapping_file.read_text(encoding="utf-8"))
         # マイグレーション: 旧共有 mapping.json からターゲット固有のエントリを分離
@@ -911,7 +911,8 @@ class EachDocsSyncer:
                     if (self.docs_dir / fname).exists():
                         migrated[fname] = eid
                 if migrated:
-                    self._save_mapping(migrated)
+                    if migrate:
+                        self._save_mapping(migrated)
                     return migrated
         return {}
 
@@ -1096,7 +1097,32 @@ class EachDocsSyncer:
             )
 
     def collect_files(self) -> list[Path]:
-        return sorted(self.docs_dir.glob(self.target.pattern))
+        excluded = self._load_excluded()
+        return sorted(f for f in self.docs_dir.glob(self.target.pattern)
+                      if f.name not in excluded)
+
+    def _load_excluded(self) -> set[str]:
+        path = self.hash_dir / "excluded.json"
+        if not path.exists():
+            return set()
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, list) or not all(isinstance(name, str) for name in data):
+            raise ValueError(f"除外情報の形式が不正です: {path}")
+        return set(data)
+
+    def untrack(self, filenames: set[str], mapping: dict) -> None:
+        """ローカル文書を保持して追跡解除し、今後の自動同期から除外する。"""
+        excluded = self._load_excluded() | filenames
+        self.hash_dir.mkdir(parents=True, exist_ok=True)
+        (self.hash_dir / "excluded.json").write_text(
+            json.dumps(sorted(excluded), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        self._save_mapping({name: eid for name, eid in mapping.items()
+                            if name not in filenames})
+        for filename in filenames:
+            for suffix in (".hash", ".remote_hash", ".meta_hash", ".assets_hash"):
+                (self.hash_dir / f"{filename}{suffix}").unlink(missing_ok=True)
 
     def dry_run(self) -> list[dict]:
         md_files = self.collect_files()
@@ -1127,6 +1153,8 @@ class EachDocsSyncer:
         """
         md_files = self.collect_files()
         if not md_files:
+            if self._load_excluded() and self.docs_dir.is_dir():
+                return 0
             raise FileNotFoundError(
                 f"{self.docs_dir} に {self.target.pattern} に一致するファイルがありません\n"
                 "→ docs_dir とパターンの設定を確認してください"

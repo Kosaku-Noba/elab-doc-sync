@@ -335,6 +335,7 @@ esync pull --id 42 --entity items --auto
 | `esync category list/show/set`      | カテゴリ操作                |
 | `esync profile list/add/remove`     | 接続プロファイル管理        |
 | `esync link <ID>`                   | 手動紐付け                  |
+| `esync rm <ファイルパス>`           | 追跡解除（`--local` でローカルファイルも削除） |
 | `esync verify`                      | 整合性チェック              |
 | `esync init`                        | 初期設定                    |
 | `esync update`                      | ツール更新                  |
@@ -431,3 +432,14 @@ uv run pytest -q -m "not integration"
 ## ライセンス
 
 MIT
+
+### 文書の追跡解除
+
+```bash
+esync rm docs/note.md                         # 文書を保持して同期対象から除外
+esync rm --id 42 --entity items               # リモート ID で指定
+esync rm docs/note.md --local                 # ローカル Markdown も削除
+esync rm docs/note.md --local --dry-run       # 実行前に確認
+```
+
+リモートのデータは保持します。解除したファイルは今後の push・status の対象から除外されます。複数指定や再登録方法は [CLI リファレンス](docs/05_CLI_REFERENCE.md#rm--追跡解除) を参照してください。
