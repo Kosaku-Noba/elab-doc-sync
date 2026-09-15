@@ -1244,7 +1244,7 @@ def cmd_link(args):
 
 
 def cmd_rm(args):
-    """文書とリモートを保持し、指定文書を継続的に同期対象から外す。"""
+    """継続的に追跡解除する。文書は既定で保持し、--local 指定時に削除する。"""
     def fail(message):
         print(f"エラー: {message}", file=sys.stderr)
         sys.exit(1)
@@ -1309,6 +1309,9 @@ def cmd_rm(args):
     for syncer, mapping, excluded, selected in states:
         if not selected:
             continue
+        if any(name in mapping for name in selected):
+            print("  注意: 解除する文書への相対リンクは、今後の push でリモート URL に変換されなくなります。"
+                  "参照元のリンクを eLabFTW の文書 URL に変更してください。")
         if not args.dry_run:
             syncer.untrack(set(selected), mapping)
         for name in sorted(selected):

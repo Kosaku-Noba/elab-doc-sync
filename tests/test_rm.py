@@ -142,3 +142,32 @@ def test_nested_document_local_deletion(project, selector):
     run(*selector, '--local')
     assert not (sub / 'note.md').exists()
     assert (project / 'docs/keep.md').exists()
+
+
+def test_relinked_excluded_document_is_not_renamed(project):
+    from elab_doc_sync.cli import cmd_link
+    from argparse import Namespace
+    run('docs/note.md')
+    with patch('elab_doc_sync.cli.ELabFTWClient') as client:
+        client.return_value.get_entity.return_value = {'body': 'remote'}
+        cmd_link(Namespace(config=str(project / '.elab-sync.yaml'), target='T',
+                           entity_id=42, file='note.md'))
+    (project / 'docs/new.md').write_text('new document')
+    cfg = load_config(project / '.elab-sync.yaml')
+    client = MagicMock()
+    client.base_url = 'https://example.invalid'
+    client.create_item.return_value = 99
+    syncer = EachDocsSyncer(client, cfg.targets[0], project)
+    syncer.sync(force=True)
+    mapping = syncer._load_mapping()
+    assert mapping['note.md'] == 42
+    assert mapping['new.md'] == 99
+    assert all(call.args[0] != 42 for call in client.update_item.call_args_list)
+
+
+def test_untrack_reports_link_migration(project, capsys):
+    (project / 'docs/keep.md').write_text('[note](note.md)')
+    run('docs/note.md', '--dry-run')
+    out = capsys.readouterr().out
+    assert '参照元のリンクを eLabFTW の文書 URL に変更' in out
+    assert out.index('相対リンク') < out.index('追跡解除予定')

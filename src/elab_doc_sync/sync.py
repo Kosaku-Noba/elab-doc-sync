@@ -938,7 +938,7 @@ class EachDocsSyncer:
         file_by_name = {f.name: f for f in md_files}
         mapped_files = set(mapping.keys())
 
-        missing = mapped_files - current_files  # mapping にあるがファイルが消えた
+        missing = mapped_files - current_files - self._load_excluded()
         new = current_files - mapped_files      # ファイルはあるが mapping に無い
 
         if not missing or not new:
