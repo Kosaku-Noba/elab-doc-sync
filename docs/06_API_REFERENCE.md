@@ -52,7 +52,7 @@
 
 | 関数 | 説明 |
 |---|---|
-| `_sync_tags(client, entity_type, entity_id, desired_tags)` | タグ追記同期（best-effort） |
+| `_sync_tags(client, entity_type, entity_id, desired_tags)` | 設定タグを追記し既存タグを保持。成功・追加不要なら `True`、取得・更新失敗なら `False`。タグなしのnull応答は空タグとして扱う。 |
 | `_sync_category(client, entity_type, entity_id, category)` | カテゴリ設定（best-effort） |
 | `_sync_attachments(attachments_dir, entity, entity_id, client, ...)` | 添付ファイルのサイズ差分同期 |
 | `_md_to_html(body)` | 数式保護付き Markdown → HTML 変換 |
