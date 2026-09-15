@@ -29,9 +29,9 @@ esync init
 | SSL 証明書検証 | — | yes |
 | ドキュメントディレクトリ | — | `docs/` |
 | ファイルパターン | — | `*.md` |
-| 同期モード | — | `merge` |
+| 同期モード | — | `each` 固定（質問しない） |
 | 送信先 | — | `items` |
-| タイトル（merge 時） | ✅ | — |
+
 
 完了すると `.elab-sync.yaml`、`.gitignore`、`README.md`、`docs/` が生成される。
 

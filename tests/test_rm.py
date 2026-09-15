@@ -149,7 +149,8 @@ def test_relinked_excluded_document_is_not_renamed(project):
     from argparse import Namespace
     run('docs/note.md')
     with patch('elab_doc_sync.cli.ELabFTWClient') as client:
-        client.return_value.get_entity.return_value = {'body': 'remote'}
+        client.return_value.base_url = 'https://example.invalid'
+        client.return_value.get_item.return_value = {'body': 'remote'}
         cmd_link(Namespace(config=str(project / '.elab-sync.yaml'), target='T',
                            entity_id=42, file='note.md'))
     (project / 'docs/new.md').write_text('new document')
@@ -157,12 +158,14 @@ def test_relinked_excluded_document_is_not_renamed(project):
     client = MagicMock()
     client.base_url = 'https://example.invalid'
     client.create_item.return_value = 99
+    client.get_item.return_value = {'body': 'remote'}
     syncer = EachDocsSyncer(client, cfg.targets[0], project)
     syncer.sync(force=True)
     mapping = syncer._load_mapping()
     assert mapping['note.md'] == 42
     assert mapping['new.md'] == 99
-    assert all(call.args[0] != 42 for call in client.update_item.call_args_list)
+    assert all('new document' not in call.kwargs.get('body', '') for call in client.update_item.call_args_list if call.args[0] == 42)
+    assert 'note.md' not in syncer._load_excluded()
 
 
 def test_untrack_reports_link_migration(project, capsys):

@@ -5,6 +5,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 import yaml
+from .safety import atomic_write
 
 
 # body_format の既定値:
@@ -69,7 +70,7 @@ class Config:
 
 def _abort(msg: str) -> None:
     print(f"エラー: {msg}", file=sys.stderr)
-    sys.exit(1)
+    sys.exit(2)
 
 
 def _parse_profiles(raw: dict) -> dict[str, ProfileConfig]:
@@ -99,7 +100,12 @@ def load_config(config_path: Path) -> Config:
             "→ 'elab-doc-sync init' で作成できます"
         )
 
-    raw = yaml.safe_load(_read_yaml_text(config_path))
+    try:
+        raw = yaml.safe_load(_read_yaml_text(config_path))
+    except yaml.YAMLError as exc:
+        _abort(f"YAMLの形式が不正です: {exc}")
+    if not isinstance(raw, dict):
+        _abort("設定ファイルはYAMLのマッピング形式で記述してください")
 
     # profiles セクションをパース
     profiles = _parse_profiles(raw)
@@ -152,13 +158,22 @@ def load_config(config_path: Path) -> Config:
             '  環境変数を設定してください: export ELABFTW_API_KEY="your_key"'
         )
 
+    targets_raw = raw.get("targets", [])
+    if not isinstance(targets_raw, list):
+        _abort("targetsはリスト形式で指定してください")
     targets = []
-    for t in raw.get("targets", []):
+    for t in targets_raw:
+        if not isinstance(t, dict) or not isinstance(t.get("docs_dir"), str) or not t["docs_dir"].strip():
+            _abort("各ターゲットにはdocs_dirが必要です")
         mode = t.get("mode", "each")
+        if mode != "each":
+            _abort("v1.0ではeachのみ対応します。merge設定の移行手順は docs/13_MIGRATION_V1.md を参照してください")
         entity = t.get("entity", "items")
         # resources は items のエイリアス（eLabFTW Web UI の表示名）
         if entity in ("resources", "resource"):
             entity = "items"
+        if entity not in ("items", "experiments"):
+            _abort("entityはitemsまたはexperimentsを指定してください")
         title = t.get("title", "")
         body_format = t.get("body_format", BODY_FORMAT_DEFAULT)
         if body_format not in ("md", "html"):
@@ -210,8 +225,9 @@ def get_client_for_target(config: Config, target: TargetConfig):
     # profile が明示的に指定されている場合はそれを優先
     if target.profile != "default":
         profile = config.profiles.get(target.profile)
-        if profile:
-            return profile.url, profile.api_key, profile.verify_ssl
+        if not profile:
+            raise ValueError(f"接続プロファイルが見つかりません: {target.profile}")
+        return profile.url, profile.api_key, profile.verify_ssl
 
     # team が指定されている場合、profiles から対応するものを探す
     if target.team is not None and config.profiles:
@@ -256,7 +272,7 @@ def update_target_in_yaml(config_path: Path, target_index: int, **fields) -> Non
     for k, v in fields.items():
         targets[target_index][k] = v
     content = yaml.dump(raw, default_flow_style=False, allow_unicode=True)
-    config_path.write_text(content, encoding="utf-8")
+    atomic_write(config_path, content)
 
 
 def append_target_to_yaml(config_path: Path, target_data: dict) -> None:
@@ -264,4 +280,4 @@ def append_target_to_yaml(config_path: Path, target_data: dict) -> None:
     raw = yaml.safe_load(_read_yaml_text(config_path)) or {}
     raw.setdefault("targets", []).append(target_data)
     content = yaml.dump(raw, default_flow_style=False, allow_unicode=True)
-    config_path.write_text(content, encoding="utf-8")
+    atomic_write(config_path, content)

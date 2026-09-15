@@ -38,12 +38,12 @@ esync [--dry-run] [--force] [-t TARGET] [--prune-attachments]
 | オプション | 説明 |
 |---|---|
 | `--dry-run` | 実際に送信せず変更予定を表示 |
-| `--force` | 差分・競合を無視して強制送信 |
+| `--force` | リモート本文を退避して強制送信。接続・取得エラーは無視しない |
 | `-t`, `--target` | 特定ターゲットのみ実行 |
 | `--prune-attachments` | リモートの不要添付を削除 |
 
 **push 処理フロー:**
-1. リネーム検出（ファイル名変更 → mapping 更新 + タイトル同期）
+1. 本文ハッシュが一致する一意なリネームを検出し、紐付けを更新（タイトル送信は競合確認後）
 2. パス1: 全ファイルの ID を確定（新規作成含む）
 3. パス2: リンク変換 + body 送信
    - 画像 → 動画 → ファイルリンク → ローカルリンク変換
@@ -51,14 +51,15 @@ esync [--dry-run] [--force] [-t TARGET] [--prune-attachments]
 ## pull
 
 ```bash
-esync pull [--id ID] [--entity TYPE] [--force] [--auto] [--dir DIR] [-t TARGET]
+esync pull [--id ID] [--entity TYPE] [--dry-run] [--force] [--auto] [--dir DIR] [-t TARGET]
 ```
 
 | オプション | 説明 |
 |---|---|
 | `--id` | 取得するエンティティ ID（複数指定可） |
 | `--entity` | `items` / `experiments`（--id 時は必須） |
-| `--force` | 既存ファイルを上書き |
+| `--force` | ローカルをバックアップして上書き。別文書との名前衝突は拒否 |
+| `--dry-run` | 取得予定を確認。設定・画像・状態ファイルも変更しない |
 | `--auto` | 振り分けを自動決定 |
 | `--dir` | 保存先ディレクトリを上書き |
 
@@ -110,7 +111,7 @@ mapping に登録済みの全ファイルについて、ローカルとリモー
 esync status [-t TARGET]
 ```
 
-各ファイルの同期状態（変更あり / 最新）とエンティティ ID を一覧表示。
+各ファイルの送信待ち・取得待ち・競合・最新・未追跡・基準情報なし・削除・確認失敗を表示します。リモートにも接続して確認します。未完了の同期と作成結果不明も区別します。
 
 ## clone
 
@@ -145,6 +146,29 @@ esync rm --id 42 --entity experiments --local --dry-run
 
 ファイルパスはカレントディレクトリ基準（絶対パスも可）です。ID 指定には `--entity` が必須で、`resources` は `items` と同じ意味です。複数ターゲットに一致する場合は `--target` で絞り込んでください。未追跡の指定を含む場合は変更せずエラーになります。ローカルファイルが既に消えていても、残っている追跡情報から解除できます。
 
-除外するファイル名はターゲットの `id_file` と同じディレクトリの `excluded.json` に保存します。同名ファイルを再作成しても除外は続きます。再び push 対象にするには、このリストから該当ファイル名を削除してください。既存リモートとの紐付けも戻す場合は `esync link <ID> --file <ファイル名> --target <ターゲット名>` を実行してください。明示的な `pull --id` や `link` は紐付けを作成できますが、除外リスト自体は解除しません。
+除外するファイル名は `id_file` の親ディレクトリの `excluded.json` に保存します。同名ファイルを再作成しても除外は続きます。`esync link <ID> --file <ファイル名> --target <ターゲット>` で既存記事との紐付けと追跡を再開できます。対応記事が存在しないと確認済みの場合は `esync link --new --file <ファイル名>` を使います。明示的な `pull --id` だけでは除外を解除しません。
 
 他文書から解除対象への相対リンク（例: `[note](note.md)`）は、対応表の削除後はリモート URL に変換されません。参照元を次に push する前に、保持された eLabFTW 文書の URL に書き換えてください。`rm` は実行時と dry-run 時にこの移行方法を表示します。
+
+## mv / backup / restore / link
+
+```bash
+esync mv docs/old.md docs/new.md --dry-run
+esync mv docs/old.md docs/new.md
+esync backup list
+esync restore <バックアップID> --dry-run
+esync restore <バックアップID>
+esync link 42 --file note.md --target docs --dry-run
+esync link 42 --file note.md --target docs
+esync link --new --file note.md --target docs
+```
+
+`mv` は同じターゲット内で文書と紐付けを移動します。リモートタイトルは次のpushで更新します。`link --file` は対象docs_dirからの相対パス、`mv` と `rm` はカレントディレクトリ基準です。`--target` は設定の `title` または `docs_dir` で指定できます。
+
+`restore` はバックアップに記録されたディレクトリ全体を復元し、復元直前もバックアップします。強制push前のリモート退避データはJSONで取り出します。リモート自体への復元は行いません。
+
+詳細・制約は [移行と復旧](13_MIGRATION_V1.md) を参照してください。
+
+## 終了コード
+
+同期系コマンドは成功・変更なしで0、競合・通信失敗・部分失敗で1、設定や引数の不正で2を返します。push/pullの出力には成功・スキップ・失敗件数を表示します。

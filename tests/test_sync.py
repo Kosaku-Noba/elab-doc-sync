@@ -93,7 +93,7 @@ def test_each_sync_multiple(tmp_path, mock_client):
     (docs / "a.md").write_text("A", encoding="utf-8")
     (docs / "b.md").write_text("B", encoding="utf-8")
     mock_client.create_item.side_effect = [10, 20]
-    mock_client.get_item.side_effect = [{"id": 10, "body": ""}, {"id": 20, "body": ""}]
+    mock_client.get_item.side_effect = lambda eid: {"id": eid, "body": ""}
     updated = syncer.sync()
     assert updated == 2
 
@@ -103,7 +103,9 @@ def test_each_sync_skip_unchanged(tmp_path, mock_client):
     syncer, docs = _make_each_syncer(tmp_path, mock_client)
     (docs / "a.md").write_text("A", encoding="utf-8")
     (docs / "b.md").write_text("B", encoding="utf-8")
+    syncer._save_mapping({"a.md": 10})
     syncer._save_hash("a.md", "A")
+    syncer._save_remote_hash("a.md", "")
     mock_client.create_item.return_value = 20
     mock_client.get_item.return_value = {"id": 20, "body": ""}
     updated = syncer.sync()
@@ -125,8 +127,9 @@ def test_each_conflict(tmp_path, mock_client):
     syncer._save_mapping({"a.md": 5})
     syncer._save_remote_hash("a.md", "<p>old</p>")
     mock_client.get_item.return_value = {"id": 5, "body": "<p>new</p>"}
-    with pytest.raises(ConflictError):
-        syncer.sync()
+    assert syncer.sync() == 0
+    assert syncer.failures == 1
+    mock_client.update_item.assert_not_called()
 
 
 # S-44
@@ -630,7 +633,7 @@ def test_each_body_format_html(tmp_path, mock_client):
     mock_client.get_item.return_value = {"id": 1, "body": "<h1>hello</h1>"}
     syncer.sync()
     call_kwargs = mock_client.update_item.call_args[1]
-    assert "content_type" not in call_kwargs
+    assert call_kwargs["content_type"] == 1
     assert "<h1" in call_kwargs["body"]
 
 
@@ -1213,7 +1216,8 @@ def test_detect_renames_single(tmp_path):
     client = MagicMock()
     syncer = EachDocsSyncer(client, target, tmp_path)
 
-    # 旧名でマッピングがある状態
+    # 同期済み本文のハッシュが一致するときだけ自動判定する。
+    syncer._save_hash("old_name.md", "# content")
     mapping = {"old_name.md": 42}
     syncer._save_mapping(mapping)
 
@@ -1223,8 +1227,8 @@ def test_detect_renames_single(tmp_path):
     assert "new_name.md" in result
     assert "old_name.md" not in result
     assert result["new_name.md"] == 42
-    # eLabFTW のタイトルが更新されたことを確認
-    client.update_item.assert_called_once_with(42, title="new_name")
+    # タイトル更新は通常pushの競合確認後に行う。
+    client.update_item.assert_not_called()
 
 
 # RENAME-02: 複数同時リネームは警告のみ（mapping は変更しない）
@@ -1246,13 +1250,10 @@ def test_detect_renames_multiple_warns(tmp_path, capsys):
 
     mapping = {"a_old.md": 1, "b_old.md": 2}
     md_files = [docs_dir / "a_new.md", docs_dir / "b_new.md"]
-    result = syncer._detect_renames(mapping, md_files, "リソース")
-
-    # mapping は変更されない
-    assert "a_old.md" in result
-    assert "b_old.md" in result
-    out = capsys.readouterr().out
-    assert "複数ファイルのリネーム" in out
+    with pytest.raises(ConflictError, match="対応が不明"):
+        syncer._detect_renames(mapping, md_files, "リソース")
+    assert mapping == {"a_old.md": 1, "b_old.md": 2}
+    client.update_item.assert_not_called()
 
 
 # RENAME-03: リネームなし（新規ファイル追加のみ）の場合は何もしない
@@ -1321,12 +1322,9 @@ def test_detect_renames_with_edit(tmp_path):
 
     mapping = {"old_name.md": 42}
     md_files = [docs_dir / "new_name.md"]
-    result = syncer._detect_renames(mapping, md_files, "リソース")
-
-    # mapping は更新される
-    assert "new_name.md" in result
-    assert result["new_name.md"] == 42
-    # タイトルの即時更新は行われない（通常syncフローに委ねる）
+    with pytest.raises(ConflictError, match="対応が不明"):
+        syncer._detect_renames(mapping, md_files, "リソース")
+    assert mapping == {"old_name.md": 42}
     client.update_item.assert_not_called()
 
 

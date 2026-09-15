@@ -34,14 +34,12 @@ eLabFTW の URL: https://<eLabFTWへのURL>/
 SSL 証明書を検証しますか？ [Y/n]: n
 Markdown ファイルを置くディレクトリ（空欄で docs/）:<好きな場所>
 同期する Markdown のファイルパターン（空欄で *.md）:
-同期モード — each: 1ファイル=1ノート / merge(非推奨): 全ファイルを1つに結合 [each]:
 送信先 — items(resources): リソース / experiments: 実験ノート [items]:
 送信形式 — md: Markdown のまま / html: HTML に変換 [md]:
-eLabFTW リソースのタイトル:
 
 ```
 
-URL、同期モード、送信先を聞かれるので順に答えると `.elab-sync.yaml` が生成されます。
+URL、保存先、送信先を聞かれるので順に答えると `.elab-sync.yaml` が生成されます。
 
 ### API キーを設定する
 
@@ -276,24 +274,34 @@ $$\frac{\partial f}{\partial x} = 2x + 1$$
 - 対象: `.md` ファイルへのリンクのみ（画像、外部URL、アンカーリンクはスキップ）
 - リンク先が同期済み（mapping に存在する）場合のみ変換。未同期のリンクはそのまま残る
 - フラグメント（`#section`）は保持される
-- `merge` モードでは非対応（1ファイル=1エンティティの対応関係がないため）
 
-### ファイル名を変えて eLabFTW のタイトルも変えたい
-
-`each` モードでは、ファイル名の変更を自動検出して eLabFTW のタイトルも更新します:
+### ファイル名を変える
 
 ```bash
-mv docs/旧タイトル.md docs/新タイトル.md
-esync
+esync mv docs/旧タイトル.md docs/新タイトル.md
+esync push
 ```
 
-```
-  [新タイトル] リネーム検出: 旧タイトル.md → 新タイトル.md（リソース #42 のタイトルを更新）
+紐付けを保持して移動し、次のpushでタイトルを更新します。自動検出は本文ハッシュが一致し、対応が一意な場合だけ行います。本文編集も伴う移動は `esync mv` を使ってください。
+
+### 競合を確認・復旧する
+
+```bash
+esync status
+esync diff
+esync pull --dry-run
+esync backup list
+esync restore <バックアップID> --dry-run
+esync restore <バックアップID>
 ```
 
-**制約:**
-- 一度に 1 ファイルずつリネームしてください。複数ファイルを同時にリネームすると対応関係が不明になり、警告が出ます
-- ファイル名変更と同時に内容も編集した場合は、リネームとして扱われ通常の sync で本文も更新されます
+通常のpullはローカル未編集の文書を更新します。両側が変更された場合は停止し、ローカルだけの変更は保持します。上書き・削除・移動前にバックアップを保存し、復元直前の状態も退避します。
+
+`pull --force` はローカルを退避して上書きします。`push --force` はリモート本文を退避して上書きします。リモート本文の退避データは復元時にJSONへ取り出し、確認後に手動で反映します。
+
+追跡解除した文書は `esync link <ID> --file <ファイル名>` で追跡再開できます。複数ターゲットでは `--target <名前またはdocs_dir>` を指定してください。
+
+移行・復元範囲・途中失敗の扱いは [v1.0への移行と復旧](docs/13_MIGRATION_V1.md) を参照してください。
 
 ---
 
@@ -324,10 +332,7 @@ esync pull --id 42 --entity items --auto
 
 ## 同期モード
 
-| モード    | 動作                                    | 使いどころ                           |
-| --------- | --------------------------------------- | ------------------------------------ |
-| `merge` | 複数 md を結合して 1 エンティティに送信 | プロジェクトドキュメントをまとめたい |
-| `each`  | 1 ファイル = 1 エンティティ             | 実験ノートを個別に管理したい         |
+`each`（1ファイル＝1記事）のみ対応します。旧 `merge` 設定は [移行手順](docs/13_MIGRATION_V1.md#mergeを使っていた場合) に従って変更してください。
 
 ---
 
@@ -347,6 +352,9 @@ esync pull --id 42 --entity items --auto
 | `esync profile list/add/remove`     | 接続プロファイル管理        |
 | `esync link <ID>`                   | 手動紐付け                  |
 | `esync rm <ファイルパス>`           | 追跡解除（`--local` でローカルファイルも削除） |
+| `esync mv <旧パス> <新パス>` | 文書と紐付けを移動 |
+| `esync backup list` | バックアップ一覧 |
+| `esync restore <ID>` | ローカル復元・リモート退避データの取り出し |
 | `esync verify`                      | 整合性チェック              |
 | `esync init`                        | 初期設定                    |
 | `esync update`                      | ツール更新                  |
@@ -386,9 +394,9 @@ profiles:
 | キー                    | 必須      | デフォルト  | 説明                                               |
 | ----------------------- | --------- | ----------- | -------------------------------------------------- |
 | `docs_dir`            | ✅        | —          | Markdown ディレクトリ                              |
-| `title`               | merge時✅ | —          | エンティティのタイトル                             |
+| `title` | — | 空文字 | CLIでターゲットを指定する名前。記事タイトルはファイル名から決定 |
 | `pattern`             | —        | `*.md`    | Glob パターン                                      |
-| `mode`                | —        | `merge`   | `merge` / `each`                               |
+| `mode` | — | `each` | 1ファイル＝1記事 |
 | `entity`              | —        | `items`   | `items` / `experiments`                        |
 | `profile`             | —        | `default` | 使用する接続プロファイル                           |
 | `tags`                | —        | `[]`      | push 時に自動追加するタグ（pull 振り分けにも使用） |
@@ -407,7 +415,7 @@ profiles:
 | `API キーが設定されていません` | `.elab-sync.yaml` の api_key を確認  |
 | `設定ファイルが見つかりません` | `esync init` を実行                  |
 | `ファイルがありません`         | `docs_dir` に `.md` ファイルを置く |
-| タイムアウト                     | 自動で1回リトライされます              |
+| タイムアウト | 状態と未完了記録を確認して再実行。記事の作成結果が不明ならlist/linkで確認 |
 
 ### `esync update` したのにバージョンが古いまま
 
@@ -432,6 +440,8 @@ uv sync
 ---
 
 ## 開発
+
+検証結果と正式リリース条件は [リリース検証](docs/14_RELEASE_VALIDATION.md) を参照してください。
 
 ```bash
 git clone https://github.com/Kosaku-Noba/elab-doc-sync.git

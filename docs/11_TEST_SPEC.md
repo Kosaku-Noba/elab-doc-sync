@@ -4,23 +4,27 @@
 
 ## 1. 概要
 
-elab-doc-sync v0.4.1 の全機能に対するユニットテスト・統合テストの仕様。
-eLabFTW API への通信は全て mock し、ファイルシステム操作は `tmp_path` を使用する。
+単体・CLIテストはAPI通信をモックし、`tmp_path` の独立したファイルシステムを使用します。`test_v1.py` では更新内容を保持する擬似サーバーで、操作をまたぐ状態遷移と復旧を検証します。
 
-テストフレームワーク: `pytest`
-モック: `unittest.mock` (`patch`, `MagicMock`)
-ディレクトリ: `tests/`
+```bash
+UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q
+```
 
-## 2. テスト対象モジュールとテストファイル
+実機テストは `test_integration.py` で分離し、テストキー未設定時はスキップします。実行すると一時的な記事・添付を作成し、終了時に削除します。
 
-| モジュール | テストファイル | テスト数 | 概要 |
-|---|---|---|---|
-| `config.py` | `tests/test_config.py` | 18 | 設定ファイルの読み込み・バリデーション |
-| `client.py` | `tests/test_client.py` | 40 | API クライアントのリクエスト構築・レスポンス処理 |
-| `sync.py` | `tests/test_sync.py` | 100 | merge/each 同期ロジック・ハッシュ管理・競合検出 |
-| `sync_log.py` | `tests/test_sync_log.py` | 13 | JSONL ログの記録・読み取り・表示 |
-| `cli.py` | `tests/test_cli.py` | 108 | CLI コマンドの統合テスト |
-| **合計** | | **279** | |
+## 2. v1.0の受け入れシナリオ
+
+- ローカルのみ・リモートのみ・両側変更と、タイトルだけの変更。
+- 本文・画像・添付・文書間リンク・フラグメント・数式の往復同期。
+- 401/403/404/429/500/タイムアウトでの重複作成防止。
+- POST結果不明、PATCH前後の通信切断、部分成功と再開。
+- 上書き前バックアップ、復元、復元の取消、破損バックアップ、シンボリックリンク拒否。
+- 原子的保存の失敗、同時実行、ローカル操作途中の中断と復旧。
+- 読み取りコマンドとdry-runの無変更保証。
+- mv、rm→link→新規文書追加、復元後に過去の作成IDを忘れないこと。
+- 旧ハッシュ・mappingの移行、複数接続先の同一ID、merge拒否、終了コード。
+
+環境別の最新結果は [リリース検証](14_RELEASE_VALIDATION.md) に記録します。以下のカテゴリは既存テストの分類です。
 
 ## 3. テストカテゴリ
 
@@ -50,7 +54,7 @@ eLabFTW API への通信は全て mock し、ファイルシステム操作は `
 ### 3.3 test_sync.py (100 tests)
 
 - ユーティリティ関数（_compute_hash, _count_local_images, _md_to_html）
-- DocsSyncer（collect_docs, has_changed, save_hash, sync 新規/更新/スキップ/force）
+- 同期状態・ハッシュ管理（新規/更新/スキップ/force）
 - EachDocsSyncer（複数ファイル同期、一部スキップ、mapping.json）
 - 画像アップロード（_rewrite_images: 正常/http URL スキップ/ファイル不在/フォールバック）
 - 競合検出（remote_hash なし/一致/不一致/force バイパス）
@@ -69,7 +73,7 @@ eLabFTW API への通信は全て mock し、ファイルシステム操作は `
 ### 3.5 test_cli.py (108 tests)
 
 - cmd_sync（push 正常/dry-run/force/ターゲット指定/ConflictError）
-- cmd_pull（each/merge/ID指定/既存スキップ/force/自動振り分け/--auto）
+- cmd_pull（each/ID指定/既存スキップ/force/自動振り分け/--auto）
 - cmd_clone（正常/複数ID/既存ディレクトリ/全件失敗/gitignore/API キー未設定）
 - cmd_log（正常/limit）
 - cmd_init（正常/既存ファイル/テンプレート展開）

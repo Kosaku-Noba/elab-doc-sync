@@ -18,7 +18,7 @@ def _write_config(tmp_path, data):
 def _base_data(**overrides):
     d = {
         "elabftw": {"url": "https://elab.example.com", "api_key": "key123", "verify_ssl": False},
-        "targets": [{"title": "T", "docs_dir": "docs/", "mode": "merge", "entity": "items"}],
+        "targets": [{"title": "T", "docs_dir": "docs/", "mode": "each", "entity": "items"}],
     }
     d.update(overrides)
     return d

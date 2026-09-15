@@ -64,7 +64,7 @@ def docs_dir(tmp_path):
 def sample_config_path(tmp_path):
     data = {
         "elabftw": {"url": "https://elab.example.com", "api_key": "test-key", "verify_ssl": False},
-        "targets": [{"title": "Test", "docs_dir": "docs/", "pattern": "*.md", "mode": "merge", "entity": "items"}],
+        "targets": [{"title": "Test", "docs_dir": "docs/", "pattern": "*.md", "mode": "each", "entity": "items"}],
     }
     p = tmp_path / ".elab-sync.yaml"
     p.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")

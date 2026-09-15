@@ -21,7 +21,7 @@ uv tool install --force git+https://github.com/Kosaku-Noba/elab-doc-sync.git
 esync init
 ```
 
-eLabFTW の URL、同期モード、送信先を聞かれるので入力してください。
+eLabFTW の URL、保存先、送信先を聞かれるので入力してください。
 
 ### ③ API キーを設定
 
@@ -57,6 +57,11 @@ uv run esync
 | eLabFTW → ローカルに取得 | `esync pull --id 42 --entity items` |
 | 複数 ID を一括取得 | `esync pull --id 42 --id 43 --entity items` |
 | 実験ノートとして取得 | `esync pull --id 42 --entity experiments` |
+| 文書と紐付けを移動 | `esync mv docs/old.md docs/new.md` |
+| バックアップ一覧 | `esync backup list` |
+| 復元内容の確認 | `esync restore <ID> --dry-run` |
+| ローカル復元 | `esync restore <ID>` |
+| 追跡再開 | `esync link 42 --file note.md` |
 | 差分を確認 | `esync diff` |
 | 同期状態を確認 | `esync status` |
 | 実行せずにプレビュー | `esync --dry-run` |
@@ -78,7 +83,6 @@ uv run esync
 
 | モード | 動作 | 設定例 |
 |---|---|---|
-| `merge`（デフォルト） | 複数 md を結合して 1 つのリソースに送信 | `mode: merge` |
 | `each` | 各 md を個別のリソース/実験ノートとして送信 | `mode: each` |
 
 ## 困ったとき
@@ -95,3 +99,13 @@ uv run esync
 
 - 全コマンドの詳細: [CLI リファレンス](https://github.com/Kosaku-Noba/elab-doc-sync/blob/main/docs/05_CLI_REFERENCE.md)
 - 設定ファイルの全オプション: [設定ファイル仕様](https://github.com/Kosaku-Noba/elab-doc-sync/blob/main/docs/04_CONFIGURATION.md)
+
+## 安全な同期と復旧
+
+通常のpullはローカル未編集なら更新し、両側変更時は停止します。競合時は `esync diff` で確認してください。失敗・競合は終了コード1、設定・引数不正は2です。
+
+上書き前のバックアップは `.elab-sync-backups/` に保存します。復元単位はバックアップに記録されたディレクトリ全体で、復元直前の状態も保存します。`push --force` 前のリモート本文はJSONで退避し、restoreで取り出します。リモートへの反映は手動です。
+
+`.elab-sync.yaml`、`.elab-sync-ids/`、`.elab-sync-backups/`、`.elab-sync-operations/`、`.elab-sync-recovery.json` はGit管理対象外にしてください。作成結果不明と表示された場合は、サーバーを確認して `link` で紐付けます。対応記事が存在しないと確認できた場合だけ `link --new --file note.md` で新規作成を再開します。
+
+[旧版からの移行と復旧の詳細](https://github.com/Kosaku-Noba/elab-doc-sync/blob/main/docs/13_MIGRATION_V1.md)

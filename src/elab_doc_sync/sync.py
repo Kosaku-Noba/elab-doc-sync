@@ -1,3 +1,4 @@
+from .safety import atomic_write, write_json, safe_path, snapshot, local_transaction
 """Diff-based docs-to-eLabFTW sync with image upload and attachment support.
 
 CLI tool — not intended for use as a library.
@@ -119,11 +120,13 @@ def _parse_image_local_name(filename: str) -> str | None:
     return None
 
 
-def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path) -> str:
+def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, strict: bool = False) -> str:
     """Markdown 内の eLabFTW 画像 URL をローカルにダウンロードし相対パスに書き換える。"""
     try:
         uploads = client.list_uploads(entity, entity_id)
     except Exception as e:
+        if strict:
+            raise
         print(f"    ⚠ 添付ファイル一覧の取得に失敗（{entity} #{entity_id}、画像のローカル化をスキップ）: {e}")
         return body
     upload_map = {}
@@ -162,14 +165,14 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
         local_name = _image_local_name(entity, entity_id, real_name)
         img_dir = docs_dir / "images"
         img_dir.mkdir(parents=True, exist_ok=True)
-        dest = img_dir / local_name
-        if not dest.exists():
+        dest = safe_path(img_dir, local_name)
+        if strict or not dest.exists():
             data = client.download_upload(
                 entity_type=entity,
                 entity_id=entity_id,
                 upload_id=matched_upload["id"],
             )
-            dest.write_bytes(data)
+            atomic_write(dest, data)
             print(f"    画像をダウンロード: {real_name}")
         return f"![{alt}](images/{local_name})"
 
@@ -223,7 +226,7 @@ def _compute_file_hash(filepath: Path) -> str:
     return h.hexdigest()
 
 
-def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path) -> str:
+def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False) -> str:
     """Markdown 内のローカル画像を eLabFTW にアップロードし URL に書き換える。
 
     upload_file はファイルパスの basename を real_name としてリモートに保存する。
@@ -247,7 +250,8 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
         for entries in existing.values():
             entries.sort(key=lambda e: e.get("id") or 0)
     except Exception:
-        pass
+        if strict:
+            raise
 
     tmp_dirs: list[str] = []
     stale_ids: list[int] = []
@@ -263,6 +267,8 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
         if not img_path.exists():
             img_path = (project_root / src).resolve()
         if not img_path.exists():
+            if strict:
+                raise FileNotFoundError(f"画像が見つかりません: {src}")
             print(f"    ⚠ 画像が見つかりません: {src}")
             return m.group(0)
         real_name = _parse_image_local_name(img_path.name) or img_path.name
@@ -275,6 +281,8 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
             if e["size"] and e["size"] == local_size:
                 # リモートのハッシュフィールドがあれば使う、なければサイズ一致で再利用
                 remote_hash = e.get("hash")
+                if strict and not remote_hash and e.get("id") is not None:
+                    remote_hash = hashlib.sha256(client.download_upload(entity_type=entity, entity_id=entity_id, upload_id=e["id"])).hexdigest()
                 if remote_hash and remote_hash != local_hash:
                     continue
                 reuse = e
@@ -303,13 +311,15 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
                     stale_ids.append(e["id"])
             print(f"    ✓ {real_name}")
             return f"![{alt}]({result['url']})"
+        if strict:
+            raise RuntimeError(f"アップロード失敗: {real_name}")
         print(f"    ✗ アップロード失敗: {real_name}")
         return m.group(0)
 
     try:
         result = IMAGE_RE.sub(replace_match, body)
         # アップロード成功後に古い添付を削除（失敗しても本文は壊さない）
-        for uid in stale_ids:
+        for uid in ([] if strict else stale_ids):
             try:
                 client.delete_upload(entity, entity_id, uid)
             except Exception:
@@ -369,18 +379,20 @@ def _rewrite_local_links(body: str, entity: str, base_url: str,
         # 外部 URL、アンカーリンク、非 .md ファイルはスキップ
         if href.startswith(("http://", "https://", "#", "mailto:")):
             return m.group(0)
-        if not href.endswith(".md"):
+        link_path, sep, fragment = href.partition("#")
+        if not link_path.endswith(".md"):
             return m.group(0)
+        fragment_suffix = sep + fragment
 
         # パスからファイル名を抽出
-        target_filename = Path(href).name
+        target_filename = Path(link_path).name
 
         # 1. 同じターゲット内の mapping を検索
         eid = mapping.get(target_filename)
         target_entity = entity
         if eid is not None:
             page = _ENTITY_TO_PAGE[target_entity]
-            url = f"{base_url}/{page}.php?mode=view&id={eid}"
+            url = f"{base_url}/{page}.php?mode=view&id={eid}{fragment_suffix}"
             return f"[{text}]({url})"
 
         # 2. 他のターゲットの mapping を検索
@@ -389,7 +401,7 @@ def _rewrite_local_links(body: str, entity: str, base_url: str,
                 eid = other_mapping.get(target_filename)
                 if eid is not None:
                     page = _ENTITY_TO_PAGE[other_entity]
-                    url = f"{base_url}/{page}.php?mode=view&id={eid}"
+                    url = f"{base_url}/{page}.php?mode=view&id={eid}{fragment_suffix}"
                     return f"[{text}]({url})"
 
         # 解決できないリンクはそのまま残す
@@ -477,7 +489,7 @@ def _is_video(filename: str) -> bool:
     return Path(filename).suffix.lower() in VIDEO_EXTENSIONS
 
 
-def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path) -> str:
+def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False) -> str:
     """Markdown 内の動画リンクを eLabFTW にアップロードし <video> タグに書き換える。
 
     対象:
@@ -501,7 +513,8 @@ def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClien
         for entries in existing.values():
             entries.sort(key=lambda e: e.get("id") or 0)
     except Exception:
-        pass
+        if strict:
+            raise
 
     stale_ids: list[int] = []
 
@@ -515,6 +528,8 @@ def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClien
         if not video_path.exists():
             video_path = (project_root / src).resolve()
         if not video_path.exists():
+            if strict:
+                raise FileNotFoundError(f"動画が見つかりません: {src}")
             print(f"    ⚠ 動画が見つかりません: {src}")
             return full_match
 
@@ -523,6 +538,10 @@ def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClien
         local_size = video_path.stat().st_size
 
         reuse = next((e for e in entries if e["size"] and e["size"] == local_size), None)
+        if reuse and strict:
+            actual = client.download_upload(entity_type=entity, entity_id=entity_id, upload_id=reuse["id"])
+            if hashlib.sha256(actual).hexdigest() != _compute_file_hash(video_path):
+                reuse = None
         if reuse:
             for e in entries:
                 if e is not reuse and e.get("id") is not None:
@@ -538,6 +557,8 @@ def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClien
                     stale_ids.append(e["id"])
             print(f"    ✓ {real_name}")
             return f'<video src="{result["url"]}" controls>{alt}</video>'
+        if strict:
+            raise RuntimeError(f"アップロード失敗: {real_name}")
         print(f"    ✗ アップロード失敗: {real_name}")
         return full_match
 
@@ -563,7 +584,7 @@ def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClien
         replacement = _process_video_match(alt, src, full)
         result = result[:start] + replacement + result[end:]
 
-    for uid in stale_ids:
+    for uid in ([] if strict else stale_ids):
         try:
             client.delete_upload(entity, entity_id, uid)
         except Exception:
@@ -585,7 +606,7 @@ def _count_local_videos(body: str) -> int:
     return count
 
 
-def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path) -> str:
+def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False) -> str:
     """Markdown 内の非画像・非動画ファイルリンクを eLabFTW にアップロードし URL に書き換える。
 
     対象:
@@ -611,23 +632,26 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
         for entries in existing.values():
             entries.sort(key=lambda e: e.get("id") or 0)
     except Exception:
-        pass
+        if strict:
+            raise
 
     stale_ids: list[int] = []
 
     def _process_file_match(alt: str, src: str, full_match: str) -> str:
-        if src.startswith(("http://", "https://")):
+        if src.startswith(("http://", "https://", "#", "mailto:", "data:")):
             return full_match
         if _is_image(src) or _is_video(src):
             return full_match
         # .md ファイルはファイル間リンク変換で処理するためスキップ
-        if src.endswith(".md"):
+        if src.split("#", 1)[0].endswith(".md"):
             return full_match
 
         file_path = (docs_dir / src).resolve()
         if not file_path.exists():
             file_path = (project_root / src).resolve()
         if not file_path.exists():
+            if strict:
+                raise FileNotFoundError(f"ファイルが見つかりません: {src}")
             print(f"    ⚠ ファイルが見つかりません: {src}")
             return full_match
 
@@ -636,6 +660,10 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
         local_size = file_path.stat().st_size
 
         reuse = next((e for e in entries if e["size"] and e["size"] == local_size), None)
+        if reuse and strict:
+            actual = client.download_upload(entity_type=entity, entity_id=entity_id, upload_id=reuse["id"])
+            if hashlib.sha256(actual).hexdigest() != _compute_file_hash(file_path):
+                reuse = None
         if reuse:
             for e in entries:
                 if e is not reuse and e.get("id") is not None:
@@ -651,6 +679,8 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
                     stale_ids.append(e["id"])
             print(f"    ✓ {real_name}")
             return f'[{alt}]({result["url"]})'
+        if strict:
+            raise RuntimeError(f"アップロード失敗: {real_name}")
         print(f"    ✗ アップロード失敗: {real_name}")
         return full_match
 
@@ -658,11 +688,11 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
     matches: list[tuple[int, int, str, str, str]] = []
     for m in IMAGE_RE.finditer(body):
         src = m.group(2)
-        if not src.startswith(("http://", "https://")) and not _is_image(src) and not _is_video(src) and not src.endswith(".md"):
+        if not src.startswith(("http://", "https://", "#", "mailto:", "data:")) and not _is_image(src) and not _is_video(src) and not src.split("#", 1)[0].endswith(".md"):
             matches.append((m.start(), m.end(), m.group(1), src, m.group(0)))
     for m in _LINK_RE.finditer(body):
         src = m.group(2)
-        if not src.startswith(("http://", "https://")) and not _is_image(src) and not _is_video(src) and not src.endswith(".md"):
+        if not src.startswith(("http://", "https://", "#", "mailto:", "data:")) and not _is_image(src) and not _is_video(src) and not src.split("#", 1)[0].endswith(".md"):
             matches.append((m.start(), m.end(), m.group(1), src, m.group(0)))
 
     matches.sort(key=lambda x: x[0])
@@ -678,7 +708,7 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
         replacement = _process_file_match(alt, src, full)
         result = result[:start] + replacement + result[end:]
 
-    for uid in stale_ids:
+    for uid in ([] if strict else stale_ids):
         try:
             client.delete_upload(entity, entity_id, uid)
         except Exception:
@@ -691,11 +721,11 @@ def _count_local_file_links(body: str) -> int:
     count = 0
     for m in IMAGE_RE.finditer(body):
         src = m.group(2)
-        if not src.startswith(("http://", "https://")) and not _is_image(src) and not _is_video(src) and not src.endswith(".md"):
+        if not src.startswith(("http://", "https://", "#", "mailto:", "data:")) and not _is_image(src) and not _is_video(src) and not src.split("#", 1)[0].endswith(".md"):
             count += 1
     for m in _LINK_RE.finditer(body):
         src = m.group(2)
-        if not src.startswith(("http://", "https://")) and not _is_image(src) and not _is_video(src) and not src.endswith(".md"):
+        if not src.startswith(("http://", "https://", "#", "mailto:", "data:")) and not _is_image(src) and not _is_video(src) and not src.split("#", 1)[0].endswith(".md"):
             count += 1
     return count
 
@@ -706,7 +736,7 @@ def _count_local_attachments(attachments_dir: Path | None) -> int:
     return sum(1 for f in attachments_dir.iterdir() if f.is_file() and not _is_image(f.name))
 
 
-def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int, client: ELabFTWClient, *, force: bool = False, pattern: str = "*", prune: bool = False) -> bool:
+def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int, client: ELabFTWClient, *, force: bool = False, pattern: str = "*", prune: bool = False, strict: bool = False) -> bool:
     """attachments_dir 内の非画像ファイルをリモートにアップロードする。
 
     差分検知: サイズ一致 → リモートに hash/sha256 フィールドがあれば
@@ -736,7 +766,8 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
         for entries in existing.values():
             entries.sort(key=lambda e: e.get("id") or 0)
     except Exception:
-        pass
+        if strict:
+            raise
 
     all_success = True
     for f in local_files:
@@ -748,6 +779,8 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
             for e in entries:
                 if int(e.get("filesize", 0) or 0) == local_size:
                     remote_hash = e.get("hash") or e.get("sha256")
+                    if strict and not remote_hash and e.get("id") is not None:
+                        remote_hash = hashlib.sha256(client.download_upload(entity_type=entity, entity_id=entity_id, upload_id=e["id"])).hexdigest()
                     if remote_hash and remote_hash != local_hash:
                         continue
                     reuse = e
@@ -765,7 +798,7 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
                 print(f"    ✗ アップロード失敗: {f.name}")
                 stale = []
                 all_success = False
-        for e in stale:
+        for e in ([] if strict else stale):
             try:
                 client.delete_upload(entity, entity_id, e["id"])
             except Exception:
@@ -788,7 +821,7 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
     return all_success
 
 
-def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, attachments_dir: Path) -> None:
+def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, attachments_dir: Path, strict: bool = False) -> None:
     """リモートの非画像添付ファイルをローカルにダウンロードする。
 
     書き込みはテンポラリファイル経由で行い、既存ファイルの部分破損を防ぐ。
@@ -798,6 +831,8 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
     try:
         uploads = client.list_uploads(entity, entity_id)
     except Exception as e:
+        if strict:
+            raise
         print(f"    ⚠ 添付ファイル一覧の取得に失敗: {e}")
         return
     attachments_dir.mkdir(parents=True, exist_ok=True)
@@ -810,7 +845,7 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
         if not safe_name or safe_name in (".", ".."):
             print(f"    ⚠ 不正なファイル名をスキップ: {rn!r}")
             continue
-        dest = attachments_dir / safe_name
+        dest = safe_path(attachments_dir, safe_name)
         remote_size = int(u.get("filesize", 0) or 0)
         if dest.exists() and remote_size:
             local_size = dest.stat().st_size
@@ -821,7 +856,7 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
                     local_hash = _compute_file_hash(dest)
                     if local_hash == remote_hash:
                         continue
-                else:
+                elif not strict:
                     continue
         try:
             overwriting = dest.exists()
@@ -852,6 +887,8 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
                 print(f"    ⚠ 上書き: {safe_name}（{entity} #{entity_id} の添付で既存ファイルを置換）")
             print(f"    添付ファイルをダウンロード: {safe_name}")
         except Exception as e:
+            if strict:
+                raise
             print(f"    ⚠ 添付ファイルのダウンロードに失敗: {safe_name}: {e}")
 
 
@@ -859,7 +896,7 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
 def _sync_tags(client: ELabFTWClient, entity_type: str, entity_id: int, desired_tags: list[str]) -> None:
     """設定のタグをリモートに追記する（既存タグは外さない）。best-effort。"""
     if not desired_tags:
-        return
+        return True
     try:
         remote = client.get_tags(entity_type, entity_id)
         remote_names = {(t.get("tag") if isinstance(t, dict) else str(t)) for t in remote}
@@ -870,12 +907,14 @@ def _sync_tags(client: ELabFTWClient, entity_type: str, entity_id: int, desired_
         import logging
         logging.getLogger(__name__).debug("タグ同期失敗", exc_info=True)
         print(f"    ⚠ タグ同期に失敗しました（本文の同期は成功しています）")
+        return False
+    return True
 
 
 def _sync_category(client: ELabFTWClient, entity_type: str, entity_id: int, category) -> None:
     """設定のカテゴリをリモートに設定する。best-effort。"""
     if category is None:
-        return
+        return True
     try:
         cat_id = client.resolve_category_id(entity_type, category)
         client.patch_entity(entity_type, entity_id, category=cat_id)
@@ -883,374 +922,376 @@ def _sync_category(client: ELabFTWClient, entity_type: str, entity_id: int, cate
         import logging
         logging.getLogger(__name__).debug("カテゴリ同期失敗", exc_info=True)
         print(f"    ⚠ カテゴリ同期に失敗しました（本文の同期は成功しています）")
+        return False
+    return True
 
 
 class EachDocsSyncer:
-    """mode: each — 1 ファイル = 1 エンティティとして個別に同期。"""
+    """One file per entity, with shared three-way state inspection."""
 
-    def __init__(self, client: ELabFTWClient, target: TargetConfig, project_root: Path):
+    SUFFIXES = (".hash", ".remote_hash", ".meta_hash", ".assets_hash", ".state.json")
+
+    def __init__(self, client, target, project_root):
         self.client = client
         self.target = target
         self.entity = target.entity
-        self.project_root = project_root
-        self.docs_dir = project_root / target.docs_dir
-        self.mapping_file = (project_root / target.id_file).parent / "mapping.json"
-        self.hash_dir = (project_root / target.id_file).parent
+        self.project_root = Path(project_root).resolve()
+        self.docs_dir = self.project_root / target.docs_dir
+        self.mapping_file = (self.project_root / target.id_file).parent / "mapping.json"
+        self.hash_dir = self.mapping_file.parent
+        self.failures = 0
+        self.skipped = 0
 
-    def _load_mapping(self, *, migrate: bool = True) -> dict:
+    def backup_paths(self):
+        paths = [self.docs_dir, self.hash_dir]
+        if self.target.attachments_dir:
+            paths.append(self.project_root / self.target.attachments_dir)
+        return paths
+
+    def _load_mapping(self, *, migrate=True):
         if self.mapping_file.exists():
-            return json.loads(self.mapping_file.read_text(encoding="utf-8"))
-        # マイグレーション: 旧共有 mapping.json からターゲット固有のエントリを分離
-        legacy_mapping_file = self.project_root / ".elab-sync-ids" / "mapping.json"
-        if legacy_mapping_file.exists() and legacy_mapping_file != self.mapping_file:
-            legacy = json.loads(legacy_mapping_file.read_text(encoding="utf-8"))
-            if legacy:
-                # このターゲットの docs_dir に存在するファイルだけ抽出
-                migrated = {}
-                for fname, eid in legacy.items():
-                    if (self.docs_dir / fname).exists():
-                        migrated[fname] = eid
-                if migrated:
-                    if migrate:
-                        self._save_mapping(migrated)
-                    return migrated
-        return {}
-
-    def _save_mapping(self, mapping: dict) -> None:
-        self.mapping_file.parent.mkdir(parents=True, exist_ok=True)
-        self.mapping_file.write_text(json.dumps(mapping, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-    def _detect_renames(self, mapping: dict, md_files: list[Path], entity_label: str) -> dict:
-        """ファイル名変更を検出し、mapping を更新する。
-
-        検出ロジック:
-        1. mapping にあるがファイルが存在しない → missing (旧ファイル候補)
-        2. ファイルが存在するが mapping に無い → new (リネーム後の候補)
-        3. missing と new が 1:1 で対応する場合、内容ハッシュで同一性を検証:
-           - 旧ファイルの保存済みハッシュと新ファイルの内容ハッシュが一致 → 純粋リネーム
-           - 不一致でも旧ハッシュが無い場合 → リネームとみなす（初回移行時）
-           - 不一致で旧ハッシュがある場合 → リネーム+編集として処理
-             (mapping は更新するが、本文更新は通常の sync フローに委ねる)
-
-        注: each モード専用。merge モードでは呼ばれない。
-        """
-        current_files = {f.name for f in md_files}
-        file_by_name = {f.name: f for f in md_files}
-        mapped_files = set(mapping.keys())
-
-        missing = mapped_files - current_files - self._load_excluded()
-        new = current_files - mapped_files      # ファイルはあるが mapping に無い
-
-        if not missing or not new:
-            return mapping
-
-        # 1:1 対応のみリネームとして処理
-        if len(missing) == 1 and len(new) == 1:
-            old_name = missing.pop()
-            new_name = new.pop()
-
-            # 内容ハッシュによる同一性検証
-            old_hash_path = self._hash_path(old_name)
-            new_file = file_by_name[new_name]
-            new_body = new_file.read_text(encoding="utf-8").strip()
-            new_hash = _compute_hash(new_body)
-
-            if old_hash_path.exists():
-                old_hash = old_hash_path.read_text().strip()
-                is_content_same = (old_hash == new_hash)
-            else:
-                # 旧ハッシュが無い場合はリネームとみなす（初回移行時）
-                is_content_same = True
-
-            # mapping を更新
-            eid = mapping.pop(old_name)
-            mapping[new_name] = eid
-            new_title = Path(new_name).stem
-
-            if is_content_same:
-                # 純粋リネーム: タイトルのみ即時更新
-                self._update_entity(eid, title=new_title)
-                print(f"  [{new_title}] リネーム検出: {old_name} → {new_name}（{entity_label} #{eid} のタイトルを更新）")
-            else:
-                # リネーム+内容編集: mapping 更新のみ。タイトルと本文は通常の sync フローで更新される
-                print(f"  [{new_title}] リネーム+編集検出: {old_name} → {new_name}（{entity_label} #{eid}）")
-
-            # ハッシュファイルをリネーム
-            for suffix in (".hash", ".remote_hash", ".meta_hash", ".assets_hash"):
-                old_hp = self.hash_dir / f"{old_name}{suffix}"
-                new_hp = self.hash_dir / f"{new_name}{suffix}"
-                if old_hp.exists():
-                    old_hp.rename(new_hp)
-
-            self._save_mapping(mapping)
-
-        elif len(missing) == len(new) and len(missing) > 1:
-            # 複数ファイルが同時にリネームされた場合: 判定不能
-            print(f"  ⚠ 複数ファイルのリネームが検出されましたが、対応関係が不明です:")
-            for name in sorted(missing):
-                print(f"    - 消失: {name}")
-            for name in sorted(new):
-                print(f"    + 新規: {name}")
-            print(f"    → 1つずつリネームして esync してください")
-
+            mapping = json.loads(self.mapping_file.read_text(encoding="utf-8"))
+        else:
+            legacy = self.project_root / ".elab-sync-ids/mapping.json"
+            mapping = {}
+            if legacy.exists() and legacy != self.mapping_file:
+                mapping = {name: eid for name, eid in json.loads(legacy.read_text(encoding="utf-8")).items()
+                           if (self.docs_dir / name).is_file()}
+                if mapping and migrate:
+                    snapshot(self.project_root, [self.hash_dir], "旧紐付けの移行")
+                    self._save_mapping(mapping)
+        if not isinstance(mapping, dict) or not all(isinstance(n, str) and Path(n).name == n and n not in ("", ".", "..")
+                                                    and isinstance(e, int) and e > 0 for n, e in mapping.items()):
+            raise ValueError(f"紐付け情報の形式が不正です: {self.mapping_file}")
+        if len(set(mapping.values())) != len(mapping):
+            raise ValueError("同じリモートIDに複数文書が紐付いています。紐付けを修正してください")
         return mapping
 
-    def _hash_path(self, filename: str) -> Path:
+    def _save_mapping(self, mapping):
+        write_json(self.mapping_file, mapping)
+
+    def _hash_path(self, filename):
         return self.hash_dir / f"{filename}.hash"
 
-    def _has_changed(self, filename: str, body: str) -> bool:
-        hp = self._hash_path(filename)
-        new_hash = _compute_hash(body)
-        if hp.exists():
-            return hp.read_text().strip() != new_hash
-        return True
-
-    def _save_hash(self, filename: str, body: str) -> None:
-        hp = self._hash_path(filename)
-        hp.parent.mkdir(parents=True, exist_ok=True)
-        hp.write_text(_compute_hash(body) + "\n")
-
-    def _remote_hash_path(self, filename: str) -> Path:
+    def _remote_hash_path(self, filename):
         return self.hash_dir / f"{filename}.remote_hash"
 
-    def _save_remote_hash(self, filename: str, remote_body: str) -> None:
-        hp = self._remote_hash_path(filename)
-        hp.parent.mkdir(parents=True, exist_ok=True)
-        hp.write_text(_compute_hash(remote_body) + "\n")
-
-    def _meta_hash_path(self, filename: str) -> Path:
+    def _meta_hash_path(self, filename):
         return self.hash_dir / f"{filename}.meta_hash"
 
-    def _has_meta_changed(self, filename: str, title: str, category, tags: list[str]) -> bool:
+    def _state(self, filename):
+        path = self.hash_dir / f"{filename}.state.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+    def _has_changed(self, filename, body):
+        state = self._state(filename)
+        hp = self._hash_path(filename)
+        saved = state["local_hash"] if state else hp.read_text().strip() if hp.exists() else None
+        return saved != _compute_hash(body)
+
+    def _save_hash(self, filename, body):
+        atomic_write(self._hash_path(filename), _compute_hash(body) + "\n")
+
+    def _save_remote_hash(self, filename, body):
+        atomic_write(self._remote_hash_path(filename), _compute_hash(body) + "\n")
+
+    def _has_meta_changed(self, filename, title, category, tags):
+        state = self._state(filename)
         hp = self._meta_hash_path(filename)
-        new_hash = _compute_meta_hash(title, category, tags)
-        if hp.exists():
-            return hp.read_text().strip() != new_hash
-        return False
+        saved = state["meta_hash"] if state else hp.read_text().strip() if hp.exists() else None
+        return saved is not None and saved != _compute_meta_hash(title, category, tags)
 
-    def _save_meta_hash(self, filename: str, title: str, category, tags: list[str]) -> None:
-        hp = self._meta_hash_path(filename)
-        hp.parent.mkdir(parents=True, exist_ok=True)
-        hp.write_text(_compute_meta_hash(title, category, tags) + "\n")
+    def _save_meta_hash(self, filename, title, category, tags):
+        atomic_write(self._meta_hash_path(filename), _compute_meta_hash(title, category, tags) + "\n")
 
-    def _get_entity(self, eid: int) -> dict:
-        if self.entity == "experiments":
-            return self.client.get_experiment(eid)
-        return self.client.get_item(eid)
+    def _get_entity(self, eid):
+        return self.client.get_experiment(eid) if self.entity == "experiments" else self.client.get_item(eid)
 
-    def _create_entity(self, title: str) -> int:
-        if self.entity == "experiments":
-            return self.client.create_experiment(title=title)
-        return self.client.create_item(title=title)
+    def _create_entity(self, title):
+        # Deliberately no PATCH here: persist the POST's ID before updating fields.
+        return self.client.create_experiment() if self.entity == "experiments" else self.client.create_item()
 
-    def _update_entity(self, eid: int, **fields) -> None:
+    def _update_entity(self, eid, **fields):
         if self.entity == "experiments":
             self.client.update_experiment(eid, **fields)
         else:
             self.client.update_item(eid, **fields)
 
-    def _assets_changed(self, filename: str, raw_body: str) -> bool:
-        """画像・添付ファイルの変更を検知する（副作用なし）。"""
-        asset_hash_file = self.hash_dir / f"{filename}.assets_hash"
-        new_hash = self._compute_assets_hash(raw_body)
-        if asset_hash_file.exists():
-            return asset_hash_file.read_text().strip() != new_hash
-        return False
-
-    def _compute_assets_hash(self, raw_body: str) -> str:
+    def _compute_assets_hash(self, raw_body):
         parts = []
-        for m in IMAGE_RE.finditer(raw_body):
+        for m in [*IMAGE_RE.finditer(raw_body), *_LINK_RE.finditer(raw_body)]:
             src = m.group(2)
-            if src.startswith(("http://", "https://")):
+            if src.startswith(("http://", "https://", "#")) or src.split("#")[0].endswith(".md"):
                 continue
-            img_path = (self.docs_dir / src).resolve()
-            if not img_path.exists():
-                img_path = (self.project_root / src).resolve()
-            if img_path.exists():
-                parts.append(_compute_file_hash(img_path))
+            path = (self.docs_dir / src).resolve()
+            if not path.exists():
+                path = (self.project_root / src).resolve()
+            parts.append(f"{src}:{_compute_file_hash(path) if path.is_file() else 'missing'}")
         if self.target.attachments_dir:
             att_dir = self.project_root / self.target.attachments_dir
             if att_dir.is_dir():
-                for f in sorted(att_dir.iterdir()):
+                for f in sorted(att_dir.glob(self.target.attachments_pattern)):
                     if f.is_file() and not _is_image(f.name):
                         parts.append(f"{f.name}:{_compute_file_hash(f)}")
         return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
 
-    def _save_assets_hash(self, filename: str, raw_body: str) -> None:
-        asset_hash_file = self.hash_dir / f"{filename}.assets_hash"
-        asset_hash_file.parent.mkdir(parents=True, exist_ok=True)
-        asset_hash_file.write_text(self._compute_assets_hash(raw_body) + "\n")
+    def _assets_changed(self, filename, raw_body):
+        state = self._state(filename)
+        hp = self.hash_dir / f"{filename}.assets_hash"
+        saved = state["assets_hash"] if state else hp.read_text().strip() if hp.exists() else None
+        return saved is not None and saved != self._compute_assets_hash(raw_body)
 
-    def _check_remote_conflict(self, filename: str, eid: int) -> None:
-        """前回同期時のリモートハッシュと現在のリモート body を比較。"""
-        hp = self._remote_hash_path(filename)
-        if not hp.exists():
-            return
-        saved_hash = hp.read_text().strip()
-        remote_data = self._get_entity(eid)
-        remote_body = remote_data.get("body", "") or ""
-        remote_hash = _compute_hash(remote_body)
-        if saved_hash != remote_hash:
-            raise ConflictError(
-                f"リモートが前回同期以降に変更されています（{self.entity} #{eid}: {filename}）\n"
-                "→ esync pull で先にリモート変更を取り込むか、--force で強制上書きしてください"
-            )
+    def _save_assets_hash(self, filename, raw_body):
+        atomic_write(self.hash_dir / f"{filename}.assets_hash", self._compute_assets_hash(raw_body) + "\n")
 
-    def collect_files(self) -> list[Path]:
+    def _remote_signature(self, data, uploads):
+        return {"body": data.get("body") or "", "title": data.get("title") or "",
+                "content_type": data.get("content_type"), "category": data.get("category"), "tags": data.get("tags"),
+                "uploads": sorted([{k: u.get(k) for k in ("id", "real_name", "hash", "sha256", "filesize", "long_name")}
+                                   for u in uploads], key=lambda u: str(u["id"]))}
+
+    def _save_baseline(self, filename, raw_body, data, uploads):
+        self._save_hash(filename, raw_body)
+        self._save_remote_hash(filename, data.get("body") or "")
+        self._save_meta_hash(filename, Path(filename).stem, self.target.category, self.target.tags)
+        self._save_assets_hash(filename, raw_body)
+        write_json(self.hash_dir / f"{filename}.state.json", {
+            "version": 1, "server": str(self.client.base_url), "entity": self.entity,
+            "profile": self.target.profile, "team": self.target.team,
+            "local_hash": _compute_hash(raw_body), "assets_hash": self._compute_assets_hash(raw_body),
+            "meta_hash": _compute_meta_hash(Path(filename).stem, self.target.category, self.target.tags),
+            "remote": self._remote_signature(data, uploads),
+        })
+
+    def inspect(self, filename, eid, data=None, uploads=None):
+        """Read-only; legacy body hashes remain usable without inventing a baseline."""
+        path = self.file_path(filename)
+        local_exists = path.is_file()
+        body = path.read_text(encoding="utf-8").strip() if local_exists else ""
+        result = {"filename": filename, "entity_id": eid, "body": body, "state": "未追跡"}
+        if eid is None:
+            return result
+        try:
+            data = self._get_entity(eid) if data is None else data
+            uploads = self.client.list_uploads(self.entity, eid) if uploads is None else uploads
+            result.update(data=data, uploads=uploads)
+            state = self._state(filename)
+            if state and (state["server"] != str(self.client.base_url) or state["entity"] != self.entity
+                          or state.get("profile", self.target.profile) != self.target.profile
+                          or state.get("team", self.target.team) != self.target.team):
+                raise ValueError("接続先が前回同期時と異なります。別の状態ディレクトリを指定してください")
+            hp = self._remote_hash_path(filename)
+            remote_known = bool(state or hp.exists())
+            remote_changed = (state["remote"] != self._remote_signature(data, uploads)) if state else (
+                hp.read_text().strip() != _compute_hash(data.get("body") or "") if hp.exists() else False)
+            local_known = bool(state or self._hash_path(filename).exists())
+            local_changed = (self._has_changed(filename, body) or self._assets_changed(filename, body)
+                             or self._has_meta_changed(filename, path.stem, self.target.category, self.target.tags))
+            result.update(local_changed=local_changed, remote_changed=remote_changed)
+            if not local_exists:
+                result["state"] = "ローカル削除"
+            elif not local_known or not remote_known:
+                result["state"] = "基準情報なし"
+            elif local_changed and remote_changed:
+                result["state"] = "競合"
+            elif local_changed:
+                result["state"] = "送信待ち"
+            elif remote_changed:
+                result["state"] = "取得待ち"
+            else:
+                result["state"] = "最新"
+        except Exception as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            result.update(state="リモート削除" if status == 404 else "確認失敗", error=str(exc))
+        return result
+
+    def file_path(self, filename):
+        safe_path(self.docs_dir, filename)
+        matches = [p for p in self.docs_dir.glob(self.target.pattern) if p.name == filename and p.is_file()]
+        if len(matches) > 1:
+            raise ValueError(f"同名ファイルが複数あります: {filename}")
+        return matches[0] if matches else self.docs_dir / filename
+
+    def collect_files(self):
         excluded = self._load_excluded()
-        return sorted(f for f in self.docs_dir.glob(self.target.pattern)
-                      if f.name not in excluded)
+        files = sorted(f for f in self.docs_dir.glob(self.target.pattern) if f.is_file() and f.name not in excluded)
+        if len({f.name for f in files}) != len(files):
+            raise ValueError("同名ファイルが複数あります。異なるファイル名にしてください")
+        for f in files:
+            safe_path(self.docs_dir, f.relative_to(self.docs_dir).as_posix())
+        return files
 
-    def _load_excluded(self) -> set[str]:
+    def _load_excluded(self):
         path = self.hash_dir / "excluded.json"
-        if not path.exists():
-            return set()
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, list) or not all(isinstance(name, str) for name in data):
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+        if not isinstance(data, list) or not all(isinstance(n, str) and Path(n).name == n for n in data):
             raise ValueError(f"除外情報の形式が不正です: {path}")
         return set(data)
 
-    def untrack(self, filenames: set[str], mapping: dict) -> None:
-        """ローカル文書を保持して追跡解除し、今後の自動同期から除外する。"""
-        excluded = self._load_excluded() | filenames
-        self.hash_dir.mkdir(parents=True, exist_ok=True)
-        (self.hash_dir / "excluded.json").write_text(
-            json.dumps(sorted(excluded), ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        self._save_mapping({name: eid for name, eid in mapping.items()
-                            if name not in filenames})
-        for filename in filenames:
-            for suffix in (".hash", ".remote_hash", ".meta_hash", ".assets_hash"):
-                (self.hash_dir / f"{filename}{suffix}").unlink(missing_ok=True)
+    def _receipt_path(self, filename):
+        identity = f"{self.client.base_url}|{self.entity}|{self.hash_dir}|{filename}"
+        key = hashlib.sha256(identity.encode()).hexdigest()
+        return self.project_root / ".elab-sync-operations" / f"{key}.json"
 
-    def dry_run(self) -> list[dict]:
+    def _pending(self):
+        path = self.hash_dir / "pending.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+    def _save_pending(self, data):
+        write_json(self.hash_dir / "pending.json", data)
+
+    def untrack(self, filenames, mapping):
+        write_json(self.hash_dir / "excluded.json", sorted(self._load_excluded() | filenames))
+        self._save_mapping({n: eid for n, eid in mapping.items() if n not in filenames})
+        for name in filenames:
+            for suffix in self.SUFFIXES:
+                (self.hash_dir / f"{name}{suffix}").unlink(missing_ok=True)
+
+    def move_tracking(self, old, new, mapping):
+        if not self._meta_hash_path(old).exists() and not self._state(old):
+            self._save_meta_hash(old, Path(old).stem, self.target.category, self.target.tags)
+        mapping[new] = mapping.pop(old)
+        for suffix in self.SUFFIXES:
+            src, dest = self.hash_dir / f"{old}{suffix}", self.hash_dir / f"{new}{suffix}"
+            if src.exists():
+                src.replace(dest)
+        self._save_mapping(mapping)
+
+    def _detect_renames(self, mapping, md_files, entity_label):
+        files = {f.name: f for f in md_files}
+        missing = set(mapping) - set(files) - self._load_excluded()
+        new = set(files) - set(mapping)
+        if not missing or not new:
+            return mapping
+        pairs = []
+        for old in sorted(missing):
+            hp = self._hash_path(old)
+            matches = [n for n in new if hp.exists() and hp.read_text().strip() == _compute_hash(files[n].read_text(encoding="utf-8").strip())]
+            if len(matches) != 1 or any(n == matches[0] for _, n in pairs):
+                raise ConflictError("リネームの対応が不明です。esync mv 旧パス 新パス で指定するか、不要な追跡をrmしてください")
+            pairs.append((old, matches[0]))
+        # No remote changes here; title updates use the normal conflict checks.
+        with local_transaction(self.project_root, [self.hash_dir], "自動リネームの紐付け変更"):
+            for old, new_name in pairs:
+                self.move_tracking(old, new_name, mapping)
+                print(f"  リネーム検出: {old} → {new_name}")
+        return mapping
+
+    def _check_remote_conflict(self, filename, eid):
+        result = self.inspect(filename, eid)
+        if result["state"] in ("競合", "取得待ち", "基準情報なし", "リモート削除", "確認失敗"):
+            raise ConflictError(f"{filename}: {result['state']}。esync diff で確認し、pull または --force を選択してください")
+
+    def dry_run(self):
+        mapping = self._load_mapping(migrate=False)
+        return [{"filename": f.name, "title": f.stem, "images": _count_local_images(body),
+                 "videos": _count_local_videos(body), "file_links": _count_local_file_links(body),
+                 "changed": self._has_changed(f.name, body), "entity_id": mapping.get(f.name)}
+                for f in self.collect_files() for body in [f.read_text(encoding="utf-8").strip()]]
+
+    def sync(self, force=False, prune_attachments=False):
         md_files = self.collect_files()
-        mapping = self._load_mapping()
-        results = []
-        for f in md_files:
-            body = f.read_text(encoding="utf-8").strip()
-            title = f.stem
-            results.append({
-                "filename": f.name,
-                "title": title,
-                "images": _count_local_images(body),
-                "videos": _count_local_videos(body),
-                "file_links": _count_local_file_links(body),
-                "changed": self._has_changed(f.name, body),
-                "entity_id": mapping.get(f.name),
-            })
-        return results
-
-    def sync(self, force: bool = False, prune_attachments: bool = False) -> int:
-        """各ファイルを個別に同期。更新した件数を返す。
-
-        2パス構造:
-        - パス1: 全ファイルの ID を確定（新規作成含む）。リンク変換に全 ID が必要なため。
-        - パス2: リンク変換 + body/メタデータ送信。
-
-        注: リンク変換は each モード専用。merge モードでは呼ばれない。
-        """
-        md_files = self.collect_files()
+        self.failures = self.skipped = 0
         if not md_files:
             if self._load_excluded() and self.docs_dir.is_dir():
                 return 0
-            raise FileNotFoundError(
-                f"{self.docs_dir} に {self.target.pattern} に一致するファイルがありません\n"
-                "→ docs_dir とパターンの設定を確認してください"
-            )
-
+            raise FileNotFoundError(f"{self.docs_dir} に {self.target.pattern} に一致するファイルがありません")
         mapping = self._load_mapping()
-        entity_label = "実験ノート" if self.entity == "experiments" else "リソース"
-        updated = 0
-
-        # リネーム検出: mapping にあるがファイルが消えたエントリと、
-        # ファイルはあるが mapping に無いエントリを突合する
-        mapping = self._detect_renames(mapping, md_files, entity_label)
-
-        # ── パス1: 全ファイルの ID を確定 ──────────────────────────
-        # 変更があるファイルの情報を収集しつつ、新規ファイルの ID を先に作成する
-        pending = []  # (file, title, raw_body, eid, body_changed, meta_changed, assets_changed)
+        pending = self._pending()
+        unknown = [name for name, item in pending.items() if not item.get("eid")]
+        if unknown:
+            raise ConflictError(f"作成結果が不明です: {', '.join(unknown)}。esync list で確認し、linkでIDを確定してください")
+        for name, item in pending.items():
+            if item.get("eid") and name not in mapping:
+                if item["eid"] in mapping.values():
+                    raise ConflictError("未完了の作成IDが別文書に紐付いています")
+                mapping[name] = item["eid"]
+                self._save_mapping(mapping)
+        mapping = self._detect_renames(mapping, md_files, self.entity)
+        jobs = []
+        # Preflight all known destinations before creating any entities.
         for f in md_files:
-            title = f.stem
-            raw_body = f.read_text(encoding="utf-8").strip()
-
-            body_changed = self._has_changed(f.name, raw_body)
-            meta_changed = self._has_meta_changed(f.name, title, self.target.category, self.target.tags)
-            assets_changed = self._assets_changed(f.name, raw_body) if not force else False
-
-            if not force and not body_changed and not meta_changed and not assets_changed and not prune_attachments:
-                # meta_hash / assets_hash がまだ無ければ初期化（既存環境のアップグレード対応）
-                if not self._meta_hash_path(f.name).exists():
-                    self._save_meta_hash(f.name, title, self.target.category, self.target.tags)
-                asset_hash_file = self.hash_dir / f"{f.name}.assets_hash"
-                if not asset_hash_file.exists():
-                    self._save_assets_hash(f.name, raw_body)
-                print(f"  [{title}] 変更なし（スキップ）")
-                continue
-
             eid = mapping.get(f.name)
-
-            if eid is not None:
-                try:
-                    self._get_entity(eid)
-                except Exception:
-                    print(f"  [{title}] {entity_label} #{eid} が見つかりません。新規作成します")
-                    eid = None
-
-            if eid is not None and not force:
-                self._check_remote_conflict(f.name, eid)
-
-            if eid is None:
-                eid = self._create_entity(title=title)
+            result = self.inspect(f.name, eid)
+            state = result["state"]
+            if state in ("確認失敗", "リモート削除"):
+                self.failures += 1
+                print(f"  [{f.stem}] {state}: {result.get('error', '')}")
+                continue
+            owned = pending.get(f.name, {})
+            expected = owned.get("expected")
+            before = owned.get("before")
+            resuming = bool(owned.get("eid") == eid and any(
+                version is not None and all(result["data"].get(k) == v for k, v in version.items())
+                for version in (expected, before)))
+            if not force and not resuming and state in ("競合", "取得待ち", "基準情報なし"):
+                self.failures += 1
+                print(f"  [{f.stem}] {state}。esync diff で確認してください")
+                continue
+            if not force and not prune_attachments and not resuming and state == "最新":
+                self.skipped += 1
+                print(f"  [{f.stem}] 変更なし（スキップ）")
+                continue
+            jobs.append((f, result, resuming))
+        for f, result, resuming in jobs:
+            if result["entity_id"] is None:
+                receipt = self._receipt_path(f.name)
+                if receipt.exists():
+                    raise ConflictError(f"{f.name}: 過去の作成記録があります。listで確認後、linkまたはlink --newで解決してください")
+                write_json(receipt, {"filename": f.name, "eid": None})
+                pending[f.name] = {"eid": None}
+                self._save_pending(pending)
+                eid = self._create_entity(f.stem)
+                if not isinstance(eid, int) or eid <= 0 or eid in mapping.values():
+                    raise RuntimeError("新規作成IDを取得できませんでした。listとlinkで確認してください")
+                write_json(receipt, {"filename": f.name, "eid": eid})
+                pending[f.name] = {"eid": eid, "expected": {"body": "", "title": ""}}
+                self._save_pending(pending)
                 mapping[f.name] = eid
                 self._save_mapping(mapping)
-                print(f"  [{title}] {entity_label} #{eid} を新規作成しました")
-
-            pending.append((f, title, raw_body, eid, body_changed, meta_changed, assets_changed))
-
-        # ── パス2: リンク変換 + body/メタデータ送信 ──────────────────
-        for f, title, raw_body, eid, body_changed, meta_changed, assets_changed in pending:
-            if body_changed or assets_changed or force:
-                body = _rewrite_images(raw_body, self.entity, eid, self.client, self.docs_dir, self.project_root)
-                body = _rewrite_videos(body, self.entity, eid, self.client, self.docs_dir, self.project_root)
-                body = _rewrite_file_links(body, self.entity, eid, self.client, self.docs_dir, self.project_root)
+                result["entity_id"] = eid
+                print(f"  [{f.stem}] #{eid} を新規作成しました")
+        updated = 0
+        for f, result, resuming in jobs:
+            eid = result["entity_id"]
+            raw_body = result["body"]
+            try:
+                if force and result.get("data") is not None:
+                    snapshot(self.project_root, [], "強制push前のリモート本文", remote={
+                        "server": str(self.client.base_url), "entity": self.entity, "id": eid,
+                        "title": result["data"].get("title"), "body": result["data"].get("body"),
+                        "content_type": result["data"].get("content_type"),
+                    })
+                body = _rewrite_images(raw_body, self.entity, eid, self.client, f.parent, self.project_root, strict=True)
+                body = _rewrite_videos(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True)
+                body = _rewrite_file_links(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True)
                 body = _rewrite_local_links(body, self.entity, self.client.base_url, mapping)
-                if self.target.body_format == "md":
-                    self._update_entity(eid, body=body, title=title)
-                else:
-                    html = _md_to_html(body)
-                    self._update_entity(eid, body=html, title=title)
-                self._save_hash(f.name, raw_body)
-
-                # push 後のリモート body ハッシュを保存（競合検出用）
-                try:
-                    remote_data = self._get_entity(eid)
-                    self._save_remote_hash(f.name, remote_data.get("body", "") or "")
-                except Exception as e:
-                    print(f"  [{title}] ⚠ リモートハッシュの保存に失敗: {e}")
-            elif meta_changed:
-                # 本文変更なし・メタデータのみ変更: タイトルだけ更新
-                self._update_entity(eid, title=title)
-
-            print(f"  [{title}] {entity_label} #{eid} を更新しました")
-
-            _sync_tags(self.client, self.entity, eid, self.target.tags)
-            _sync_category(self.client, self.entity, eid, self.target.category)
-            self._save_meta_hash(f.name, title, self.target.category, self.target.tags)
-
-            if self.target.attachments_dir:
-                att_ok = _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, eid, self.client, force=force, pattern=self.target.attachments_pattern, prune=prune_attachments)
-            else:
+                body = body if self.target.body_format == "md" else _md_to_html(body)
+                expected = {"body": body, "title": f.stem, "content_type": 2 if self.target.body_format == "md" else 1}
+                previous = result.get("data") or self._get_entity(eid)
+                before = {key: previous.get(key) for key in expected}
+                pending[f.name] = {"eid": eid, "expected": expected, "before": before}
+                self._save_pending(pending)
+                self._update_entity(eid, **expected)
+                meta_changed = force or result.get("data") is None or resuming or self._has_meta_changed(f.name, f.stem, self.target.category, self.target.tags)
+                tags_ok = _sync_tags(self.client, self.entity, eid, self.target.tags) if meta_changed else True
+                category_ok = _sync_category(self.client, self.entity, eid, self.target.category) if meta_changed else True
                 att_ok = True
-
-            if att_ok:
-                self._save_assets_hash(f.name, raw_body)
-
-            log_path = self.project_root / sync_log.DEFAULT_LOG_PATH
-            sync_log.record(log_path, action="push", target=title,
-                            entity=self.entity, entity_id=eid, files=[f.name])
-
-            updated += 1
-
+                if self.target.attachments_dir:
+                    att_ok = _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, eid, self.client,
+                                               force=force, pattern=self.target.attachments_pattern, prune=prune_attachments, strict=True)
+                if tags_ok is False or category_ok is False or not att_ok:
+                    raise RuntimeError("本文更新後、メタデータまたは添付の同期が失敗しました。再実行してください")
+                data = self._get_entity(eid)
+                uploads = self.client.list_uploads(self.entity, eid)
+                self._save_baseline(f.name, raw_body, data, uploads)
+                pending.pop(f.name, None)
+                self._save_pending(pending)
+                sync_log.record(self.project_root / sync_log.DEFAULT_LOG_PATH, action="push", target=f.stem,
+                                entity=self.entity, entity_id=eid, files=[f.name])
+                updated += 1
+                print(f"  [{f.stem}] #{eid} を更新しました")
+            except Exception as exc:
+                self.failures += 1
+                print(f"  [{f.stem}] 同期失敗: {exc}")
         return updated

@@ -1,199 +1,53 @@
-# 同期エンジン詳細
+# 同期エンジン
 
-→ [API リファレンス](06_API_REFERENCE.md) | [性能仕様](08_PERFORMANCE.md)
+## 状態判定
 
-## EachDocsSyncer
+`EachDocsSyncer.inspect()` をstatus・push・pullで共用します。読み取りだけを行い、次の状態を返します。
 
-1 ファイル = 1 エンティティとして個別に同期する。
-
-```python
-EachDocsSyncer(client: ELabFTWClient, target: TargetConfig, project_root: Path)
-```
-
-| メソッド | 戻り値 | 説明 |
+| 状態 | 意味 | 通常のpull |
 |---|---|---|
-| `collect_files()` | `list[Path]` | docs_dir から pattern に一致するファイル一覧（辞書順） |
-| `dry_run()` | `list[dict]` | 各ファイルの `{filename, title, images, videos, file_links, changed, entity_id}` |
-| `sync(force, prune_attachments)` | `int` | 同期実行。更新した件数を返す |
-| `_detect_renames(mapping, md_files, entity_label)` | `dict` | リネーム検出して mapping を更新 |
-| `_load_mapping()` | `dict` | mapping.json を読み込み（マイグレーション付き） |
-| `_save_mapping(mapping)` | `None` | mapping.json を保存 |
+| 最新 | 前回から変更なし | スキップ |
+| 送信待ち | ローカルの本文・設定・画像・添付が変更された | ローカル編集を保持 |
+| 取得待ち | リモートの本文・タイトル・カテゴリ・タグ・添付情報が変更された | バックアップ後に取得 |
+| 競合 | 両側に変更あり | 停止・diffを案内 |
+| 基準情報なし | 安全な比較に必要な保存情報がない | 既存ファイルを上書きしない |
+| 未追跡 | ファイルはあるが紐付けなし | 明示ID取得時に同名ファイルを保護 |
+| ローカル削除 | 紐付け先のローカル文書がない | 明示pullで再取得可能 |
+| リモート削除 | APIが404を返した | 自動再作成しない |
+| 確認失敗 | 認証・通信・状態情報のエラー | 停止 |
 
-## 2パス sync 構造
+`status` はさらに「作成結果不明」「同期未完了」を表示します。
 
-同一 push 内で新規作成されるファイル間のリンクも正しく解決するため、sync は2パスで実行される。
+## pushの順序
 
-### パス1: 全 ID 確定
+1. 除外状態・紐付け・未完了記録を読み、曖昧なリネームを拒否する。
+2. 既存記事とローカルの状態を確認する。認証エラー等を不存在扱いしない。
+3. 新規記事はPOST前に作成記録を書き、取得したIDを本文更新より先に保存する。
+4. 全IDを使って文書間リンクを変換する。画像・動画・ファイルリンクをアップロードし、指定の本文形式で送る。
+5. 必要なタグ・カテゴリ・添付を同期する。失敗した文書は完了扱いにしない。
+6. 成功した文書の状態を保存して未完了記録を解除する。失敗件数は終了コードにも反映する。
 
-```
-1. docs_dir から pattern に一致するファイルを収集
-2. mapping.json を読み込み
-3. リネーム検出 (_detect_renames)
-4. 各ファイルについて:
-   a. SHA-256 ハッシュで差分検知 + メタデータ/アセット変更検知
-   b. 変更なし → スキップ（pending に追加しない）
-   c. 競合検出（remote_hash 比較）
-   d. mapping に ID なし or リモートに不在 → 新規作成して mapping に追加
-   e. (file, title, raw_body, eid, 変更フラグ) を pending に追加
-```
+同期処理の画像・動画・ファイル更新では、以前の本文が参照するアップロードを自動削除しません。`--prune-attachments` は別途明示する削除操作です。
 
-### パス2: リンク変換 + 送信
+## 保存情報
 
-```
-各 pending について:
-1. _rewrite_images     — ローカル画像をアップロードし URL に書き換え
-2. _rewrite_videos     — 動画をアップロードし <video> タグに変換
-3. _rewrite_file_links — 非画像・非動画ファイルをアップロードし URL 書き換え
-4. _rewrite_local_links — [text](./file.md) → eLabFTW 記事 URL に変換
-5. body_format に応じて HTML 変換
-6. eLabFTW に PATCH で更新
-7. タグ同期・カテゴリ同期
-8. 添付ファイルアップロード（attachments_dir 指定時）
-9. ハッシュ保存（local_hash, remote_hash, meta_hash, assets_hash）
-10. 同期ログに記録
-```
+`id_file` の親ディレクトリに `mapping.json`、`excluded.json`、`pending.json` と文書ごとの状態ファイルを置きます。
 
-## ファイル間リンク変換
+- `*.state.json`: 前回のローカル本文・画像/添付・設定ハッシュとリモートの比較情報。
+- `*.hash` / `*.remote_hash` / `*.meta_hash` / `*.assets_hash`: 旧状態からの移行・互換用情報。
+- `.elab-sync-operations/`: 作成要求の記録。ローカル復元で消さない。
 
-### Push 時: `_rewrite_local_links()`
+状態保存は同じディレクトリの一時ファイルをfsyncしてから置換します。複数の状態ファイルを変更するローカル操作は、バックアップと復旧記録で保護します。CLIの書き込み操作にはプロジェクト単位のプロセスロックを使います。
 
-each モード専用。`[text](./file.md)` 形式のリンクを eLabFTW 記事 URL に変換する。
+## pullの順序
 
-**対象:**
-- `[text](./file.md)`, `[text](file.md)`, `[text](../dir/file.md)`
+1. 明示されたターゲット・既存紐付け・タグ等から接続先と保存先を決める。複数接続先で同じIDが追跡されている場合はターゲット指定を要求する。
+2. 本文・タイトル・添付情報と前回状態を比較する。
+3. ローカル編集、ファイル名衝突、保存先外へのパスを確認する。
+4. 変更対象ディレクトリと状態をバックアップする。
+5. Markdownを保持、HTMLのみMarkdownへ変換し、画像・添付を取得する。
+6. 文書を保存し、必要なら旧名を削除して紐付けと同期状態を保存する。
 
-**除外:**
-- 画像リンク (`![...](...)`)
-- 外部 URL (`http://`, `https://`)
-- アンカーリンク (`#...`)
-- 非 `.md` ファイル
+画像・添付の取得失敗は成功扱いにしません。部分的なローカル変更があれば復旧用IDを表示し、restoreまで次の書き込みを停止します。
 
-**変換例:**
-```
-[セットアップ](./setup.md) → [セットアップ](https://elab.example.com/items.php?mode=view&id=42)
-```
-
-**仕様:**
-- mapping に存在するファイルのみ変換（未同期リンクはそのまま残す）
-- 2パス構造により、同一 push 内の新規ファイル間リンクも解決可能
-
-### Pull 時: `_rewrite_elab_links_to_local()`
-
-eLabFTW 記事 URL をローカルファイルリンクに逆変換する。
-
-**判定:**
-- ホスト完全一致（`urlparse` で比較、前方一致ではない）
-- フラグメント (`#section`) は保持される
-
-**変換例:**
-```
-[セットアップ](https://elab.example.com/items.php?mode=view&id=42#intro)
-  → [セットアップ](./setup.md#intro)
-```
-
-## リネーム検出
-
-### `_detect_renames()`
-
-push 時に mapping ロード直後に実行。ファイル名変更を検出して mapping を更新する。
-
-**アルゴリズム:**
-1. mapping にあるがファイルが存在しない → `missing`（旧ファイル候補）
-2. ファイルが存在するが mapping にない → `new`（リネーム後の候補）
-3. `missing` と `new` が 1:1 の場合のみ自動検出
-4. 内容ハッシュで同一性を検証:
-   - 一致 → 純粋リネーム: タイトルを即時更新
-   - 不一致 → リネーム+編集: mapping 更新のみ（本文はパス2で送信）
-
-**制約:**
-- 複数ファイルの同時リネームは対応関係が不明なため警告のみ
-- 一度に1ファイルずつリネームすることを推奨
-
-## 動画埋め込み
-
-### `_rewrite_videos()`
-
-Markdown 内の動画リンクを eLabFTW にアップロードし `<video>` タグに変換する。
-
-**対象:**
-- 通常リンク: `[説明](video.mp4)`
-- 画像記法: `![説明](video.mp4)`
-
-**対象拡張子:** `.mp4`, `.webm`
-
-**変換結果:**
-```html
-<video src="https://elab.example.com/app/download.php?f=abc&name=video.mp4&storage=1" controls>説明</video>
-```
-
-**重複チェック:** ファイル名+サイズ一致で既存アップロードを再利用。
-
-## ファイルリンクアップロード
-
-### `_rewrite_file_links()`
-
-非画像・非動画のローカルファイルリンクをアップロードし URL を書き換える。
-
-**対象:**
-- 通常リンク: `[データ](./results.csv)`
-- 画像記法: `![プロトコル](protocol.pdf)` → `[プロトコル](url)` に正規化
-
-**除外:**
-- 画像ファイル（`_rewrite_images` で処理）
-- 動画ファイル（`_rewrite_videos` で処理）
-- `.md` ファイル（`_rewrite_local_links` で処理）
-- 外部 URL
-
-## 処理パイプライン順序
-
-```
-images → videos → file_links → local_links
-```
-
-各段階は前段で処理済みのファイル種別をスキップするため干渉しない。
-
-## 競合検出
-
-push 時にリモートが前回同期以降に変更されていないか確認する。
-
-```
-前回保存した remote_hash ≠ 現在のリモート body のハッシュ
-  → ConflictError を発生
-  → ユーザーに esync pull または --force を案内
-```
-
-## Pull フロー
-
-```
-1. 対象エンティティを特定（--id / mapping / 全件取得）
-2. --id 指定時: 自動振り分けで保存先ターゲットを決定
-   - 既紐付け → そのディレクトリ
-   - スコアリング（tags/category/title_pattern）
-   - --auto: 最高スコアで自動決定
-3. eLabFTW から HTML body を取得
-4. HTML → Markdown に変換（markdownify）
-5. 画像ダウンロード
-6. eLabFTW URL → ローカルリンク逆変換
-7. タイトル変更によるファイルリネーム（reverse_mapping で検出）
-8. ローカルにファイル保存
-9. ID マッピング・ハッシュを保存
-10. 同期ログに記録
-```
-
-## mapping.json のターゲット分離
-
-各ターゲットは独立した状態ディレクトリを持つ。
-
-```
-.elab-sync-ids/
-├── elab_docs/           # docs_dir="elab_docs" のターゲット
-│   ├── mapping.json
-│   ├── *.hash
-│   └── *.remote_hash
-├── elab_weekly/         # docs_dir="elab_weekly" のターゲット
-│   ├── mapping.json
-│   └── ...
-└── sync-log.jsonl       # 全ターゲット共通
-```
-
-**マイグレーション:** 旧共有 `mapping.json` が存在し、新パスに mapping がない場合、対象 `docs_dir` に存在するファイルのエントリだけを自動移行する。
+詳細は [移行と復旧](13_MIGRATION_V1.md) を参照してください。

@@ -48,6 +48,8 @@ def test_sync_normal(MockSyncer, MockClient, tmp_path):
     cfg, docs = _write_config(tmp_path)
     (docs / "a.md").write_text("hello", encoding="utf-8")
     MockSyncer.return_value.sync.return_value = True
+    MockSyncer.return_value.failures = 0
+    MockSyncer.return_value.skipped = 0
     cmd_sync(_ns(tmp_path))
     MockSyncer.return_value.sync.assert_called_once_with(force=False, prune_attachments=False)
 
@@ -68,6 +70,8 @@ def test_sync_force(MockSyncer, MockClient, tmp_path):
     cfg, docs = _write_config(tmp_path)
     (docs / "a.md").write_text("hello", encoding="utf-8")
     MockSyncer.return_value.sync.return_value = True
+    MockSyncer.return_value.failures = 0
+    MockSyncer.return_value.skipped = 0
     cmd_sync(_ns(tmp_path, force=True))
     MockSyncer.return_value.sync.assert_called_once_with(force=True, prune_attachments=False)
 
@@ -159,9 +163,11 @@ def test_pull_each_rename_on_title_change(MockClient, tmp_path):
     ids_dir.mkdir(exist_ok=True)
     import json as _json
     (ids_dir / "mapping.json").write_text(_json.dumps({"OldTitle.md": 1}))
-    (ids_dir / "OldTitle.md.hash").write_text("abc\n")
+    from elab_doc_sync.sync import _compute_hash
+    (ids_dir / "OldTitle.md.hash").write_text(_compute_hash("content") + "\n")
+    (ids_dir / "OldTitle.md.remote_hash").write_text(_compute_hash("<p>content</p>") + "\n")
     MockClient.return_value.get_item.return_value = {"id": 1, "title": "NewTitle", "body": "<p>new</p>"}
-    # --force なしでもリネームは成功する
+    # 同期済みでローカル未編集なら --force なしでリネームできる
     cmd_pull(_ns(tmp_path, id=None, command="pull"))
     assert (docs / "NewTitle.md").exists()
     assert not (docs / "OldTitle.md").exists()
@@ -185,8 +191,8 @@ def test_pull_each_rename_collision_skips(MockClient, tmp_path, capsys):
     (ids_dir / "OldTitle.md.hash").write_text("abc\n")
     MockClient.return_value.get_item.return_value = {"id": 1, "title": "NewTitle", "body": "<p>new</p>"}
     cmd_pull(_ns(tmp_path, id=None, command="pull"))
-    out = capsys.readouterr().out
-    assert "リネームをスキップ" in out
+    captured = capsys.readouterr()
+    assert "リネーム先" in captured.err
     # 旧ファイルは維持される
     assert (docs / "OldTitle.md").exists()
     # 既存ファイルは上書きされない
@@ -230,8 +236,8 @@ def test_pull_each_old_file_missing_new_exists_skips(MockClient, tmp_path, capsy
     (ids_dir / "OldTitle.md.hash").write_text("abc\n")
     MockClient.return_value.get_item.return_value = {"id": 1, "title": "NewTitle", "body": "<p>new</p>"}
     cmd_pull(_ns(tmp_path, id=None, command="pull"))
-    out = capsys.readouterr().out
-    assert "既にローカルに存在" in out
+    captured = capsys.readouterr()
+    assert "リネーム先" in captured.err
     # 既存ファイルは上書きされない
     assert (docs / "NewTitle.md").read_text(encoding="utf-8") == "existing\n"
     # mapping/hash は変更されない（スキップ時は状態を触らない）
@@ -255,8 +261,7 @@ def test_pull_each_skip_no_image_download(MockClient, tmp_path):
         "body": '<p><img src="https://elab.example.com/app/download.php?f=abc.png&name=photo.png&storage=1" alt="pic"></p>',
     }
     cmd_pull(_ns(tmp_path, id=None, command="pull"))
-    # スキップされたので list_uploads / download_upload は呼ばれない
-    client.list_uploads.assert_not_called()
+    # 状態の確認は行うが、競合時にファイルは取得しない。
     client.download_upload.assert_not_called()
     # images/ ディレクトリも作られない
     assert not (docs / "images").exists()
@@ -270,7 +275,7 @@ def test_pull_id_without_entity_exits(tmp_path, capsys):
     _write_config(tmp_path, mode="each")
     with pytest.raises(SystemExit) as exc_info:
         cmd_pull(_ns(tmp_path, id=[42], command="pull"))
-    assert exc_info.value.code == 1
+    assert exc_info.value.code == 2
     assert "--entity も指定してください" in capsys.readouterr().err
 
 
@@ -307,7 +312,7 @@ def test_pull_auto_add_target(MockClient, tmp_path, capsys):
     cmd_pull(_ns(tmp_path, id=[42], entity="experiments", command="pull"))
     out = capsys.readouterr().out
     # ターゲットが自動追加された
-    assert "ターゲットを .elab-sync.yaml に追加" in out
+    assert "新規ターゲット追加" in out
     # experiments/ に保存された
     exp_dir = tmp_path / "experiments"
     assert (exp_dir / "Exp1.md").exists()
@@ -388,11 +393,9 @@ def test_pull_target_mismatch_zero(MockClient, tmp_path, capsys):
     cfg, docs = _write_config(tmp_path, mode="each", entity="items")
     client = MockClient.return_value
     client.get_item.return_value = {"id": 1, "title": "X", "body": "<p>x</p>"}
-    cmd_pull(_ns(tmp_path, id=[1], entity="items", command="pull", target="NoSuchTarget"))
-    out = capsys.readouterr().out
-    assert "0 件取得" in out
-    # ファイルは生成されない
-    assert list(docs.glob("*.md")) == []
+    with pytest.raises(ValueError, match="ターゲットが見つかりません"):
+        cmd_pull(_ns(tmp_path, id=[1], entity="items", command="pull", target="NoSuchTarget"))
+    client.get_item.assert_not_called()
 
 
 def _clone_ns(tmp_path, **kw):
@@ -600,7 +603,7 @@ def test_status_changed(MockClient, tmp_path, capsys):
     (docs / "a.md").write_text("content", encoding="utf-8")
     cmd_status(_ns(tmp_path))
     out = capsys.readouterr().out
-    assert "変更あり" in out
+    assert "未追跡" in out
 
 
 # CLI-53
@@ -614,6 +617,8 @@ def test_status_up_to_date(MockClient, tmp_path, capsys):
     target = TargetConfig(title="", docs_dir="docs/", id_file=str(tmp_path / ".elab-sync-ids" / "default.id"), mode="each")
     syncer = EachDocsSyncer(MockClient.return_value, target, tmp_path)
     syncer._save_hash("a.md", "content")
+    MockClient.return_value.get_item.return_value = {"body": "content"}
+    syncer._save_remote_hash("a.md", "content")
     mapping = {"a.md": 1}
     syncer._save_mapping(mapping)
     cmd_status(_ns(tmp_path))
@@ -965,7 +970,7 @@ def test_cmd_link_each(MockClient, tmp_path, capsys):
     cfg, docs = _write_config(tmp_path, mode="each")
     (docs / "a.md").write_text("# A\n", encoding="utf-8")
     client = MockClient.return_value
-    client.get_entity.return_value = {"id": 55, "body": "<p>test</p>"}
+    client.get_item.return_value = {"id": 55, "body": "<p>test</p>"}
     args = Namespace(config=str(cfg), target=None, force=False, entity_id=55, file="a.md")
     cmd_link(args)
     out = capsys.readouterr().out
@@ -981,7 +986,7 @@ def test_cmd_link_each(MockClient, tmp_path, capsys):
 def test_cmd_link_each_no_file(MockClient, tmp_path):
     cfg, _ = _write_config(tmp_path, mode="each")
     args = Namespace(config=str(cfg), target=None, force=False, entity_id=55, file=None)
-    with pytest.raises(SystemExit):
+    with pytest.raises(ValueError):
         cmd_link(args)
 
 
@@ -1508,7 +1513,7 @@ def test_pull_auto_dispatch_create_new_target(MockClient, tmp_path, monkeypatch,
     monkeypatch.setattr("builtins.input", lambda _: "3")
     cmd_pull(_ns(tmp_path, id=[50], entity="items", command="pull"))
     out = capsys.readouterr().out
-    assert "新規ターゲットを追加" in out
+    assert "新規ターゲット追加" in out
     # YAML にターゲットが追加されている
     import yaml as _yaml
     raw = _yaml.safe_load((tmp_path / ".elab-sync.yaml").read_text(encoding="utf-8"))
