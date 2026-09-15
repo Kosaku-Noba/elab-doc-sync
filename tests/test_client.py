@@ -506,3 +506,11 @@ def test_soft_deleted_entity_is_missing(mock_req, method, state, client):
     with pytest.raises(HTTPError) as error:
         getattr(client, method)(42)
     assert error.value.response.status_code == 404
+
+
+@patch("elab_doc_sync.client.requests.request")
+def test_get_tags_null_is_empty(mock_req, client):
+    response = _mock_response()
+    response.json.return_value = None
+    mock_req.return_value = response
+    assert client.get_tags("items", 42) == []

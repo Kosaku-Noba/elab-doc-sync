@@ -252,7 +252,9 @@ class ELabFTWClient:
     # ── tags ─────────────────────────────────────────────────
 
     def get_tags(self, entity_type: str, entity_id: int) -> list[dict]:
-        return self._req("GET", f"/api/v2/{entity_type}/{entity_id}/tags").json()
+        data = self._req("GET", f"/api/v2/{entity_type}/{entity_id}/tags").json()
+        # Untagged entities may return JSON null instead of an empty list.
+        return [] if data is None else data
 
     def add_tag(self, entity_type: str, entity_id: int, tag: str) -> None:
         self._req("POST", f"/api/v2/{entity_type}/{entity_id}/tags", json={"tag": tag})

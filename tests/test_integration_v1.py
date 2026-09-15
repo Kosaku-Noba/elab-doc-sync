@@ -67,3 +67,32 @@ def test_real_roundtrip_conflict_and_restore(server, tmp_path, body_format):
     backup_id = ({p.parent.name for p in (tmp_path / BACKUPS).glob('*/manifest.json')} - before).pop()
     restore(tmp_path, backup_id)
     assert note.read_text(encoding='utf-8') == 'unsent local edit'
+
+
+def test_untagged_cli_pull_and_first_tag_push(server, tmp_path, monkeypatch):
+    import yaml
+    from elab_doc_sync.cli import main
+    from elab_doc_sync.config import load_config
+    from elab_doc_sync.sync import _tag_names
+
+    client, eid = server
+    assert _tag_names(client.get_item(eid).get('tags')) == []
+    assert client.get_tags('items', eid) == []
+    url, key, verify_ssl = connection_settings()
+    config = tmp_path / '.elab-sync.yaml'
+    config.write_text(yaml.safe_dump({
+        'elabftw': {'url': url, 'api_key': key, 'verify_ssl': verify_ssl},
+        'targets': [{'docs_dir': 'docs', 'body_format': 'md'}],
+    }))
+    monkeypatch.setattr('sys.argv', ['esync', 'pull', '--config', str(config), '--id', str(eid), '--entity', 'items'])
+    main()
+    note = next((tmp_path / 'docs').glob('*.md'))
+    note.write_text('Local edit without tags')
+    monkeypatch.setattr('sys.argv', ['esync', 'push', '--config', str(config)])
+    main()
+    assert client.get_item(eid)['body'] == 'Local edit without tags'
+    target = load_config(config).targets[0]
+    target.tags = ['elab-doc-sync-test']
+    syncer = EachDocsSyncer(client, target, tmp_path)
+    assert syncer.sync() == 1
+    assert _tag_names(client.get_item(eid).get('tags')) == ['elab-doc-sync-test']

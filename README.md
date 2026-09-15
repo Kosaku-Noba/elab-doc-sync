@@ -10,7 +10,7 @@ Markdown ドキュメントを eLabFTW に同期する CLI ツール。`esync` �
 
 通常のpullはローカル未編集の文書を更新し、両側に変更がある場合は競合として停止します。バックアップ・復元、紐付けを保持する `mv`、途中失敗からの再開に対応しました。同期モードは `each` のみです。
 
-既存ユーザーは更新前に [v1.0への移行と復旧](docs/13_MIGRATION_V1.md) を確認してください。検証環境・結果は [リリース検証](docs/14_RELEASE_VALIDATION.md) に記載しています。
+既存ユーザーは更新前に [v1.0への移行と復旧](docs/13_MIGRATION_V1.md) を確認してください。変更履歴は [Changelog](CHANGELOG.md)、検証環境・結果は [リリース検証](docs/14_RELEASE_VALIDATION.md) に記載しています。
 
 ---
 

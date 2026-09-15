@@ -701,3 +701,32 @@ def test_old_pending_guard_resumes_without_false_conflict(project, old_tags):
     assert syncer.sync() == 1
     assert client.create_item.call_count == 1
     assert not syncer._pending()
+
+
+@pytest.mark.parametrize("tags", [None, "", [], [None]])
+def test_untagged_article_pull_then_push(project, tags):
+    root, client, remote, syncer, args = project
+    remote[42] = {"id": 42, "title": "untagged", "body": "remote body", "content_type": 2, "tags": tags}
+    # Exercise ID-based dispatch with multiple targets and no tag match.
+    cfg = root / '.elab-sync.yaml'
+    raw = yaml.safe_load(cfg.read_text())
+    raw['targets'].append({'title': 'Other', 'docs_dir': 'other', 'tags': ['other']})
+    cfg.write_text(yaml.safe_dump(raw))
+    with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
+        assert cmd_pull(args(id=[42], entity='items', auto=True)) == 0
+    note = root / 'docs/untagged.md'
+    assert note.read_text().strip() == 'remote body'
+    note.write_text('local edit')
+    assert syncer.sync() == 1
+    assert remote[42]['body'] == 'local edit'
+    assert syncer.inspect('untagged.md', 42)['state'] == '最新'
+
+
+def test_push_adds_first_tag_when_tags_endpoint_returns_null(project):
+    root, client, remote, syncer, args = project
+    (root / 'docs/a.md').write_text('body')
+    syncer.target.tags = ['first']
+    client.get_tags.side_effect = lambda entity, eid: None
+    assert syncer.sync() == 1
+    client.add_tag.assert_called_once_with('items', 1, 'first')
+    assert syncer.inspect('a.md', 1)['state'] == '最新'

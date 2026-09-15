@@ -932,13 +932,13 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
 
 
 
-def _sync_tags(client: ELabFTWClient, entity_type: str, entity_id: int, desired_tags: list[str]) -> None:
-    """設定のタグをリモートに追記する（既存タグは外さない）。best-effort。"""
+def _sync_tags(client: ELabFTWClient, entity_type: str, entity_id: int, desired_tags: list[str]) -> bool:
+    """設定のタグを追記し、取得・更新に失敗した場合はFalseを返す。"""
     if not desired_tags:
         return True
     try:
         remote = client.get_tags(entity_type, entity_id)
-        remote_names = {(t.get("tag") if isinstance(t, dict) else str(t)) for t in remote}
+        remote_names = set(_tag_names(remote))
         for tag in desired_tags:
             if tag not in remote_names:
                 client.add_tag(entity_type, entity_id, tag)
