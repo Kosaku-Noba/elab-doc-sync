@@ -40,7 +40,10 @@ def project(tmp_path):
     client.get_item.side_effect = get
     client.update_item.side_effect = lambda eid, **kw: remote[eid].update(kw)
     client.list_uploads.return_value = []
-    client.get_tags.return_value = []
+    client.get_tags.side_effect = lambda entity, eid: copy.deepcopy(remote[eid].get("tags") or [])
+    client.add_tag.side_effect = lambda entity, eid, tag: remote[eid].setdefault("tags", []).append(tag)
+    client.resolve_category_id.side_effect = lambda entity, category: int(category)
+    client.patch_entity.side_effect = lambda entity, eid, **kw: remote[eid].update(kw)
     target = load_config(cfg).targets[0]
     syncer = EachDocsSyncer(client, target, tmp_path)
     def args(**kw):
@@ -157,7 +160,7 @@ def test_failed_metadata_is_not_marked_complete(project):
     assert syncer.failures == 1
     assert syncer._pending()
     assert not syncer._state('a.md')
-    client.add_tag.side_effect = None
+    client.add_tag.side_effect = lambda entity, eid, tag: remote[eid].setdefault("tags", []).append(tag)
     assert syncer.sync() == 1
     assert client.create_item.call_count == 1
 
@@ -604,3 +607,57 @@ def test_external_attachment_directory_is_rejected_before_post(project):
     finally:
         note.unlink()
         outside.rmdir()
+
+
+def test_concurrent_category_change_after_our_patch_is_not_adopted(project):
+    root, client, remote, syncer, args = push_note(project)
+    syncer.target.category = 10
+    def override_category(entity, eid, **fields):
+        remote[eid].update(fields)
+        remote[eid]['category'] = 99
+    client.patch_entity.side_effect = override_category
+    assert syncer.sync() == 0
+    assert syncer.failures == 1
+    assert remote[1]['category'] == 99
+    assert syncer.inspect('a.md', 1)['state'] == '競合'
+    assert syncer._pending()
+
+
+def test_concurrent_tag_change_after_our_add_is_not_adopted(project):
+    root, client, remote, syncer, args = push_note(project)
+    syncer.target.tags = ['ours']
+    def add_then_other_user(entity, eid, tag):
+        remote[eid]['tags'] = [tag, 'third-party']
+    client.add_tag.side_effect = add_then_other_user
+    assert syncer.sync() == 0
+    assert syncer.failures == 1
+    assert syncer.inspect('a.md', 1)['state'] == '競合'
+    assert syncer._pending()
+
+
+def test_expected_category_and_tag_changes_complete(project):
+    root, client, remote, syncer, args = push_note(project)
+    syncer.target.category = 10
+    syncer.target.tags = ['ours']
+    assert syncer.sync() == 1
+    assert remote[1]['category'] == 10
+    assert remote[1]['tags'] == ['ours']
+    assert syncer.inspect('a.md', 1)['state'] == '最新'
+
+
+def test_category_change_at_final_read_is_not_adopted(project):
+    root, client, remote, syncer, args = push_note(project)
+    syncer.target.category = 10
+    calls_after_patch = 0
+    get = client.get_item.side_effect
+    def get_with_late_change(eid):
+        nonlocal calls_after_patch
+        if remote[eid].get('category') == 10:
+            calls_after_patch += 1
+            if calls_after_patch == 2:
+                remote[eid]['category'] = 99
+        return get(eid)
+    client.get_item.side_effect = get_with_late_change
+    assert syncer.sync() == 0
+    assert remote[1]['category'] == 99
+    assert syncer._pending()

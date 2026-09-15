@@ -60,6 +60,22 @@ def _compute_hash(body: str) -> str:
     return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
 
 
+def _tag_names(value):
+    if isinstance(value, str):
+        value = value.split("|")
+    return sorted({str(t.get("tag")) if isinstance(t, dict) else str(t) for t in (value or [])
+                   if (t.get("tag") if isinstance(t, dict) else t)})
+
+
+def _category_value(value):
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return str(value)
+
+
 def _compute_meta_hash(title: str, category, tags: list[str]) -> str:
     """タイトル・カテゴリ・タグからメタデータハッシュを計算する。"""
     data = json.dumps({"title": title, "category": category, "tags": sorted(tags or [])},
@@ -1065,7 +1081,7 @@ class EachDocsSyncer:
 
     def _remote_signature(self, data, uploads):
         return {"body": data.get("body") or "", "title": data.get("title") or "",
-                "content_type": data.get("content_type"), "category": data.get("category"), "tags": data.get("tags"),
+                "content_type": data.get("content_type"), "category": _category_value(data.get("category")), "tags": _tag_names(data.get("tags")),
                 "uploads": sorted([{k: u.get(k) for k in ("id", "real_name", "hash", "sha256", "filesize", "long_name")}
                                    for u in uploads], key=lambda u: str(u["id"]))}
 
@@ -1239,6 +1255,9 @@ class EachDocsSyncer:
                 print(f"  [{f.stem}] {state}: {result.get('error', '')}")
                 continue
             owned = pending.get(f.name, {})
+            # before/expected are the body fields before/after our PATCH. Either
+            # may be observed after a lost response. guard covers metadata and
+            # uploads: these must still match the last confirmed checkpoint.
             expected = owned.get("expected")
             before = owned.get("before")
             current_guard = {k: v for k, v in self._remote_signature(result.get("data", {}), result.get("uploads", [])).items() if k not in ("body", "title", "content_type")}
@@ -1300,26 +1319,36 @@ class EachDocsSyncer:
                 self._save_pending(pending)
                 self._update_entity(eid, **expected)
                 meta_changed = force or result.get("data") is None or resuming or self._has_meta_changed(f.name, f.stem, self.target.category, self.target.tags)
-                def checkpoint(allowed_fields=()):
+                def checkpoint(expected_changes=None):
+                    """Confirm the predicted result, never adopt an unknown update.
+
+                    expected_changes contains only values our completed operation
+                    was intended to produce (tag union or resolved category ID).
+                    All other guard fields must remain exactly unchanged.
+                    """
                     observed = self._get_entity(eid)
                     signature = self._remote_signature(observed, self.client.list_uploads(self.entity, eid))
                     observed_guard = {k: v for k, v in signature.items() if k not in ("body", "title", "content_type")}
-                    if any(value != pending[f.name]["guard"].get(key) for key, value in observed_guard.items() if key not in allowed_fields):
+                    expected_guard = {**pending[f.name]["guard"], **(expected_changes or {})}
+                    if observed_guard != expected_guard:
                         raise ConflictError("同期処理中にリモートのメタデータ・添付が変更されました。diffで確認してください")
                     pending[f.name]["guard"] = observed_guard
                     self._save_pending(pending)
+                    return observed, signature["uploads"]
 
                 checkpoint()
                 tags_ok = _sync_tags(self.client, self.entity, eid, self.target.tags) if meta_changed else True
                 if not tags_ok:
                     raise RuntimeError("本文更新後にタグ同期が失敗しました。リモートを確認して再実行してください")
                 if meta_changed:
-                    checkpoint(("tags",))
-                category_ok = _sync_category(self.client, self.entity, eid, self.target.category) if meta_changed else True
+                    checkpoint({"tags": sorted(set(pending[f.name]["guard"]["tags"]) | set(self.target.tags))})
+                category_id = (self.client.resolve_category_id(self.entity, self.target.category)
+                               if meta_changed and self.target.category is not None else None)
+                category_ok = _sync_category(self.client, self.entity, eid, category_id) if meta_changed else True
                 if not category_ok:
                     raise RuntimeError("本文更新後にカテゴリ同期が失敗しました。リモートを確認して再実行してください")
                 if meta_changed:
-                    checkpoint(("category",))
+                    checkpoint({"category": _category_value(category_id)} if category_id is not None else None)
                 att_ok = True
                 if self.target.attachments_dir:
                     att_ok = _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, eid, self.client,
@@ -1328,6 +1357,9 @@ class EachDocsSyncer:
                     raise RuntimeError("本文更新後、メタデータまたは添付の同期が失敗しました。再実行してください")
                 data = self._get_entity(eid)
                 uploads = self.client.list_uploads(self.entity, eid)
+                actual = self._remote_signature(data, uploads)
+                if any(actual[k] != pending[f.name]["guard"][k] for k in ("category", "tags")):
+                    raise ConflictError("完了確認時にリモートのカテゴリ・タグが期待値と異なります")
                 self._save_baseline(f.name, raw_body, data, uploads)
                 pending.pop(f.name, None)
                 self._save_pending(pending)
