@@ -661,3 +661,43 @@ def test_category_change_at_final_read_is_not_adopted(project):
     assert syncer.sync() == 0
     assert remote[1]['category'] == 99
     assert syncer._pending()
+
+
+@pytest.mark.parametrize('old_tags', [None, 'a|b', [{'id': 1, 'tag': 'a'}, {'id': 2, 'tag': 'b'}]])
+def test_old_state_metadata_is_normalized_without_writing(project, old_tags):
+    root, client, remote, syncer, args = push_note(project)
+    remote[1]['category'] = 10
+    remote[1]['tags'] = [] if old_tags is None else ['a', 'b']
+    path = syncer.hash_dir / 'a.md.state.json'
+    state = json.loads(path.read_text())
+    state['remote']['category'] = '10'
+    state['remote']['tags'] = old_tags
+    path.write_text(json.dumps(state))
+    before = path.read_bytes()
+    assert syncer.inspect('a.md', 1)['state'] == '最新'
+    assert path.read_bytes() == before
+    (root / 'docs/a.md').write_text('local edit')
+    assert syncer.inspect('a.md', 1)['state'] == '送信待ち'
+    assert syncer.sync() == 1
+    assert remote[1]['body'] == 'local edit'
+
+
+@pytest.mark.parametrize('old_tags', [None, 'a|b'])
+def test_old_pending_guard_resumes_without_false_conflict(project, old_tags):
+    root, client, remote, syncer, args = push_note(project)
+    remote[1]['category'] = 10
+    remote[1]['tags'] = [] if old_tags is None else ['a', 'b']
+    syncer._save_baseline('a.md', 'original', client.get_item(1), [])
+    (root / 'docs/a.md').write_text('local edit')
+    update = client.update_item.side_effect
+    client.update_item.side_effect = requests.Timeout()
+    assert syncer.sync() == 0
+    path = syncer.hash_dir / 'pending.json'
+    pending = json.loads(path.read_text())
+    pending['a.md']['guard']['category'] = '10'
+    pending['a.md']['guard']['tags'] = old_tags
+    path.write_text(json.dumps(pending))
+    client.update_item.side_effect = update
+    assert syncer.sync() == 1
+    assert client.create_item.call_count == 1
+    assert not syncer._pending()

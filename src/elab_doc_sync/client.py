@@ -30,6 +30,17 @@ class ELabFTWClient:
         resp.raise_for_status()
         return resp
 
+    def _get_entity(self, path: str) -> dict:
+        response = self._req("GET", path)
+        data = response.json()
+        if str(data.get("state")) == "3":
+            # eLabFTW can return HTTP 200 for soft-deleted entities. Present the
+            # same missing-entity signal used by sync/pull for actual HTTP 404.
+            missing = requests.Response()
+            missing.status_code = 404
+            raise requests.HTTPError(f"削除済み記事: {path}", response=missing)
+        return data
+
     def _parse_id(self, resp: requests.Response) -> int:
         loc = resp.headers.get("location", "")
         try:
@@ -68,7 +79,7 @@ class ELabFTWClient:
         return self._req("GET", "/api/v2/items").json()
 
     def get_item(self, item_id: int) -> dict:
-        return self._req("GET", f"/api/v2/items/{item_id}").json()
+        return self._get_entity(f"/api/v2/items/{item_id}")
 
     def create_item(self, title: str = "", body: str = "") -> int:
         resp = self._req("POST", "/api/v2/items")
@@ -89,7 +100,7 @@ class ELabFTWClient:
         return self._req("GET", "/api/v2/experiments").json()
 
     def get_experiment(self, exp_id: int) -> dict:
-        return self._req("GET", f"/api/v2/experiments/{exp_id}").json()
+        return self._get_entity(f"/api/v2/experiments/{exp_id}")
 
     def create_experiment(self, title: str = "", body: str = "") -> int:
         resp = self._req("POST", "/api/v2/experiments")

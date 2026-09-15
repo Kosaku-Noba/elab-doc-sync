@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 import pytest
-import yaml
+from integration_support import connection_settings, record_entity, delete_test_entity
 
 from elab_doc_sync.client import ELabFTWClient
 from elab_doc_sync.cli import _pull_each_entity
@@ -21,12 +21,12 @@ pytestmark = [pytest.mark.integration, pytest.mark.skipif(not CONFIG_PATH, reaso
 
 @pytest.fixture
 def server(request):
-    raw = yaml.safe_load(Path(CONFIG_PATH).read_text(encoding='utf-8'))
-    connection = raw.get('elabftw') or raw['profiles']['default']
-    client = ELabFTWClient(connection['url'], connection['api_key'], connection.get('verify_ssl', True))
+    url, key, verify_ssl = connection_settings()
+    client = ELabFTWClient(url, key, verify_ssl)
     response = client._req('POST', '/api/v2/items')
     eid = client._parse_id(response)
-    request.addfinalizer(lambda: client.delete_item(eid))
+    request.addfinalizer(lambda: delete_test_entity(client, eid))
+    record_entity("created", eid)
     client.update_item(eid, title='[test] elab-doc-sync v1', body='', content_type=2)
     return client, eid
 

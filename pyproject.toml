@@ -1,6 +1,6 @@
 [project]
 name = "elab-doc-sync"
-version = "0.5.3"
+version = "1.0.0"
 description = "Sync Markdown docs to eLabFTW items with image upload and diff-based updates"
 requires-python = ">=3.10"
 dependencies = [
@@ -30,5 +30,5 @@ packages = ["src/elab_doc_sync"]
 
 [tool.pytest.ini_options]
 markers = [
-    "integration: tests requiring network access to demo.elabftw.net",
+    "integration: tests requiring explicitly configured eLabFTW access",
 ]

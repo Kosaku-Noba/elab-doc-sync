@@ -140,7 +140,7 @@ wheels = [
 
 [[package]]
 name = "elab-doc-sync"
-version = "0.5.3"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "markdown" },

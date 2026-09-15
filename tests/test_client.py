@@ -495,3 +495,14 @@ def test_get_active_team_no_team_field(mock_req, client):
     team_id, team_name = client.get_active_team()
     assert team_id == 0
     assert team_name is None
+
+
+@pytest.mark.parametrize("method", ["get_item", "get_experiment"])
+@pytest.mark.parametrize("state", [3, "3"])
+@patch("elab_doc_sync.client.requests.request")
+def test_soft_deleted_entity_is_missing(mock_req, method, state, client):
+    from requests import HTTPError
+    mock_req.return_value = _mock_response({"id": 42, "state": state})
+    with pytest.raises(HTTPError) as error:
+        getattr(client, method)(42)
+    assert error.value.response.status_code == 404

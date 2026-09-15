@@ -1,10 +1,10 @@
-"""Integration tests against demo.elabftw.net.
+"""Integration tests against demo.elabftw.net or ELABFTW_TEST_CONFIG.
 
-Requires ELABFTW_DEMO_API_KEY environment variable or skip.
+Requires ELABFTW_TEST_CONFIG or ELABFTW_DEMO_API_KEY; otherwise skipped.
 Run with: ELABFTW_DEMO_API_KEY=<key> UV_CACHE_DIR=/tmp/uv-cache uv run pytest tests/test_integration.py -v
 
 Notes:
-- テストは demo 環境に一時的に item を作成し、終了時に削除する
+- テストは指定先に一時的に item を作成し、終了時に削除する
 - cleanup が途中失敗した場合は [test] prefix 付き item が残る可能性がある
 """
 
@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from integration_support import connection_settings, record_entity, delete_test_entity
 from elab_doc_sync.client import ELabFTWClient
 from elab_doc_sync.sync import (
     _download_attachments,
@@ -25,8 +26,7 @@ from elab_doc_sync.sync import (
 )
 from elab_doc_sync.config import TargetConfig
 
-DEMO_URL = "https://demo.elabftw.net"
-API_KEY = os.environ.get("ELABFTW_DEMO_API_KEY", "")
+DEMO_URL, API_KEY, VERIFY_SSL = connection_settings()
 
 pytestmark = [
     pytest.mark.skipif(not API_KEY, reason="ELABFTW_DEMO_API_KEY not set"),
@@ -36,15 +36,11 @@ pytestmark = [
 
 @pytest.fixture
 def client():
-    return ELabFTWClient(DEMO_URL, API_KEY, verify_ssl=True)
+    return ELabFTWClient(DEMO_URL, API_KEY, verify_ssl=VERIFY_SSL)
 
 
 def _safe_delete(client, item_id):
-    try:
-        client.delete_item(item_id)
-    except Exception as e:
-        import warnings
-        warnings.warn(f"Failed to delete test item #{item_id} on demo.elabftw.net: {e}")
+    delete_test_entity(client, item_id)
 
 
 @pytest.fixture
@@ -56,6 +52,7 @@ def test_item(client, request):
     resp = client._req("POST", "/api/v2/items")
     item_id = client._parse_id(resp)
     request.addfinalizer(lambda: _safe_delete(client, item_id))
+    record_entity("created", item_id)
     try:
         client.update_item(item_id, title="[test] integration")
     except Exception:

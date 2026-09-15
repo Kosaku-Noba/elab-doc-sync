@@ -76,6 +76,12 @@ def _category_value(value):
         return str(value)
 
 
+def _normalize_metadata_signature(signature):
+    """Normalize older saved signatures in memory without changing their evidence."""
+    return {**signature, "category": _category_value(signature.get("category")),
+            "tags": _tag_names(signature.get("tags"))}
+
+
 def _compute_meta_hash(title: str, category, tags: list[str]) -> str:
     """タイトル・カテゴリ・タグからメタデータハッシュを計算する。"""
     data = json.dumps({"title": title, "category": category, "tags": sorted(tags or [])},
@@ -1014,7 +1020,11 @@ class EachDocsSyncer:
 
     def _state(self, filename):
         path = self.hash_dir / f"{filename}.state.json"
-        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+        if not path.exists():
+            return None
+        state = json.loads(path.read_text(encoding="utf-8"))
+        state["remote"] = _normalize_metadata_signature(state["remote"])
+        return state
 
     def _has_changed(self, filename, body):
         state = self._state(filename)
@@ -1170,7 +1180,11 @@ class EachDocsSyncer:
 
     def _pending(self):
         path = self.hash_dir / "pending.json"
-        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        pending = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        for item in pending.values():
+            if item.get("guard") is not None:
+                item["guard"] = _normalize_metadata_signature(item["guard"])
+        return pending
 
     def _save_pending(self, data):
         write_json(self.hash_dir / "pending.json", data)
