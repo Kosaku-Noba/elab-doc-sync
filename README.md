@@ -94,7 +94,7 @@ export ELABFTW_API_KEY="your_key"
 .elab-sync-recovery.json
 ```
 
-独自の `id_file` を設定した場合は、その保存先も除外してください。これらの記録は復旧に必要なので、一括削除しないでください。
+独自の `id_file` を設定した場合は、専用の親ディレクトリ全体も除外してください。例えば `id_file: .sync-state/team/default.id` なら `.sync-state/team/` を `.gitignore` に追加します。同じ場所に紐付けやリモート本文を含む状態記録も保存するため、IDファイル単体の除外では不十分です。これらの記録は復旧に必要なので、一括削除しないでください。
 
 ---
 
