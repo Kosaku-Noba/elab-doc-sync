@@ -2,6 +2,8 @@
 
 import argparse
 import difflib
+import glob
+import re
 import json
 import shutil
 import sys
@@ -1290,8 +1292,14 @@ def cmd_rm(args):
         fail("--id 指定時は --entity も指定してください")
     if args.entity and not args.id:
         fail("--entity は --id と一緒に指定してください")
-    if not args.files and not args.id:
-        fail("ファイルパスまたは --id と --entity を指定してください")
+    regexes = []
+    for expression in getattr(args, "regex", None) or []:
+        try:
+            regexes.append(re.compile(expression))
+        except re.error as exc:
+            fail(f"正規表現が不正です: {expression}: {exc}")
+    if not args.files and not args.id and not regexes:
+        fail("ファイル・ディレクトリ・パターン、--regex、または --id と --entity を指定してください")
 
     config_path = Path(args.config).resolve()
     config = load_config(config_path)
@@ -1307,7 +1315,16 @@ def cmd_rm(args):
 
     selectors = [("file", value) for value in args.files]
     selectors += [("id", value) for value in (args.id or [])]
+    selectors += [("regex", value) for value in regexes]
     for kind, value in selectors:
+        selector_path = Path(value).resolve() if kind == "file" else None
+        is_pattern = kind == "file" and not selector_path.exists() and glob.has_magic(value)
+        directories = []
+        if kind == "file":
+            if selector_path.is_dir():
+                directories = [selector_path]
+            elif is_pattern:
+                directories = [Path(p).resolve() for p in glob.glob(value) if Path(p).is_dir()]
         matches = []
         for index, (syncer, mapping, excluded, selected) in enumerate(states):
             if kind == "id" and syncer.entity != _normalize_entity(args.entity):
@@ -1320,7 +1337,13 @@ def cmd_rm(args):
                 if not paths:
                     paths = [syncer.docs_dir / name]
                 if kind == "file":
-                    matching_paths = [p for p in paths if p.resolve() == Path(value).resolve()]
+                    matching_paths = [p for p in paths if (
+                        p.resolve() == selector_path
+                        or any(p.resolve().is_relative_to(d) for d in directories)
+                        or (is_pattern and p.resolve().match(str(selector_path)))
+                    )]
+                elif kind == "regex":
+                    matching_paths = paths if value.search(name) else []
                 else:
                     matching_paths = paths if mapping.get(name) == value else []
                 if matching_paths:
@@ -1676,7 +1699,8 @@ def main():
     link_parser.add_argument("--new", action="store_true", help="対応するリモート記事が存在しないと確認後、新規追跡を再開")
 
     rm_parser = sub.add_parser("rm", help="文書を保持して追跡解除し、今後の同期から除外", parents=[common])
-    rm_parser.add_argument("files", nargs="*", help="解除するファイルパス（カレントディレクトリ基準、複数指定可）")
+    rm_parser.add_argument("files", nargs="*", help="解除するファイル・ディレクトリ・glob（カレントディレクトリ基準、複数指定可）")
+    rm_parser.add_argument("--regex", action="append", help="ファイル名に部分一致する正規表現（複数指定可）")
     rm_parser.add_argument("--id", type=int, action="append", help="解除するリモート ID（複数指定可）")
     rm_parser.add_argument("--entity", choices=["items", "experiments", "resources"], help="ID のエンティティ種別")
     rm_parser.add_argument("--local", action="store_true", help="対象のローカル Markdown ファイルも削除する")

@@ -133,6 +133,10 @@ esync clone --url URL --entity TYPE --id ID [--dir DIR] [--no-verify]
 ## rm — 追跡解除
 
 ```bash
+esync rm elab_doc/elab*                      # ワイルドカードで複数選択
+esync rm 'docs/note*.md'                     # esync 側で glob を解釈
+esync rm docs/subdir                        # 配下の追跡文書を再帰的に選択
+esync rm --regex '^note.*\.md$'              # ファイル名に正規表現で一致
 esync rm docs/note.md
 esync rm docs/a.md docs/b.md
 esync rm --id 42 --entity items
@@ -144,6 +148,8 @@ esync rm --id 42 --entity experiments --local --dry-run
 指定文書の ID の紐付けと同期ハッシュを削除し、以後の push・status の対象から継続的に除外します。通常の pull も解除した ID を取得しなくなります。リモートのデータは保持します。
 
 ローカルファイルは既定で保持し、`--local` 指定時だけ対象の Markdown ファイルを削除します。画像・添付ファイルは保持します。`--dry-run` は追跡解除と削除の予定を表示し、ファイルを変更しません。
+
+ディレクトリ指定は配下の追跡済み・除外済み文書を再帰的に選択し、未追跡ファイルやディレクトリ自体は削除しません。パスの glob は `*`、`?`、`[]` に対応します。引用符なしの glob はシェルで展開されるため、未追跡ファイルも展開された場合はエラーになります。引用符で囲むと esync が追跡情報から選択します。`--regex` は拡張子を含むファイル名だけに部分一致し、ディレクトリ名には一致しません。複数のパス・glob・`--regex`・ID は和集合として扱い、重複は一度だけ処理します。各指定で一致がない場合や正規表現が不正な場合は変更せずエラーになります。
 
 ファイルパスはカレントディレクトリ基準（絶対パスも可）です。ID 指定には `--entity` が必須で、`resources` は `items` と同じ意味です。複数ターゲットに一致する場合は `--target` で絞り込んでください。未追跡の指定を含む場合は変更せずエラーになります。ローカルファイルが既に消えていても、残っている追跡情報から解除できます。
 

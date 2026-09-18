@@ -174,3 +174,69 @@ def test_untrack_reports_link_migration(project, capsys):
     out = capsys.readouterr().out
     assert '参照元のリンクを eLabFTW の文書 URL に変更' in out
     assert out.index('相対リンク') < out.index('追跡解除予定')
+
+
+@pytest.mark.parametrize('selector', [
+    ('docs/note.md', 'docs/keep.md'), ('docs',), ('docs/*.md',),
+    ('--regex', r'^(note|keep)\.md$'),
+    ('--regex', '^note', '--regex', '^keep'),
+])
+@pytest.mark.parametrize('delete', [False, True])
+def test_bulk_selectors(project, selector, delete):
+    (project / 'docs/untracked.txt').write_text('keep')
+    run(*selector, *(['--local'] if delete else []))
+    assert json.loads((project / '.ids/mapping.json').read_text()) == {}
+    assert json.loads((project / '.ids/excluded.json').read_text()) == ['keep.md', 'note.md']
+    assert (project / 'docs/note.md').exists() is not delete
+    assert (project / 'docs/keep.md').exists() is not delete
+    assert (project / 'docs/untracked.txt').read_text() == 'keep'
+
+
+@pytest.mark.parametrize('selector', [('docs/n*',), ('docs/n?te.md',),
+    ('docs/[n]ote.md',), ('--regex', '^note')])
+def test_pattern_selects_only_matching_document(project, selector):
+    run(*selector)
+    assert json.loads((project / '.ids/mapping.json').read_text()) == {'keep.md': 43}
+
+
+@pytest.mark.parametrize('selector', [('docs',), ('docs/*',), ('--regex', 'md$')])
+def test_bulk_dry_run(project, selector):
+    before = snapshot(project)
+    run(*selector, '--local', '--dry-run')
+    assert snapshot(project) == before
+
+
+@pytest.mark.parametrize('selector', [('docs/no-match*',), ('--regex', '['),
+    ('--regex', '^docs/'), ('docs/note.md', '--regex', 'missing')])
+def test_invalid_bulk_selection_is_atomic(project, selector):
+    before = snapshot(project)
+    with pytest.raises(SystemExit):
+        run(*selector, '--local')
+    assert snapshot(project) == before
+
+
+@pytest.mark.parametrize('selector', [('docs/sub',), ('docs/s*',), ('docs',)])
+def test_directory_recurses_only_tracked_documents(project, selector):
+    config = project / '.elab-sync.yaml'
+    data = yaml.safe_load(config.read_text())
+    data['targets'][0]['pattern'] = '**/*.md'
+    config.write_text(yaml.safe_dump(data))
+    sub = project / 'docs/sub'
+    sub.mkdir()
+    (project / 'docs/note.md').rename(sub / 'note.md')
+    (sub / 'untracked.md').write_text('keep')
+    run(*selector, '--local')
+    assert not (sub / 'note.md').exists()
+    assert (sub / 'untracked.md').read_text() == 'keep'
+    assert sub.is_dir()
+
+
+def test_missing_local_file_matches_glob(project):
+    (project / 'docs/note.md').unlink()
+    run('docs/n*', '--local')
+    assert json.loads((project / '.ids/mapping.json').read_text()) == {'keep.md': 43}
+
+
+def test_overlapping_selectors_are_deduplicated(project, capsys):
+    run('docs/note.md', 'docs/n*', '--regex', '^note', '--local')
+    assert capsys.readouterr().out.count('追跡解除しました:') == 1
