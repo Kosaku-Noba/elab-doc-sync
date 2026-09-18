@@ -158,6 +158,7 @@ esync diff
 
 ```bash
 esync rm elab_doc/elab*                      # ワイルドカードで複数選択
+esync rm 'docs/*' --local --dry-run          # 一致するディレクトリ配下も含めて予定を確認
 esync rm 'docs/note*.md'                     # esync 側で glob を解釈
 esync rm docs/subdir                        # 配下の追跡文書を再帰的に選択
 esync rm --regex '^note.*\.md$'              # ファイル名に正規表現で一致
