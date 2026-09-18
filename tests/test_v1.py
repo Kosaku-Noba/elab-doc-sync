@@ -187,11 +187,11 @@ def test_force_push_saves_remote_without_secrets(project):
     remote[1]['body'] = 'remote edits'
     assert syncer.sync(force=True) == 1
     manifest = next((root / BACKUPS).glob('*/manifest.json'))
-    saved = json.loads(manifest.read_text())
+    saved = json.loads(manifest.read_text(encoding="utf-8"))
     assert saved['remote']['body'] == 'remote edits'
-    assert 'SECRET' not in manifest.read_text()
+    assert 'SECRET' not in manifest.read_text(encoding="utf-8")
     restore(root, manifest.parent.name)
-    exported = json.loads((root / BACKUPS / f'{manifest.parent.name}-remote.json').read_text())
+    exported = json.loads((root / BACKUPS / f'{manifest.parent.name}-remote.json').read_text(encoding="utf-8"))
     assert exported['body'] == 'remote edits'
     assert remote[1]['body'] == 'original'
 

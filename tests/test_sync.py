@@ -942,7 +942,8 @@ def test_download_attachments_preserves_permissions_on_overwrite(tmp_path):
     att_dir.mkdir()
     existing = att_dir / "report.pdf"
     existing.write_bytes(b"old")
-    existing.chmod(0o755)  # 特殊な権限を設定
+    existing.chmod(0o755)  # Windows では実行ビットが反映されない
+    original_mode = existing.stat().st_mode & 0o777
 
     client = MagicMock()
     client.list_uploads.return_value = [
@@ -954,7 +955,7 @@ def test_download_attachments_preserves_permissions_on_overwrite(tmp_path):
 
     assert existing.read_bytes() == b"new content"
     actual_mode = existing.stat().st_mode & 0o777
-    assert actual_mode == 0o755, f"権限が復元されていない: {oct(actual_mode)}"
+    assert actual_mode == original_mode, f"権限が復元されていない: {oct(actual_mode)}"
 
 
 # S-104: _download_attachments が書き込み失敗時にテンポラリファイルを残さない
