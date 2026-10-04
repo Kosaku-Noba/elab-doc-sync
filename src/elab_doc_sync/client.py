@@ -248,7 +248,9 @@ class ELabFTWClient:
             if cat.get("title") == category:
                 return cat["id"]
         raise ValueError(f"カテゴリ「{category}」が見つかりません（API から読めないカテゴリの可能性があります）。"
-                         f"「esync category show」で ID を確認し、category: 64 のように数字で指定してください")
+                         f"同じカテゴリの文書から「esync category show --id <ID> --entity {entity_type}」で"
+                         f"カテゴリ ID を確認し、数字で指定してください"
+                         f"（設定ファイル: category: 64 / CLI: esync category set 64 --id <ID> --entity {entity_type}）")
 
     def resolve_category_name(self, entity_type: str, category_id: int) -> str | None:
         """カテゴリ ID を名前に解決する。見つからなければ None。"""
