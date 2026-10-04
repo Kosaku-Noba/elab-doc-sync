@@ -90,6 +90,36 @@ def test_upload_file(mock_req, client, tmp_path):
     assert "img.png" in result["url"]
 
 
+# CL-06b: 一覧が新しい順でも、Location の ID でアップロードした添付を選ぶ
+@patch("elab_doc_sync.client.requests.request")
+def test_upload_file_picks_new_upload_by_location(mock_req, client, tmp_path):
+    img = tmp_path / "img.png"
+    img.write_bytes(b"new")
+    upload_resp = _mock_response(headers={"location": "https://elab.example.com/api/v2/items/1/uploads/101"})
+    list_resp = _mock_response([
+        {"real_name": "img.png", "long_name": "new-blob", "storage": "2", "id": 101},
+        {"real_name": "img.png", "long_name": "old-blob", "storage": "2", "id": 100},
+    ])
+    mock_req.side_effect = [upload_resp, list_resp]
+    result = client.upload_file("items", 1, str(img))
+    assert result["id"] == 101
+    assert "new-blob" in result["url"]
+
+
+# CL-06c: Location がなければ同じハッシュで ID が最大の添付を選ぶ（一覧の順序に依存しない）
+@patch("elab_doc_sync.client.requests.request")
+def test_upload_file_without_location_picks_matching_hash(mock_req, client, tmp_path):
+    import hashlib
+    img = tmp_path / "img.png"
+    img.write_bytes(b"new")
+    list_resp = _mock_response([
+        {"real_name": "img.png", "long_name": "new-blob", "storage": "2", "id": 101, "hash": hashlib.sha256(b"new").hexdigest()},
+        {"real_name": "img.png", "long_name": "old-blob", "storage": "2", "id": 100, "hash": hashlib.sha256(b"old").hexdigest()},
+    ])
+    mock_req.side_effect = [_mock_response(), list_resp]
+    assert client.upload_file("items", 1, str(img))["id"] == 101
+
+
 # CL-07
 @patch("elab_doc_sync.client.requests.request")
 def test_upload_file_no_url(mock_req, client, tmp_path):

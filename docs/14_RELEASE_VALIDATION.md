@@ -67,12 +67,20 @@ wheel/sdist のビルドと、独立した Python 3.12 環境への wheel イン
 - diff と status で、変わった項目が分からない
 - 差し替えた画像の古い版が残る
 
+実機検証の途中で、同じ名前の画像を差し替えても、本文が古い版を指したままになる既存の不具合も見つかり、修正しました。
+
 | 環境 | 結果 |
 |---|---|
-| Linux / Python 3.10.20 | 425 passed、9 skipped |
-| Linux / Python 3.12.3 | 425 passed、9 skipped |
-| Linux / Python 3.14.3 | 425 passed、9 skipped |
+| Linux / Python 3.10.20 | 427 passed、11 skipped |
+| Linux / Python 3.12.3 | 427 passed、11 skipped |
+| Linux / Python 3.14.3 | 427 passed、11 skipped |
+| 実機（eLabFTW 5.5.14、ユーザーが許可した設定先） | 11 passed |
 
-wheel/sdist のビルドと、独立した Python 3.12 環境への wheel インストール後の `esync --version`（1.0.2）・`esync diff --help`・`esync category --help` を確認しました。9件のスキップは実機接続テストです。
+11件のスキップは実機接続テストです。実機テストには、v1.0.2 で追加した次の2件を含みます。作成した一時記事はすべて、削除後に GET で削除済みであることを確認しました。
 
-今回はリモート API の扱い（カテゴリの PATCH の省略、古い版の添付の削除、再開の判定）を変えています。ただし、実機での往復同期はこのリリース作業では実行していません。eLabFTW の保存時の書き換え（行頭の `>` を `&gt;` にする）と、一覧に出ないカテゴリ（個別 GET が 403）は、利用者の報告にある API 応答を状態付きのモックで再現してテストしました。Windows は GitHub Actions の結果で確認します。
+- `test_real_resume_after_server_rewrites_body`: 行頭が `>` の本文を送ると、eLabFTW が保存時に本文を書き換えることを確認した。そのうえで、本文の更新後に止めた同期を、通常の push で再開できることを確認した
+- `test_real_replaced_image_old_version_is_deleted`: 同じ名前の画像を差し替えると、本文が新しい版を指し、古い版の添付が削除されることを確認した
+
+wheel/sdist のビルドと、独立した Python 3.12 環境への wheel インストール後の `esync --version`（1.0.2）・`esync diff --help`・`esync category --help` を確認しました。
+
+読み取り権限のないカテゴリ（一覧に出ず、個別 GET が 403 になる）は、一時記事では再現できません。利用者の報告にある API 応答を、状態付きのモックで再現してテストしました。Windows は GitHub Actions の結果で確認します。

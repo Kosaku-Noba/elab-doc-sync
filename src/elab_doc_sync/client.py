@@ -1,5 +1,6 @@
 """eLabFTW API v2 client for items, experiments, uploads, tags, and metadata."""
 
+import hashlib
 import json
 import logging
 import requests
@@ -147,13 +148,18 @@ class ELabFTWClient:
         リトライ対象: requests.exceptions.Timeout, ConnectionError, HTTPError(5xx)
         4xx は即失敗。POST が非冪等なため、リトライで重複が生じた場合は
         同名ファイルの最新を採用し、古い重複は呼び出し元で掃除される前提。
+
+        アップロードした添付は、POST 応答の Location の ID で特定する。取れない
+        場合は同名・同ハッシュのうち ID が最大のものを使う。一覧の並び順は
+        サーバーにより異なる（eLabFTW 5.5 は新しい順）ため頼らない。
         """
         url = f"/api/v2/{entity_type}/{entity_id}/uploads"
+        response = None
         for attempt in range(2):
             try:
                 with open(filepath, "rb") as f:
-                    self._req("POST", url, headers=self._auth_headers,
-                              files={"file": f}, data={"comment": comment}, timeout=60)
+                    response = self._req("POST", url, headers=self._auth_headers,
+                                         files={"file": f}, data={"comment": comment}, timeout=60)
                 break
             except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
                 if attempt == 0:
@@ -165,16 +171,21 @@ class ELabFTWClient:
                 raise
         uploads = self._req("GET", url).json()
         filename = Path(filepath).name
-        for upload in reversed(uploads):
-            if upload.get("real_name") == filename:
-                long_name = upload.get("long_name")
-                storage = upload.get("storage")
-                if long_name and storage:
-                    return {
-                        "id": upload.get("id"), "filename": filename,
-                        "url": f"{self.base_url}/app/download.php?f={long_name}&name={filename}&storage={storage}",
-                    }
-        return {"filename": filename, "url": None}
+        candidates = [u for u in uploads if u.get("real_name") == filename and u.get("long_name") and u.get("storage")]
+        location = str(getattr(response, "headers", {}).get("location", "") or "").rstrip("/").split("/")[-1]
+        new_id = int(location) if location.isdigit() else None
+        upload = next((u for u in candidates if u.get("id") == new_id), None)
+        if upload is None and candidates:
+            with open(filepath, "rb") as f:
+                local_hash = hashlib.sha256(f.read()).hexdigest()
+            same = [u for u in candidates if (u.get("hash") or u.get("sha256")) == local_hash]
+            upload = max(same or candidates, key=lambda u: u.get("id") or 0)
+        if upload is None:
+            return {"filename": filename, "url": None}
+        return {
+            "id": upload.get("id"), "filename": filename,
+            "url": f"{self.base_url}/app/download.php?f={upload['long_name']}&name={filename}&storage={upload['storage']}",
+        }
 
     def delete_upload(self, entity_type: str, entity_id: int, upload_id: int) -> None:
         """添付ファイルを削除する。"""

@@ -96,3 +96,58 @@ def test_untagged_cli_pull_and_first_tag_push(server, tmp_path, monkeypatch):
     syncer = EachDocsSyncer(client, target, tmp_path)
     assert syncer.sync() == 1
     assert _tag_names(client.get_item(eid).get('tags')) == ['elab-doc-sync-test']
+
+
+def _png(width, height, color):
+    import struct
+    import zlib
+    def chunk(kind, data):
+        return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data) & 0xffffffff)
+    raw = b''.join(b'\x00' + bytes(color) * width for _ in range(height))
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0))
+            + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b''))
+
+
+def test_real_resume_after_server_rewrites_body(server, tmp_path):
+    """eLabFTW が保存時に本文を書き換えても、本文更新後に止まった同期を再開できる。"""
+    client, eid = server
+    docs = tmp_path / 'docs'
+    docs.mkdir()
+    filename = '[test] elab-doc-sync v1.md'
+    note = docs / filename
+    note.write_text('# Test\n\n> **注意:** quoted line\n\nplain <span>tag</span> text', encoding='utf-8')
+    target = TargetConfig(title='T', docs_dir='docs', id_file='.ids/default.id', body_format='md')
+    syncer = EachDocsSyncer(client, target, tmp_path)
+    syncer._save_mapping({filename: eid})
+    # 存在しないカテゴリ名で、本文更新後に失敗させる
+    target.category = 'elab-doc-sync-test-no-such-category'
+    assert syncer.sync(force=True) == 0
+    owned = syncer._pending()[filename]
+    assert owned['stored']['body'] == client.get_item(eid)['body']
+    # eLabFTW 5.5 は保存時に本文を書き換える（送った本文のままでは再開判定が一致しない）
+    assert owned['stored']['body'] != owned['expected']['body']
+    target.category = None
+    assert syncer.sync() == 1
+    assert not syncer._pending()
+    assert syncer.inspect(filename, eid)['state'] == '最新'
+
+
+def test_real_replaced_image_old_version_is_deleted(server, tmp_path):
+    client, eid = server
+    docs = tmp_path / 'docs'
+    docs.mkdir()
+    filename = '[test] elab-doc-sync v1.md'
+    (docs / 'picture.png').write_bytes(_png(2, 2, (255, 0, 0)))
+    (docs / filename).write_text('![image](picture.png)', encoding='utf-8')
+    target = TargetConfig(title='T', docs_dir='docs', id_file='.ids/default.id', body_format='md')
+    syncer = EachDocsSyncer(client, target, tmp_path)
+    syncer._save_mapping({filename: eid})
+    assert syncer.sync(force=True) == 1
+    first = [u['id'] for u in client.list_uploads('items', eid) if u.get('real_name') == 'picture.png']
+    assert len(first) == 1
+    (docs / 'picture.png').write_bytes(_png(4, 4, (0, 0, 255)))
+    assert syncer.sync() == 1
+    current = [u for u in client.list_uploads('items', eid) if u.get('real_name') == 'picture.png']
+    assert len(current) == 1 and current[0]['id'] != first[0]
+    assert current[0]['long_name'] in client.get_item(eid)['body']
+    assert syncer.inspect(filename, eid)['state'] == '最新'
