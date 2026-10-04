@@ -950,12 +950,17 @@ def _sync_tags(client: ELabFTWClient, entity_type: str, entity_id: int, desired_
     return True
 
 
-def _sync_category(client: ELabFTWClient, entity_type: str, entity_id: int, category) -> None:
-    """設定のカテゴリをリモートに設定する。best-effort。"""
+def _sync_category(client: ELabFTWClient, entity_type: str, entity_id: int, category, current: dict | None = None) -> None:
+    """設定のカテゴリをリモートに設定する。best-effort。
+
+    current（エンティティの現在データ）が既に目的のカテゴリなら PATCH しない。
+    """
     if category is None:
         return True
     try:
-        cat_id = client.resolve_category_id(entity_type, category)
+        cat_id = client.resolve_category_id(entity_type, category, current=current)
+        if current is not None and _category_value(current.get("category")) == cat_id:
+            return True
         client.patch_entity(entity_type, entity_id, category=cat_id)
     except Exception:
         import logging
@@ -1350,15 +1355,19 @@ class EachDocsSyncer:
                     self._save_pending(pending)
                     return observed, signature["uploads"]
 
-                checkpoint()
+                observed, _ = checkpoint()
                 tags_ok = _sync_tags(self.client, self.entity, eid, self.target.tags) if meta_changed else True
                 if not tags_ok:
                     raise RuntimeError("本文更新後にタグ同期が失敗しました。リモートを確認して再実行してください")
                 if meta_changed:
-                    checkpoint({"tags": sorted(set(pending[f.name]["guard"]["tags"]) | set(self.target.tags))})
-                category_id = (self.client.resolve_category_id(self.entity, self.target.category)
-                               if meta_changed and self.target.category is not None else None)
-                category_ok = _sync_category(self.client, self.entity, eid, category_id) if meta_changed else True
+                    observed, _ = checkpoint({"tags": sorted(set(pending[f.name]["guard"]["tags"]) | set(self.target.tags))})
+                category_id = None
+                if meta_changed and self.target.category is not None:
+                    try:
+                        category_id = self.client.resolve_category_id(self.entity, self.target.category, current=observed)
+                    except ValueError as exc:
+                        raise RuntimeError(f"本文は更新済みですが、カテゴリを解決できませんでした: {exc}") from exc
+                category_ok = _sync_category(self.client, self.entity, eid, category_id, current=observed) if meta_changed else True
                 if not category_ok:
                     raise RuntimeError("本文更新後にカテゴリ同期が失敗しました。リモートを確認して再実行してください")
                 if meta_changed:

@@ -231,16 +231,24 @@ class ELabFTWClient:
             return self.list_experiments_categories()
         return self.list_items_types()
 
-    def resolve_category_id(self, entity_type: str, category: str | int) -> int:
-        """カテゴリ名または ID を ID に解決する。"""
+    def resolve_category_id(self, entity_type: str, category: str | int, current: dict | None = None) -> int:
+        """カテゴリ名または ID を ID に解決する。
+
+        current にエンティティのデータを渡すと、そのカテゴリ名が一致する場合は
+        一覧を引かずにその ID を使う。読み取り権限のないカテゴリは一覧 API に
+        出ないが、エンティティには category_title として返るため。
+        """
         try:
             return int(category)
         except (ValueError, TypeError):
             pass
+        if current and current.get("category") is not None and current.get("category_title") == category:
+            return int(current["category"])
         for cat in self.list_categories(entity_type):
             if cat.get("title") == category:
                 return cat["id"]
-        raise ValueError(f"カテゴリ「{category}」が見つかりません")
+        raise ValueError(f"カテゴリ「{category}」が見つかりません（API から読めないカテゴリの可能性があります）。"
+                         f"「esync category show」で ID を確認し、category: 64 のように数字で指定してください")
 
     def resolve_category_name(self, entity_type: str, category_id: int) -> str | None:
         """カテゴリ ID を名前に解決する。見つからなければ None。"""

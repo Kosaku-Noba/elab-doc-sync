@@ -42,7 +42,7 @@ def project(tmp_path):
     client.list_uploads.return_value = []
     client.get_tags.side_effect = lambda entity, eid: copy.deepcopy(remote[eid].get("tags") or [])
     client.add_tag.side_effect = lambda entity, eid, tag: remote[eid].setdefault("tags", []).append(tag)
-    client.resolve_category_id.side_effect = lambda entity, category: int(category)
+    client.resolve_category_id.side_effect = lambda entity, category, current=None: int(category)
     client.patch_entity.side_effect = lambda entity, eid, **kw: remote[eid].update(kw)
     target = load_config(cfg).targets[0]
     syncer = EachDocsSyncer(client, target, tmp_path)
@@ -643,6 +643,36 @@ def test_expected_category_and_tag_changes_complete(project):
     assert remote[1]['category'] == 10
     assert remote[1]['tags'] == ['ours']
     assert syncer.inspect('a.md', 1)['state'] == '最新'
+
+
+def test_force_push_with_unlisted_current_category_succeeds(project):
+    # カテゴリ一覧に出ない（権限なし）カテゴリが既に付いている文書でも --force push が通る
+    from elab_doc_sync.client import ELabFTWClient
+    root, client, remote, syncer, args = push_note(project)
+    remote[1].update(category=64, category_title='SPECIFICATION')
+    syncer.target.category = 'SPECIFICATION'
+    client.list_categories.return_value = [{'id': 65, 'title': 'OTHER'}]
+    client.resolve_category_id.side_effect = lambda entity, category, current=None: \
+        ELabFTWClient.resolve_category_id(client, entity, category, current=current)
+    (root / 'docs/a.md').write_text('changed')
+    assert syncer.sync(force=True) == 1
+    assert syncer.failures == 0
+    assert not syncer._pending()
+    assert remote[1]['category'] == 64
+    assert not any(c.kwargs.get('category') for c in client.patch_entity.call_args_list)
+
+
+def test_unresolvable_category_reports_body_updated(project, capsys):
+    from elab_doc_sync.client import ELabFTWClient
+    root, client, remote, syncer, args = push_note(project)
+    syncer.target.category = 'SPECIFICATION'
+    client.list_categories.return_value = [{'id': 65, 'title': 'OTHER'}]
+    client.resolve_category_id.side_effect = lambda entity, category, current=None: \
+        ELabFTWClient.resolve_category_id(client, entity, category, current=current)
+    (root / 'docs/a.md').write_text('changed')
+    assert syncer.sync(force=True) == 0
+    out = capsys.readouterr().out
+    assert '本文は更新済み' in out and '数字で指定' in out
 
 
 def test_category_change_at_final_read_is_not_adopted(project):

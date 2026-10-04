@@ -1569,6 +1569,7 @@ def cmd_category(args):
         cats = client.list_categories(entity_type)
         for c in cats:
             print(f"  #{c['id']}  {c.get('title', '?')}")
+        print("  ※ 読み取り権限のないカテゴリは一覧に表示されません。文書のカテゴリは「category show」で確認できます")
         return
 
     entity_type = _normalize_entity(direct_entity)
@@ -1593,7 +1594,11 @@ def _category_show(client, entity_type, entity_id):
 
 def _category_set(client, entity_type, entity_id, category_value):
     label = f"{_entity_label(entity_type)} #{entity_id}"
-    cat_id = client.resolve_category_id(entity_type, category_value)
+    entity = client.get_entity(entity_type, entity_id)
+    cat_id = client.resolve_category_id(entity_type, category_value, current=entity)
+    if entity.get("category") is not None and int(entity["category"]) == cat_id:
+        print(f"  {label}: すでにカテゴリ #{cat_id} が設定されています")
+        return
     client.patch_entity(entity_type, entity_id, category=cat_id)
     print(f"  {label}: カテゴリを設定しました (#{cat_id})")
 

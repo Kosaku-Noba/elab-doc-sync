@@ -1005,6 +1005,14 @@ def test_sync_category_none_skips(mock_client):
     mock_client.patch_entity.assert_not_called()
 
 
+def test_sync_category_skips_patch_when_already_set(mock_client):
+    from elab_doc_sync.sync import _sync_category
+    mock_client.resolve_category_id.return_value = 64
+    assert _sync_category(mock_client, "items", 42, "SPECIFICATION",
+                          current={"category": 64, "category_title": "SPECIFICATION"}) is True
+    mock_client.patch_entity.assert_not_called()
+
+
 def test_sync_category_failure_is_best_effort(mock_client, capsys):
     from elab_doc_sync.sync import _sync_category
     mock_client.resolve_category_id.side_effect = Exception("API error")

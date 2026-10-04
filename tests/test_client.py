@@ -388,6 +388,22 @@ def test_resolve_category_id_not_found(mock_req, client):
         client.resolve_category_id("items", "存在しない")
 
 
+@patch("elab_doc_sync.client.requests.request")
+def test_resolve_category_id_uses_current_entity_for_unlisted_category(mock_req, client):
+    # 読み取り権限のないカテゴリは一覧に出ないが、文書側の category_title で解決できる
+    mock_req.return_value = _mock_response([{"id": 65, "title": "OTHER"}])
+    current = {"category": 64, "category_title": "SPECIFICATION"}
+    assert client.resolve_category_id("items", "SPECIFICATION", current=current) == 64
+    mock_req.assert_not_called()
+
+
+@patch("elab_doc_sync.client.requests.request")
+def test_resolve_category_id_not_found_suggests_numeric_id(mock_req, client):
+    mock_req.return_value = _mock_response([{"id": 65, "title": "OTHER"}])
+    with pytest.raises(ValueError, match="数字で指定"):
+        client.resolve_category_id("items", "SPECIFICATION", current={"category": 65, "category_title": "OTHER"})
+
+
 # ── Phase 2: upload リトライテスト ──────────────────────────
 
 

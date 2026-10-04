@@ -1232,12 +1232,29 @@ def test_cmd_category_show(MockClient, tmp_path, capsys):
 def test_cmd_category_set(MockClient, tmp_path, capsys):
     cfg, _ = _write_config(tmp_path)
     client = MockClient.return_value
+    client.get_entity.return_value = {"category": 1, "category_title": "試薬"}
     client.resolve_category_id.return_value = 3
     args = Namespace(config=str(cfg), target=None, force=False, cat_action="set",
                      category_value="プロトコル", id=42, entity="items")
     cmd_category(args)
     client.patch_entity.assert_called_once_with("items", 42, category=3)
     assert "#42" in capsys.readouterr().out
+
+
+# CAT-03b: 既に同じカテゴリなら PATCH しない（読めないカテゴリでも成功する）
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_category_set_already_set_skips_patch(MockClient, tmp_path, capsys):
+    cfg, _ = _write_config(tmp_path)
+    client = MockClient.return_value
+    entity = {"category": 64, "category_title": "SPECIFICATION"}
+    client.get_entity.return_value = entity
+    client.resolve_category_id.return_value = 64
+    args = Namespace(config=str(cfg), target=None, force=False, cat_action="set",
+                     category_value="SPECIFICATION", id=4959, entity="items")
+    cmd_category(args)
+    client.resolve_category_id.assert_called_once_with("items", "SPECIFICATION", current=entity)
+    client.patch_entity.assert_not_called()
+    assert "すでに" in capsys.readouterr().out
 
 
 # CAT-04: category show without --id exits (argparse required)
