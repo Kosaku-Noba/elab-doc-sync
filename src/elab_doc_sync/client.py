@@ -150,7 +150,9 @@ class ELabFTWClient:
         同名ファイルの最新を採用し、古い重複は呼び出し元で掃除される前提。
 
         アップロードした添付は、POST 応答の Location の ID で特定する。取れない
-        場合は同名・同ハッシュのうち ID が最大のものを使う。一覧の並び順は
+        場合は同名・同ハッシュのうち ID が最大のものを使う。同ハッシュがなければ、
+        ハッシュを持たない同名添付のうち ID が最大のもの（内容は未検証）を使う。
+        どれもなければ特定できないとして url=None を返す。一覧の並び順は
         サーバーにより異なる（eLabFTW 5.5 は新しい順）ため頼らない。
         """
         url = f"/api/v2/{entity_type}/{entity_id}/uploads"
@@ -179,7 +181,10 @@ class ELabFTWClient:
             with open(filepath, "rb") as f:
                 local_hash = hashlib.sha256(f.read()).hexdigest()
             same = [u for u in candidates if (u.get("hash") or u.get("sha256")) == local_hash]
-            upload = max(same or candidates, key=lambda u: u.get("id") or 0)
+            # ハッシュを返さないサーバーでは内容を確かめられないため、最大 ID を使う
+            unknown = [u for u in candidates if not (u.get("hash") or u.get("sha256"))]
+            if same or unknown:
+                upload = max(same or unknown, key=lambda u: u.get("id") or 0)
         if upload is None:
             return {"filename": filename, "url": None}
         return {

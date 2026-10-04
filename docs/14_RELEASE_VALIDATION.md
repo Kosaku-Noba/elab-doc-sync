@@ -71,9 +71,9 @@ wheel/sdist のビルドと、独立した Python 3.12 環境への wheel イン
 
 | 環境 | 結果 |
 |---|---|
-| Linux / Python 3.10.20 | 427 passed、11 skipped |
-| Linux / Python 3.12.3 | 427 passed、11 skipped |
-| Linux / Python 3.14.3 | 427 passed、11 skipped |
+| Linux / Python 3.10.20 | 429 passed、11 skipped |
+| Linux / Python 3.12.3 | 429 passed、11 skipped |
+| Linux / Python 3.14.3 | 429 passed、11 skipped |
 | 実機（eLabFTW 5.5.14、ユーザーが許可した設定先） | 11 passed |
 
 11件のスキップは実機接続テストです。実機テストには、v1.0.2 で追加した次の2件を含みます。作成した一時記事はすべて、削除後に GET で削除済みであることを確認しました。

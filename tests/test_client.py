@@ -120,6 +120,32 @@ def test_upload_file_without_location_picks_matching_hash(mock_req, client, tmp_
     assert client.upload_file("items", 1, str(img))["id"] == 101
 
 
+# CL-06d: ハッシュが分かっていて一致しなければ、旧版を返さず特定失敗にする
+@patch("elab_doc_sync.client.requests.request")
+def test_upload_file_without_location_rejects_hash_mismatch(mock_req, client, tmp_path):
+    import hashlib
+    img = tmp_path / "img.png"
+    img.write_bytes(b"new")
+    list_resp = _mock_response([
+        {"real_name": "img.png", "long_name": "old-blob", "storage": "2", "id": 100, "hash": hashlib.sha256(b"old").hexdigest()},
+    ])
+    mock_req.side_effect = [_mock_response(), list_resp]
+    assert client.upload_file("items", 1, str(img))["url"] is None
+
+
+# CL-06e: ハッシュを返さないサーバーでは、ハッシュなしの同名添付のうち最大 ID を使う
+@patch("elab_doc_sync.client.requests.request")
+def test_upload_file_without_location_or_hash_picks_highest_id(mock_req, client, tmp_path):
+    img = tmp_path / "img.png"
+    img.write_bytes(b"new")
+    list_resp = _mock_response([
+        {"real_name": "img.png", "long_name": "new-blob", "storage": "2", "id": 101},
+        {"real_name": "img.png", "long_name": "old-blob", "storage": "2", "id": 100},
+    ])
+    mock_req.side_effect = [_mock_response(), list_resp]
+    assert client.upload_file("items", 1, str(img))["id"] == 101
+
+
 # CL-07
 @patch("elab_doc_sync.client.requests.request")
 def test_upload_file_no_url(mock_req, client, tmp_path):
