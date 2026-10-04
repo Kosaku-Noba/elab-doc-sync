@@ -779,7 +779,7 @@ def test_interrupted_sync_resumes_when_elabftw_rewrote_body(project):
     client.update_item.side_effect = _rewrite_quotes_on_save(remote)
     syncer.target.category = 'SPEC'
     client.resolve_category_id.side_effect = ValueError('カテゴリ「SPEC」が見つかりません')
-    (root / 'docs/a.md').write_text('> **注意:** quoted')
+    (root / 'docs/a.md').write_text('> **注意:** quoted', encoding='utf-8')
     assert syncer.sync() == 0
     assert syncer._pending()['a.md']['stored']['body'] == '&gt; **注意:** quoted'
     client.resolve_category_id.side_effect = lambda entity, category, current=None: 10
@@ -881,7 +881,7 @@ def test_old_version_referenced_by_upload_id_is_kept(project):
     assert syncer.sync() == 1
     old_id = uploads[1][0]['id']
     (root / 'docs/picture.png').write_bytes(b'new image, longer')
-    (root / 'docs/a.md').write_text(f'![image](picture.png)\n\n[旧版](https://example.test/api/v2/items/1/uploads/{old_id})')
+    (root / 'docs/a.md').write_text(f'![image](picture.png)\n\n[旧版](https://example.test/api/v2/items/1/uploads/{old_id})', encoding='utf-8')
     assert syncer.sync() == 1
     assert old_id in [u['id'] for u in uploads[1]]
     client.delete_upload.assert_not_called()
