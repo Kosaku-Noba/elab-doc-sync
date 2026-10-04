@@ -16,7 +16,7 @@ from .safety import atomic_write, write_json, safe_path, snapshot, local_transac
 from .config import TargetConfig
 from .client import ELabFTWClient
 from .config import load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, append_target_to_yaml
-from .sync import EachDocsSyncer, ConflictError, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments, _rewrite_elab_links_to_local
+from .sync import EachDocsSyncer, ConflictError, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS
 from . import sync_log
 
 DEFAULT_CONFIG = ".elab-sync.yaml"
@@ -250,6 +250,10 @@ def cmd_status(args):
             pending = syncer._pending().get(name)
             state = ("作成結果不明" if not pending.get("eid") else "同期未完了") if pending else result["state"]
             print(f"  [{name}] {state}（#{mapping.get(name, '未作成')}）")
+            if state in ("競合", "取得待ち") and result.get("data") is not None and hasattr(syncer, "remote_changes"):
+                changes = syncer.remote_changes(name, result["data"], result.get("uploads", []))
+                if changes:
+                    print(f"    eLabFTW 側の変更: {', '.join(REMOTE_FIELD_LABELS[k] for k in changes)}（詳細は esync diff）")
             if result.get("error"):
                 print(f"    {result['error']}")
             failed |= state in ("競合", "確認失敗", "リモート削除", "作成結果不明", "同期未完了")
@@ -602,6 +606,29 @@ def _show_diff(title, local_text, remote_text):
     return True
 
 
+def _show_remote_changes(syncer, client, target, filename, eid, data):
+    """前回同期時から eLabFTW 側で変わった内容を表示する。変更があれば True。"""
+    try:
+        uploads = client.list_uploads(target.entity, eid)
+    except Exception as e:
+        print(f"  [{filename}] 添付一覧の取得に失敗したため、eLabFTW 側の変更は表示できません: {e}", file=sys.stderr)
+        return False
+    lines, old_body, new_body = syncer.describe_remote_changes(filename, data, uploads)
+    body_changed = old_body is not None and old_body != new_body
+    if not lines and not body_changed:
+        return False
+    print(f"  [{filename}] 前回の同期以降の eLabFTW 側の変更:")
+    for line in lines:
+        print(f"    {line}")
+    if body_changed:
+        diff = difflib.unified_diff(
+            old_body.splitlines(keepends=True), new_body.splitlines(keepends=True),
+            fromfile=f"前回同期時の eLabFTW: {filename}", tofile=f"現在の eLabFTW: {filename}")
+        sys.stdout.writelines(line if line.endswith("\n") else line + "\n" for line in diff)
+    print()
+    return True
+
+
 def cmd_diff(args):
     """ローカルと eLabFTW 上の内容の差分を表示する。"""
     config_path = Path(args.config)
@@ -644,6 +671,8 @@ def cmd_diff(args):
                     has_diff = True
                 else:
                     print(f"  [{filename}] 差分なし")
+                if _show_remote_changes(syncer, client, target, filename, eid, data):
+                    has_diff = True
 
     if not has_diff and not failed:
         print("\nすべて最新です")

@@ -760,3 +760,114 @@ def test_push_adds_first_tag_when_tags_endpoint_returns_null(project):
     assert syncer.sync() == 1
     client.add_tag.assert_called_once_with('items', 1, 'first')
     assert syncer.inspect('a.md', 1)['state'] == '最新'
+
+
+# ── v1.0.2: eLabFTW の本文書き換え・変更理由の表示・古い版の添付 ──
+
+
+def _rewrite_quotes_on_save(remote):
+    """eLabFTW が保存時に行頭の > を &gt; にする挙動を模す。"""
+    def update(eid, **kw):
+        if 'body' in kw:
+            kw['body'] = kw['body'].replace('> ', '&gt; ')
+        remote[eid].update(kw)
+    return update
+
+
+def test_interrupted_sync_resumes_when_elabftw_rewrote_body(project):
+    root, client, remote, syncer, args = push_note(project)
+    client.update_item.side_effect = _rewrite_quotes_on_save(remote)
+    syncer.target.category = 'SPEC'
+    client.resolve_category_id.side_effect = ValueError('カテゴリ「SPEC」が見つかりません')
+    (root / 'docs/a.md').write_text('> **注意:** quoted')
+    assert syncer.sync() == 0
+    assert syncer._pending()['a.md']['stored']['body'] == '&gt; **注意:** quoted'
+    client.resolve_category_id.side_effect = lambda entity, category, current=None: 10
+    assert syncer.sync() == 1
+    assert not syncer._pending()
+    assert remote[1]['category'] == 10
+    assert syncer.inspect('a.md', 1)['state'] == '最新'
+
+
+def test_blocked_resume_names_the_changed_fields(project, capsys):
+    root, client, remote, syncer, args = push_note(project)
+    syncer.target.category = 'SPEC'
+    client.resolve_category_id.side_effect = ValueError('not found')
+    (root / 'docs/a.md').write_text('changed')
+    assert syncer.sync() == 0
+    remote[1]['body'] = 'third party'
+    remote[1]['tags'] = ['other']
+    capsys.readouterr()
+    assert syncer.sync() == 0
+    out = capsys.readouterr().out
+    assert '未完了の同期後にリモート変更があります' in out
+    assert '前回の同期記録と異なる項目: 本文, タグ' in out
+
+
+def test_status_and_diff_show_remote_metadata_changes(project, capsys):
+    from elab_doc_sync.cli import cmd_diff
+    root, client, remote, syncer, args = push_note(project)
+    remote[1]['body'] = 'original\nremote line'
+    remote[1]['tags'] = ['added']
+    remote[1]['category'] = 7
+    client.list_uploads.return_value = [{'id': 5, 'real_name': 'x.png', 'long_name': 'blob5', 'hash': 'h'}]
+    capsys.readouterr()
+    with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
+        cmd_status(args())
+        status_out = capsys.readouterr().out
+        cmd_diff(args())
+        diff_out = capsys.readouterr().out
+    assert '取得待ち' in status_out
+    assert 'eLabFTW 側の変更: 本文, カテゴリ, タグ, 添付' in status_out
+    assert '前回の同期以降の eLabFTW 側の変更' in diff_out
+    assert 'カテゴリ: なし → #7' in diff_out
+    assert 'タグ: +added' in diff_out
+    assert '添付追加: x.png (#5)' in diff_out
+    assert '+remote line' in diff_out
+
+
+def _stateful_uploads(client):
+    import hashlib
+    uploads = {}
+    def upload(entity, eid, path):
+        source = Path(path)
+        content = source.read_bytes()
+        uid = sum(len(v) for v in uploads.values()) + 100
+        uploads.setdefault(eid, []).append({'id': uid, 'real_name': source.name, 'long_name': f'blob{uid}', 'storage': '1',
+                                            'filesize': len(content), 'hash': hashlib.sha256(content).hexdigest()})
+        return {'id': uid, 'url': f'https://example.test/app/download.php?f=blob{uid}&name={source.name}&storage=1'}
+    def delete(entity, eid, uid):
+        uploads[eid] = [u for u in uploads[eid] if u['id'] != uid]
+    client.upload_file.side_effect = upload
+    client.delete_upload.side_effect = delete
+    client.list_uploads.side_effect = lambda entity, eid: copy.deepcopy(uploads.get(eid, []))
+    return uploads
+
+
+def test_replaced_image_old_version_is_deleted_after_successful_push(project):
+    root, client, remote, syncer, args = project
+    uploads = _stateful_uploads(client)
+    (root / 'docs/picture.png').write_bytes(b'old image')
+    (root / 'docs/a.md').write_text('![image](picture.png)')
+    assert syncer.sync() == 1
+    old_id = uploads[1][0]['id']
+    (root / 'docs/picture.png').write_bytes(b'new image, longer')
+    assert syncer.sync() == 1
+    assert [u['real_name'] for u in uploads[1]] == ['picture.png']
+    assert uploads[1][0]['id'] != old_id
+    assert f"blob{uploads[1][0]['id']}" in remote[1]['body']
+    assert syncer.inspect('a.md', 1)['state'] == '最新'
+
+
+def test_failed_push_keeps_old_image_version(project):
+    root, client, remote, syncer, args = project
+    uploads = _stateful_uploads(client)
+    (root / 'docs/picture.png').write_bytes(b'old image')
+    (root / 'docs/a.md').write_text('![image](picture.png)')
+    assert syncer.sync() == 1
+    (root / 'docs/picture.png').write_bytes(b'new image, longer')
+    syncer.target.category = 'SPEC'
+    client.resolve_category_id.side_effect = ValueError('not found')
+    assert syncer.sync() == 0
+    assert len(uploads[1]) == 2
+    client.delete_upload.assert_not_called()

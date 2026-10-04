@@ -269,7 +269,7 @@ def _resolve_asset_path(docs_dir: Path, project_root: Path, source: str, strict=
     raise FileNotFoundError(source)
 
 
-def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False) -> str:
+def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None) -> str:
     """Markdown 内のローカル画像を eLabFTW にアップロードし URL に書き換える。
 
     upload_file はファイルパスの basename を real_name としてリモートに保存する。
@@ -360,6 +360,9 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
     try:
         result = IMAGE_RE.sub(replace_match, body)
         # アップロード成功後に古い添付を削除（失敗しても本文は壊さない）
+        # strict では削除せず、呼び出し元が同期成功後に削除できるよう返す
+        if strict and stale_out is not None:
+            stale_out.extend(stale_ids)
         for uid in ([] if strict else stale_ids):
             try:
                 client.delete_upload(entity, entity_id, uid)
@@ -530,7 +533,7 @@ def _is_video(filename: str) -> bool:
     return Path(filename).suffix.lower() in VIDEO_EXTENSIONS
 
 
-def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False) -> str:
+def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None) -> str:
     """Markdown 内の動画リンクを eLabFTW にアップロードし <video> タグに書き換える。
 
     対象:
@@ -623,6 +626,8 @@ def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClien
         replacement = _process_video_match(alt, src, full)
         result = result[:start] + replacement + result[end:]
 
+    if strict and stale_out is not None:
+        stale_out.extend(stale_ids)
     for uid in ([] if strict else stale_ids):
         try:
             client.delete_upload(entity, entity_id, uid)
@@ -645,7 +650,7 @@ def _count_local_videos(body: str) -> int:
     return count
 
 
-def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False) -> str:
+def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None) -> str:
     """Markdown 内の非画像・非動画ファイルリンクを eLabFTW にアップロードし URL に書き換える。
 
     対象:
@@ -745,6 +750,8 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
         replacement = _process_file_match(alt, src, full)
         result = result[:start] + replacement + result[end:]
 
+    if strict and stale_out is not None:
+        stale_out.extend(stale_ids)
     for uid in ([] if strict else stale_ids):
         try:
             client.delete_upload(entity, entity_id, uid)
@@ -950,6 +957,14 @@ def _sync_tags(client: ELabFTWClient, entity_type: str, entity_id: int, desired_
     return True
 
 
+REMOTE_FIELD_LABELS = {"body": "本文", "title": "タイトル", "content_type": "本文形式",
+                       "category": "カテゴリ", "tags": "タグ", "uploads": "添付"}
+
+
+def _format_category(value):
+    return "なし" if value is None else f"#{value}"
+
+
 def _sync_category(client: ELabFTWClient, entity_type: str, entity_id: int, category, current: dict | None = None) -> None:
     """設定のカテゴリをリモートに設定する。best-effort。
 
@@ -1099,6 +1114,77 @@ class EachDocsSyncer:
                 "content_type": data.get("content_type"), "category": _category_value(data.get("category")), "tags": _tag_names(data.get("tags")),
                 "uploads": sorted([{k: u.get(k) for k in ("id", "real_name", "hash", "sha256", "filesize", "long_name")}
                                    for u in uploads], key=lambda u: str(u["id"]))}
+
+    def remote_changes(self, filename, data, uploads):
+        """前回同期時から eLabFTW 側で変わった項目のキーを返す（基準情報がなければ空）。"""
+        state = self._state(filename)
+        if not state:
+            return []
+        old, new = state["remote"], self._remote_signature(data, uploads)
+        return [k for k in REMOTE_FIELD_LABELS if old.get(k) != new.get(k)]
+
+    def describe_remote_changes(self, filename, data, uploads):
+        """前回同期時からの eLabFTW 側の変更を (本文以外の説明行, 前回本文, 現在本文) で返す。"""
+        state = self._state(filename)
+        if not state:
+            return [], None, None
+        old, new = state["remote"], self._remote_signature(data, uploads)
+        lines = []
+        if old["title"] != new["title"]:
+            lines.append(f"タイトル: {old['title']!r} → {new['title']!r}")
+        if old.get("content_type") != new.get("content_type"):
+            lines.append(f"本文形式: {old.get('content_type')} → {new.get('content_type')}")
+        if old.get("category") != new.get("category"):
+            lines.append(f"カテゴリ: {_format_category(old.get('category'))} → {_format_category(new.get('category'))}")
+        added_tags = sorted(set(new["tags"]) - set(old["tags"]))
+        removed_tags = sorted(set(old["tags"]) - set(new["tags"]))
+        if added_tags or removed_tags:
+            lines.append("タグ: " + " ".join([f"+{t}" for t in added_tags] + [f"-{t}" for t in removed_tags]))
+        old_uploads = {str(u.get("id")): u for u in old["uploads"]}
+        new_uploads = {str(u.get("id")): u for u in new["uploads"]}
+        for uid in sorted(set(new_uploads) - set(old_uploads)):
+            lines.append(f"添付追加: {new_uploads[uid].get('real_name')} (#{uid})")
+        for uid in sorted(set(old_uploads) - set(new_uploads)):
+            lines.append(f"添付削除: {old_uploads[uid].get('real_name')} (#{uid})")
+        for uid in sorted(set(old_uploads) & set(new_uploads)):
+            if old_uploads[uid] != new_uploads[uid]:
+                lines.append(f"添付変更: {new_uploads[uid].get('real_name')} (#{uid})")
+        return lines, old["body"], new["body"]
+
+    def _delete_stale_uploads(self, eid, stale_ids):
+        """差し替え前の古い版の添付を削除する。best-effort。
+
+        同期の他の処理がすべて成功した後にだけ呼ぶ。現在の本文から参照されて
+        いる添付は削除しない。
+        """
+        if not stale_ids:
+            return
+        body = self._get_entity(eid).get("body") or ""
+        by_id = {u.get("id"): u for u in self.client.list_uploads(self.entity, eid)}
+        for uid in dict.fromkeys(stale_ids):
+            upload = by_id.get(uid)
+            if upload is None or (upload.get("long_name") and upload["long_name"] in body):
+                continue
+            try:
+                self.client.delete_upload(self.entity, eid, uid)
+                print(f"    古い版の添付を削除しました: {upload.get('real_name')} (#{uid})")
+            except Exception:
+                import logging
+                logging.getLogger(__name__).debug("古い添付の削除失敗", exc_info=True)
+                print(f"    ⚠ 古い版の添付を削除できませんでした: {upload.get('real_name')} (#{uid})")
+
+    def _resume_mismatch(self, owned, eid, data, current_guard):
+        """未完了の同期記録と現在のリモートで食い違う項目の表示名を返す。"""
+        if owned.get("eid") != eid:
+            return ["文書ID"]
+        labels = [REMOTE_FIELD_LABELS[k] for k in ("category", "tags", "uploads")
+                  if (owned.get("guard") or {}).get(k) != current_guard.get(k)]
+        versions = [v for v in (owned.get("expected"), owned.get("stored"), owned.get("before")) if v is not None]
+        if not any(all(data.get(k) == v for k, v in version.items()) for version in versions):
+            keys = {k for version in versions for k in version}
+            labels[:0] = [REMOTE_FIELD_LABELS[k] for k in ("body", "title", "content_type")
+                          if k in keys and all(data.get(k) != version.get(k) for version in versions if k in version)]
+        return labels
 
     def _save_baseline(self, filename, raw_body, data, uploads):
         self._save_hash(filename, raw_body)
@@ -1280,12 +1366,18 @@ class EachDocsSyncer:
             expected = owned.get("expected")
             before = owned.get("before")
             current_guard = {k: v for k, v in self._remote_signature(result.get("data", {}), result.get("uploads", [])).items() if k not in ("body", "title", "content_type")}
+            # stored is the body as eLabFTW saved it after our PATCH; eLabFTW may
+            # rewrite what we sent (e.g. "> " to "&gt; "), so expected alone never matches.
+            stored = owned.get("stored")
             resuming = bool(owned.get("eid") == eid and owned.get("guard") == current_guard and any(
                 version is not None and all(result["data"].get(k) == v for k, v in version.items())
-                for version in (expected, before)))
+                for version in (expected, stored, before)))
             if not force and owned and not resuming:
                 self.failures += 1
                 print(f"  [{f.stem}] 未完了の同期後にリモート変更があります。diffで確認してから再開してください")
+                mismatch = self._resume_mismatch(owned, eid, result["data"], current_guard)
+                if mismatch:
+                    print(f"    前回の同期記録と異なる項目: {', '.join(mismatch)}")
                 continue
             if not force and not resuming and state in ("競合", "取得待ち", "基準情報なし"):
                 self.failures += 1
@@ -1325,9 +1417,10 @@ class EachDocsSyncer:
                         "title": result["data"].get("title"), "body": result["data"].get("body"),
                         "content_type": result["data"].get("content_type"),
                     })
-                body = _rewrite_images(raw_body, self.entity, eid, self.client, f.parent, self.project_root, strict=True)
-                body = _rewrite_videos(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True)
-                body = _rewrite_file_links(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True)
+                stale_uploads: list[int] = []
+                body = _rewrite_images(raw_body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads)
+                body = _rewrite_videos(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads)
+                body = _rewrite_file_links(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads)
                 body = _rewrite_local_links(body, self.entity, self.client.base_url, mapping)
                 body = body if self.target.body_format == "md" else _md_to_html(body)
                 expected = {"body": body, "title": f.stem, "content_type": 2 if self.target.body_format == "md" else 1}
@@ -1356,6 +1449,8 @@ class EachDocsSyncer:
                     return observed, signature["uploads"]
 
                 observed, _ = checkpoint()
+                pending[f.name]["stored"] = {key: observed.get(key) for key in expected}
+                self._save_pending(pending)
                 tags_ok = _sync_tags(self.client, self.entity, eid, self.target.tags) if meta_changed else True
                 if not tags_ok:
                     raise RuntimeError("本文更新後にタグ同期が失敗しました。リモートを確認して再実行してください")
@@ -1378,6 +1473,7 @@ class EachDocsSyncer:
                                                force=force, pattern=self.target.attachments_pattern, prune=prune_attachments, strict=True)
                 if tags_ok is False or category_ok is False or not att_ok:
                     raise RuntimeError("本文更新後、メタデータまたは添付の同期が失敗しました。再実行してください")
+                self._delete_stale_uploads(eid, stale_uploads)
                 data = self._get_entity(eid)
                 uploads = self.client.list_uploads(self.entity, eid)
                 actual = self._remote_signature(data, uploads)
