@@ -56,3 +56,23 @@ eLabFTW 5.5.14ではDELETE後もGETが成功し、`state=3`（削除済み）を
 | Linux / Python 3.14.3 | 411 passed、9 skipped |
 
 wheel/sdist のビルドと、独立した Python 3.12 環境への wheel インストール後の `esync --version`（1.0.1）・`esync rm --help` を確認しました。9件のスキップは実機接続テストです。今回はリモートAPI処理に変更がないため実機往復同期は再実行せず、上記 v1.0.0 の実機検証結果を参照します。Windows は GitHub Actions の結果で確認します。
+
+
+## v1.0.2 の追加検証（2026-10-04）
+
+今回の変更は、eLabFTW 5.5.14 の実運用で報告された次の不具合の修正です。
+
+- 読み取り権限のないカテゴリの名前を解決できない
+- eLabFTW による本文の書き換えのため、止まった同期を再開できない
+- diff と status で、変わった項目が分からない
+- 差し替えた画像の古い版が残る
+
+| 環境 | 結果 |
+|---|---|
+| Linux / Python 3.10.20 | 425 passed、9 skipped |
+| Linux / Python 3.12.3 | 425 passed、9 skipped |
+| Linux / Python 3.14.3 | 425 passed、9 skipped |
+
+wheel/sdist のビルドと、独立した Python 3.12 環境への wheel インストール後の `esync --version`（1.0.2）・`esync diff --help`・`esync category --help` を確認しました。9件のスキップは実機接続テストです。
+
+今回はリモート API の扱い（カテゴリの PATCH の省略、古い版の添付の削除、再開の判定）を変えています。ただし、実機での往復同期はこのリリース作業では実行していません。eLabFTW の保存時の書き換え（行頭の `>` を `&gt;` にする）と、一覧に出ないカテゴリ（個別 GET が 403）は、利用者の報告にある API 応答を状態付きのモックで再現してテストしました。Windows は GitHub Actions の結果で確認します。
