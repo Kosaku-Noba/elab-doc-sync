@@ -1151,34 +1151,56 @@ class EachDocsSyncer:
                 lines.append(f"添付変更: {new_uploads[uid].get('real_name')} (#{uid})")
         return lines, old["body"], new["body"]
 
-    def _delete_stale_uploads(self, eid, stale_ids):
-        """差し替え前の古い版の添付を削除する。best-effort。
+    def _delete_stale_uploads(self, eid, stale_ids, pending, filename):
+        """差し替え前の古い版の添付を削除し、削除できた ID の集合を返す。best-effort。
 
-        同期の他の処理がすべて成功した後にだけ呼ぶ。現在の本文から参照されて
-        いる添付は削除しない。
+        文書の本文・タグ・カテゴリ・添付の同期がすべて済んだ後にだけ呼ぶ。
+        現在の本文から long_name または /uploads/{id} で参照されている添付は
+        削除しない。削除の途中で止まっても再開できるよう、削除候補を先に
+        pending の deleting に記録する。
         """
-        if not stale_ids:
-            return
         body = self._get_entity(eid).get("body") or ""
         by_id = {u.get("id"): u for u in self.client.list_uploads(self.entity, eid)}
-        for uid in dict.fromkeys(stale_ids):
-            upload = by_id.get(uid)
-            if upload is None or (upload.get("long_name") and upload["long_name"] in body):
-                continue
+        candidates = [uid for uid in dict.fromkeys(stale_ids) if uid in by_id
+                      and not (by_id[uid].get("long_name") and by_id[uid]["long_name"] in body)
+                      and not re.search(rf"/uploads/{uid}(?!\d)", body)]
+        if not candidates:
+            return set()
+        pending[filename]["deleting"] = candidates
+        self._save_pending(pending)
+        deleted = set()
+        for uid in candidates:
+            name = by_id[uid].get("real_name")
             try:
                 self.client.delete_upload(self.entity, eid, uid)
-                print(f"    古い版の添付を削除しました: {upload.get('real_name')} (#{uid})")
+                deleted.add(uid)
+                print(f"    古い版の添付を削除しました: {name} (#{uid})")
             except Exception:
                 import logging
                 logging.getLogger(__name__).debug("古い添付の削除失敗", exc_info=True)
-                print(f"    ⚠ 古い版の添付を削除できませんでした: {upload.get('real_name')} (#{uid})")
+                print(f"    ⚠ 古い版の添付を削除できませんでした: {name} (#{uid})")
+        return deleted
+
+    @staticmethod
+    def _guard_matches(owned, current_guard):
+        """記録した guard と現在を比べる。削除途中の添付（deleting）の有無は問わない。"""
+        guard = owned.get("guard")
+        if guard is None:
+            return False
+        deleting = set(owned.get("deleting") or [])
+        if not deleting:
+            return guard == current_guard
+        def strip(g):
+            return {**g, "uploads": [u for u in g.get("uploads", []) if u.get("id") not in deleting]}
+        return strip(guard) == strip(current_guard)
 
     def _resume_mismatch(self, owned, eid, data, current_guard):
         """未完了の同期記録と現在のリモートで食い違う項目の表示名を返す。"""
         if owned.get("eid") != eid:
             return ["文書ID"]
-        labels = [REMOTE_FIELD_LABELS[k] for k in ("category", "tags", "uploads")
-                  if (owned.get("guard") or {}).get(k) != current_guard.get(k)]
+        labels = [] if self._guard_matches(owned, current_guard) else [
+            REMOTE_FIELD_LABELS[k] for k in ("category", "tags", "uploads")
+            if (owned.get("guard") or {}).get(k) != current_guard.get(k)]
         versions = [v for v in (owned.get("expected"), owned.get("stored"), owned.get("before")) if v is not None]
         if not any(all(data.get(k) == v for k, v in version.items()) for version in versions):
             keys = {k for version in versions for k in version}
@@ -1369,7 +1391,7 @@ class EachDocsSyncer:
             # stored is the body as eLabFTW saved it after our PATCH; eLabFTW may
             # rewrite what we sent (e.g. "> " to "&gt; "), so expected alone never matches.
             stored = owned.get("stored")
-            resuming = bool(owned.get("eid") == eid and owned.get("guard") == current_guard and any(
+            resuming = bool(owned.get("eid") == eid and self._guard_matches(owned, current_guard) and any(
                 version is not None and all(result["data"].get(k) == v for k, v in version.items())
                 for version in (expected, stored, before)))
             if not force and owned and not resuming:
@@ -1473,7 +1495,11 @@ class EachDocsSyncer:
                                                force=force, pattern=self.target.attachments_pattern, prune=prune_attachments, strict=True)
                 if tags_ok is False or category_ok is False or not att_ok:
                     raise RuntimeError("本文更新後、メタデータまたは添付の同期が失敗しました。再実行してください")
-                self._delete_stale_uploads(eid, stale_uploads)
+                deleted = self._delete_stale_uploads(eid, stale_uploads, pending, f.name) if stale_uploads else set()
+                if "deleting" in pending[f.name]:
+                    checkpoint({"uploads": [u for u in pending[f.name]["guard"]["uploads"] if u.get("id") not in deleted]})
+                    pending[f.name].pop("deleting")
+                    self._save_pending(pending)
                 data = self._get_entity(eid)
                 uploads = self.client.list_uploads(self.entity, eid)
                 actual = self._remote_signature(data, uploads)

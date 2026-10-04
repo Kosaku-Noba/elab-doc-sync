@@ -871,3 +871,42 @@ def test_failed_push_keeps_old_image_version(project):
     assert syncer.sync() == 0
     assert len(uploads[1]) == 2
     client.delete_upload.assert_not_called()
+
+
+def test_old_version_referenced_by_upload_id_is_kept(project):
+    root, client, remote, syncer, args = project
+    uploads = _stateful_uploads(client)
+    (root / 'docs/picture.png').write_bytes(b'old image')
+    (root / 'docs/a.md').write_text('![image](picture.png)')
+    assert syncer.sync() == 1
+    old_id = uploads[1][0]['id']
+    (root / 'docs/picture.png').write_bytes(b'new image, longer')
+    (root / 'docs/a.md').write_text(f'![image](picture.png)\n\n[旧版](https://example.test/api/v2/items/1/uploads/{old_id})')
+    assert syncer.sync() == 1
+    assert old_id in [u['id'] for u in uploads[1]]
+    client.delete_upload.assert_not_called()
+
+
+def test_network_failure_after_deleting_old_version_can_resume(project):
+    root, client, remote, syncer, args = project
+    uploads = _stateful_uploads(client)
+    (root / 'docs/picture.png').write_bytes(b'old image')
+    (root / 'docs/a.md').write_text('![image](picture.png)')
+    assert syncer.sync() == 1
+    (root / 'docs/picture.png').write_bytes(b'new image, longer')
+    get = client.get_item.side_effect
+    failed = []
+    def get_failing_once_after_delete(eid):
+        if client.delete_upload.called and not failed:
+            failed.append(True)
+            raise requests.ConnectionError('lost')
+        return get(eid)
+    client.get_item.side_effect = get_failing_once_after_delete
+    assert syncer.sync() == 0
+    assert syncer._pending()['a.md']['deleting']
+    assert len(uploads[1]) == 1
+    client.get_item.side_effect = get
+    assert syncer.sync() == 1
+    assert not syncer._pending()
+    assert [u['real_name'] for u in uploads[1]] == ['picture.png']
+    assert syncer.inspect('a.md', 1)['state'] == '最新'
