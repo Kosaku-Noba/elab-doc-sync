@@ -1183,16 +1183,20 @@ class EachDocsSyncer:
 
     @staticmethod
     def _guard_matches(owned, current_guard):
-        """記録した guard と現在を比べる。削除途中の添付（deleting）の有無は問わない。"""
+        """記録した guard と現在を比べる。
+
+        削除途中の添付（deleting）については、消えていることだけを許す。
+        残っている候補は記録と完全に一致しなければならない。
+        """
         guard = owned.get("guard")
         if guard is None:
             return False
         deleting = set(owned.get("deleting") or [])
         if not deleting:
             return guard == current_guard
-        def strip(g):
-            return {**g, "uploads": [u for u in g.get("uploads", []) if u.get("id") not in deleting]}
-        return strip(guard) == strip(current_guard)
+        present = {u.get("id") for u in current_guard.get("uploads", [])}
+        expected = [u for u in guard.get("uploads", []) if u.get("id") not in deleting or u.get("id") in present]
+        return {**guard, "uploads": expected} == current_guard
 
     def _resume_mismatch(self, owned, eid, data, current_guard):
         """未完了の同期記録と現在のリモートで食い違う項目の表示名を返す。"""
