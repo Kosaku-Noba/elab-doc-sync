@@ -71,6 +71,7 @@ def _relink_local_documents(syncers):
     URL のまま残る。ローカル未編集の文書だけを対象に、ローカル側の基準だけを更新する
     （次の push でも同じ URL に戻るため、リモートとの差は生じない）。
     """
+    changes = []
     for syncer in syncers:
         links = syncer.link_targets()
         for name in syncer._load_mapping(migrate=False):
@@ -82,11 +83,17 @@ def _relink_local_documents(syncers):
                 continue
             relinked = _rewrite_elab_links_to_local(body, syncer.client.base_url, {}, syncer.entity,
                                                     source=path, links=links)
-            if relinked == body:
-                continue
-            with local_transaction(syncer.project_root, syncer.backup_paths(), f"pull:リンク更新:{name}"):
-                atomic_write(path, relinked + "\n")
-                syncer._refresh_local_hash(name, relinked)
+            if relinked != body:
+                changes.append((syncer, name, path, relinked))
+    if not changes:
+        return
+    # 書き換える文書と、その状態ファイルだけを退避する
+    paths = [p for syncer, name, path, _ in changes
+             for p in (path, syncer._hash_path(name), syncer.hash_dir / f"{name}.state.json")]
+    with local_transaction(changes[0][0].project_root, paths, "pull:文書間リンクの更新"):
+        for syncer, name, path, relinked in changes:
+            atomic_write(path, relinked + "\n")
+            syncer._refresh_local_hash(name, relinked)
             print(f"  [{path.stem}] 文書間リンクをローカルのパスに更新")
 
 

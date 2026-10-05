@@ -1064,18 +1064,27 @@ class EachDocsSyncer:
         mapping を渡すと、このターゲットについては保存前の紐付けを使う。
         """
         links = LinkTargets(self.client.base_url)
+
+        def recorded_here(syncer, name):
+            # 接続先を変える前の紐付けは、別サーバーの ID を指すため使わない
+            state = syncer._state(name)
+            return state is None or (state["server"] == str(syncer.client.base_url) and state["entity"] == syncer.entity)
+
         for other in self.link_syncers:
             same_host = (other.client.base_url == self.client.base_url
                          or _hosts_match(self.client.base_url, other.client.base_url))
             if other.mapping_file == self.mapping_file or not same_host:
                 continue
             for name, eid in other._load_mapping(migrate=False).items():
+                if not recorded_here(other, name):
+                    continue
                 try:
                     links.add(other.entity, eid, other.file_path(name))
                 except ValueError:
                     continue  # 同名ファイルが複数ある文書は特定できない
         for name, eid in (self._load_mapping(migrate=False) if mapping is None else mapping).items():
-            links.add(self.entity, eid, self.file_path(name))
+            if recorded_here(self, name):
+                links.add(self.entity, eid, self.file_path(name))
         return links
 
     def _refresh_local_hash(self, filename, raw_body):

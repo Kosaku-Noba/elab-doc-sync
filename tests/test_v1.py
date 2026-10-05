@@ -998,3 +998,33 @@ def test_relink_after_pull_keeps_local_edits(project):
         report.write_text(edited, encoding='utf-8')
         assert cmd_pull(args(id=[10], entity='items', target='T')) == 0
     assert report.read_text(encoding='utf-8') == edited
+
+
+def test_link_targets_skip_mappings_recorded_on_another_server(project):
+    root, client, remote, syncer, args = project
+    (root / 'docs/a.md').write_text('a', encoding='utf-8')
+    syncer._save_mapping({'a.md': 42})
+    syncer._save_baseline('a.md', 'a', {'body': 'a'}, [])
+    client.base_url = 'https://new.example.test'
+    assert syncer.link_targets().path_for('items', 42) is None
+
+
+def test_relink_backs_up_only_changed_documents(project):
+    root, client, remote, syncer, args = project
+    _two_target_project(root)
+    (root / 'docs/unrelated.md').write_text('x', encoding='utf-8')
+    remote[10] = {'id': 10, 'title': '仕様', 'body': 'spec', 'content_type': 2}
+    for eid, title in ((11, 'r1'), (12, 'r2')):
+        remote[eid] = {'id': eid, 'title': title, 'content_type': 2,
+                       'body': '[仕様](https://example.test/database.php?mode=view&id=10)'}
+    with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
+        assert cmd_pull(args(id=[11, 12], entity='items', target='R')) == 0
+        before = set((root / BACKUPS).iterdir())
+        assert cmd_pull(args(id=[10], entity='items', target='T')) == 0
+    new = set((root / BACKUPS).iterdir()) - before
+    manifests = [json.loads((d / 'manifest.json').read_text(encoding='utf-8')) for d in new if d.is_dir()]
+    relink = [m for m in manifests if m['reason'] == 'pull:文書間リンクの更新']
+    assert len(relink) == 1
+    roots = {r['path'] for r in relink[0]['roots']}
+    assert {'reports/r1.md', 'reports/r2.md'} <= roots
+    assert not any(r.startswith('docs') for r in roots)
