@@ -1028,3 +1028,20 @@ def test_relink_backs_up_only_changed_documents(project):
     roots = {r['path'] for r in relink[0]['roots']}
     assert {'reports/r1.md', 'reports/r2.md'} <= roots
     assert not any(r.startswith('docs') for r in roots)
+
+
+def test_pull_does_not_resolve_links_with_stale_server_mapping(project):
+    root, client, remote, syncer, args = project
+    (root / 'docs/a.md').write_text('a', encoding='utf-8')
+    syncer._save_mapping({'a.md': 42})
+    syncer._save_baseline('a.md', 'a', {'body': 'a'}, [])
+    cfg = root / '.elab-sync.yaml'
+    raw = yaml.safe_load(cfg.read_text(encoding='utf-8'))
+    raw['elabftw']['url'] = 'https://new.example.test'
+    cfg.write_text(yaml.safe_dump(raw), encoding='utf-8')
+    client.base_url = 'https://new.example.test'
+    remote[43] = {'id': 43, 'title': 'b', 'content_type': 2,
+                  'body': '[a](https://new.example.test/database.php?mode=view&id=42)'}
+    with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
+        cmd_pull(args(id=[43], entity='items'))
+    assert 'id=42' in (root / 'docs/b.md').read_text(encoding='utf-8')

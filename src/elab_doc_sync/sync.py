@@ -428,6 +428,18 @@ class LinkTargets:
     def path_for(self, entity: str, eid: int) -> Path | None:
         return self._by_id.get((entity, eid))
 
+    def url_for_name(self, filename: str, entity: str) -> str | None:
+        """パスで一致しないリンクを、ファイル名で解決する（同じ entity を優先、一意な場合のみ）。"""
+        for same_entity in (True, False):
+            found = {key for path, key in self._by_path.items()
+                     if path.name == filename and (key[0] == entity) == same_entity}
+            if len(found) == 1:
+                found_entity, eid = found.pop()
+                return f"{self.base_url}/{_ENTITY_TO_PAGE[found_entity]}.php?mode=view&id={eid}"
+            if found:
+                return None
+        return None
+
 
 def _relative_link(path: Path, start: Path) -> str:
     rel = _os.path.relpath(path, start).replace(_os.sep, "/")
@@ -467,11 +479,10 @@ def _rewrite_local_links(body: str, entity: str, base_url: str,
         # エディタが日本語ファイル名を %E6... とエンコードしたリンクも解決する
         link_path = unquote(link_path)
 
-        # 0. リンク先のパスが追跡中の文書（他ターゲットを含む）と一致
+        # 0. 全ターゲットの対応があれば、それだけで解決する（接続先の異なる紐付けは除外済み）
         if links is not None and source is not None:
-            url = links.url_for(Path(source).parent / link_path)
-            if url is not None:
-                return f"[{text}]({url}{fragment_suffix})"
+            url = links.url_for(Path(source).parent / link_path) or links.url_for_name(Path(link_path).name, entity)
+            return f"[{text}]({url}{fragment_suffix})" if url is not None else m.group(0)
 
         # パスからファイル名を抽出
         target_filename = Path(link_path).name
@@ -548,11 +559,12 @@ def _rewrite_elab_links_to_local(body: str, base_url: str,
         if not _hosts_match(base_url, link_base):
             return m.group(0)
 
-        # 0. 全ターゲットの追跡中の文書から、実際の置き場所への相対パスで解決
+        # 0. 全ターゲットの対応があれば、それだけで解決する（接続先の異なる紐付けは除外済み）
         if links is not None and source is not None:
             path = links.path_for(link_entity, link_id)
-            if path is not None:
-                return f"[{text}]({_relative_link(path, Path(source).resolve().parent)}{fragment})"
+            if path is None:
+                return m.group(0)
+            return f"[{text}]({_relative_link(path, Path(source).resolve().parent)}{fragment})"
 
         # 1. 同じターゲット内で解決
         if link_entity == entity and link_id in reverse:
