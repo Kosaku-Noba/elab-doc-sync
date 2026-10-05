@@ -30,8 +30,9 @@
 
 | 関数 | 説明 |
 |---|---|
-| `_rewrite_local_links(body, entity, base_url, mapping, all_mappings=None)` | `[text](./file.md)` → eLabFTW URL に変換 |
-| `_rewrite_elab_links_to_local(body, base_url, mapping, entity, all_mappings=None, target_docs_dir="")` | eLabFTW URL → `[text](./file.md)` に逆変換 |
+| `_rewrite_local_links(body, entity, base_url, mapping, all_mappings=None, *, source=None, links=None)` | `[text](./file.md)` → eLabFTW URL に変換。`links` があれば、`source` からの相対パスで全ターゲットの文書を解決 |
+| `_rewrite_elab_links_to_local(body, base_url, mapping, entity, all_mappings=None, target_docs_dir="", *, source=None, links=None)` | eLabFTW URL → `[text](./file.md)` に逆変換。`links` があれば、`source` からリンク先の実際の場所への相対パスにする |
+| `LinkTargets` / `EachDocsSyncer.link_targets(mapping=None)` | 同じホストの全ターゲットで追跡中の文書と、ローカルパスの対応 |
 | `_hosts_match(base_url, link_base)` | ホスト完全一致判定（urlparse） |
 
 #### 内部関数 — カウント・判定

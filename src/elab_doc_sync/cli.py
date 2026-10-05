@@ -56,6 +56,40 @@ def _make_syncer(client, target, project_root):
     return EachDocsSyncer(client, target, project_root)
 
 
+def _link_syncers(config, project_root):
+    """文書間リンクの解決用に、全ターゲットの syncer を作る（各 syncer が互いを参照する）。"""
+    syncers = [_make_syncer(_make_client_for_target(config, t), t, project_root) for t in config.targets]
+    for syncer in syncers:
+        syncer.link_syncers = syncers
+    return syncers
+
+
+def _relink_local_documents(syncers):
+    """取得済みの文書に残る eLabFTW の記事 URL を、追跡中の文書へのローカルリンクに置き換える。
+
+    リンク先の文書を後から pull した場合、リンク元は「最新」としてスキップされるため、
+    URL のまま残る。ローカル未編集の文書だけを対象に、ローカル側の基準だけを更新する
+    （次の push でも同じ URL に戻るため、リモートとの差は生じない）。
+    """
+    for syncer in syncers:
+        links = syncer.link_targets()
+        for name in syncer._load_mapping(migrate=False):
+            path = syncer.file_path(name)
+            if not path.is_file() or syncer._state(name) is None:
+                continue
+            body = path.read_text(encoding="utf-8").strip()
+            if syncer._has_changed(name, body):
+                continue
+            relinked = _rewrite_elab_links_to_local(body, syncer.client.base_url, {}, syncer.entity,
+                                                    source=path, links=links)
+            if relinked == body:
+                continue
+            with local_transaction(syncer.project_root, syncer.backup_paths(), f"pull:リンク更新:{name}"):
+                atomic_write(path, relinked + "\n")
+                syncer._refresh_local_hash(name, relinked)
+            print(f"  [{path.stem}] 文書間リンクをローカルのパスに更新")
+
+
 def _score_target_match(target, remote_tags: list[str], remote_category: str | None, remote_title: str) -> float:
     """リモートエンティティとターゲットのマッチスコアを計算する。
 
@@ -192,11 +226,9 @@ def cmd_sync(args):
     config = load_config(config_path)
 
     updated = failed = skipped = 0
-    for target in config.targets:
+    for target, syncer in zip(config.targets, _link_syncers(config, project_root)):
         if not _matches_target(target, args.target):
             continue
-        client = _make_client_for_target(config, target)
-        syncer = _make_syncer(client, target, project_root)
 
         if args.dry_run:
             entity_label = "実験ノート" if target.entity == "experiments" else "リソース"
@@ -432,6 +464,8 @@ def cmd_pull(args):
             failed += 1
             if (root / RECOVERY).exists():
                 break
+    if pulled and not dry_run and not export:
+        _relink_local_documents(_link_syncers(config, root))
     print(f"\n{'確認' if dry_run else '完了'}: {pulled} 件取得{'予定' if dry_run else ''}、{skipped} 件スキップ、{failed} 件失敗")
     return 1 if failed else 0
 
@@ -513,6 +547,7 @@ def _pull_entity_to_target(client, config, config_path, target, project_root,
     docs_dir = project_root / (pull_dir_override or Path(target.docs_dir))
     is_temp_export = docs_dir.resolve() != (project_root / target.docs_dir).resolve()
     syncer = EachDocsSyncer(client, target, project_root)
+    syncer.link_syncers = _link_syncers(config, project_root)
     mapping = syncer._load_mapping(migrate=False)
     return _pull_each_entity(client, syncer, target, project_root, docs_dir, mapping,
                              {v: k for k, v in mapping.items()}, eid, data, entity_type,
@@ -566,7 +601,10 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
         if old_name:
             new_mapping.pop(old_name, None)
         new_mapping[filename] = eid
-        body_md = _rewrite_elab_links_to_local(body_md, client.base_url, new_mapping, entity_type, target_docs_dir=target.docs_dir)
+        links = syncer.link_targets(new_mapping)
+        links.add(entity_type, eid, filepath)
+        body_md = _rewrite_elab_links_to_local(body_md, client.base_url, new_mapping, entity_type,
+                                               target_docs_dir=target.docs_dir, source=filepath, links=links)
         if target.attachments_dir:
             _download_attachments(entity_type, eid, client, project_root / target.attachments_dir, strict=True)
         atomic_write(filepath, body_md + "\n")
@@ -637,6 +675,7 @@ def cmd_diff(args):
 
     has_diff = False
     failed = False
+    link_syncers = _link_syncers(config, project_root)
     for target in config.targets:
         if not _matches_target(target, args.target):
             continue
@@ -647,7 +686,9 @@ def cmd_diff(args):
 
         if target.mode == "each":
             syncer = EachDocsSyncer(client, target, project_root)
+            syncer.link_syncers = link_syncers
             mapping = syncer._load_mapping(migrate=False)
+            links = syncer.link_targets(mapping)
 
             for filename, eid in mapping.items():
                 local_path = docs_dir / filename
@@ -666,6 +707,8 @@ def cmd_diff(args):
                 local_md = local_path.read_text(encoding="utf-8").strip()
                 remote_md = _remote_markdown(data, target)
                 remote_md = _normalize_remote_image_urls(remote_md, target.entity, eid, client)
+                remote_md = _rewrite_elab_links_to_local(remote_md, client.base_url, mapping, target.entity,
+                                                         source=local_path, links=links)
 
                 if _show_diff(filename, local_md, remote_md):
                     has_diff = True
@@ -1209,6 +1252,7 @@ def cmd_link(args):
     if not args.file or (not getattr(args, "new", False) and (args.entity_id is None or args.entity_id <= 0)):
         raise ValueError("正のIDと --file を指定してください")
     syncer = _make_syncer(_make_client_for_target(config, target), target, config_path.parent)
+    syncer.link_syncers = _link_syncers(config, config_path.parent)
     path = safe_path(syncer.docs_dir, args.file)
     filename = path.name
     if not path.is_file():
@@ -1236,7 +1280,10 @@ def cmd_link(args):
     mapping[filename] = args.entity_id
     normalized = _normalize_remote_image_urls(_remote_markdown(data, target), target.entity, args.entity_id,
                                               syncer.client, uploads=uploads)
-    normalized = _rewrite_elab_links_to_local(normalized, syncer.client.base_url, mapping, target.entity)
+    links = syncer.link_targets(mapping)
+    links.add(target.entity, args.entity_id, path)
+    normalized = _rewrite_elab_links_to_local(normalized, syncer.client.base_url, mapping, target.entity,
+                                              source=path, links=links)
     with local_transaction(config_path.parent, [syncer.hash_dir], "link:追跡再開"):
         syncer._save_mapping(mapping)
         write_json(syncer.hash_dir / "excluded.json", sorted(syncer._load_excluded() - {filename}))

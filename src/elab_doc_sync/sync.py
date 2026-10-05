@@ -12,6 +12,7 @@ import tempfile
 import markdown
 import html as _html
 from pathlib import Path
+from urllib.parse import unquote
 
 from .safety import atomic_write, write_json, safe_path, snapshot, local_transaction
 from .client import ELabFTWClient
@@ -400,8 +401,42 @@ def _hosts_match(base_url: str, link_base: str) -> bool:
     return urlparse(base_url).netloc == urlparse(link_base).netloc
 
 
+class LinkTargets:
+    """同じ eLabFTW 上で追跡中の文書（全ターゲット）と、そのローカルパスの対応。
+
+    文書間リンクを、ターゲット（docs_dir）やサブディレクトリをまたいでも
+    パスで解決するために使う。ファイル名だけでは別ディレクトリの同名文書と区別できない。
+    """
+
+    def __init__(self, base_url: str):
+        self.base_url = base_url
+        self._by_path: dict[Path, tuple[str, int]] = {}
+        self._by_id: dict[tuple[str, int], Path] = {}
+
+    def add(self, entity: str, eid: int, path: Path) -> None:
+        path = Path(path).resolve()
+        self._by_path[path] = (entity, eid)
+        self._by_id[(entity, eid)] = path
+
+    def url_for(self, path: Path) -> str | None:
+        found = self._by_path.get(Path(path).resolve())
+        if found is None:
+            return None
+        entity, eid = found
+        return f"{self.base_url}/{_ENTITY_TO_PAGE[entity]}.php?mode=view&id={eid}"
+
+    def path_for(self, entity: str, eid: int) -> Path | None:
+        return self._by_id.get((entity, eid))
+
+
+def _relative_link(path: Path, start: Path) -> str:
+    rel = _os.path.relpath(path, start).replace(_os.sep, "/")
+    return rel if rel.startswith("../") else f"./{rel}"
+
+
 def _rewrite_local_links(body: str, entity: str, base_url: str,
-                         mapping: dict, all_mappings: list[tuple[str, str, dict]] | None = None) -> str:
+                         mapping: dict, all_mappings: list[tuple[str, str, dict]] | None = None,
+                         *, source: Path | None = None, links: LinkTargets | None = None) -> str:
     """Markdown 本文中のローカルファイルリンクを eLabFTW の記事 URL に変換する。
 
     each モード専用。merge モードでは 1 ファイル = 1 エンティティの対応関係がないため非対応。
@@ -416,6 +451,8 @@ def _rewrite_local_links(body: str, entity: str, base_url: str,
         mapping: 現在のターゲットの {filename: entity_id} マッピング
         all_mappings: 全ターゲットの [(docs_dir, entity_type, {filename: eid}), ...] リスト
                       他ターゲットのファイルへのリンクも解決するために使用
+        source: この本文のローカルファイル。links と併せて相対パスを解決する
+        links: 全ターゲットの文書とローカルパスの対応。パスで一致すれば最優先で使う
     """
     def replace_link(m):
         text, href = m.group(1), m.group(2)
@@ -427,6 +464,14 @@ def _rewrite_local_links(body: str, entity: str, base_url: str,
         if not link_path.endswith(".md"):
             return m.group(0)
         fragment_suffix = sep + fragment
+        # エディタが日本語ファイル名を %E6... とエンコードしたリンクも解決する
+        link_path = unquote(link_path)
+
+        # 0. リンク先のパスが追跡中の文書（他ターゲットを含む）と一致
+        if links is not None and source is not None:
+            url = links.url_for(Path(source).parent / link_path)
+            if url is not None:
+                return f"[{text}]({url}{fragment_suffix})"
 
         # パスからファイル名を抽出
         target_filename = Path(link_path).name
@@ -457,7 +502,8 @@ def _rewrite_local_links(body: str, entity: str, base_url: str,
 def _rewrite_elab_links_to_local(body: str, base_url: str,
                                  mapping: dict, entity: str,
                                  all_mappings: list[tuple[str, str, dict]] | None = None,
-                                 target_docs_dir: str = "") -> str:
+                                 target_docs_dir: str = "",
+                                 *, source: Path | None = None, links: LinkTargets | None = None) -> str:
     """eLabFTW の記事 URL をローカルファイルリンクに逆変換する。
 
     each モード専用。merge モードでは mapping が空のため変換は行われない。
@@ -473,6 +519,8 @@ def _rewrite_elab_links_to_local(body: str, base_url: str,
         entity: 現在のターゲットの entity タイプ
         all_mappings: 全ターゲットの [(docs_dir, entity_type, {filename: eid}), ...]
         target_docs_dir: 現在のターゲットの docs_dir（相対パス計算用）
+        source: この本文を書き込むローカルファイル。links と併せて相対パスを計算する
+        links: 全ターゲットの文書とローカルパスの対応。一致すれば最優先で使う
     """
     # reverse mapping: entity_id → filename
     reverse = {v: k for k, v in mapping.items()}
@@ -499,6 +547,12 @@ def _rewrite_elab_links_to_local(body: str, base_url: str,
         # ホスト完全一致でなければスキップ（外部 eLabFTW リンク）
         if not _hosts_match(base_url, link_base):
             return m.group(0)
+
+        # 0. 全ターゲットの追跡中の文書から、実際の置き場所への相対パスで解決
+        if links is not None and source is not None:
+            path = links.path_for(link_entity, link_id)
+            if path is not None:
+                return f"[{text}]({_relative_link(path, Path(source).resolve().parent)}{fragment})"
 
         # 1. 同じターゲット内で解決
         if link_entity == entity and link_id in reverse:
@@ -1000,6 +1054,37 @@ class EachDocsSyncer:
         self.hash_dir = self.mapping_file.parent
         self.failures = 0
         self.skipped = 0
+        # 文書間リンクの解決に使う全ターゲットの syncer（CLI が設定する）
+        self.link_syncers = []
+
+    def link_targets(self, mapping=None):
+        """全ターゲットの追跡中の文書から、文書間リンクの対応を作る。
+
+        接続先のホストが異なるターゲットは含めない（ID が別サーバーのものになるため）。
+        mapping を渡すと、このターゲットについては保存前の紐付けを使う。
+        """
+        links = LinkTargets(self.client.base_url)
+        for other in self.link_syncers:
+            same_host = (other.client.base_url == self.client.base_url
+                         or _hosts_match(self.client.base_url, other.client.base_url))
+            if other.mapping_file == self.mapping_file or not same_host:
+                continue
+            for name, eid in other._load_mapping(migrate=False).items():
+                try:
+                    links.add(other.entity, eid, other.file_path(name))
+                except ValueError:
+                    continue  # 同名ファイルが複数ある文書は特定できない
+        for name, eid in (self._load_mapping(migrate=False) if mapping is None else mapping).items():
+            links.add(self.entity, eid, self.file_path(name))
+        return links
+
+    def _refresh_local_hash(self, filename, raw_body):
+        """リモートと無関係にローカル本文だけを書き換えたとき、ローカル側の基準を合わせる。"""
+        self._save_hash(filename, raw_body)
+        path = self.hash_dir / f"{filename}.state.json"
+        state = json.loads(path.read_text(encoding="utf-8"))
+        state["local_hash"] = _compute_hash(raw_body)
+        write_json(path, state)
 
     def backup_paths(self):
         paths = [self.docs_dir, self.hash_dir]
@@ -1433,6 +1518,7 @@ class EachDocsSyncer:
                 result["entity_id"] = eid
                 print(f"  [{f.stem}] #{eid} を新規作成しました")
         updated = 0
+        links = self.link_targets(mapping) if jobs else None
         for f, result, resuming in jobs:
             eid = result["entity_id"]
             raw_body = result["body"]
@@ -1447,7 +1533,7 @@ class EachDocsSyncer:
                 body = _rewrite_images(raw_body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads)
                 body = _rewrite_videos(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads)
                 body = _rewrite_file_links(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads)
-                body = _rewrite_local_links(body, self.entity, self.client.base_url, mapping)
+                body = _rewrite_local_links(body, self.entity, self.client.base_url, mapping, source=f, links=links)
                 body = body if self.target.body_format == "md" else _md_to_html(body)
                 expected = {"body": body, "title": f.stem, "content_type": 2 if self.target.body_format == "md" else 1}
                 previous = result.get("data") or self._get_entity(eid)

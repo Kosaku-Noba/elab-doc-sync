@@ -937,3 +937,64 @@ def test_change_to_pending_deletion_candidate_blocks_resume(project, capsys):
     out = capsys.readouterr().out
     assert '未完了の同期後にリモート変更があります' in out
     assert '添付' in out
+
+
+# ── v1.0.3: 別PCでの pull とターゲットをまたぐ文書間リンク ──
+
+def _two_target_project(root):
+    """docs/ と reports/ の2ターゲット構成にする。"""
+    cfg = root / '.elab-sync.yaml'
+    raw = yaml.safe_load(cfg.read_text(encoding='utf-8'))
+    raw['targets'].append({'title': 'R', 'docs_dir': 'reports', 'id_file': '.ids/reports/default.id', 'body_format': 'md'})
+    cfg.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding='utf-8')
+    (root / 'reports').mkdir()
+    return cfg
+
+
+def test_push_resolves_encoded_link_to_other_target(project):
+    from elab_doc_sync.cli import cmd_sync
+    root, client, remote, syncer, args = project
+    _two_target_project(root)
+    (root / 'docs/仕様.md').write_text('spec', encoding='utf-8')
+    # エディタがファイル名を URL エンコードしたリンク
+    (root / 'reports/週報.md').write_text('[仕様](../docs/%E4%BB%95%E6%A7%98.md#intro)', encoding='utf-8')
+    with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
+        assert cmd_sync(args(prune_attachments=False)) == 0
+    spec_id = next(eid for eid, r in remote.items() if r['title'] == '仕様')
+    report = next(r for r in remote.values() if r['title'] == '週報')
+    assert report['body'] == f'[仕様](https://example.test/database.php?mode=view&id={spec_id}#intro)'
+
+
+def test_pull_on_another_pc_restores_links_in_any_order(project):
+    root, client, remote, syncer, args = project
+    _two_target_project(root)
+    remote[10] = {'id': 10, 'title': '仕様', 'body': 'spec', 'content_type': 2}
+    remote[11] = {'id': 11, 'title': '週報', 'content_type': 2,
+                  'body': '[仕様](https://example.test/database.php?mode=view&id=10#intro)'}
+    with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
+        # リンク元を先に取得すると、リンク先はまだ追跡されていない
+        assert cmd_pull(args(id=[11], entity='items', target='R')) == 0
+        report = root / 'reports/週報.md'
+        assert 'id=10' in report.read_text(encoding='utf-8')
+        assert cmd_pull(args(id=[10], entity='items', target='T')) == 0
+    assert report.read_text(encoding='utf-8').strip() == '[仕様](../docs/仕様.md#intro)'
+    reports = EachDocsSyncer(client, load_config(root / '.elab-sync.yaml').targets[1], root)
+    assert reports.inspect('週報.md', 11)['state'] == '最新'
+    # 次の push は同じ URL に戻るので、送信不要のまま
+    reports.link_syncers = [syncer, reports]
+    assert reports.sync() == 0
+
+
+def test_relink_after_pull_keeps_local_edits(project):
+    root, client, remote, syncer, args = project
+    _two_target_project(root)
+    remote[10] = {'id': 10, 'title': '仕様', 'body': 'spec', 'content_type': 2}
+    remote[11] = {'id': 11, 'title': '週報', 'content_type': 2,
+                  'body': '[仕様](https://example.test/database.php?mode=view&id=10)'}
+    with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
+        assert cmd_pull(args(id=[11], entity='items', target='R')) == 0
+        report = root / 'reports/週報.md'
+        edited = report.read_text(encoding='utf-8') + '追記\n'
+        report.write_text(edited, encoding='utf-8')
+        assert cmd_pull(args(id=[10], entity='items', target='T')) == 0
+    assert report.read_text(encoding='utf-8') == edited
