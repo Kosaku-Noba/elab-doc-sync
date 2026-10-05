@@ -464,7 +464,9 @@ def _rewrite_local_links(body: str, entity: str, base_url: str,
         all_mappings: 全ターゲットの [(docs_dir, entity_type, {filename: eid}), ...] リスト
                       他ターゲットのファイルへのリンクも解決するために使用
         source: この本文のローカルファイル。links と併せて相対パスを解決する
-        links: 全ターゲットの文書とローカルパスの対応。パスで一致すれば最優先で使う
+        links: 全ターゲットの文書とローカルパスの対応。source と併せて渡すと、これだけで解決する
+               （パス、次に一意なファイル名で照合し、mapping・all_mappings は使わない）。
+               解決できないリンクはそのまま残す
     """
     def replace_link(m):
         text, href = m.group(1), m.group(2)
@@ -531,7 +533,8 @@ def _rewrite_elab_links_to_local(body: str, base_url: str,
         all_mappings: 全ターゲットの [(docs_dir, entity_type, {filename: eid}), ...]
         target_docs_dir: 現在のターゲットの docs_dir（相対パス計算用）
         source: この本文を書き込むローカルファイル。links と併せて相対パスを計算する
-        links: 全ターゲットの文書とローカルパスの対応。一致すれば最優先で使う
+        links: 全ターゲットの文書とローカルパスの対応。source と併せて渡すと、これだけで解決し、
+               mapping・all_mappings は使わない。解決できない URL はそのまま残す
     """
     # reverse mapping: entity_id → filename
     reverse = {v: k for k, v in mapping.items()}

@@ -1045,3 +1045,31 @@ def test_pull_does_not_resolve_links_with_stale_server_mapping(project):
     with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
         cmd_pull(args(id=[43], entity='items'))
     assert 'id=42' in (root / 'docs/b.md').read_text(encoding='utf-8')
+
+
+def test_link_targets_resolve_file_name_only_when_unique(tmp_path):
+    from elab_doc_sync.sync import LinkTargets, _rewrite_local_links
+    links = LinkTargets('https://example.test')
+    links.add('items', 1, tmp_path / 'a/same.md')
+    links.add('items', 2, tmp_path / 'b/same.md')
+    links.add('experiments', 3, tmp_path / 'c/exp.md')
+    links.add('items', 4, tmp_path / 'd/exp.md')
+    source = tmp_path / 'r/report.md'
+    # 同名の文書が複数あれば変換しない
+    assert _rewrite_local_links('[x](same.md)', 'items', 'https://example.test', {'same.md': 9},
+                                source=source, links=links) == '[x](same.md)'
+    # 同じ entity を優先する
+    assert _rewrite_local_links('[x](exp.md)', 'experiments', 'https://example.test', {},
+                                source=source, links=links) == '[x](https://example.test/experiments.php?mode=view&id=3)'
+
+
+def test_push_does_not_resolve_links_with_stale_server_mapping(project):
+    root, client, remote, syncer, args = project
+    (root / 'docs/a.md').write_text('a', encoding='utf-8')
+    syncer._save_mapping({'a.md': 42})
+    syncer._save_baseline('a.md', 'a', {'body': 'a'}, [])
+    client.base_url = 'https://new.example.test'
+    (root / 'docs/b.md').write_text('[a](./a.md)', encoding='utf-8')
+    syncer.sync()
+    b = next(r for r in remote.values() if r['title'] == 'b')
+    assert b['body'] == '[a](./a.md)'
