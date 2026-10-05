@@ -84,3 +84,18 @@ wheel/sdist のビルドと、独立した Python 3.12 環境への wheel イン
 wheel/sdist のビルドと、独立した Python 3.12 環境への wheel インストール後の `esync --version`（1.0.2）・`esync diff --help`・`esync category --help` を確認しました。
 
 読み取り権限のないカテゴリ（一覧に出ず、個別 GET が 403 になる）は、一時記事では再現できません。利用者の報告にある API 応答を、状態付きのモックで再現してテストしました。Windows は GitHub Actions の結果で確認します。
+
+
+## v1.0.3 の追加検証（2026-10-05）
+
+今回の変更は、別の PC で `esync pull --id` した文書の文書間リンクが、ローカルのリンクに戻らない不具合の修正です。
+
+| 環境 | 結果 |
+|---|---|
+| Linux / Python 3.10.20 | 437 passed、11 skipped |
+| Linux / Python 3.12.3 | 437 passed、11 skipped |
+| Linux / Python 3.14.3 | 437 passed、11 skipped |
+
+wheel/sdist のビルドと、独立した Python 3.12 環境への wheel インストール後の `esync --version`（1.0.3）・`esync pull --help` を確認しました。11件のスキップは実機接続テストです。
+
+実機の記事（読み取りのみ）で、別ターゲットへのリンクが `../elab_docs/%E6...md` のような相対パスのまま保存されていること、HTML 本文の記事 URL（`&amp;id=`）が Markdown 変換後に `&id=` となりローカルのパスへ戻せることを確認しました。変更は本文中のリンクの変換とローカルの状態ファイルに限られ、リモート API の呼び出し方は変えていないため、実機での往復同期はこのリリース作業では実行していません。Windows は GitHub Actions の結果で確認します。
