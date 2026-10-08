@@ -74,19 +74,24 @@ def test_three_way_status_and_pull(project, local, remote_change, expected):
     with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
         code = cmd_pull(args())
     assert code == int(local and remote_change)
-    assert (root / 'docs/a.md').read_text().strip() == ('local' if local else 'remote' if remote_change else 'original')
+    merged = '<<<<<<< ローカル\nlocal\n=======\nremote\n>>>>>>> eLabFTW #1'
+    assert (root / 'docs/a.md').read_text().strip() == (
+        merged if local and remote_change else 'local' if local else 'remote' if remote_change else 'original')
     if not local and remote_change:
         assert syncer.inspect('a.md', 1)['state'] == '最新'
 
 
-def test_rename_does_not_overwrite_local_edits(project):
+def test_remote_rename_keeps_local_edits(project):
     root, client, remote, syncer, args = push_note(project)
     remote[1]['title'] = 'renamed'
     (root / 'docs/a.md').write_text('unsent')
     with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
-        assert cmd_pull(args()) == 1
-    assert (root / 'docs/a.md').read_text() == 'unsent'
-    assert not (root / 'docs/renamed.md').exists()
+        assert cmd_pull(args()) == 0
+    assert not (root / 'docs/a.md').exists()
+    assert (root / 'docs/renamed.md').read_text().strip() == 'unsent'
+    assert syncer.inspect('renamed.md', 1)['state'] == '送信待ち'
+    assert syncer.sync() == 1
+    assert remote[1]['body'] == 'unsent' and remote[1]['title'] == 'renamed'
 
 
 def test_remote_title_only_change_pulls_safely(project):
@@ -1152,3 +1157,131 @@ def test_push_does_not_resolve_links_with_stale_server_mapping(project):
     syncer.sync()
     b = next(r for r in remote.values() if r['title'] == 'b')
     assert b['body'] == '[a](./a.md)'
+
+
+# ── pull 時の 3-way マージ ──
+
+
+def _pull(client, args, **kw):
+    with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
+        return cmd_pull(args(**kw))
+
+
+def test_pull_merges_non_overlapping_edits(project):
+    root, client, remote, syncer, args = push_note(project, 'one\ntwo\nthree')
+    (root / 'docs/a.md').write_text('ONE\ntwo\nthree')
+    remote[1]['body'] = 'one\ntwo\nTHREE'
+    assert _pull(client, args) == 0
+    assert (root / 'docs/a.md').read_text().strip() == 'ONE\ntwo\nTHREE'
+    assert syncer.inspect('a.md', 1)['state'] == '送信待ち'
+    assert syncer.sync() == 1
+    assert remote[1]['body'] == 'ONE\ntwo\nTHREE'
+    assert syncer.inspect('a.md', 1)['state'] == '最新'
+
+
+def test_conflict_markers_block_push_and_pull_until_resolved(project, capsys):
+    root, client, remote, syncer, args = push_note(project, 'one\ntwo')
+    (root / 'docs/a.md').write_text('one\nlocal')
+    remote[1]['body'] = 'one\nremote'
+    assert _pull(client, args) == 1
+    text = (root / 'docs/a.md').read_text()
+    assert text.strip() == 'one\n<<<<<<< ローカル\nlocal\n=======\nremote\n>>>>>>> eLabFTW #1'
+    assert '競合マーカーが残っている文書: 1 件' in capsys.readouterr().out
+    assert syncer.inspect('a.md', 1)['state'] == '競合マーカーあり'
+    assert syncer.sync(force=True) == 0 and syncer.failures == 1
+    assert remote[1]['body'] == 'one\nremote'
+    remote[1]['body'] = 'one\nremote again'
+    assert _pull(client, args) == 1
+    assert (root / 'docs/a.md').read_text() == text
+    (root / 'docs/a.md').write_text('one\nlocal and remote')
+    assert syncer.sync(force=True) == 1
+    assert remote[1]['body'] == 'one\nlocal and remote'
+
+
+def test_status_reports_conflict_markers(project, capsys):
+    root, client, remote, syncer, args = push_note(project, 'one')
+    (root / 'docs/a.md').write_text('local')
+    remote[1]['body'] = 'remote'
+    _pull(client, args)
+    capsys.readouterr()
+    with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
+        assert cmd_status(args()) == 1
+    assert '競合マーカーあり' in capsys.readouterr().out
+
+
+def test_documented_git_markers_are_not_conflicts(project):
+    root, client, remote, syncer, args = push_note(project)
+    (root / 'docs/a.md').write_text('```\n<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> branch\n```')
+    assert syncer.inspect('a.md', 1)['state'] == '送信待ち'
+    assert syncer.sync() == 1
+
+
+def test_pull_without_recorded_base_marks_every_difference(project):
+    root, client, remote, syncer, args = push_note(project, 'one\ntwo')
+    (syncer.hash_dir / 'a.md.base').unlink()
+    (root / 'docs/a.md').write_text('ONE\ntwo')
+    remote[1]['body'] = 'one\ntwo\nthree'
+    assert _pull(client, args) == 1
+    text = (root / 'docs/a.md').read_text()
+    assert text.count('<<<<<<< ローカル') == 2
+
+
+def test_pull_merge_dry_run_changes_nothing(project, capsys):
+    root, client, remote, syncer, args = push_note(project, 'one')
+    (root / 'docs/a.md').write_text('local')
+    remote[1]['body'] = 'remote'
+    assert _pull(client, args, dry_run=True) == 0
+    assert 'ローカル編集とマージ予定' in capsys.readouterr().out
+    assert (root / 'docs/a.md').read_text() == 'local'
+    assert syncer.inspect('a.md', 1)['state'] == '競合'
+
+
+def test_merge_keeps_pending_metadata_changes(project):
+    root, client, remote, syncer, args = push_note(project, 'one\ntwo')
+    cfg = root / '.elab-sync.yaml'
+    data = yaml.safe_load(cfg.read_text())
+    data['targets'][0]['tags'] = ['ours']
+    cfg.write_text(yaml.safe_dump(data))
+    syncer.target.tags = ['ours']
+    remote[1]['body'] = 'one\ntwo\nthree'
+    assert syncer.inspect('a.md', 1)['state'] == '競合'
+    assert _pull(client, args) == 0
+    assert (root / 'docs/a.md').read_text().strip() == 'one\ntwo\nthree'
+    assert syncer.inspect('a.md', 1)['state'] == '送信待ち'
+    assert syncer.sync() == 1
+    assert remote[1]['tags'] == ['ours']
+
+
+def test_merge_keeps_locally_edited_image_referenced_by_local_path(project):
+    root, client, remote, syncer, args = project
+    uploads = _stateful_uploads(client)
+    (root / 'docs/picture.png').write_bytes(b'old image')
+    (root / 'docs/a.md').write_text('![image](picture.png)\ntext')
+    assert syncer.sync() == 1
+    (root / 'docs/picture.png').write_bytes(b'new image, longer')
+    remote[1]['body'] += '\nremote line'
+    client.download_upload.return_value = b'old image'
+    assert _pull(client, args) == 0
+    assert (root / 'docs/a.md').read_text().strip() == '![image](picture.png)\ntext\nremote line'
+    assert (root / 'docs/picture.png').read_bytes() == b'new image, longer'
+    assert syncer.sync() == 1
+    assert len(uploads[1]) == 1 and uploads[1][0]['filesize'] == len(b'new image, longer')
+
+
+def test_merge_does_not_overwrite_pulled_image_edited_locally(project):
+    root, client, remote, syncer, args = project
+    uploads = _stateful_uploads(client)
+    (root / 'docs/picture.png').write_bytes(b'remote image')
+    (root / 'docs/a.md').write_text('![image](picture.png)\ntext')
+    assert syncer.sync() == 1
+    client.download_upload.return_value = b'remote image'
+    remote[1]['body'] += '\nfirst remote line'
+    (root / 'docs/a.md').unlink()
+    assert _pull(client, args, force=True) == 0
+    pulled = root / 'docs/images' / next(p.name for p in (root / 'docs/images').iterdir())
+    pulled.write_bytes(b'edited locally')
+    remote[1]['body'] += '\nsecond remote line'
+    assert syncer.inspect('a.md', 1)['state'] == '競合'
+    assert _pull(client, args) == 0
+    assert pulled.read_bytes() == b'edited locally'
+    assert (root / 'docs/a.md').read_text().strip().endswith('second remote line')

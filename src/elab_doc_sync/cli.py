@@ -16,17 +16,12 @@ from .safety import atomic_write, write_json, safe_path, snapshot, local_transac
 from .config import TargetConfig
 from .client import ELabFTWClient
 from .config import load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, append_target_to_yaml
-from .sync import EachDocsSyncer, ConflictError, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS
+from .merge import merge_text
+from .sync import EachDocsSyncer, ConflictError, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
 from . import sync_log
 
 DEFAULT_CONFIG = ".elab-sync.yaml"
 
-# html_to_md 共通オプション: エスケープを抑制してラウンドトリップを安定させる
-# 適用先: pull, diff, clone, new（HTML→Markdown 変換の全経路）
-# 方針: 本ツール経由の push→pull ラウンドトリップの安定性を優先する。
-# Web UI 等で直接作成された HTML 内のリテラルな * や _ は、pull 後に
-# Markdown の強調記法として解釈される可能性がある（許容する仕様）。
-_MD_OPTS = {"heading_style": "ATX", "escape_asterisks": False, "escape_underscores": False}
 
 # eLabFTW の Web UI では items を「リソース」と表示するため、CLI でも resources を受け付ける
 _ENTITY_ALIASES = {"resources": "items", "resource": "items"}
@@ -305,7 +300,9 @@ def cmd_status(args):
                     print(f"    eLabFTW 側の変更: {', '.join(REMOTE_FIELD_LABELS[k] for k in changes)}（詳細は esync diff）")
             if result.get("error"):
                 print(f"    {result['error']}")
-            failed |= state in ("競合", "確認失敗", "リモート削除", "作成結果不明", "同期未完了")
+            if state == "競合マーカーあり":
+                print("    マーカーを解消してから push してください")
+            failed |= state in ("競合", "確認失敗", "リモート削除", "作成結果不明", "同期未完了", "競合マーカーあり")
     if (config_path.parent / RECOVERY).exists():
         print("  未完了のローカル変更があります。backup list と restore で復旧してください")
         failed = True
@@ -401,6 +398,7 @@ def cmd_pull(args):
         raise ValueError(f"ターゲットが見つかりません: {args.target}")
     export = Path(args.dir) if getattr(args, "dir", None) else None
     pulled = skipped = failed = 0
+    conflict_files = []
     jobs = []
     if args.id:
         entity = _normalize_entity(args.entity)
@@ -473,7 +471,7 @@ def cmd_pull(args):
     for client, target, eid, data in jobs:
         try:
             result = _pull_entity_to_target(client, config, config_path, target, root, eid, data, target.entity,
-                                            args.force, export, dry_run=dry_run)
+                                            args.force, export, dry_run=dry_run, conflict_files=conflict_files)
             pulled += result
             skipped += int(result == 0)
         except Exception as exc:
@@ -484,7 +482,11 @@ def cmd_pull(args):
     if pulled and not dry_run and not export:
         _relink_local_documents(_link_syncers(config, root))
     print(f"\n{'確認' if dry_run else '完了'}: {pulled} 件取得{'予定' if dry_run else ''}、{skipped} 件スキップ、{failed} 件失敗")
-    return 1 if failed else 0
+    if conflict_files:
+        print(f"競合マーカーが残っている文書: {len(conflict_files)} 件")
+        for path in conflict_files:
+            print(f"  {path}")
+    return 1 if failed or conflict_files else 0
 
 
 def _find_target_by_dir(config, entity_type: str, project_root: Path, pull_dir: Path):
@@ -551,16 +553,8 @@ def _create_target_from_remote(config, config_path, project_root, entity_type,
     return new_config.targets[-1]
 
 
-def _remote_markdown(data, target):
-    body = data.get("body") or ""
-    # API content_type: 1=HTML, 2=Markdown. Legacy responses use target configuration.
-    content_type = data.get("content_type")
-    is_md = str(content_type) == "2" or (content_type is None and target.body_format == "md")
-    return body.strip() if is_md else html_to_md(body, **_MD_OPTS).strip()
-
-
 def _pull_entity_to_target(client, config, config_path, target, project_root,
-                           eid, data, entity_type, force, pull_dir_override, dry_run=False):
+                           eid, data, entity_type, force, pull_dir_override, dry_run=False, conflict_files=None):
     docs_dir = project_root / (pull_dir_override or Path(target.docs_dir))
     is_temp_export = docs_dir.resolve() != (project_root / target.docs_dir).resolve()
     syncer = EachDocsSyncer(client, target, project_root)
@@ -568,12 +562,12 @@ def _pull_entity_to_target(client, config, config_path, target, project_root,
     mapping = syncer._load_mapping(migrate=False)
     return _pull_each_entity(client, syncer, target, project_root, docs_dir, mapping,
                              {v: k for k, v in mapping.items()}, eid, data, entity_type,
-                             force, is_temp_export, dry_run=dry_run)
+                             force, is_temp_export, dry_run=dry_run, conflict_files=conflict_files)
 
 
 def _pull_each_entity(client, syncer, target, project_root, docs_dir,
                       mapping, reverse_mapping, eid, data, entity_type,
-                      force, is_temp_export, dry_run=False):
+                      force, is_temp_export, dry_run=False, conflict_files=None):
     title = data.get("title") or f"untitled_{eid}"
     if any(c in title for c in '/\\\x00<>:"|?*') or title in (".", ".."):
         raise ValueError(f"ファイル名にできないタイトルです: {title!r}")
@@ -588,14 +582,22 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
     if old_path and old_path != filepath and filepath.exists():
         raise ConflictError(f"リネーム先 {filename} が既に存在するため変更をスキップします")
     uploads = client.list_uploads(entity_type, eid)
+    merge = False
     if old_name and old_path.is_file():
         status = syncer.inspect(old_name, eid, data, uploads)
         state = status["state"]
         if state == "確認失敗":
             raise ConflictError(status.get("error", state))
         if not force:
-            if state in ("競合", "基準情報なし"):
+            if state == "競合マーカーあり":
+                raise ConflictError(f"{old_name}: 競合マーカーが残っています。マーカーを解消してから push してください")
+            if state == "基準情報なし":
                 raise ConflictError(f"{old_name}: {state}。esync diff で確認してください")
+            # Both sides changed: merge the remote body into the local edits.
+            merge = state == "競合" and not is_temp_export
+            if merge and dry_run:
+                print(f"  [{title}] #{eid} → {filepath}（ローカル編集とマージ予定）")
+                return 1
             if state == "送信待ち":
                 print(f"  [{title}] ローカル編集を保持（送信待ち）")
                 return 0
@@ -613,7 +615,7 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
     with local_transaction(project_root, paths, f"pull:{entity_type}/{eid}"):
         docs_dir.mkdir(parents=True, exist_ok=True)
         body_md = _remote_markdown(data, target)
-        body_md = _download_images(body_md, entity_type, eid, client, parent, strict=True)
+        body_md = _download_images(body_md, entity_type, eid, client, parent, strict=True, keep_existing=merge)
         new_mapping = dict(mapping)
         if old_name:
             new_mapping.pop(old_name, None)
@@ -623,25 +625,43 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
         body_md = _rewrite_elab_links_to_local(body_md, client.base_url, new_mapping, entity_type,
                                                target_docs_dir=target.docs_dir, source=filepath, links=links)
         if target.attachments_dir:
-            _download_attachments(entity_type, eid, client, project_root / target.attachments_dir, strict=True)
-        atomic_write(filepath, body_md + "\n")
+            _download_attachments(entity_type, eid, client, project_root / target.attachments_dir, strict=True,
+                                  keep_existing=merge)
+        local_md, conflicts = body_md, 0
+        if merge:
+            local_md, conflicts = merge_text(syncer.load_base(old_name), old_path.read_text(encoding="utf-8").strip(),
+                                             body_md, remote_label=f"#{eid}")
+        atomic_write(filepath, local_md + "\n")
         if old_path and old_path != filepath:
             old_path.unlink(missing_ok=True)
         if not is_temp_export:
             if old_name and old_name != filename:
                 for suffix in syncer.SUFFIXES:
-                    (syncer.hash_dir / f"{old_name}{suffix}").unlink(missing_ok=True)
+                    src = syncer.hash_dir / f"{old_name}{suffix}"
+                    if merge and src.exists():
+                        src.replace(syncer.hash_dir / f"{filename}{suffix}")
+                    src.unlink(missing_ok=True)
             mapping.clear()
             mapping.update(new_mapping)
             reverse_mapping[eid] = filename
             syncer._save_mapping(mapping)
-            syncer._save_baseline(filename, body_md, data, uploads)
+            if merge:
+                syncer.save_merge_baseline(filename, body_md, data, uploads)
+            else:
+                syncer._save_baseline(filename, body_md, data, uploads)
             pending = syncer._pending()
             pending.pop(old_name or filename, None)
             syncer._save_pending(pending)
         sync_log.record(project_root / sync_log.DEFAULT_LOG_PATH, action="pull", target=title,
                         entity=entity_type, entity_id=eid, files=[filename])
-    print(f"  [{title}] #{eid} → {filepath}")
+    if conflicts:
+        print(f"  [{title}] #{eid} → {filepath}（競合 {conflicts} 箇所。マーカーを解消してから push してください）")
+        if conflict_files is not None:
+            conflict_files.append(filepath)
+    elif merge:
+        print(f"  [{title}] #{eid} → {filepath}（ローカル編集とマージしました。push で送信してください）")
+    else:
+        print(f"  [{title}] #{eid} → {filepath}")
     return 1
 
 

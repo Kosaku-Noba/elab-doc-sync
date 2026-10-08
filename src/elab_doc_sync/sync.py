@@ -10,6 +10,7 @@ import re
 import shutil
 import tempfile
 import markdown
+from markdownify import markdownify as html_to_md
 import html as _html
 from pathlib import Path
 from urllib.parse import unquote
@@ -18,6 +19,7 @@ from .safety import atomic_write, write_json, safe_path, snapshot, local_transac
 from .client import ELabFTWClient
 from .config import TargetConfig
 from . import sync_log
+from .merge import has_conflict_markers
 
 IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 # eLabFTW の画像 URL から upload_id を抽出する正規表現。
@@ -143,8 +145,12 @@ def _parse_image_local_name(filename: str) -> str | None:
     return None
 
 
-def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, strict: bool = False) -> str:
-    """Markdown 内の eLabFTW 画像 URL をローカルにダウンロードし相対パスに書き換える。"""
+def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, strict: bool = False,
+                     keep_existing: bool = False) -> str:
+    """Markdown 内の eLabFTW 画像 URL をローカルにダウンロードし相対パスに書き換える。
+
+    keep_existing=True では既存の画像ファイルを上書きしない（マージ時にローカルの編集を守る）。
+    """
     try:
         uploads = client.list_uploads(entity, entity_id)
     except Exception as e:
@@ -189,7 +195,7 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
         img_dir = docs_dir / "images"
         img_dir.mkdir(parents=True, exist_ok=True)
         dest = safe_path(img_dir, local_name)
-        if strict or not dest.exists():
+        if not dest.exists() or (strict and not keep_existing):
             data = client.download_upload(
                 entity_type=entity,
                 entity_id=entity_id,
@@ -200,6 +206,22 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
         return f"![{alt}](images/{local_name})"
 
     return IMAGE_RE.sub(replace_match, body)
+
+
+# html_to_md 共通オプション: エスケープを抑制してラウンドトリップを安定させる
+# 適用先: pull, diff, clone, new、マージの基準本文（HTML→Markdown 変換の全経路）
+# 方針: 本ツール経由の push→pull ラウンドトリップの安定性を優先する。
+# Web UI 等で直接作成された HTML 内のリテラルな * や _ は、pull 後に
+# Markdown の強調記法として解釈される可能性がある（許容する仕様）。
+_MD_OPTS = {"heading_style": "ATX", "escape_asterisks": False, "escape_underscores": False}
+
+
+def _remote_markdown(data, target):
+    body = data.get("body") or ""
+    # API content_type: 1=HTML, 2=Markdown. Legacy responses use target configuration.
+    content_type = data.get("content_type")
+    is_md = str(content_type) == "2" or (content_type is None and target.body_format == "md")
+    return body.strip() if is_md else html_to_md(body, **_MD_OPTS).strip()
 
 
 def _normalize_remote_image_urls(body: str, entity: str, entity_id: int, client: ELabFTWClient, uploads=None) -> str:
@@ -936,8 +958,11 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
     return all_success
 
 
-def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, attachments_dir: Path, strict: bool = False) -> None:
+def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, attachments_dir: Path, strict: bool = False,
+                          keep_existing: bool = False) -> None:
     """リモートの非画像添付ファイルをローカルにダウンロードする。
+
+    keep_existing=True では既存のファイルを上書きしない（マージ時にローカルの編集を守る）。
 
     書き込みはテンポラリファイル経由で行い、既存ファイルの部分破損を防ぐ。
     fsync は行わないため、電源断やカーネルクラッシュ時のデータ保全は保証しない。
@@ -961,6 +986,8 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
             print(f"    ⚠ 不正なファイル名をスキップ: {rn!r}")
             continue
         dest = safe_path(attachments_dir, safe_name)
+        if keep_existing and dest.exists():
+            continue
         remote_size = int(u.get("filesize", 0) or 0)
         if dest.exists() and remote_size:
             local_size = dest.stat().st_size
@@ -1057,7 +1084,9 @@ def _sync_category(client: ELabFTWClient, entity_type: str, entity_id: int, cate
 class EachDocsSyncer:
     """One file per entity, with shared three-way state inspection."""
 
-    SUFFIXES = (".hash", ".remote_hash", ".meta_hash", ".assets_hash", ".state.json")
+    # .base keeps the body as of the last sync for three-way merges on pull.
+    # It must not end in .md: the state directory may lie under docs_dir.
+    SUFFIXES = (".hash", ".remote_hash", ".meta_hash", ".assets_hash", ".state.json", ".base")
 
     def __init__(self, client, target, project_root):
         self.client = client
@@ -1321,7 +1350,24 @@ class EachDocsSyncer:
                           if k in keys and all(data.get(k) != version.get(k) for version in versions if k in version)]
         return labels
 
-    def _save_baseline(self, filename, raw_body, data, uploads):
+    def load_base(self, filename):
+        """eLabFTW body as of the last sync, converted as pull does, or None."""
+        path = self.hash_dir / f"{filename}.base"
+        return path.read_text(encoding="utf-8") if path.is_file() else None
+
+    def remote_base(self, data, uploads, eid, mapping, links, source):
+        """Convert a remote body the way pull and diff do, without downloads.
+
+        Used as the merge base: where it differs from the local file only by
+        conversion (e.g. image paths), the merge keeps the local text.
+        """
+        body = _remote_markdown(data, self.target)
+        body = _normalize_remote_image_urls(body, self.entity, eid, self.client, uploads=uploads)
+        return _rewrite_elab_links_to_local(body, self.client.base_url, mapping, self.entity, source=source, links=links)
+
+    def _save_baseline(self, filename, raw_body, data, uploads, base=None):
+        """Record a completed sync. base defaults to raw_body (pull/link write the remote body)."""
+        atomic_write(self.hash_dir / f"{filename}.base", raw_body if base is None else base)
         self._save_hash(filename, raw_body)
         self._save_remote_hash(filename, data.get("body") or "")
         self._save_meta_hash(filename, Path(filename).stem, self.target.category, self.target.tags)
@@ -1333,6 +1379,18 @@ class EachDocsSyncer:
             "meta_hash": _compute_meta_hash(Path(filename).stem, self.target.category, self.target.tags),
             "remote": self._remote_signature(data, uploads),
         })
+
+    def save_merge_baseline(self, filename, base, data, uploads):
+        """Record the remote side after merging it into local edits on pull.
+
+        Local hashes stay as they were, so the merged body, local asset edits
+        and pending metadata changes are still sent on the next push.
+        """
+        atomic_write(self.hash_dir / f"{filename}.base", base)
+        self._save_remote_hash(filename, data.get("body") or "")
+        state = self._state(filename)
+        if state:
+            write_json(self.hash_dir / f"{filename}.state.json", {**state, "remote": self._remote_signature(data, uploads)})
 
     def inspect(self, filename, eid, data=None, uploads=None):
         """Read-only; legacy body hashes remain usable without inventing a baseline."""
@@ -1371,6 +1429,8 @@ class EachDocsSyncer:
                 result["state"] = "取得待ち"
             else:
                 result["state"] = "最新"
+            if local_exists and has_conflict_markers(body):
+                result["state"] = "競合マーカーあり"
         except Exception as exc:
             status = getattr(getattr(exc, "response", None), "status_code", None)
             result.update(state="リモート削除" if status == 404 else "確認失敗", error=str(exc))
@@ -1538,9 +1598,14 @@ class EachDocsSyncer:
                 if mismatch:
                     print(f"    前回の同期記録と異なる項目: {', '.join(mismatch)}")
                 continue
+            if state == "競合マーカーあり":
+                self.failures += 1
+                print(f"  [{f.stem}] 競合マーカーが残っています。マーカーを解消してから push してください")
+                continue
             if not force and not resuming and state in ("競合", "取得待ち", "基準情報なし"):
                 self.failures += 1
-                print(f"  [{f.stem}] {state}。esync diff で確認してください")
+                hint = "esync pull でマージしてから push してください" if state == "競合" else "esync diff で確認してください"
+                print(f"  [{f.stem}] {state}。{hint}")
                 continue
             if not force and not prune_attachments and not resuming and state == "最新":
                 self.skipped += 1
@@ -1658,7 +1723,8 @@ class EachDocsSyncer:
                 actual = self._remote_signature(data, uploads)
                 if any(actual[k] != pending[f.name]["guard"][k] for k in ("category", "tags")):
                     raise ConflictError("完了確認時にリモートのカテゴリ・タグが期待値と異なります")
-                self._save_baseline(f.name, raw_body, data, uploads)
+                self._save_baseline(f.name, raw_body, data, uploads,
+                                    base=self.remote_base(data, uploads, eid, mapping, links, f))
                 pending.pop(f.name, None)
                 self._save_pending(pending)
                 sync_log.record(self.project_root / sync_log.DEFAULT_LOG_PATH, action="push", target=f.stem,
