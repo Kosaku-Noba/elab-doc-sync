@@ -754,8 +754,16 @@ def cmd_diff(args):
                 failed = True
                 print(f"  eLabFTW #{eid} の取得に失敗: {e}\n", file=sys.stderr)
                 continue
-            print(f"  状態: {syncer.inspect(filename, eid, data, uploads)['state']}")
+            result = syncer.inspect(filename, eid, data, uploads)
+            print(f"  状態: {result['state']}")
             if _show_document_diff(syncer, target, filename, eid, data, uploads, local_path, mapping, links):
+                has_diff = True
+            elif result.get("local_changed"):
+                # Body unchanged, but images, attachments or settings (tags, category, format) changed.
+                print("  本文の差分なし（画像・添付ファイル、または設定のタグ・カテゴリ・本文形式が変わっています。push で送信されます）")
+                has_diff = True
+            elif result["state"] != "最新":
+                print("  本文の差分なし")
                 has_diff = True
             else:
                 print("  差分なし")

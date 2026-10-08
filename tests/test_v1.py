@@ -1382,3 +1382,17 @@ def test_diff_without_synced_record_compares_directly(project, capsys):
     _diff(client, args)
     out = capsys.readouterr().out
     assert '前回同期時の本文が未記録のため直接比較' in out
+
+
+def test_diff_reports_unsent_setting_change_without_body_diff(project, capsys):
+    root, client, remote, syncer, args = push_note(project, 'one')
+    cfg = root / '.elab-sync.yaml'
+    data = yaml.safe_load(cfg.read_text())
+    data['targets'][0]['tags'] = ['new-tag']
+    cfg.write_text(yaml.safe_dump(data))
+    capsys.readouterr()
+    _diff(client, args)
+    out = capsys.readouterr().out
+    assert '状態: 送信待ち' in out
+    assert '本文の差分なし（画像・添付ファイル、または設定' in out
+    assert 'すべて最新です' not in out
