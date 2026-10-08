@@ -595,6 +595,7 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
                 raise ConflictError(f"{old_name}: {state}。esync diff で確認してください")
             # Both sides changed: merge the remote body into the local edits.
             merge = state == "競合" and not is_temp_export
+            metadata_pending = merge and syncer._has_meta_changed(old_name, Path(old_name).stem, target.category, target.tags)
             if merge and dry_run:
                 print(f"  [{title}] #{eid} → {filepath}（ローカル編集とマージ予定）")
                 return 1
@@ -646,7 +647,7 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
             reverse_mapping[eid] = filename
             syncer._save_mapping(mapping)
             if merge:
-                syncer.save_merge_baseline(filename, body_md, data, uploads)
+                syncer.save_merge_baseline(filename, body_md, data, uploads, metadata_pending)
             else:
                 syncer._save_baseline(filename, body_md, data, uploads)
             pending = syncer._pending()

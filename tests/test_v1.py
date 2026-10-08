@@ -1198,6 +1198,34 @@ def test_conflict_markers_block_push_and_pull_until_resolved(project, capsys):
     assert remote[1]['body'] == 'one\nlocal and remote'
 
 
+def test_force_pull_replaces_file_with_conflict_markers(project):
+    root, client, remote, syncer, args = push_note(project, 'one')
+    (root / 'docs/a.md').write_text('local')
+    remote[1]['body'] = 'remote'
+    assert _pull(client, args) == 1
+    assert syncer.inspect('a.md', 1)['state'] == '競合マーカーあり'
+    assert _pull(client, args, force=True) == 0
+    assert (root / 'docs/a.md').read_text().strip() == 'remote'
+    assert syncer.inspect('a.md', 1)['state'] == '最新'
+
+
+def test_merge_with_remote_rename_does_not_revert_remote_category(project):
+    root, client, remote, syncer, args = project
+    cfg = root / '.elab-sync.yaml'
+    data = yaml.safe_load(cfg.read_text())
+    data['targets'][0]['category'] = 10
+    cfg.write_text(yaml.safe_dump(data))
+    syncer.target.category = 10
+    (root / 'docs/a.md').write_text('one')
+    assert syncer.sync() == 1
+    remote[1].update(title='renamed', category=20)
+    (root / 'docs/a.md').write_text('local')
+    assert _pull(client, args) == 0
+    assert syncer.sync() == 1
+    assert remote[1]['body'] == 'local'
+    assert remote[1]['category'] == 20
+
+
 def test_status_reports_conflict_markers(project, capsys):
     root, client, remote, syncer, args = push_note(project, 'one')
     (root / 'docs/a.md').write_text('local')

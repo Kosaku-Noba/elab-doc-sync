@@ -1380,17 +1380,27 @@ class EachDocsSyncer:
             "remote": self._remote_signature(data, uploads),
         })
 
-    def save_merge_baseline(self, filename, base, data, uploads):
+    def save_merge_baseline(self, filename, base, data, uploads, metadata_pending):
         """Record the remote side after merging it into local edits on pull.
 
-        Local hashes stay as they were, so the merged body, local asset edits
-        and pending metadata changes are still sent on the next push.
+        Body and asset hashes stay as they were, so the merged body and local
+        asset edits are still sent on the next push. The metadata hash stays
+        only when a setting change is still unsent (metadata_pending);
+        otherwise it is recorded for the current file name, so a title taken
+        from eLabFTW does not make push resend the configured tags and
+        category over remote changes.
         """
         atomic_write(self.hash_dir / f"{filename}.base", base)
         self._save_remote_hash(filename, data.get("body") or "")
+        meta_hash = _compute_meta_hash(Path(filename).stem, self.target.category, self.target.tags)
+        if not metadata_pending:
+            self._save_meta_hash(filename, Path(filename).stem, self.target.category, self.target.tags)
         state = self._state(filename)
         if state:
-            write_json(self.hash_dir / f"{filename}.state.json", {**state, "remote": self._remote_signature(data, uploads)})
+            write_json(self.hash_dir / f"{filename}.state.json", {
+                **state, "remote": self._remote_signature(data, uploads),
+                **({} if metadata_pending else {"meta_hash": meta_hash}),
+            })
 
     def inspect(self, filename, eid, data=None, uploads=None):
         """Read-only; legacy body hashes remain usable without inventing a baseline."""
