@@ -1457,12 +1457,13 @@ class EachDocsSyncer:
         if result["state"] in ("競合", "取得待ち", "基準情報なし", "リモート削除", "確認失敗"):
             raise ConflictError(f"{filename}: {result['state']}。esync diff で確認し、pull または --force を選択してください")
 
-    def dry_run(self):
+    def dry_run(self, only=None):
         mapping = self._load_mapping(migrate=False)
         return [{"filename": f.name, "title": f.stem, "images": _count_local_images(body),
                  "videos": _count_local_videos(body), "file_links": _count_local_file_links(body),
                  "changed": self._has_changed(f.name, body), "entity_id": mapping.get(f.name)}
-                for f in self.collect_files() for body in [f.read_text(encoding="utf-8").strip()]]
+                for f in self.collect_files() if only is None or f.name in only
+                for body in [f.read_text(encoding="utf-8").strip()]]
 
     def _resolve_target_category(self, entities):
         """Resolve the target's category to an ID.
@@ -1477,7 +1478,12 @@ class EachDocsSyncer:
         current = next((e for e in entities if len(ids) == 1 and e.get("category_title") == category), None)
         return self.client.resolve_category_id(self.entity, category, current=current)
 
-    def sync(self, force=False, prune_attachments=False):
+    def sync(self, force=False, prune_attachments=False, only=None):
+        """Push the target's documents, or only the file names in `only`.
+
+        Rename detection still looks at every document, so unselected files
+        are never mistaken for renamed or missing ones.
+        """
         md_files = self.collect_files()
         self.failures = self.skipped = 0
         if not md_files:
@@ -1500,6 +1506,8 @@ class EachDocsSyncer:
         observed_entities = []
         # Preflight all known destinations before creating any entities.
         for f in md_files:
+            if only is not None and f.name not in only:
+                continue
             self._compute_assets_hash(f.read_text(encoding="utf-8").strip(), f.name)
             eid = mapping.get(f.name)
             result = self.inspect(f.name, eid)

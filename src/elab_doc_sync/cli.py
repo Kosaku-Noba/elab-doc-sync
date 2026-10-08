@@ -233,8 +233,18 @@ def cmd_sync(args):
     config = load_config(config_path)
 
     updated = failed = skipped = 0
-    for target, syncer in zip(config.targets, _link_syncers(config, project_root)):
-        if not _matches_target(target, args.target):
+    pairs = [(t, s) for t, s in zip(config.targets, _link_syncers(config, project_root)) if _matches_target(t, args.target)]
+    files, regex_expressions = getattr(args, "files", None) or [], getattr(args, "regex", None)
+    selected = None
+    if files or regex_expressions:
+        try:
+            selected = _select_push_files(pairs, files, _compile_regexes(regex_expressions))
+        except ValueError as e:
+            print(f"エラー: {e}", file=sys.stderr)
+            return 1
+    for index, (target, syncer) in enumerate(pairs):
+        only = None if selected is None else selected.get(index)
+        if selected is not None and not only:
             continue
 
         if args.dry_run:
@@ -242,7 +252,7 @@ def cmd_sync(args):
             att_dir = (project_root / target.attachments_dir) if target.attachments_dir else None
             att_count = _count_local_attachments(att_dir)
             att_str = f"  添付: {att_count}件" if att_count else ""
-            results = syncer.dry_run()
+            results = syncer.dry_run(only=only)
             if not results:
                 print(f"  [each: {target.docs_dir}] ドキュメントなし")
                 continue
@@ -256,7 +266,7 @@ def cmd_sync(args):
             continue
 
         try:
-            updated += syncer.sync(force=args.force, prune_attachments=args.prune_attachments)
+            updated += syncer.sync(force=args.force, prune_attachments=args.prune_attachments, only=only)
             failed += syncer.failures
             skipped += syncer.skipped
         except ConflictError as e:
@@ -997,6 +1007,7 @@ def cmd_update(args):
 HELP_EPILOG = """\
 使用例:
   elab-doc-sync                  ローカル → eLabFTW に同期（push）
+  elab-doc-sync push docs/a.md   指定した文書だけ push（ディレクトリ・glob・--regex も可）
   elab-doc-sync pull             eLabFTW → ローカルに取得
   elab-doc-sync pull --id 42     指定 ID のエンティティを取得
   elab-doc-sync diff             ローカルと eLabFTW の差分を表示
@@ -1364,6 +1375,73 @@ def cmd_restore(args):
     return 0
 
 
+def _compile_regexes(expressions):
+    regexes = []
+    for expression in expressions or []:
+        try:
+            regexes.append(re.compile(expression))
+        except re.error as exc:
+            raise ValueError(f"正規表現が不正です: {expression}: {exc}") from exc
+    return regexes
+
+
+def _path_selector(kind, value):
+    """Return a predicate for a file/directory/glob path or a file-name regex.
+
+    Paths are relative to the current directory. A directory, or a glob that
+    matches a directory, selects the documents under it recursively. A regex
+    matches part of the file name (with extension) only.
+    """
+    if kind == "regex":
+        return lambda path: bool(value.search(path.name))
+    selector_path = Path(value).resolve()
+    is_pattern = not selector_path.exists() and glob.has_magic(value)
+    directories = []
+    if selector_path.is_dir():
+        directories = [selector_path]
+    elif is_pattern:
+        directories = [Path(p).resolve() for p in glob.glob(value) if Path(p).is_dir()]
+    def matches(path):
+        resolved = path.resolve()
+        return (resolved == selector_path
+                or any(resolved.is_relative_to(d) for d in directories)
+                or (is_pattern and resolved.match(str(selector_path))))
+    return matches
+
+
+def _select_push_files(targets_and_syncers, files, regexes):
+    """Resolve push selectors to {target index: set of file names}.
+
+    Every selector must match at least one document. Documents excluded with
+    rm are reported instead of being silently ignored.
+    """
+    selected = {}
+    selectors = [("file", value) for value in files] + [("regex", value) for value in regexes]
+    candidates = []
+    for index, (target, syncer) in enumerate(targets_and_syncers):
+        excluded = syncer._load_excluded()
+        for path in sorted(syncer.docs_dir.glob(target.pattern)):
+            if path.is_file():
+                candidates.append((index, path, path.name in excluded))
+    for kind, value in selectors:
+        label = value if kind == "file" else value.pattern
+        matches = _path_selector(kind, value)
+        hits = [(index, path, excluded) for index, path, excluded in candidates if matches(path)]
+        if not hits:
+            raise ValueError(f"同期対象の文書が見つかりません: {label}")
+        if kind == "file" and Path(value).resolve().is_file():
+            excluded_hits = [path for index, path, excluded in hits if excluded]
+            if excluded_hits:
+                raise ValueError(f"rm で同期対象から除外された文書です: {excluded_hits[0]}"
+                                 f"（再開するには esync link で紐付けてください）")
+        hits = [(index, path) for index, path, excluded in hits if not excluded]
+        if not hits:
+            raise ValueError(f"同期対象の文書が見つかりません（rm で除外済み）: {label}")
+        for index, path in hits:
+            selected.setdefault(index, set()).add(path.name)
+    return selected
+
+
 @project_command
 def cmd_rm(args):
     """継続的に追跡解除する。文書は既定で保持し、--local 指定時に削除する。"""
@@ -1375,12 +1453,10 @@ def cmd_rm(args):
         fail("--id 指定時は --entity も指定してください")
     if args.entity and not args.id:
         fail("--entity は --id と一緒に指定してください")
-    regexes = []
-    for expression in getattr(args, "regex", None) or []:
-        try:
-            regexes.append(re.compile(expression))
-        except re.error as exc:
-            fail(f"正規表現が不正です: {expression}: {exc}")
+    try:
+        regexes = _compile_regexes(getattr(args, "regex", None))
+    except ValueError as exc:
+        fail(str(exc))
     if not args.files and not args.id and not regexes:
         fail("ファイル・ディレクトリ・パターン、--regex、または --id と --entity を指定してください")
 
@@ -1400,14 +1476,7 @@ def cmd_rm(args):
     selectors += [("id", value) for value in (args.id or [])]
     selectors += [("regex", value) for value in regexes]
     for kind, value in selectors:
-        selector_path = Path(value).resolve() if kind == "file" else None
-        is_pattern = kind == "file" and not selector_path.exists() and glob.has_magic(value)
-        directories = []
-        if kind == "file":
-            if selector_path.is_dir():
-                directories = [selector_path]
-            elif is_pattern:
-                directories = [Path(p).resolve() for p in glob.glob(value) if Path(p).is_dir()]
+        path_matches = _path_selector(kind, value) if kind != "id" else None
         matches = []
         for index, (syncer, mapping, excluded, selected) in enumerate(states):
             if kind == "id" and syncer.entity != _normalize_entity(args.entity):
@@ -1419,14 +1488,8 @@ def cmd_rm(args):
                 paths = [p for p in syncer.docs_dir.glob(syncer.target.pattern) if p.name == name]
                 if not paths:
                     paths = [syncer.docs_dir / name]
-                if kind == "file":
-                    matching_paths = [p for p in paths if (
-                        p.resolve() == selector_path
-                        or any(p.resolve().is_relative_to(d) for d in directories)
-                        or (is_pattern and p.resolve().match(str(selector_path)))
-                    )]
-                elif kind == "regex":
-                    matching_paths = paths if value.search(name) else []
+                if path_matches:
+                    matching_paths = [p for p in paths if path_matches(p)]
                 else:
                     matching_paths = paths if mapping.get(name) == value else []
                 if matching_paths:
@@ -1712,7 +1775,9 @@ def main():
 
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("status", help="同期状態を確認", parents=[common])
-    sub.add_parser("push", help="ローカル → eLabFTW に同期（esync と同じ）", parents=[common])
+    push_parser = sub.add_parser("push", help="ローカル → eLabFTW に同期（esync と同じ）", parents=[common])
+    push_parser.add_argument("files", nargs="*", help="同期するファイル・ディレクトリ・glob（カレントディレクトリ基準、複数指定可。省略時は全文書）")
+    push_parser.add_argument("--regex", action="append", help="同期するファイル名に部分一致する正規表現（複数指定可）")
     sub.add_parser("init", help="対話的に設定ファイルを作成", parents=[common])
     sub.add_parser("diff", help="ローカルと eLabFTW の差分を表示", parents=[common])
     sub.add_parser("update", help="ツールを最新版に更新")

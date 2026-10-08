@@ -7,6 +7,7 @@
 | コマンド | 説明 |
 |---|---|
 | `esync` | ローカル → eLabFTW に同期（push） |
+| `esync push <ファイルパス>` | 指定した文書だけ push（ディレクトリ・glob・`--regex` も可） |
 | `esync pull` | eLabFTW → ローカルに取得 |
 | `esync pull --id 42 --entity items` | 指定 ID のリソースを取得 |
 | `esync diff` | ローカルと eLabFTW の差分を表示 |
@@ -33,14 +34,36 @@
 
 ```bash
 esync [--dry-run] [--force] [-t TARGET] [--prune-attachments]
+esync push [ファイル・ディレクトリ・glob ...] [--regex 式] [--dry-run] [--force] [-t TARGET] [--prune-attachments]
 ```
 
 | オプション | 説明 |
 |---|---|
+| `ファイル・ディレクトリ・glob` | 指定した文書だけを push（`esync push` のみ。カレントディレクトリ基準、複数指定可） |
+| `--regex` | ファイル名に部分一致する文書だけを push（`esync push` のみ。複数指定可） |
 | `--dry-run` | 実際に送信せず変更予定を表示 |
 | `--force` | リモート本文を退避して強制送信。接続・取得エラーは無視しない |
 | `-t`, `--target` | 特定ターゲットのみ実行 |
 | `--prune-attachments` | リモートの不要添付を削除 |
+
+**一部の文書だけ push する:**
+
+```bash
+esync push docs/note.md                    # 1 文書だけ
+esync push docs/a.md docs/b.md             # 複数指定
+esync push docs/subdir                     # 配下の文書を再帰的に選択
+esync push 'docs/note*.md'                 # esync 側で glob を解釈
+esync push --regex '^2026-'                # ファイル名に正規表現で一致
+esync push docs/note.md --dry-run          # 対象と変更有無を確認
+```
+
+指定の解釈は `esync rm` と同じです。ディレクトリ、またはディレクトリに一致した glob は配下の文書を再帰的に選択します。パスの glob は `*`、`?`、`[]` に対応します。`--regex` は拡張子を含むファイル名だけに部分一致します。複数の指定は和集合として扱います。選べるのは設定したターゲットの `docs_dir` と `pattern` に一致する文書で、`--target` を付けるとそのターゲットに限ります。
+
+- 未追跡の文書を指定すると、通常の push と同じく eLabFTW に新規作成します
+- `esync rm` で除外した文書をファイル名で指定するとエラーになります。ディレクトリ・glob・`--regex` で選んだ場合は除外した文書を飛ばします
+- いずれかの指定に一致する文書がない場合や正規表現が不正な場合は、何も送信せずにエラーになります
+- 指定しなかった文書は確認も送信もしません。変更は次回の push まで残ります
+- リネームの自動検出は、指定しなかった文書も含めてターゲット全体で行います
 
 **push 処理フロー:**
 1. 本文ハッシュが一致する一意なリネームを検出し、紐付けを更新（タイトル送信は競合確認後）

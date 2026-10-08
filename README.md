@@ -313,6 +313,17 @@ $$\frac{\partial f}{\partial x} = 2x + 1$$
 - 接続先（`url`）を変える前に同期した文書の紐付けは、保存済みの同期状態から接続先の違いを確認できる場合、リンクの解決に使わない。同期状態の記録がない旧形式の紐付けは接続先を判定できないため、そのまま使う
 - フラグメント（`#section`）は保持される
 
+### 一部の文書だけ push する
+
+```bash
+esync push docs/note.md            # 1 文書だけ
+esync push docs/subdir             # 配下の文書を再帰的に選択
+esync push 'docs/note*.md'         # glob
+esync push --regex '^2026-'        # ファイル名に正規表現で一致
+```
+
+指定の解釈は `esync rm` と同じです。未追跡の文書は新規作成します。指定しなかった文書は送信しないため、変更は次回の push まで残ります。詳細は [CLI リファレンスの push](docs/05_CLI_REFERENCE.md#pushデフォルトコマンド) を参照してください。
+
 ### ファイル名を変える
 
 ```bash
@@ -394,6 +405,7 @@ esync pull --id 42 --entity items --auto
 | コマンド                              | やること                    |
 | ------------------------------------- | --------------------------- |
 | `esync`                             | push（ローカル → eLabFTW） |
+| `esync push <ファイルパス>`         | 指定した文書だけ push（ディレクトリ・glob・`--regex` も可） |
 | `esync pull`                        | pull（eLabFTW → ローカル） |
 | `esync pull --id 42 --entity items` | 指定 ID を取得              |
 | `esync diff`                        | 差分表示                    |

@@ -51,7 +51,7 @@ def test_sync_normal(MockSyncer, MockClient, tmp_path):
     MockSyncer.return_value.failures = 0
     MockSyncer.return_value.skipped = 0
     cmd_sync(_ns(tmp_path))
-    MockSyncer.return_value.sync.assert_called_once_with(force=False, prune_attachments=False)
+    MockSyncer.return_value.sync.assert_called_once_with(force=False, prune_attachments=False, only=None)
 
 
 # CLI-02
@@ -73,7 +73,7 @@ def test_sync_force(MockSyncer, MockClient, tmp_path):
     MockSyncer.return_value.failures = 0
     MockSyncer.return_value.skipped = 0
     cmd_sync(_ns(tmp_path, force=True))
-    MockSyncer.return_value.sync.assert_called_once_with(force=True, prune_attachments=False)
+    MockSyncer.return_value.sync.assert_called_once_with(force=True, prune_attachments=False, only=None)
 
 
 # CLI-04
