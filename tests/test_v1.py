@@ -662,17 +662,88 @@ def test_force_push_with_unlisted_current_category_succeeds(project):
     assert not any(c.kwargs.get('category') for c in client.patch_entity.call_args_list)
 
 
-def test_unresolvable_category_reports_body_updated(project, capsys):
+def _real_category_resolution(client, listed):
     from elab_doc_sync.client import ELabFTWClient
-    root, client, remote, syncer, args = push_note(project)
-    syncer.target.category = 'SPECIFICATION'
-    client.list_categories.return_value = [{'id': 65, 'title': 'OTHER'}]
+    client.list_categories.return_value = listed
     client.resolve_category_id.side_effect = lambda entity, category, current=None: \
         ELabFTWClient.resolve_category_id(client, entity, category, current=current)
+
+
+def test_unresolvable_category_skips_before_body_update(project, capsys):
+    root, client, remote, syncer, args = push_note(project)
+    syncer.target.category = 'SPECIFICATION'
+    _real_category_resolution(client, [{'id': 65, 'title': 'OTHER'}])
     (root / 'docs/a.md').write_text('changed')
+    (root / 'docs/b.md').write_text('new')
     assert syncer.sync(force=True) == 0
     out = capsys.readouterr().out
-    assert '本文は更新済み' in out and '数字で指定' in out
+    assert '数字で指定' in out and 'eLabFTW は変更していません' in out
+    assert syncer.failures == 2
+    assert remote[1]['body'] == 'original'
+    assert len(remote) == 1 and client.create_item.call_count == 1
+    assert not syncer._pending()
+    assert client.list_categories.call_count == 1
+
+
+def _patch_with_category_titles(client, remote, titles):
+    def patch_entity(entity, eid, **kw):
+        remote[eid].update(kw)
+        if 'category' in kw:
+            remote[eid]['category_title'] = titles[kw['category']]
+    client.patch_entity.side_effect = patch_entity
+
+
+def test_unlisted_category_resolved_from_another_document_of_target(project):
+    # 一覧 API に出ないカテゴリでも、同じターゲットの別文書が持っていればその ID を使う
+    root, client, remote, syncer, args = project
+    _patch_with_category_titles(client, remote, {64: 'SPECIFICATION'})
+    syncer.target.category = 64
+    (root / 'docs/a.md').write_text('original')
+    assert syncer.sync() == 1
+    syncer.target.category = 'SPECIFICATION'
+    _real_category_resolution(client, [{'id': 65, 'title': 'OTHER'}])
+    (root / 'docs/b.md').write_text('new')
+    assert syncer.sync() == 2
+    assert syncer.failures == 0
+    assert remote[2]['category'] == 64
+    client.list_categories.assert_not_called()
+
+
+def test_ambiguous_category_title_across_documents_uses_list_api(project, capsys):
+    root, client, remote, syncer, args = project
+    _patch_with_category_titles(client, remote, {64: 'SPEC', 70: 'SPEC'})
+    syncer.target.category = 64
+    (root / 'docs/a.md').write_text('first')
+    assert syncer.sync() == 1
+    syncer.target.category = 70
+    (root / 'docs/b.md').write_text('second')
+    assert syncer.sync() == 2
+    # 他のユーザーが a を同名の別カテゴリに戻し、それを同期済みとして取り込んだ状態
+    remote[1].update(category=64, category_title='SPEC')
+    syncer._save_baseline('a.md', 'first', client.get_item(1), [])
+    syncer.target.category = 'SPEC'
+    _real_category_resolution(client, [])
+    (root / 'docs/c.md').write_text('new')
+    assert syncer.sync() == 0
+    assert syncer.failures == 3
+    assert client.list_categories.call_count == 1
+    assert '[c] カテゴリ未解決のためスキップ' in capsys.readouterr().out
+    assert 3 not in remote
+
+
+def test_unchanged_metadata_documents_sync_when_category_unresolvable(project):
+    # 前回はカテゴリ名を解決できた（一覧に出ていた）が、今回は一覧に出ない場合
+    root, client, remote, syncer, args = project
+    syncer.target.category = 'SPECIFICATION'
+    _real_category_resolution(client, [{'id': 64, 'title': 'SPECIFICATION'}])
+    (root / 'docs/a.md').write_text('original')
+    assert syncer.sync() == 1
+    client.list_categories.reset_mock()
+    client.list_categories.return_value = []
+    (root / 'docs/a.md').write_text('changed')
+    assert syncer.sync() == 1
+    assert remote[1]['body'] == 'changed'
+    client.list_categories.assert_not_called()
 
 
 def test_category_change_at_final_read_is_not_adopted(project):
@@ -777,12 +848,12 @@ def _rewrite_quotes_on_save(remote):
 def test_interrupted_sync_resumes_when_elabftw_rewrote_body(project):
     root, client, remote, syncer, args = push_note(project)
     client.update_item.side_effect = _rewrite_quotes_on_save(remote)
-    syncer.target.category = 'SPEC'
-    client.resolve_category_id.side_effect = ValueError('カテゴリ「SPEC」が見つかりません')
+    syncer.target.category = 10
+    client.patch_entity.side_effect = RuntimeError('category PATCH failed')
     (root / 'docs/a.md').write_text('> **注意:** quoted', encoding='utf-8')
     assert syncer.sync() == 0
     assert syncer._pending()['a.md']['stored']['body'] == '&gt; **注意:** quoted'
-    client.resolve_category_id.side_effect = lambda entity, category, current=None: 10
+    client.patch_entity.side_effect = lambda entity, eid, **kw: remote[eid].update(kw)
     assert syncer.sync() == 1
     assert not syncer._pending()
     assert remote[1]['category'] == 10
@@ -791,8 +862,8 @@ def test_interrupted_sync_resumes_when_elabftw_rewrote_body(project):
 
 def test_blocked_resume_names_the_changed_fields(project, capsys):
     root, client, remote, syncer, args = push_note(project)
-    syncer.target.category = 'SPEC'
-    client.resolve_category_id.side_effect = ValueError('not found')
+    syncer.target.category = 10
+    client.patch_entity.side_effect = RuntimeError('category PATCH failed')
     (root / 'docs/a.md').write_text('changed')
     assert syncer.sync() == 0
     remote[1]['body'] = 'third party'
@@ -866,8 +937,8 @@ def test_failed_push_keeps_old_image_version(project):
     (root / 'docs/a.md').write_text('![image](picture.png)')
     assert syncer.sync() == 1
     (root / 'docs/picture.png').write_bytes(b'new image, longer')
-    syncer.target.category = 'SPEC'
-    client.resolve_category_id.side_effect = ValueError('not found')
+    syncer.target.category = 10
+    client.patch_entity.side_effect = RuntimeError('category PATCH failed')
     assert syncer.sync() == 0
     assert len(uploads[1]) == 2
     client.delete_upload.assert_not_called()

@@ -453,7 +453,7 @@ profiles:
 | `entity`              | —        | `items`   | `items` / `experiments`                        |
 | `profile`             | —        | `default` | 使用する接続プロファイル                           |
 | `tags`                | —        | `[]`      | push 時に自動追加するタグ（pull 振り分けにも使用） |
-| `category`            | —        | —          | push 時のカテゴリ（pull 振り分けにも使用）         |
+| `category`            | —        | —          | push 時のカテゴリ。名前または数字の ID（pull 振り分けにも使用）。一覧 API に出ない（読み取り権限のない）カテゴリは ID で指定 |
 | `title_pattern`       | —        | —          | pull 振り分け用タイトル glob                       |
 | `body_format`         | —        | `html`    | `md` / `html`                                  |
 | `attachments_dir`     | —        | —          | 添付ファイルディレクトリ                           |

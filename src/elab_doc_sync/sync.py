@@ -1464,6 +1464,19 @@ class EachDocsSyncer:
                  "changed": self._has_changed(f.name, body), "entity_id": mapping.get(f.name)}
                 for f in self.collect_files() for body in [f.read_text(encoding="utf-8").strip()]]
 
+    def _resolve_target_category(self, entities):
+        """Resolve the target's category to an ID.
+
+        Categories the API key cannot read are missing from the list API, but
+        documents already in them still return category_title. Use such a
+        document of this target when it identifies exactly one ID.
+        """
+        category = self.target.category
+        ids = {int(e["category"]) for e in entities
+               if e.get("category") is not None and e.get("category_title") == category}
+        current = next((e for e in entities if len(ids) == 1 and e.get("category_title") == category), None)
+        return self.client.resolve_category_id(self.entity, category, current=current)
+
     def sync(self, force=False, prune_attachments=False):
         md_files = self.collect_files()
         self.failures = self.skipped = 0
@@ -1484,12 +1497,15 @@ class EachDocsSyncer:
                 self._save_mapping(mapping)
         mapping = self._detect_renames(mapping, md_files, self.entity)
         jobs = []
+        observed_entities = []
         # Preflight all known destinations before creating any entities.
         for f in md_files:
             self._compute_assets_hash(f.read_text(encoding="utf-8").strip(), f.name)
             eid = mapping.get(f.name)
             result = self.inspect(f.name, eid)
             state = result["state"]
+            if result.get("data"):
+                observed_entities.append(result["data"])
             if state in ("確認失敗", "リモート削除"):
                 self.failures += 1
                 print(f"  [{f.stem}] {state}: {result.get('error', '')}")
@@ -1523,6 +1539,27 @@ class EachDocsSyncer:
                 print(f"  [{f.stem}] 変更なし（スキップ）")
                 continue
             jobs.append((f, result, resuming))
+
+        def needs_meta(f, result, resuming):
+            return (force or result.get("data") is None or resuming
+                    or self._has_meta_changed(f.name, f.stem, self.target.category, self.target.tags))
+
+        # Resolve the category before any body update, so an unresolvable name
+        # never leaves documents half-synced (body updated, category not).
+        category_id = None
+        if self.target.category is not None and any(needs_meta(*job) for job in jobs):
+            try:
+                category_id = self._resolve_target_category(observed_entities)
+            except ValueError as exc:
+                print(f"  カテゴリを解決できないため、カテゴリの設定が必要な文書の同期を中止しました: {exc}")
+                kept = []
+                for job in jobs:
+                    if needs_meta(*job):
+                        self.failures += 1
+                        print(f"  [{job[0].stem}] カテゴリ未解決のためスキップ（eLabFTW は変更していません）")
+                    else:
+                        kept.append(job)
+                jobs = kept
         for f, result, resuming in jobs:
             if result["entity_id"] is None:
                 receipt = self._receipt_path(f.name)
@@ -1566,7 +1603,7 @@ class EachDocsSyncer:
                 pending[f.name] = {"eid": eid, "expected": expected, "before": before, "guard": guard}
                 self._save_pending(pending)
                 self._update_entity(eid, **expected)
-                meta_changed = force or result.get("data") is None or resuming or self._has_meta_changed(f.name, f.stem, self.target.category, self.target.tags)
+                meta_changed = needs_meta(f, result, resuming)
                 def checkpoint(expected_changes=None):
                     """Confirm the predicted result, never adopt an unknown update.
 
@@ -1592,12 +1629,6 @@ class EachDocsSyncer:
                     raise RuntimeError("本文更新後にタグ同期が失敗しました。リモートを確認して再実行してください")
                 if meta_changed:
                     observed, _ = checkpoint({"tags": sorted(set(pending[f.name]["guard"]["tags"]) | set(self.target.tags))})
-                category_id = None
-                if meta_changed and self.target.category is not None:
-                    try:
-                        category_id = self.client.resolve_category_id(self.entity, self.target.category, current=observed)
-                    except ValueError as exc:
-                        raise RuntimeError(f"本文は更新済みですが、カテゴリを解決できませんでした: {exc}") from exc
                 category_ok = _sync_category(self.client, self.entity, eid, category_id, current=observed) if meta_changed else True
                 if not category_ok:
                     raise RuntimeError("本文更新後にカテゴリ同期が失敗しました。リモートを確認して再実行してください")
