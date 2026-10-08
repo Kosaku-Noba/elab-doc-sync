@@ -1451,10 +1451,33 @@ def test_next_actions_quote_paths_and_name_the_target(project):
     (root / 'docs/sub/a; echo x.md').write_text('one')
     syncer.target.pattern = '**/*.md'
     syncer.link_syncers = [syncer, MagicMock()]
+    from elab_doc_sync.sync import _shell_quote
     actions = '\n'.join(syncer.next_actions('リモート削除', 'a; echo x.md', 1))
-    assert "esync rm 'docs/sub/a; echo x.md'" in actions
-    assert "esync link --new --file 'sub/a; echo x.md' --target T" in actions
-    assert "esync push 'docs/sub/a; echo x.md'" in actions
+    assert f"esync rm {_shell_quote('docs/sub/a; echo x.md')}" in actions
+    assert f"esync link --new --file {_shell_quote('sub/a; echo x.md')} --target T" in actions
+    assert f"esync push {_shell_quote('docs/sub/a; echo x.md')}" in actions
+
+
+def _powershell_unquote(text):
+    """PowerShell の単一引用符の規則（中身は展開しない、'' は '）で 1 引数を読む。"""
+    if text.startswith("'"):
+        assert text.endswith("'") and len(text) >= 2
+        inner = text[1:-1]
+        assert "'" not in inner.replace("''", "")
+        return inner.replace("''", "'")
+    assert not any(c in text for c in " ;&|<>$`'\"()")
+    return text
+
+
+@pytest.mark.parametrize('value', [
+    'docs/a.md', 'docs/a b.md', 'docs/a; echo x.md', "docs/it's.md",
+    'docs/$(Write-Output UNEXPECTED).md', 'docs/$HOME.md', 'docs/`whoami`.md', 'docs/a&b|c.md',
+])
+def test_shell_quote_keeps_arguments_literal(value):
+    import shlex
+    from elab_doc_sync.sync import _shell_quote
+    assert shlex.split(_shell_quote(value, windows=False)) == [value]
+    assert _powershell_unquote(_shell_quote(value, windows=True)) == value
 
 
 def test_suggested_recreation_works_with_several_targets(project, capsys):

@@ -1054,12 +1054,20 @@ def _sync_tags(client: ELabFTWClient, entity_type: str, entity_id: int, desired_
     return True
 
 
-def _shell_quote(value):
-    """Quote an argument so a suggested command can be pasted into the shell."""
-    if _os.name == "nt":
-        # PowerShell and cmd both accept double quotes; '"' cannot appear in Windows file names.
-        return f'"{value}"' if re.search(r'[\s&|<>^%;()\'`$,]', value) else value
-    return shlex.quote(value)
+def _shell_quote(value, windows=None):
+    """Quote an argument so a suggested command can be pasted into the shell.
+
+    POSIX shells use shlex.quote. On Windows the target is PowerShell: inside
+    single quotes nothing is expanded ($(...), $var, `), and a quote is
+    written twice. cmd.exe is not supported.
+    """
+    if windows is None:
+        windows = _os.name == "nt"
+    if not windows:
+        return shlex.quote(value)
+    if value and re.fullmatch(r"[\w@%+=:,./\\-]+", value):
+        return value
+    return "'" + value.replace("'", "''") + "'"
 
 
 REMOTE_FIELD_LABELS = {"body": "本文", "title": "タイトル", "content_type": "本文形式",

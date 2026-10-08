@@ -163,7 +163,7 @@ pull でマージした文書では、「ローカルの変更」にマージで
     → eLabFTW に作り直す: esync rm docs/b.md → esync link --new --file b.md → esync push docs/b.md
 ```
 
-`diff` の各文書と、push で送信しなかった文書にも同じ案内を表示します。案内はプロジェクトのルート（`.elab-sync.yaml` のあるディレクトリ）で実行する前提で、`push`・`rm` のパスはルートからの相対パス、`link --file` は `docs_dir` からの相対パスです。空白や記号を含むパスは引用符で囲みます。設定にターゲットが複数ある場合は `--target` も付けます。
+`diff` の各文書と、push で送信しなかった文書にも同じ案内を表示します。案内はプロジェクトのルート（`.elab-sync.yaml` のあるディレクトリ）で実行する前提で、`push`・`rm` のパスはルートからの相対パス、`link --file` は `docs_dir` からの相対パスです。空白や記号を含むパスは単一引用符で囲みます（macOS・Linux のシェルと Windows の PowerShell 向け。cmd.exe には対応していません）。設定にターゲットが複数ある場合、`link`・`pull --id`・`rm --id` の案内には `--target` も付けます。引数のない `esync pull`（「取得待ち」「競合」の案内）は、ターゲットを限定せずに全文書を対象にします。
 
 ```bash
 esync status [-t TARGET]
