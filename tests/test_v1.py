@@ -903,7 +903,7 @@ def test_status_and_diff_show_remote_metadata_changes(project, capsys):
         diff_out = capsys.readouterr().out
     assert '取得待ち' in status_out
     assert 'eLabFTW 側の変更: 本文, カテゴリ, タグ, 添付' in status_out
-    assert '前回の同期以降の eLabFTW 側の変更' in diff_out
+    assert 'eLabFTW 側の変更（前回の同期 → 現在の eLabFTW）' in diff_out
     assert 'カテゴリ: なし → #7' in diff_out
     assert 'タグ: +added' in diff_out
     assert '添付追加: x.png (#5)' in diff_out
@@ -1313,3 +1313,72 @@ def test_merge_does_not_overwrite_pulled_image_edited_locally(project):
     assert _pull(client, args) == 0
     assert pulled.read_bytes() == b'edited locally'
     assert (root / 'docs/a.md').read_text().strip().endswith('second remote line')
+
+
+# ── diff: 前回の同期からの変更を文書ごとに表示 ──
+
+
+def _diff(client, args, *argv):
+    from elab_doc_sync.cli import cmd_diff
+    data = {}
+    if argv:
+        data['files'] = [a for a in argv if not a.startswith('--regex=')]
+        data['regex'] = [a.split('=', 1)[1] for a in argv if a.startswith('--regex=')] or None
+    with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
+        return cmd_diff(args(**data))
+
+
+def test_diff_ignores_elabftw_rewrites_since_last_sync(project, capsys):
+    # eLabFTW が保存時に箇条書きの記号を書き換えても、前回の同期と比べるため差分に出ない
+    root, client, remote, syncer, args = project
+    client.update_item.side_effect = lambda eid, **kw: remote[eid].update(
+        {**kw, **({'body': kw['body'].replace('* ', '- ')} if 'body' in kw else {})})
+    (root / 'docs/a.md').write_text('* item')
+    assert syncer.sync() == 1
+    assert remote[1]['body'] == '- item'
+    capsys.readouterr()
+    assert _diff(client, args) == 0
+    out = capsys.readouterr().out
+    assert '━━ docs/a.md（items #1）━━' in out
+    assert '状態: 最新' in out and '差分なし' in out
+    assert '-* item' not in out
+
+
+def test_diff_separates_local_and_remote_changes(project, capsys):
+    root, client, remote, syncer, args = push_note(project, 'one\ntwo')
+    (root / 'docs/a.md').write_text('ONE\ntwo')
+    remote[1]['body'] = 'one\ntwo\nthree'
+    capsys.readouterr()
+    _diff(client, args)
+    out = capsys.readouterr().out
+    local_part, remote_part = out.split('eLabFTW 側の変更')
+    assert 'ローカルの変更' in local_part and '+ONE' in local_part and '+three' not in local_part
+    assert '+three' in remote_part and '+ONE' not in remote_part
+    assert '状態: 競合' in out
+
+
+def test_diff_selects_documents_like_push(project, capsys):
+    root, client, remote, syncer, args = push_note(project, 'one')
+    (root / 'docs/b.md').write_text('two')
+    assert syncer.sync() == 1
+    (root / 'docs/c.md').write_text('new')
+    capsys.readouterr()
+    _diff(client, args, str(root / 'docs/b.md'), str(root / 'docs/c.md'))
+    out = capsys.readouterr().out
+    assert 'docs/b.md' in out and 'docs/a.md' not in out
+    assert '━━ docs/c.md（未追跡）━━' in out
+    capsys.readouterr()
+    assert _diff(client, args, '--regex=^a') == 0
+    out = capsys.readouterr().out
+    assert 'docs/a.md' in out and 'docs/b.md' not in out
+    assert _diff(client, args, str(root / 'docs/missing.md')) == 2
+
+
+def test_diff_without_synced_record_compares_directly(project, capsys):
+    root, client, remote, syncer, args = push_note(project, 'one')
+    (syncer.hash_dir / 'a.md.synced').unlink()
+    remote[1]['body'] = '- one'
+    capsys.readouterr()
+    _diff(client, args)
+    out = capsys.readouterr().out
+    assert '前回同期時の本文が未記録のため直接比較' in out

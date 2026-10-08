@@ -40,7 +40,8 @@ my-docs-repo/
 │   │   ├── {filename}.remote_hash    # リモート body ハッシュ（競合検出用）
 │   │   ├── {filename}.meta_hash      # メタデータハッシュ
 │   │   ├── {filename}.assets_hash    # 画像・添付ハッシュ
-│   │   └── {filename}.base           # 前回同期時の本文（pull のマージ基準）
+│   │   ├── {filename}.base           # 前回同期時の eLabFTW の本文（pull のマージ基準）
+│   │   └── {filename}.synced         # 前回同期時のローカルの本文（diff の比較元）
 │   └── sync-log.jsonl                # 同期ログ
 ├── .gitignore
 └── README.md

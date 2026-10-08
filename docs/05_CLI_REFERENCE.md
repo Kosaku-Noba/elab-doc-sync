@@ -10,7 +10,7 @@
 | `esync push <ファイルパス>` | 指定した文書だけ push（ディレクトリ・glob・`--regex` も可） |
 | `esync pull` | eLabFTW → ローカルに取得 |
 | `esync pull --id 42 --entity items` | 指定 ID のリソースを取得 |
-| `esync diff` | ローカルと eLabFTW の差分を表示 |
+| `esync diff [ファイルパス]` | 前回の同期からのローカルと eLabFTW の変更を文書ごとに表示 |
 | `esync status` | 同期状態を確認 |
 | `esync tag list/add/remove` | タグ操作 |
 | `esync category list/show/set` | カテゴリ操作 |
@@ -131,15 +131,19 @@ esync update
 ## diff
 
 ```bash
-esync diff [-t TARGET]
+esync diff [ファイル・ディレクトリ・glob ...] [--regex 式] [-t TARGET]
 ```
 
-mapping に登録済みの全ファイルについて、ローカルとリモートの unified diff を表示。
+追跡中の文書ごとに、見出し（`━━ docs/a.md（items #42）━━`）と状態を表示し、前回の同期からの変更を次の 2 つに分けて表示します。文書の指定方法は `esync push` と同じです（省略時は全文書）。
 
-続けて、前回の同期以降に eLabFTW 側で変わった内容を表示します。
+- **ローカルの変更**: 前回同期した時点のローカルの本文と、現在のファイルの unified diff
+- **eLabFTW 側の変更**: タイトル・本文形式・カテゴリ・タグ・添付の追加・削除・変更と、前回同期時の eLabFTW の本文と現在の本文の unified diff
 
-- タイトル・本文形式・カテゴリ・タグ・添付の追加・削除・変更
-- 前回同期時の eLabFTW の本文と現在の eLabFTW の本文の unified diff（esync の変換による差を含まないため、eLabFTW 側の編集だけが分かります）
+どちらも前回の同期時点と比べるため、eLabFTW が保存時に本文を書き換えた分（箇条書きの記号、`>` のエスケープなど）や、esync の変換による差（画像のパスなど）は差分に出ません。
+
+このバージョンより前に同期した文書は、前回同期時のローカルの本文が記録されていないため、ローカルと eLabFTW の本文を直接比較します（その旨を表示します）。この場合は eLabFTW による書き換えも差分に出ます。次に push または pull した時点から記録します。
+
+指定した文書が未追跡の場合は「push で新規作成されます」と表示します。一致する文書がない指定や不正な正規表現は終了コード 2 です。
 
 ## status
 

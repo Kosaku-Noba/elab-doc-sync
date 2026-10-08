@@ -1084,9 +1084,10 @@ def _sync_category(client: ELabFTWClient, entity_type: str, entity_id: int, cate
 class EachDocsSyncer:
     """One file per entity, with shared three-way state inspection."""
 
-    # .base keeps the body as of the last sync for three-way merges on pull.
-    # It must not end in .md: the state directory may lie under docs_dir.
-    SUFFIXES = (".hash", ".remote_hash", ".meta_hash", ".assets_hash", ".state.json", ".base")
+    # .base keeps the eLabFTW body as of the last sync (converted as pull does)
+    # for three-way merges; .synced keeps the local body as of the last sync
+    # for diff. Neither may end in .md: the state directory may lie under docs_dir.
+    SUFFIXES = (".hash", ".remote_hash", ".meta_hash", ".assets_hash", ".state.json", ".base", ".synced")
 
     def __init__(self, client, target, project_root):
         self.client = client
@@ -1355,6 +1356,11 @@ class EachDocsSyncer:
         path = self.hash_dir / f"{filename}.base"
         return path.read_text(encoding="utf-8") if path.is_file() else None
 
+    def load_synced_local(self, filename):
+        """Local body as of the last sync, or None if not recorded."""
+        path = self.hash_dir / f"{filename}.synced"
+        return path.read_text(encoding="utf-8") if path.is_file() else None
+
     def remote_base(self, data, uploads, eid, mapping, links, source):
         """Convert a remote body the way pull and diff do, without downloads.
 
@@ -1368,6 +1374,7 @@ class EachDocsSyncer:
     def _save_baseline(self, filename, raw_body, data, uploads, base=None):
         """Record a completed sync. base defaults to raw_body (pull/link write the remote body)."""
         atomic_write(self.hash_dir / f"{filename}.base", raw_body if base is None else base)
+        atomic_write(self.hash_dir / f"{filename}.synced", raw_body)
         self._save_hash(filename, raw_body)
         self._save_remote_hash(filename, data.get("body") or "")
         self._save_meta_hash(filename, Path(filename).stem, self.target.category, self.target.tags)

@@ -233,7 +233,7 @@ def cmd_sync(args):
     selected = None
     if files or regex_expressions:
         try:
-            selected = _select_push_files(pairs, files, _compile_regexes(regex_expressions))
+            selected = _select_documents(pairs, files, _compile_regexes(regex_expressions))
         except ValueError as e:
             print(f"エラー: {e}", file=sys.stderr)
             return 2
@@ -666,99 +666,103 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
     return 1
 
 
-def _show_diff(title, local_text, remote_text):
-    """unified diff を表示。差分がなければ False を返す。"""
-    local_lines = local_text.splitlines(keepends=True)
-    remote_lines = remote_text.splitlines(keepends=True)
-    diff = list(difflib.unified_diff(
-        remote_lines, local_lines,
-        fromfile=f"eLabFTW: {title}",
-        tofile=f"ローカル: {title}",
-    ))
-    if not diff:
-        return False
-    sys.stdout.writelines(diff)
-    print()
-    return True
+def _show_diff(old_text, new_text, old_label, new_label, indent="    "):
+    """unified diff を字下げして表示。差分がなければ False を返す。"""
+    diff = list(difflib.unified_diff(old_text.splitlines(), new_text.splitlines(),
+                                     fromfile=old_label, tofile=new_label, lineterm=""))
+    for line in diff:
+        print(f"{indent}{line}")
+    return bool(diff)
 
 
-def _show_remote_changes(syncer, client, target, filename, eid, data):
-    """前回同期時から eLabFTW 側で変わった内容を表示する。変更があれば True。"""
-    try:
-        uploads = client.list_uploads(target.entity, eid)
-    except Exception as e:
-        print(f"  [{filename}] 添付一覧の取得に失敗したため、eLabFTW 側の変更は表示できません: {e}", file=sys.stderr)
-        return False
+def _show_document_diff(syncer, target, filename, eid, data, uploads, local_path, mapping, links):
+    """1文書の差分を「ローカルの変更」と「eLabFTW 側の変更」に分けて表示する。差分があれば True。
+
+    どちらも前回の同期時点と比べるため、eLabFTW が保存時に本文を書き換えた分
+    （箇条書きの記号など）は差分に出ない。
+    """
+    local_md = local_path.read_text(encoding="utf-8").strip()
+    synced_local = syncer.load_synced_local(filename)
+    shown = False
+    if synced_local is None:
+        remote_md = syncer.remote_base(data, uploads, eid, mapping, links, local_path)
+        if remote_md != local_md:
+            print("  ローカルと eLabFTW の本文の差（前回同期時の本文が未記録のため直接比較。"
+                  "eLabFTW による書き換えも差分に出ます）:")
+            shown = _show_diff(remote_md, local_md, "eLabFTW", "ローカル")
+    elif synced_local.strip() != local_md:
+        print("  ローカルの変更（前回の同期 → 現在のファイル）:")
+        shown = _show_diff(synced_local.strip(), local_md, "前回の同期", "ローカル")
     lines, old_body, new_body = syncer.describe_remote_changes(filename, data, uploads)
-    body_changed = old_body is not None and old_body != new_body
-    if not lines and not body_changed:
-        return False
-    print(f"  [{filename}] 前回の同期以降の eLabFTW 側の変更:")
-    for line in lines:
-        print(f"    {line}")
-    if body_changed:
-        diff = difflib.unified_diff(
-            old_body.splitlines(keepends=True), new_body.splitlines(keepends=True),
-            fromfile=f"前回同期時の eLabFTW: {filename}", tofile=f"現在の eLabFTW: {filename}")
-        sys.stdout.writelines(line if line.endswith("\n") else line + "\n" for line in diff)
-    print()
-    return True
+    if old_body is not None and old_body != new_body:
+        old_md = _remote_markdown({"body": old_body, "content_type": data.get("content_type")}, target)
+        new_md = _remote_markdown(data, target)
+    else:
+        old_md = new_md = None
+    if lines or old_md != new_md:
+        print("  eLabFTW 側の変更（前回の同期 → 現在の eLabFTW）:")
+        for line in lines:
+            print(f"    {line}")
+        if old_md != new_md:
+            _show_diff(old_md, new_md, "前回の同期", "eLabFTW")
+        shown = True
+    return shown
 
 
 def cmd_diff(args):
-    """ローカルと eLabFTW 上の内容の差分を表示する。"""
+    """ローカルと eLabFTW の差分を、前回の同期からの変更として文書ごとに表示する。"""
     config_path = Path(args.config)
-    project_root = config_path.parent or Path(".")
+    project_root = (config_path.parent or Path(".")).resolve()
     config = load_config(config_path)
+    pairs = [(t, s) for t, s in zip(config.targets, _link_syncers(config, project_root)) if _matches_target(t, args.target)]
+    files, regex_expressions = getattr(args, "files", None) or [], getattr(args, "regex", None)
+    selected = None
+    if files or regex_expressions:
+        try:
+            selected = _select_documents(pairs, files, _compile_regexes(regex_expressions))
+        except ValueError as e:
+            print(f"エラー: {e}", file=sys.stderr)
+            return 2
 
-    has_diff = False
-    failed = False
-    link_syncers = _link_syncers(config, project_root)
-    for target in config.targets:
-        if not _matches_target(target, args.target):
+    has_diff = failed = False
+    for index, (target, syncer) in enumerate(pairs):
+        only = None if selected is None else selected.get(index)
+        if selected is not None and not only:
             continue
-
-        client = _make_client_for_target(config, target)
-        docs_dir = project_root / target.docs_dir
-        get_fn = client.get_experiment if target.entity == "experiments" else client.get_item
-
-        if target.mode == "each":
-            syncer = EachDocsSyncer(client, target, project_root)
-            syncer.link_syncers = link_syncers
-            mapping = syncer._load_mapping(migrate=False)
-            links = syncer.link_targets(mapping)
-
-            for filename, eid in mapping.items():
-                local_path = docs_dir / filename
-                if not local_path.exists():
-                    print(f"  [{filename}] ローカルにファイルなし（eLabFTW #{eid} のみ存在）\n")
-                    has_diff = True
-                    continue
-
-                try:
-                    data = get_fn(eid)
-                except Exception as e:
-                    failed = True
-                    print(f"  [{filename}] eLabFTW #{eid} の取得に失敗: {e}\n", file=sys.stderr)
-                    continue
-
-                local_md = local_path.read_text(encoding="utf-8").strip()
-                remote_md = _remote_markdown(data, target)
-                remote_md = _normalize_remote_image_urls(remote_md, target.entity, eid, client)
-                remote_md = _rewrite_elab_links_to_local(remote_md, client.base_url, mapping, target.entity,
-                                                         source=local_path, links=links)
-
-                if _show_diff(filename, local_md, remote_md):
-                    has_diff = True
-                else:
-                    print(f"  [{filename}] 差分なし")
-                if _show_remote_changes(syncer, client, target, filename, eid, data):
-                    has_diff = True
+        mapping = syncer._load_mapping(migrate=False)
+        links = syncer.link_targets(mapping)
+        for filename in sorted(mapping if only is None else only):
+            eid = mapping.get(filename)
+            local_path = syncer.file_path(filename)
+            try:
+                label = local_path.resolve().relative_to(project_root).as_posix()
+            except ValueError:
+                label = str(local_path)
+            if eid is None:
+                print(f"━━ {label}（未追跡）━━\n  push で eLabFTW に新規作成されます\n")
+                has_diff = True
+                continue
+            print(f"━━ {label}（{target.entity} #{eid}）━━")
+            if not local_path.is_file():
+                print("  ローカルにファイルなし（eLabFTW にのみ存在）\n")
+                has_diff = True
+                continue
+            try:
+                data = syncer._get_entity(eid)
+                uploads = syncer.client.list_uploads(target.entity, eid)
+            except Exception as e:
+                failed = True
+                print(f"  eLabFTW #{eid} の取得に失敗: {e}\n", file=sys.stderr)
+                continue
+            print(f"  状態: {syncer.inspect(filename, eid, data, uploads)['state']}")
+            if _show_document_diff(syncer, target, filename, eid, data, uploads, local_path, mapping, links):
+                has_diff = True
+            else:
+                print("  差分なし")
+            print()
 
     if not has_diff and not failed:
-        print("\nすべて最新です")
-
-
+        print("すべて最新です")
     return int(failed)
 
 
@@ -1430,8 +1434,8 @@ def _path_selector(kind, value):
     return matches
 
 
-def _select_push_files(targets_and_syncers, files, regexes):
-    """Resolve push selectors to {target index: set of file names}.
+def _select_documents(targets_and_syncers, files, regexes):
+    """Resolve push/diff selectors to {target index: set of file names}.
 
     Every selector must match at least one document that is not excluded
     with rm. A file path naming an excluded document is an error; directories,
@@ -1801,7 +1805,9 @@ def main():
     push_parser.add_argument("files", nargs="*", help="同期するファイル・ディレクトリ・glob（カレントディレクトリ基準、複数指定可。省略時は全文書）")
     push_parser.add_argument("--regex", action="append", help="同期するファイル名に部分一致する正規表現（複数指定可）")
     sub.add_parser("init", help="対話的に設定ファイルを作成", parents=[common])
-    sub.add_parser("diff", help="ローカルと eLabFTW の差分を表示", parents=[common])
+    diff_parser = sub.add_parser("diff", help="前回の同期からのローカルと eLabFTW の変更を表示", parents=[common])
+    diff_parser.add_argument("files", nargs="*", help="表示するファイル・ディレクトリ・glob（push と同じ指定。省略時は全文書）")
+    diff_parser.add_argument("--regex", action="append", help="表示するファイル名に部分一致する正規表現（複数指定可）")
     sub.add_parser("update", help="ツールを最新版に更新")
 
     pull_parser = sub.add_parser("pull", help="eLabFTW からエンティティを取得してローカルに保存", parents=[common])

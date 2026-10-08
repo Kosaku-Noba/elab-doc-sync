@@ -431,7 +431,7 @@ esync pull --id 42 --entity items --auto
 | `esync push <ファイルパス>`         | 指定した文書だけ push（ディレクトリ・glob・`--regex` も可） |
 | `esync pull`                        | pull（eLabFTW → ローカル） |
 | `esync pull --id 42 --entity items` | 指定 ID を取得              |
-| `esync diff`                        | 差分表示                    |
+| `esync diff [ファイルパス]`         | 前回の同期からのローカル・eLabFTW の変更を文書ごとに表示 |
 | `esync status`                      | 同期状態を確認              |
 | `esync list`                        | リモート一覧                |
 | `esync clone`                       | プロジェクトを構築          |
