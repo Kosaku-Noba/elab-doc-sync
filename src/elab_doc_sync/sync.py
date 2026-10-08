@@ -1058,16 +1058,20 @@ def _shell_quote(value, windows=None):
     """Quote an argument so a suggested command can be pasted into the shell.
 
     POSIX shells use shlex.quote. On Windows the target is PowerShell: inside
-    single quotes nothing is expanded ($(...), $var, `), and a quote is
-    written twice. cmd.exe is not supported.
+    single quotes nothing is expanded ($(...), $var, `). PowerShell treats
+    ' and the typographic quotes ‘ ’ ‚ ‛ alike, so each of them is written
+    twice. cmd.exe is not supported.
     """
     if windows is None:
         windows = _os.name == "nt"
     if not windows:
         return shlex.quote(value)
-    if value and re.fullmatch(r"[\w@%+=:,./\\-]+", value):
+    if value and re.fullmatch(r"[A-Za-z0-9_@%+=:,./\\-]+", value):
         return value
-    return "'" + value.replace("'", "''") + "'"
+    return "'" + re.sub(f"([{_POWERSHELL_QUOTES}])", r"\1\1", value) + "'"
+
+
+_POWERSHELL_QUOTES = "'\u2018\u2019\u201a\u201b"
 
 
 REMOTE_FIELD_LABELS = {"body": "本文", "title": "タイトル", "content_type": "本文形式",

@@ -1458,26 +1458,59 @@ def test_next_actions_quote_paths_and_name_the_target(project):
     assert f"esync push {_shell_quote('docs/sub/a; echo x.md')}" in actions
 
 
+PS_QUOTES = "'\u2018\u2019\u201a\u201b"
+
+
 def _powershell_unquote(text):
-    """PowerShell の単一引用符の規則（中身は展開しない、'' は '）で 1 引数を読む。"""
-    if text.startswith("'"):
-        assert text.endswith("'") and len(text) >= 2
-        inner = text[1:-1]
-        assert "'" not in inner.replace("''", "")
-        return inner.replace("''", "'")
-    assert not any(c in text for c in " ;&|<>$`'\"()")
-    return text
+    """PowerShell の単一引用符の規則で 1 引数を読む。
+
+    ' と ‘ ’ ‚ ‛ はどれも引用符で、引用内では 2 つ続くと 1 文字、1 つなら引用の終わり。
+    """
+    if text[0] not in PS_QUOTES:
+        assert all(c.isascii() and (c.isalnum() or c in '_@%+=:,./\\-') for c in text)
+        return text
+    out, i = [], 1
+    while True:
+        c = text[i]
+        if c in PS_QUOTES:
+            if i + 1 < len(text) and text[i + 1] in PS_QUOTES:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            assert i == len(text) - 1, f'引用が途中で閉じる: {text!r}'
+            return ''.join(out)
+        out.append(c)
+        i += 1
 
 
 @pytest.mark.parametrize('value', [
     'docs/a.md', 'docs/a b.md', 'docs/a; echo x.md', "docs/it's.md",
     'docs/$(Write-Output UNEXPECTED).md', 'docs/$HOME.md', 'docs/`whoami`.md', 'docs/a&b|c.md',
+    'docs/a\u2019; Write-Output UNEXPECTED; #.md', 'docs/\u2018x\u2019\u201a\u201b.md', 'docs/日本語.md',
 ])
 def test_shell_quote_keeps_arguments_literal(value):
     import shlex
     from elab_doc_sync.sync import _shell_quote
     assert shlex.split(_shell_quote(value, windows=False)) == [value]
     assert _powershell_unquote(_shell_quote(value, windows=True)) == value
+
+
+@pytest.mark.parametrize('value', [
+    'docs/a b.md', "docs/it's.md", 'docs/$(Write-Output UNEXPECTED).md',
+    'docs/a\u2019; Write-Output UNEXPECTED; #.md', 'docs/\u2018x\u2019\u201a\u201b.md',
+])
+def test_shell_quote_with_real_powershell(value):
+    import shutil
+    import subprocess
+    from elab_doc_sync.sync import _shell_quote
+    shell = shutil.which('pwsh') or shutil.which('powershell')
+    if not shell:
+        pytest.skip('PowerShell がない')
+    script = ('[Console]::OutputEncoding = [Text.Encoding]::UTF8; '
+              f'& {{ param($a) [Console]::Out.Write($a) }} {_shell_quote(value, windows=True)}')
+    out = subprocess.run([shell, '-NoProfile', '-NonInteractive', '-Command', script],
+                         capture_output=True, timeout=60).stdout.decode('utf-8')
+    assert out == value
 
 
 def test_suggested_recreation_works_with_several_targets(project, capsys):
