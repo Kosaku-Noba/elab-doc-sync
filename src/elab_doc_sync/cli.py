@@ -241,7 +241,7 @@ def cmd_sync(args):
             selected = _select_push_files(pairs, files, _compile_regexes(regex_expressions))
         except ValueError as e:
             print(f"エラー: {e}", file=sys.stderr)
-            return 1
+            return 2
     for index, (target, syncer) in enumerate(pairs):
         only = None if selected is None else selected.get(index)
         if selected is not None and not only:
@@ -1412,8 +1412,9 @@ def _path_selector(kind, value):
 def _select_push_files(targets_and_syncers, files, regexes):
     """Resolve push selectors to {target index: set of file names}.
 
-    Every selector must match at least one document. Documents excluded with
-    rm are reported instead of being silently ignored.
+    Every selector must match at least one document that is not excluded
+    with rm. A file path naming an excluded document is an error; directories,
+    globs and regexes skip excluded documents.
     """
     selected = {}
     selectors = [("file", value) for value in files] + [("regex", value) for value in regexes]

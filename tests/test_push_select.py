@@ -1,6 +1,7 @@
 """esync push でファイル・ディレクトリ・glob・正規表現を指定して一部の文書だけ同期する。"""
 
 import copy
+import json
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -100,7 +101,7 @@ def test_dry_run_lists_only_selected(project, capsys):
 ])
 def test_invalid_selection_pushes_nothing(project, args, message, capsys):
     root, remote = project
-    assert push(*args) == 1
+    assert push(*args) == 2
     assert message in capsys.readouterr().err
     assert remote == {}
 
@@ -111,10 +112,44 @@ def test_excluded_document_is_reported(project, capsys):
     with patch.object(sys, 'argv', ['esync', 'rm', 'docs/a.md']):
         main()
     count = len(remote)
-    assert push('docs/a.md') == 1
+    assert push('docs/a.md') == 2
     assert 'rm で同期対象から除外された文書です' in capsys.readouterr().err
     # ディレクトリ指定では除外済みの文書を飛ばして残りを push する
     (root / 'docs/b.md').write_text('b changed')
     assert push('docs') in (0, None)
     assert len(remote) == count
     assert {e['title']: e['body'] for e in remote.values()}['b'] == 'b changed'
+
+
+def test_unselected_documents_are_not_fetched(project):
+    root, remote = project
+    assert push() in (0, None)
+    ids = {e['title']: e['id'] for e in remote.values()}
+    from elab_doc_sync.cli import ELabFTWClient
+    client = ELabFTWClient()
+    fetch = client.get_item.side_effect
+    def get_item(eid):
+        if eid != ids['a']:
+            raise AssertionError(f'unselected document #{eid} was fetched')
+        return fetch(eid)
+    client.get_item.side_effect = get_item
+    (root / 'docs/a.md').write_text('a changed')
+    (root / 'docs/b.md').write_text('b changed')
+    assert push('docs/a.md') in (0, None)
+    assert remote[ids['a']]['body'] == 'a changed'
+
+
+def test_rename_of_unselected_document_moves_mapping_only(project):
+    root, remote = project
+    assert push() in (0, None)
+    ids = {e['title']: e['id'] for e in remote.values()}
+    (root / 'docs/b.md').rename(root / 'docs/b2.md')
+    (root / 'docs/a.md').write_text('a changed')
+    assert push('docs/a.md') in (0, None)
+    mapping = json.loads((root / '.ids/mapping.json').read_text())
+    assert mapping['b2.md'] == ids['b'] and 'b.md' not in mapping
+    assert remote[ids['b']]['title'] == 'b'
+    assert len(remote) == 4
+    assert push() in (0, None)
+    assert remote[ids['b']]['title'] == 'b2'
+    assert len(remote) == 4
