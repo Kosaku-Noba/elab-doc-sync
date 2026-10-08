@@ -298,10 +298,9 @@ def cmd_status(args):
                 changes = syncer.remote_changes(name, result["data"], result.get("uploads", []))
                 if changes:
                     print(f"    eLabFTW 側の変更: {', '.join(REMOTE_FIELD_LABELS[k] for k in changes)}（詳細は esync diff）")
-            if result.get("error"):
+            if result.get("error") and state != "リモート削除":
                 print(f"    {result['error']}")
-            if state == "競合マーカーあり":
-                print("    マーカーを解消してから push してください")
+            syncer._print_next_actions(state, name, mapping.get(name))
             failed |= state in ("競合", "確認失敗", "リモート削除", "作成結果不明", "同期未完了", "競合マーカーあり")
     if (config_path.parent / RECOVERY).exists():
         print("  未完了のローカル変更があります。backup list と restore で復旧してください")
@@ -756,6 +755,7 @@ def cmd_diff(args):
                 continue
             result = syncer.inspect(filename, eid, data, uploads)
             print(f"  状態: {result['state']}")
+            syncer._print_next_actions(result["state"], filename, eid)
             if _show_document_diff(syncer, target, filename, eid, data, uploads, local_path, mapping, links):
                 has_diff = True
             elif result.get("local_changed"):

@@ -1387,6 +1387,49 @@ class EachDocsSyncer:
             "remote": self._remote_signature(data, uploads),
         })
 
+    def label(self, filename):
+        """Path of a document as shown in messages: relative to the project root."""
+        path = self.file_path(filename)
+        try:
+            return path.resolve().relative_to(self.project_root).as_posix()
+        except ValueError:
+            return str(path)
+
+    def next_actions(self, state, filename, eid=None):
+        """Commands that move a document in the given state forward, one per line."""
+        path, entity = self.label(filename), self.entity
+        adopt_remote = f"esync pull --id {eid} --entity {entity} --force" if eid else "esync pull --force"
+        actions = {
+            "送信待ち": [f"送信: esync push {path}"],
+            "取得待ち": ["取得: esync pull"],
+            "競合": ["両方の変更をマージ: esync pull（同じ箇所の変更はマーカーで残る）",
+                     f"ローカルを採用（eLabFTW を上書き）: esync push --force {path}",
+                     f"eLabFTW を採用（ローカルを上書き）: {adopt_remote}"],
+            "競合マーカーあり": [f"マーカーを消して内容を整えてから送信: esync push {path}",
+                               f"マーカーごと破棄して eLabFTW を採用: {adopt_remote}"],
+            "基準情報なし": [f"差分を確認: esync diff {path}",
+                         f"ローカルを採用: esync push --force {path}",
+                         f"eLabFTW を採用: {adopt_remote}"],
+            "同期未完了": [f"再開: esync push {path}"],
+            "再開不可": [f"差分を確認: esync diff {path}",
+                       f"ローカルを採用して同期を完了: esync push --force {path}",
+                       f"eLabFTW を採用して同期記録を破棄: {adopt_remote}"],
+            "リモート削除": [f"追跡をやめる（ローカルの文書は残る）: esync rm {path}",
+                           f"eLabFTW に作り直す: esync rm {path} の後 esync link --new --file {filename}"],
+            "ローカル削除": [f"eLabFTW から取り直す: {adopt_remote}",
+                           f"追跡をやめる: esync rm --id {eid} --entity {entity}"],
+            "未追跡": [f"eLabFTW に新規作成: esync push {path}"],
+            "確認失敗": ["接続先・API キーを確認して再実行"],
+            "作成結果不明": ["eLabFTW で記事ができたかを esync list で確認",
+                         f"できていれば紐付け: esync link <ID> --file {filename}",
+                         f"できていなければ作成をやり直す: esync link --new --file {filename}"],
+        }
+        return actions.get(state, [])
+
+    def _print_next_actions(self, state, filename, eid=None):
+        for action in self.next_actions(state, filename, eid):
+            print(f"    → {action}")
+
     def save_merge_baseline(self, filename, base, data, uploads, metadata_pending):
         """Record the remote side after merging it into local edits on pull.
 
@@ -1593,7 +1636,9 @@ class EachDocsSyncer:
                 observed_entities.append(result["data"])
             if state in ("確認失敗", "リモート削除"):
                 self.failures += 1
-                print(f"  [{f.stem}] {state}: {result.get('error', '')}")
+                reason = "eLabFTW で記事が削除されています（push では作り直しません）" if state == "リモート削除" else result.get("error", "")
+                print(f"  [{f.stem}] {state}: {reason}")
+                self._print_next_actions(state, f.name, eid)
                 continue
             owned = pending.get(f.name, {})
             # before/expected are the body fields before/after our PATCH. Either
@@ -1610,19 +1655,21 @@ class EachDocsSyncer:
                 for version in (expected, stored, before)))
             if not force and owned and not resuming:
                 self.failures += 1
-                print(f"  [{f.stem}] 未完了の同期後にリモート変更があります。diffで確認してから再開してください")
+                print(f"  [{f.stem}] 前回の push が途中で止まった後に eLabFTW 側が変更されたため、自動では再開しません")
                 mismatch = self._resume_mismatch(owned, eid, result["data"], current_guard)
                 if mismatch:
                     print(f"    前回の同期記録と異なる項目: {', '.join(mismatch)}")
+                self._print_next_actions("再開不可", f.name, eid)
                 continue
             if state == "競合マーカーあり":
                 self.failures += 1
-                print(f"  [{f.stem}] 競合マーカーが残っています。マーカーを解消してから push してください")
+                print(f"  [{f.stem}] 競合マーカーが残っています")
+                self._print_next_actions(state, f.name, eid)
                 continue
             if not force and not resuming and state in ("競合", "取得待ち", "基準情報なし"):
                 self.failures += 1
-                hint = "esync pull でマージしてから push してください" if state == "競合" else "esync diff で確認してください"
-                print(f"  [{f.stem}] {state}。{hint}")
+                print(f"  [{f.stem}] {state}のため送信しません")
+                self._print_next_actions(state, f.name, eid)
                 continue
             if not force and not prune_attachments and not resuming and state == "最新":
                 self.skipped += 1

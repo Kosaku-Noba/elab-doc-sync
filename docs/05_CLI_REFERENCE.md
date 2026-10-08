@@ -151,6 +151,20 @@ pull でマージした文書では、「ローカルの変更」にマージで
 
 ## status
 
+文書ごとに状態を表示し、続けて次に実行できるコマンドを `→` で表示します。例:
+
+```text
+  [a.md] 競合（#42）
+    → 両方の変更をマージ: esync pull（同じ箇所の変更はマーカーで残る）
+    → ローカルを採用（eLabFTW を上書き）: esync push --force docs/a.md
+    → eLabFTW を採用（ローカルを上書き）: esync pull --id 42 --entity items --force
+  [b.md] リモート削除（#43）
+    → 追跡をやめる（ローカルの文書は残る）: esync rm docs/b.md
+    → eLabFTW に作り直す: esync rm docs/b.md の後 esync link --new --file b.md
+```
+
+`diff` の各文書と、push で送信しなかった文書にも同じ案内を表示します。パスはプロジェクトのルートからの相対パスです。
+
 ```bash
 esync status [-t TARGET]
 ```

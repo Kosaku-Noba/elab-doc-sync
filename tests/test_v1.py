@@ -1,6 +1,7 @@
 """Safety scenarios using a stateful remote, rather than fixed API responses."""
 import copy
 import json
+import sys
 from argparse import Namespace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -884,7 +885,8 @@ def test_blocked_resume_names_the_changed_fields(project, capsys):
     capsys.readouterr()
     assert syncer.sync() == 0
     out = capsys.readouterr().out
-    assert '未完了の同期後にリモート変更があります' in out
+    assert '自動では再開しません' in out
+    assert 'esync push --force docs/a.md' in out and 'esync pull --id 1 --entity items --force' in out
     assert '前回の同期記録と異なる項目: 本文, タグ' in out
 
 
@@ -1019,7 +1021,8 @@ def test_change_to_pending_deletion_candidate_blocks_resume(project, capsys):
     capsys.readouterr()
     assert syncer.sync() == 0
     out = capsys.readouterr().out
-    assert '未完了の同期後にリモート変更があります' in out
+    assert '自動では再開しません' in out
+    assert 'esync push --force docs/a.md' in out and 'esync pull --id 1 --entity items --force' in out
     assert '添付' in out
 
 
@@ -1396,3 +1399,47 @@ def test_diff_reports_unsent_setting_change_without_body_diff(project, capsys):
     assert '状態: 送信待ち' in out
     assert '本文の差分なし（画像・添付ファイル、または設定' in out
     assert 'すべて最新です' not in out
+
+
+# ── 状態ごとの次の操作 ──
+
+
+def test_status_shows_next_action_per_state(project, capsys):
+    root, client, remote, syncer, args = push_note(project, 'one')
+    (root / 'docs/b.md').write_text('two')
+    assert syncer.sync() == 1
+    (root / 'docs/a.md').write_text('local')
+    remote[1]['body'] = 'remote'
+    del remote[2]
+    (root / 'docs/c.md').write_text('new')
+    capsys.readouterr()
+    with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
+        cmd_status(args())
+    out = capsys.readouterr().out
+    assert '[a.md] 競合' in out and '→ 両方の変更をマージ: esync pull' in out
+    assert '[b.md] リモート削除' in out and '→ 追跡をやめる（ローカルの文書は残る）: esync rm docs/b.md' in out
+    assert '[c.md] 未追跡' in out and '→ eLabFTW に新規作成: esync push docs/c.md' in out
+
+
+def test_push_explains_deleted_remote_and_how_to_stop_tracking(project, capsys):
+    root, client, remote, syncer, args = push_note(project, 'one')
+    del remote[1]
+    (root / 'docs/a.md').write_text('local')
+    capsys.readouterr()
+    assert syncer.sync() == 0
+    out = capsys.readouterr().out
+    assert 'eLabFTW で記事が削除されています' in out
+    assert 'esync rm docs/a.md' in out and 'esync link --new --file a.md' in out
+
+
+def test_suggested_commands_resolve_deleted_remote(project):
+    # 案内どおり rm → link --new → push で作り直せる
+    root, client, remote, syncer, args = push_note(project, 'one')
+    del remote[1]
+    with patch.object(sys, 'argv', ['esync', 'rm', str(root / 'docs/a.md'), '--config', str(root / '.elab-sync.yaml')]):
+        main()
+    with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
+        assert cmd_link(args(file='a.md', entity_id=None, new=True)) == 0
+    assert syncer.sync() == 1
+    assert client.create_item.call_count == 2
+    assert remote[syncer._load_mapping()['a.md']]['body'] == 'one'
