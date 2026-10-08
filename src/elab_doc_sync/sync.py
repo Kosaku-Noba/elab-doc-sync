@@ -7,6 +7,7 @@ import hashlib
 import json
 import os as _os
 import re
+import shlex
 import shutil
 import tempfile
 import markdown
@@ -1053,6 +1054,14 @@ def _sync_tags(client: ELabFTWClient, entity_type: str, entity_id: int, desired_
     return True
 
 
+def _shell_quote(value):
+    """Quote an argument so a suggested command can be pasted into the shell."""
+    if _os.name == "nt":
+        # PowerShell and cmd both accept double quotes; '"' cannot appear in Windows file names.
+        return f'"{value}"' if re.search(r'[\s&|<>^%;()\'`$,]', value) else value
+    return shlex.quote(value)
+
+
 REMOTE_FIELD_LABELS = {"body": "本文", "title": "タイトル", "content_type": "本文形式",
                        "category": "カテゴリ", "tags": "タグ", "uploads": "添付"}
 
@@ -1396,9 +1405,18 @@ class EachDocsSyncer:
             return str(path)
 
     def next_actions(self, state, filename, eid=None):
-        """Commands that move a document in the given state forward, one per line."""
-        path, entity = self.label(filename), self.entity
-        adopt_remote = f"esync pull --id {eid} --entity {entity} --force" if eid else "esync pull --force"
+        """Commands that move a document in the given state forward, one per line.
+
+        Paths are quoted for the shell and relative to the project root, where
+        the commands are meant to be run. --file is relative to docs_dir, as
+        link expects. --target is added when the project has several targets.
+        """
+        path, entity = _shell_quote(self.label(filename)), self.entity
+        file_arg = _shell_quote(self.file_path(filename).relative_to(self.docs_dir).as_posix())
+        target = ""
+        if len(self.link_syncers) > 1:
+            target = f" --target {_shell_quote(self.target.title or self.target.docs_dir)}"
+        adopt_remote = f"esync pull --id {eid} --entity {entity} --force{target}" if eid else "esync pull --force"
         actions = {
             "送信待ち": [f"送信: esync push {path}"],
             "取得待ち": ["取得: esync pull"],
@@ -1415,14 +1433,14 @@ class EachDocsSyncer:
                        f"ローカルを採用して同期を完了: esync push --force {path}",
                        f"eLabFTW を採用して同期記録を破棄: {adopt_remote}"],
             "リモート削除": [f"追跡をやめる（ローカルの文書は残る）: esync rm {path}",
-                           f"eLabFTW に作り直す: esync rm {path} の後 esync link --new --file {filename}"],
+                           f"eLabFTW に作り直す: esync rm {path} → esync link --new --file {file_arg}{target} → esync push {path}"],
             "ローカル削除": [f"eLabFTW から取り直す: {adopt_remote}",
-                           f"追跡をやめる: esync rm --id {eid} --entity {entity}"],
+                           f"追跡をやめる: esync rm --id {eid} --entity {entity}{target}"],
             "未追跡": [f"eLabFTW に新規作成: esync push {path}"],
             "確認失敗": ["接続先・API キーを確認して再実行"],
             "作成結果不明": ["eLabFTW で記事ができたかを esync list で確認",
-                         f"できていれば紐付け: esync link <ID> --file {filename}",
-                         f"できていなければ作成をやり直す: esync link --new --file {filename}"],
+                         f"できていれば紐付け: esync link <ID> --file {file_arg}{target}",
+                         f"できていなければ作成をやり直す: esync link --new --file {file_arg}{target} → esync push {path}"],
         }
         return actions.get(state, [])
 

@@ -283,10 +283,9 @@ def cmd_status(args):
     config_path = Path(args.config).resolve()
     config = load_config(config_path)
     failed = False
-    for target in config.targets:
+    for target, syncer in zip(config.targets, _link_syncers(config, config_path.parent)):
         if not _matches_target(target, args.target):
             continue
-        syncer = _make_syncer(_make_client_for_target(config, target), target, config_path.parent)
         mapping = syncer._load_mapping(migrate=False)
         names = (set(mapping) | set(syncer._pending()) | {f.name for f in syncer.collect_files()}) - syncer._load_excluded()
         for name in sorted(names):

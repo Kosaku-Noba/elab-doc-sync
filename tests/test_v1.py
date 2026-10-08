@@ -1443,3 +1443,44 @@ def test_suggested_commands_resolve_deleted_remote(project):
     assert syncer.sync() == 1
     assert client.create_item.call_count == 2
     assert remote[syncer._load_mapping()['a.md']]['body'] == 'one'
+
+
+def test_next_actions_quote_paths_and_name_the_target(project):
+    root, client, remote, syncer, args = project
+    (root / 'docs/sub').mkdir()
+    (root / 'docs/sub/a; echo x.md').write_text('one')
+    syncer.target.pattern = '**/*.md'
+    syncer.link_syncers = [syncer, MagicMock()]
+    actions = '\n'.join(syncer.next_actions('リモート削除', 'a; echo x.md', 1))
+    assert "esync rm 'docs/sub/a; echo x.md'" in actions
+    assert "esync link --new --file 'sub/a; echo x.md' --target T" in actions
+    assert "esync push 'docs/sub/a; echo x.md'" in actions
+
+
+def test_suggested_recreation_works_with_several_targets(project, capsys):
+    root, client, remote, syncer, args = project
+    cfg = root / '.elab-sync.yaml'
+    data = yaml.safe_load(cfg.read_text())
+    data['targets'].append({'title': 'U', 'docs_dir': 'other', 'id_file': '.ids2/default.id', 'body_format': 'md'})
+    cfg.write_text(yaml.safe_dump(data))
+    (root / 'other').mkdir()
+    (root / 'other/o.md').write_text('other')
+    (root / 'docs/a.md').write_text('one')
+    with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client), patch.object(sys, 'argv', ['esync', 'push', '--config', str(cfg)]):
+        main()
+    del remote[1]
+    capsys.readouterr()
+    with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
+        cmd_status(args())
+    hint = next(l for l in capsys.readouterr().out.splitlines() if '作り直す' in l)
+    steps = [step.strip().split()[1:] for step in hint.split(': ', 1)[1].split('→')]
+    assert [s[0] for s in steps] == ['rm', 'link', 'push']
+    for step in steps:
+        argv = [a if not a.startswith('docs/') else str(root / a) for a in step]
+        with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client), \
+             patch.object(sys, 'argv', ['esync', *argv, '--config', str(cfg)]):
+            try:
+                main()
+            except SystemExit as exc:
+                assert not exc.code
+    assert client.create_item.call_count == 3

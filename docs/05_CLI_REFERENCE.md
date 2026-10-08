@@ -160,10 +160,10 @@ pull でマージした文書では、「ローカルの変更」にマージで
     → eLabFTW を採用（ローカルを上書き）: esync pull --id 42 --entity items --force
   [b.md] リモート削除（#43）
     → 追跡をやめる（ローカルの文書は残る）: esync rm docs/b.md
-    → eLabFTW に作り直す: esync rm docs/b.md の後 esync link --new --file b.md
+    → eLabFTW に作り直す: esync rm docs/b.md → esync link --new --file b.md → esync push docs/b.md
 ```
 
-`diff` の各文書と、push で送信しなかった文書にも同じ案内を表示します。パスはプロジェクトのルートからの相対パスです。
+`diff` の各文書と、push で送信しなかった文書にも同じ案内を表示します。案内はプロジェクトのルート（`.elab-sync.yaml` のあるディレクトリ）で実行する前提で、`push`・`rm` のパスはルートからの相対パス、`link --file` は `docs_dir` からの相対パスです。空白や記号を含むパスは引用符で囲みます。設定にターゲットが複数ある場合は `--target` も付けます。
 
 ```bash
 esync status [-t TARGET]
