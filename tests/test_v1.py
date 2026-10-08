@@ -744,6 +744,14 @@ def test_unchanged_metadata_documents_sync_when_category_unresolvable(project):
     assert syncer.sync() == 1
     assert remote[1]['body'] == 'changed'
     client.list_categories.assert_not_called()
+    # 新規文書が混ざると解決を試み、新規文書だけスキップする
+    (root / 'docs/a.md').write_text('changed again')
+    (root / 'docs/b.md').write_text('new')
+    assert syncer.sync() == 1
+    assert syncer.failures == 1
+    assert remote[1]['body'] == 'changed again'
+    assert 2 not in remote and 'b.md' not in syncer._load_mapping()
+    assert client.list_categories.call_count == 1
 
 
 def test_category_change_at_final_read_is_not_adopted(project):
