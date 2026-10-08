@@ -76,7 +76,7 @@ def test_three_way_status_and_pull(project, local, remote_change, expected):
         code = cmd_pull(args())
     assert code == int(local and remote_change)
     merged = '<<<<<<< ローカル\nlocal\n=======\nremote\n>>>>>>> eLabFTW #1'
-    assert (root / 'docs/a.md').read_text().strip() == (
+    assert (root / 'docs/a.md').read_text(encoding='utf-8').strip() == (
         merged if local and remote_change else 'local' if local else 'remote' if remote_change else 'original')
     if not local and remote_change:
         assert syncer.inspect('a.md', 1)['state'] == '最新'
@@ -89,7 +89,7 @@ def test_remote_rename_keeps_local_edits(project):
     with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
         assert cmd_pull(args()) == 0
     assert not (root / 'docs/a.md').exists()
-    assert (root / 'docs/renamed.md').read_text().strip() == 'unsent'
+    assert (root / 'docs/renamed.md').read_text(encoding='utf-8').strip() == 'unsent'
     assert syncer.inspect('renamed.md', 1)['state'] == '送信待ち'
     assert syncer.sync() == 1
     assert remote[1]['body'] == 'unsent' and remote[1]['title'] == 'renamed'
@@ -100,7 +100,7 @@ def test_remote_title_only_change_pulls_safely(project):
     remote[1]['title'] = 'renamed'
     with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
         assert cmd_pull(args()) == 0
-    assert (root / 'docs/renamed.md').read_text().strip() == 'original'
+    assert (root / 'docs/renamed.md').read_text(encoding='utf-8').strip() == 'original'
     assert syncer._load_mapping() == {'renamed.md': 1}
     assert syncer.inspect('renamed.md', 1)['state'] == '最新'
 
@@ -180,12 +180,12 @@ def test_force_pull_backup_restore_and_undo_restore(project):
     manifest = next((root / BACKUPS).glob('*/manifest.json'))
     backup_id = manifest.parent.name
     restore(root, backup_id, dry_run=True)
-    assert (root / 'docs/a.md').read_text().strip() == 'remote edits'
+    assert (root / 'docs/a.md').read_text(encoding='utf-8').strip() == 'remote edits'
     restore(root, backup_id)
-    assert (root / 'docs/a.md').read_text() == 'local edits'
+    assert (root / 'docs/a.md').read_text(encoding='utf-8') == 'local edits'
     undo = [p for p in (root / BACKUPS).glob('*/manifest.json') if p != manifest][0]
     restore(root, undo.parent.name)
-    assert (root / 'docs/a.md').read_text().strip() == 'remote edits'
+    assert (root / 'docs/a.md').read_text(encoding='utf-8').strip() == 'remote edits'
 
 
 def test_force_push_saves_remote_without_secrets(project):
@@ -207,7 +207,7 @@ def test_backup_failure_prevents_pull_changes(project):
     remote[1]['body'] = 'remote'
     with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client), patch('elab_doc_sync.safety.snapshot', side_effect=OSError('disk full')):
         assert cmd_pull(args()) == 1
-    assert (root / 'docs/a.md').read_text() == 'original'
+    assert (root / 'docs/a.md').read_text(encoding='utf-8') == 'original'
     assert not (root / RECOVERY).exists()
 
 
@@ -218,9 +218,9 @@ def test_interrupted_transaction_is_recoverable(tmp_path):
         with local_transaction(tmp_path, [note], 'failure'):
             note.write_text('partial')
             raise RuntimeError()
-    pending = json.loads((tmp_path / RECOVERY).read_text())
+    pending = json.loads((tmp_path / RECOVERY).read_text(encoding='utf-8'))
     restore(tmp_path, pending['backup'])
-    assert note.read_text() == 'before'
+    assert note.read_text(encoding='utf-8') == 'before'
     assert not (tmp_path / RECOVERY).exists()
 
 
@@ -230,7 +230,7 @@ def test_atomic_write_keeps_existing_on_replace_error(tmp_path):
     with patch('elab_doc_sync.safety.os.replace', side_effect=OSError('failed')):
         with pytest.raises(OSError):
             atomic_write(note, 'after')
-    assert note.read_text() == 'before'
+    assert note.read_text(encoding='utf-8') == 'before'
     assert list(tmp_path.iterdir()) == [note]
 
 
@@ -264,7 +264,7 @@ def test_pull_rejects_unsafe_remote_title(project, title):
     remote[1]['title'] = title
     with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
         assert cmd_pull(args(force=True)) == 1
-    assert (root / 'docs/a.md').read_text() == 'original'
+    assert (root / 'docs/a.md').read_text(encoding='utf-8') == 'original'
     assert not (root / BACKUPS).exists()
 
 
@@ -275,7 +275,7 @@ def test_markdown_math_roundtrip(project):
     assert remote[1]['body'] == body
     with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
         assert cmd_pull(args(force=True)) == 0
-    assert (root / 'docs/a.md').read_text().strip() == body
+    assert (root / 'docs/a.md').read_text(encoding='utf-8').strip() == body
     assert syncer.sync() == 0
 
 
@@ -299,7 +299,7 @@ def test_mv_and_relink_preserve_entity(project):
 def test_merge_rejected_before_network(project):
     root, client, remote, syncer, args = project
     cfg = root / '.elab-sync.yaml'
-    raw = yaml.safe_load(cfg.read_text())
+    raw = yaml.safe_load(cfg.read_text(encoding='utf-8'))
     raw['targets'][0]['mode'] = 'merge'
     cfg.write_text(yaml.safe_dump(raw))
     with pytest.raises(SystemExit) as exc:
@@ -330,7 +330,7 @@ def test_image_attachment_and_document_link_roundtrip(project):
     (root / 'attachments/report.csv').write_bytes(b'old csv')
     syncer.target.attachments_dir = 'attachments'
     config_path = root / '.elab-sync.yaml'
-    cfg = yaml.safe_load(config_path.read_text())
+    cfg = yaml.safe_load(config_path.read_text(encoding='utf-8'))
     cfg['targets'][0]['attachments_dir'] = 'attachments'
     config_path.write_text(yaml.safe_dump(cfg))
     (root / 'docs/a.md').write_text('![image](picture.png)\n\n[other](./b.md#section)')
@@ -346,7 +346,7 @@ def test_image_attachment_and_document_link_roundtrip(project):
         assert cmd_pull(args(id=[1], entity='items')) == 0
     assert (root / 'docs/images/items_1_picture.png').read_bytes() == b'new image'
     assert (root / 'attachments/report.csv').read_bytes() == b'old csv'
-    assert '[other](./b.md#section)' in (root / 'docs/a.md').read_text()
+    assert '[other](./b.md#section)' in (root / 'docs/a.md').read_text(encoding='utf-8')
     assert syncer.sync() == 0
 
 
@@ -416,12 +416,12 @@ def test_damaged_backup_is_rejected_before_any_write(tmp_path):
     note.write_text('before')
     backup_id = snapshot(tmp_path, [note], 'test')
     note.write_text('after')
-    manifest = json.loads((tmp_path / BACKUPS / backup_id / 'manifest.json').read_text())
+    manifest = json.loads((tmp_path / BACKUPS / backup_id / 'manifest.json').read_text(encoding='utf-8'))
     blob = manifest['files']['a.md']['sha256']
     (tmp_path / BACKUPS / backup_id / blob).write_bytes(b'corrupted')
     with pytest.raises(ValueError, match='破損'):
         restore(tmp_path, backup_id)
-    assert note.read_text() == 'after'
+    assert note.read_text(encoding='utf-8') == 'after'
 
 
 def test_symlink_replaced_after_backup_is_not_followed(tmp_path):
@@ -437,7 +437,7 @@ def test_symlink_replaced_after_backup_is_not_followed(tmp_path):
         pytest.skip('symlink creation unavailable')
     with pytest.raises(ValueError, match='シンボリックリンク'):
         restore(tmp_path, backup_id)
-    assert outside.read_text() == 'must preserve'
+    assert outside.read_text(encoding='utf-8') == 'must preserve'
 
 
 def test_profile_change_blocks_force_push(project):
@@ -451,7 +451,7 @@ def test_profile_change_blocks_force_push(project):
 def test_pull_same_id_on_two_profiles_requires_target(project):
     root, client, remote, syncer, args = push_note(project)
     cfg_path = root / '.elab-sync.yaml'
-    cfg = yaml.safe_load(cfg_path.read_text())
+    cfg = yaml.safe_load(cfg_path.read_text(encoding='utf-8'))
     cfg['profiles'] = {'other': {'url': 'https://other.test', 'api_key': 'OTHER-SECRET'}}
     cfg['targets'].append({'title': 'Other', 'docs_dir': 'other', 'id_file': '.other/default.id', 'profile': 'other'})
     cfg_path.write_text(yaml.safe_dump(cfg))
@@ -784,7 +784,7 @@ def test_old_state_metadata_is_normalized_without_writing(project, old_tags):
     remote[1]['category'] = 10
     remote[1]['tags'] = [] if old_tags is None else ['a', 'b']
     path = syncer.hash_dir / 'a.md.state.json'
-    state = json.loads(path.read_text())
+    state = json.loads(path.read_text(encoding='utf-8'))
     state['remote']['category'] = '10'
     state['remote']['tags'] = old_tags
     path.write_text(json.dumps(state))
@@ -808,7 +808,7 @@ def test_old_pending_guard_resumes_without_false_conflict(project, old_tags):
     client.update_item.side_effect = requests.Timeout()
     assert syncer.sync() == 0
     path = syncer.hash_dir / 'pending.json'
-    pending = json.loads(path.read_text())
+    pending = json.loads(path.read_text(encoding='utf-8'))
     pending['a.md']['guard']['category'] = '10'
     pending['a.md']['guard']['tags'] = old_tags
     path.write_text(json.dumps(pending))
@@ -824,13 +824,13 @@ def test_untagged_article_pull_then_push(project, tags):
     remote[42] = {"id": 42, "title": "untagged", "body": "remote body", "content_type": 2, "tags": tags}
     # Exercise ID-based dispatch with multiple targets and no tag match.
     cfg = root / '.elab-sync.yaml'
-    raw = yaml.safe_load(cfg.read_text())
+    raw = yaml.safe_load(cfg.read_text(encoding='utf-8'))
     raw['targets'].append({'title': 'Other', 'docs_dir': 'other', 'tags': ['other']})
     cfg.write_text(yaml.safe_dump(raw))
     with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
         assert cmd_pull(args(id=[42], entity='items', auto=True)) == 0
     note = root / 'docs/untagged.md'
-    assert note.read_text().strip() == 'remote body'
+    assert note.read_text(encoding='utf-8').strip() == 'remote body'
     note.write_text('local edit')
     assert syncer.sync() == 1
     assert remote[42]['body'] == 'local edit'
@@ -1175,7 +1175,7 @@ def test_pull_merges_non_overlapping_edits(project):
     (root / 'docs/a.md').write_text('ONE\ntwo\nthree')
     remote[1]['body'] = 'one\ntwo\nTHREE'
     assert _pull(client, args) == 0
-    assert (root / 'docs/a.md').read_text().strip() == 'ONE\ntwo\nTHREE'
+    assert (root / 'docs/a.md').read_text(encoding='utf-8').strip() == 'ONE\ntwo\nTHREE'
     assert syncer.inspect('a.md', 1)['state'] == '送信待ち'
     assert syncer.sync() == 1
     assert remote[1]['body'] == 'ONE\ntwo\nTHREE'
@@ -1187,7 +1187,7 @@ def test_conflict_markers_block_push_and_pull_until_resolved(project, capsys):
     (root / 'docs/a.md').write_text('one\nlocal')
     remote[1]['body'] = 'one\nremote'
     assert _pull(client, args) == 1
-    text = (root / 'docs/a.md').read_text()
+    text = (root / 'docs/a.md').read_text(encoding='utf-8')
     assert text.strip() == 'one\n<<<<<<< ローカル\nlocal\n=======\nremote\n>>>>>>> eLabFTW #1'
     assert '競合マーカーが残っている文書: 1 件' in capsys.readouterr().out
     assert syncer.inspect('a.md', 1)['state'] == '競合マーカーあり'
@@ -1195,7 +1195,7 @@ def test_conflict_markers_block_push_and_pull_until_resolved(project, capsys):
     assert remote[1]['body'] == 'one\nremote'
     remote[1]['body'] = 'one\nremote again'
     assert _pull(client, args) == 1
-    assert (root / 'docs/a.md').read_text() == text
+    assert (root / 'docs/a.md').read_text(encoding='utf-8') == text
     (root / 'docs/a.md').write_text('one\nlocal and remote')
     assert syncer.sync(force=True) == 1
     assert remote[1]['body'] == 'one\nlocal and remote'
@@ -1208,14 +1208,14 @@ def test_force_pull_replaces_file_with_conflict_markers(project):
     assert _pull(client, args) == 1
     assert syncer.inspect('a.md', 1)['state'] == '競合マーカーあり'
     assert _pull(client, args, force=True) == 0
-    assert (root / 'docs/a.md').read_text().strip() == 'remote'
+    assert (root / 'docs/a.md').read_text(encoding='utf-8').strip() == 'remote'
     assert syncer.inspect('a.md', 1)['state'] == '最新'
 
 
 def test_merge_with_remote_rename_does_not_revert_remote_category(project):
     root, client, remote, syncer, args = project
     cfg = root / '.elab-sync.yaml'
-    data = yaml.safe_load(cfg.read_text())
+    data = yaml.safe_load(cfg.read_text(encoding='utf-8'))
     data['targets'][0]['category'] = 10
     cfg.write_text(yaml.safe_dump(data))
     syncer.target.category = 10
@@ -1253,7 +1253,7 @@ def test_pull_without_recorded_base_marks_every_difference(project):
     (root / 'docs/a.md').write_text('ONE\ntwo')
     remote[1]['body'] = 'one\ntwo\nthree'
     assert _pull(client, args) == 1
-    text = (root / 'docs/a.md').read_text()
+    text = (root / 'docs/a.md').read_text(encoding='utf-8')
     assert text.count('<<<<<<< ローカル') == 2
 
 
@@ -1263,21 +1263,21 @@ def test_pull_merge_dry_run_changes_nothing(project, capsys):
     remote[1]['body'] = 'remote'
     assert _pull(client, args, dry_run=True) == 0
     assert 'ローカル編集とマージ予定' in capsys.readouterr().out
-    assert (root / 'docs/a.md').read_text() == 'local'
+    assert (root / 'docs/a.md').read_text(encoding='utf-8') == 'local'
     assert syncer.inspect('a.md', 1)['state'] == '競合'
 
 
 def test_merge_keeps_pending_metadata_changes(project):
     root, client, remote, syncer, args = push_note(project, 'one\ntwo')
     cfg = root / '.elab-sync.yaml'
-    data = yaml.safe_load(cfg.read_text())
+    data = yaml.safe_load(cfg.read_text(encoding='utf-8'))
     data['targets'][0]['tags'] = ['ours']
     cfg.write_text(yaml.safe_dump(data))
     syncer.target.tags = ['ours']
     remote[1]['body'] = 'one\ntwo\nthree'
     assert syncer.inspect('a.md', 1)['state'] == '競合'
     assert _pull(client, args) == 0
-    assert (root / 'docs/a.md').read_text().strip() == 'one\ntwo\nthree'
+    assert (root / 'docs/a.md').read_text(encoding='utf-8').strip() == 'one\ntwo\nthree'
     assert syncer.inspect('a.md', 1)['state'] == '送信待ち'
     assert syncer.sync() == 1
     assert remote[1]['tags'] == ['ours']
@@ -1293,7 +1293,7 @@ def test_merge_keeps_locally_edited_image_referenced_by_local_path(project):
     remote[1]['body'] += '\nremote line'
     client.download_upload.return_value = b'old image'
     assert _pull(client, args) == 0
-    assert (root / 'docs/a.md').read_text().strip() == '![image](picture.png)\ntext\nremote line'
+    assert (root / 'docs/a.md').read_text(encoding='utf-8').strip() == '![image](picture.png)\ntext\nremote line'
     assert (root / 'docs/picture.png').read_bytes() == b'new image, longer'
     assert syncer.sync() == 1
     assert len(uploads[1]) == 1 and uploads[1][0]['filesize'] == len(b'new image, longer')
@@ -1315,7 +1315,7 @@ def test_merge_does_not_overwrite_pulled_image_edited_locally(project):
     assert syncer.inspect('a.md', 1)['state'] == '競合'
     assert _pull(client, args) == 0
     assert pulled.read_bytes() == b'edited locally'
-    assert (root / 'docs/a.md').read_text().strip().endswith('second remote line')
+    assert (root / 'docs/a.md').read_text(encoding='utf-8').strip().endswith('second remote line')
 
 
 # ── diff: 前回の同期からの変更を文書ごとに表示 ──
@@ -1390,7 +1390,7 @@ def test_diff_without_synced_record_compares_directly(project, capsys):
 def test_diff_reports_unsent_setting_change_without_body_diff(project, capsys):
     root, client, remote, syncer, args = push_note(project, 'one')
     cfg = root / '.elab-sync.yaml'
-    data = yaml.safe_load(cfg.read_text())
+    data = yaml.safe_load(cfg.read_text(encoding='utf-8'))
     data['targets'][0]['tags'] = ['new-tag']
     cfg.write_text(yaml.safe_dump(data))
     capsys.readouterr()
@@ -1516,7 +1516,7 @@ def test_shell_quote_with_real_powershell(value):
 def test_suggested_recreation_works_with_several_targets(project, capsys):
     root, client, remote, syncer, args = project
     cfg = root / '.elab-sync.yaml'
-    data = yaml.safe_load(cfg.read_text())
+    data = yaml.safe_load(cfg.read_text(encoding='utf-8'))
     data['targets'].append({'title': 'U', 'docs_dir': 'other', 'id_file': '.ids2/default.id', 'body_format': 'md'})
     cfg.write_text(yaml.safe_dump(data))
     (root / 'other').mkdir()
