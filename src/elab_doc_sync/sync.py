@@ -222,7 +222,23 @@ def _remote_markdown(data, target):
     # API content_type: 1=HTML, 2=Markdown. Legacy responses use target configuration.
     content_type = data.get("content_type")
     is_md = str(content_type) == "2" or (content_type is None and target.body_format == "md")
-    return body.strip() if is_md else html_to_md(body, **_MD_OPTS).strip()
+    # eLabFTW stores Markdown bodies HTML-escaped ("> " -> "&gt; ", "&&" -> "&amp;&amp;").
+    return _html.unescape(body).strip() if is_md else html_to_md(body, **_MD_OPTS).strip()
+
+
+_ANGLE_RE = re.compile(r"<[^<>\n]*>")
+
+
+def _dropped_angle_fragments(sent: str, stored: str) -> list[str]:
+    """Return <...> fragments in the sent Markdown that eLabFTW removed on save.
+
+    eLabFTW treats e.g. "<string>" in "array<string>" as an HTML tag and drops it.
+    That text cannot be recovered by pull, so push must report it.
+    """
+    from collections import Counter
+    kept = Counter(_ANGLE_RE.findall(_html.unescape(stored or "")))
+    lost = Counter(_ANGLE_RE.findall(sent)) - kept
+    return list(lost)
 
 
 def _normalize_remote_image_urls(body: str, entity: str, entity_id: int, client: ELabFTWClient, uploads=None) -> str:
@@ -1791,6 +1807,7 @@ class EachDocsSyncer:
                 observed, _ = checkpoint()
                 pending[f.name]["stored"] = {key: observed.get(key) for key in expected}
                 self._save_pending(pending)
+                dropped = _dropped_angle_fragments(body, observed.get("body")) if self.target.body_format == "md" else []
                 tags_ok = _sync_tags(self.client, self.entity, eid, self.target.tags) if meta_changed else True
                 if not tags_ok:
                     raise RuntimeError("本文更新後にタグ同期が失敗しました。リモートを確認して再実行してください")
@@ -1825,6 +1842,12 @@ class EachDocsSyncer:
                                 entity=self.entity, entity_id=eid, files=[f.name])
                 updated += 1
                 print(f"  [{f.stem}] #{eid} を更新しました")
+                if dropped:
+                    self.failures += 1
+                    shown = ", ".join(dropped[:5]) + (f" ほか{len(dropped) - 5}件" if len(dropped) > 5 else "")
+                    print(f"  [{f.stem}] 警告: eLabFTW が本文の <…> を削除しました: {shown}")
+                    print("    ローカルの原稿はそのままですが、eLabFTW 上の本文（と他の環境での pull 結果）からは失われています。"
+                          "表記を見直して再度 push してください")
             except Exception as exc:
                 self.failures += 1
                 print(f"  [{f.stem}] 同期失敗: {exc}")

@@ -1,6 +1,7 @@
 """Safety scenarios using a stateful remote, rather than fixed API responses."""
 import copy
 import json
+import re
 import sys
 from argparse import Namespace
 from pathlib import Path
@@ -872,6 +873,43 @@ def test_interrupted_sync_resumes_when_elabftw_rewrote_body(project):
     assert not syncer._pending()
     assert remote[1]['category'] == 10
     assert syncer.inspect('a.md', 1)['state'] == '最新'
+
+
+def test_pull_unescapes_markdown_stored_by_elabftw(project):
+    root, client, remote, syncer, args = push_note(project)
+    remote[1]['body'] = ('&gt; **注意:** quoted\n\n```sql\nWHERE n &gt;= 1\n```\n\n'
+                         '```mermaid\nA --&gt; B\n```\n\n`cmd 2&gt;/dev/null &amp;&amp; next`')
+    with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
+        assert cmd_pull(args()) == 0
+    assert (root / 'docs/a.md').read_text(encoding='utf-8').strip() == (
+        '> **注意:** quoted\n\n```sql\nWHERE n >= 1\n```\n\n'
+        '```mermaid\nA --> B\n```\n\n`cmd 2>/dev/null && next`')
+    assert syncer.inspect('a.md', 1)['state'] == '最新'
+
+
+def test_push_reports_angle_brackets_dropped_by_elabftw(project, capsys):
+    root, client, remote, syncer, args = project
+    def update(eid, **kw):
+        if 'body' in kw:
+            kw['body'] = re.sub(r'<[^<>\n]*>', '', kw['body']).replace('>', '&gt;')
+        remote[eid].update(kw)
+    client.update_item.side_effect = update
+    (root / 'docs/a.md').write_text('| ids | array<string> |\n\nA --> B\n\npip install /wheels/<pkg>.whl',
+                                    encoding='utf-8')
+    assert syncer.sync() == 1
+    assert syncer.failures == 1
+    out = capsys.readouterr().out
+    assert 'eLabFTW が本文の <…> を削除しました: <string>, <pkg>' in out
+    assert '-->' not in out.split('削除しました')[1]
+
+
+def test_push_does_not_warn_when_only_escaped(project, capsys):
+    root, client, remote, syncer, args = project
+    client.update_item.side_effect = _rewrite_quotes_on_save(remote)
+    (root / 'docs/a.md').write_text('> quoted <br>', encoding='utf-8')
+    assert syncer.sync() == 1
+    assert syncer.failures == 0
+    assert '削除しました' not in capsys.readouterr().out
 
 
 def test_blocked_resume_names_the_changed_fields(project, capsys):
