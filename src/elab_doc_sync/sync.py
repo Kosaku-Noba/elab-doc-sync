@@ -1403,10 +1403,12 @@ class EachDocsSyncer:
 
     def _save_base(self, filename, base, data):
         # A base converted from a Markdown body is stored HTML-escaped, the form
-        # eLabFTW stores Markdown in. Bases saved before v1.0.5 are already in
-        # that form, so load_base reads old and new files the same way. Whether
-        # to unescape follows the remote content_type in state.json, not the
-        # current body_format, which may change after the base was saved.
+        # eLabFTW stores Markdown in. Released versions up to v1.0.4 saved such
+        # bases unconverted, which is that same form, and saved bases from HTML
+        # bodies as markdownify output, which is never unescaped here. So
+        # load_base reads old and new files the same way. Whether to unescape
+        # follows the remote content_type in state.json, not the current
+        # body_format, which may change after the base was saved.
         is_md = _is_markdown_body(data.get("content_type"), self.target)
         atomic_write(self.hash_dir / f"{filename}.base", _html.escape(base, quote=False) if is_md else base)
 
