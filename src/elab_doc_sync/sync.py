@@ -1394,8 +1394,14 @@ class EachDocsSyncer:
         if not path.is_file():
             return None
         base = path.read_text(encoding="utf-8")
-        # Bases saved before v1.0.5 kept eLabFTW's HTML escaping ("&gt; ").
         return _html.unescape(base) if self.target.body_format == "md" else base
+
+    def _save_base(self, filename, base):
+        # Markdown bases are stored HTML-escaped, the form eLabFTW stores bodies
+        # in. Bases saved before v1.0.5 are already in that form, so load_base
+        # reads old and new files the same way.
+        atomic_write(self.hash_dir / f"{filename}.base",
+                     _html.escape(base, quote=False) if self.target.body_format == "md" else base)
 
     def load_synced_local(self, filename):
         """Local body as of the last sync, or None if not recorded."""
@@ -1414,7 +1420,7 @@ class EachDocsSyncer:
 
     def _save_baseline(self, filename, raw_body, data, uploads, base=None):
         """Record a completed sync. base defaults to raw_body (pull/link write the remote body)."""
-        atomic_write(self.hash_dir / f"{filename}.base", raw_body if base is None else base)
+        self._save_base(filename, raw_body if base is None else base)
         atomic_write(self.hash_dir / f"{filename}.synced", raw_body)
         self._save_hash(filename, raw_body)
         self._save_remote_hash(filename, data.get("body") or "")
@@ -1490,7 +1496,7 @@ class EachDocsSyncer:
         from eLabFTW does not make push resend the configured tags and
         category over remote changes.
         """
-        atomic_write(self.hash_dir / f"{filename}.base", base)
+        self._save_base(filename, base)
         self._save_remote_hash(filename, data.get("body") or "")
         meta_hash = _compute_meta_hash(Path(filename).stem, self.target.category, self.target.tags)
         if not metadata_pending:

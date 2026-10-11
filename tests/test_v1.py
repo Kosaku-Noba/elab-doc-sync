@@ -1,5 +1,6 @@
 """Safety scenarios using a stateful remote, rather than fixed API responses."""
 import copy
+import html as _html
 import json
 import re
 import sys
@@ -917,6 +918,20 @@ def test_pull_after_dropped_angle_brackets_keeps_local_original(project):
     with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
         assert cmd_pull(args()) == 0
     assert (root / 'docs/a.md').read_text(encoding='utf-8').strip() == 'ids: array<string>\n\nmemo edited'
+
+
+def test_literal_entity_in_local_survives_merge(project):
+    root, client, remote, syncer, args = project
+    client.update_item.side_effect = lambda eid, **kw: remote[eid].update(
+        {**kw, 'body': _html.escape(kw['body'], quote=False)} if 'body' in kw else kw)
+    (root / 'docs/a.md').write_text('literal: &gt;\n\nmemo', encoding='utf-8')
+    assert syncer.sync() == 1
+    assert syncer.inspect('a.md', 1)['state'] == '最新'
+    (root / 'docs/a.md').write_text('literal: >\n\nmemo', encoding='utf-8')
+    remote[1]['body'] = _html.escape('literal: &lt;\n\nmemo', quote=False)
+    with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
+        assert cmd_pull(args()) == 1
+    assert '<<<<<<<' in (root / 'docs/a.md').read_text(encoding='utf-8')
 
 
 def test_escaped_base_from_older_version_merges_cleanly(project):
