@@ -217,11 +217,14 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
 _MD_OPTS = {"heading_style": "ATX", "escape_asterisks": False, "escape_underscores": False}
 
 
+def _is_markdown_body(content_type, target):
+    # API content_type: 1=HTML, 2=Markdown. Legacy responses use target configuration.
+    return str(content_type) == "2" or (content_type is None and target.body_format == "md")
+
+
 def _remote_markdown(data, target):
     body = data.get("body") or ""
-    # API content_type: 1=HTML, 2=Markdown. Legacy responses use target configuration.
-    content_type = data.get("content_type")
-    is_md = str(content_type) == "2" or (content_type is None and target.body_format == "md")
+    is_md = _is_markdown_body(data.get("content_type"), target)
     # eLabFTW stores Markdown bodies HTML-escaped ("> " -> "&gt; ", "&&" -> "&amp;&amp;").
     return _html.unescape(body).strip() if is_md else html_to_md(body, **_MD_OPTS).strip()
 
@@ -1394,14 +1397,18 @@ class EachDocsSyncer:
         if not path.is_file():
             return None
         base = path.read_text(encoding="utf-8")
-        return _html.unescape(base) if self.target.body_format == "md" else base
+        state = self._state(filename)
+        content_type = state["remote"].get("content_type") if state else None
+        return _html.unescape(base) if _is_markdown_body(content_type, self.target) else base
 
-    def _save_base(self, filename, base):
-        # Markdown bases are stored HTML-escaped, the form eLabFTW stores bodies
-        # in. Bases saved before v1.0.5 are already in that form, so load_base
-        # reads old and new files the same way.
-        atomic_write(self.hash_dir / f"{filename}.base",
-                     _html.escape(base, quote=False) if self.target.body_format == "md" else base)
+    def _save_base(self, filename, base, data):
+        # A base converted from a Markdown body is stored HTML-escaped, the form
+        # eLabFTW stores Markdown in. Bases saved before v1.0.5 are already in
+        # that form, so load_base reads old and new files the same way. Whether
+        # to unescape follows the remote content_type in state.json, not the
+        # current body_format, which may change after the base was saved.
+        is_md = _is_markdown_body(data.get("content_type"), self.target)
+        atomic_write(self.hash_dir / f"{filename}.base", _html.escape(base, quote=False) if is_md else base)
 
     def load_synced_local(self, filename):
         """Local body as of the last sync, or None if not recorded."""
@@ -1420,7 +1427,7 @@ class EachDocsSyncer:
 
     def _save_baseline(self, filename, raw_body, data, uploads, base=None):
         """Record a completed sync. base defaults to raw_body (pull/link write the remote body)."""
-        self._save_base(filename, raw_body if base is None else base)
+        self._save_base(filename, raw_body if base is None else base, data)
         atomic_write(self.hash_dir / f"{filename}.synced", raw_body)
         self._save_hash(filename, raw_body)
         self._save_remote_hash(filename, data.get("body") or "")
@@ -1496,7 +1503,7 @@ class EachDocsSyncer:
         from eLabFTW does not make push resend the configured tags and
         category over remote changes.
         """
-        self._save_base(filename, base)
+        self._save_base(filename, base, data)
         self._save_remote_hash(filename, data.get("body") or "")
         meta_hash = _compute_meta_hash(Path(filename).stem, self.target.category, self.target.tags)
         if not metadata_pending:

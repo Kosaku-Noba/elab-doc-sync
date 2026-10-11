@@ -934,6 +934,23 @@ def test_literal_entity_in_local_survives_merge(project):
     assert '<<<<<<<' in (root / 'docs/a.md').read_text(encoding='utf-8')
 
 
+def test_base_format_follows_remote_after_body_format_change(project):
+    root, client, remote, syncer, args = project
+    client.update_item.side_effect = lambda eid, **kw: remote[eid].update(
+        {**kw, 'body': _html.escape(kw['body'], quote=False)} if 'body' in kw else kw)
+    (root / 'docs/a.md').write_text('literal: >\n\nmemo', encoding='utf-8')
+    assert syncer.sync() == 1
+    cfg = root / '.elab-sync.yaml'
+    raw = yaml.safe_load(cfg.read_text())
+    raw['targets'][0]['body_format'] = 'html'
+    cfg.write_text(yaml.safe_dump(raw))
+    (root / 'docs/a.md').write_text('literal: &gt;\n\nmemo', encoding='utf-8')
+    remote[1]['body'] = _html.escape('literal: >\n\nmemo edited', quote=False)
+    with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
+        assert cmd_pull(args()) == 0
+    assert (root / 'docs/a.md').read_text(encoding='utf-8').strip() == 'literal: &gt;\n\nmemo edited'
+
+
 def test_escaped_base_from_older_version_merges_cleanly(project):
     root, client, remote, syncer, args = project
     client.update_item.side_effect = _rewrite_quotes_on_save(remote)
