@@ -901,6 +901,35 @@ def test_push_reports_angle_brackets_dropped_by_elabftw(project, capsys):
     out = capsys.readouterr().out
     assert 'eLabFTW が本文の <…> を削除しました: <string>, <pkg>' in out
     assert '-->' not in out.split('削除しました')[1]
+    assert syncer.inspect('a.md', 1)['state'] == '送信待ち'
+
+
+def test_pull_after_dropped_angle_brackets_keeps_local_original(project):
+    root, client, remote, syncer, args = project
+    def update(eid, **kw):
+        if 'body' in kw:
+            kw['body'] = re.sub(r'<[^<>\n]*>', '', kw['body'])
+        remote[eid].update(kw)
+    client.update_item.side_effect = update
+    (root / 'docs/a.md').write_text('ids: array<string>\n\nmemo', encoding='utf-8')
+    syncer.sync()
+    remote[1]['body'] = 'ids: array\n\nmemo edited'
+    with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
+        assert cmd_pull(args()) == 0
+    assert (root / 'docs/a.md').read_text(encoding='utf-8').strip() == 'ids: array<string>\n\nmemo edited'
+
+
+def test_escaped_base_from_older_version_merges_cleanly(project):
+    root, client, remote, syncer, args = project
+    client.update_item.side_effect = _rewrite_quotes_on_save(remote)
+    (root / 'docs/a.md').write_text('> quoted\n\nlocal', encoding='utf-8')
+    assert syncer.sync() == 1
+    (syncer.hash_dir / 'a.md.base').write_text('&gt; quoted\n\nlocal', encoding='utf-8')
+    (root / 'docs/a.md').write_text('> quoted\n\nlocal edited', encoding='utf-8')
+    remote[1]['body'] = '&gt; quoted remote\n\nlocal'
+    with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
+        assert cmd_pull(args()) == 0
+    assert (root / 'docs/a.md').read_text(encoding='utf-8').strip() == '> quoted remote\n\nlocal edited'
 
 
 def test_push_does_not_warn_when_only_escaped(project, capsys):

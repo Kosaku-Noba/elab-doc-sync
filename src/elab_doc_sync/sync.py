@@ -1391,7 +1391,11 @@ class EachDocsSyncer:
     def load_base(self, filename):
         """eLabFTW body as of the last sync, converted as pull does, or None."""
         path = self.hash_dir / f"{filename}.base"
-        return path.read_text(encoding="utf-8") if path.is_file() else None
+        if not path.is_file():
+            return None
+        base = path.read_text(encoding="utf-8")
+        # Bases saved before v1.0.5 kept eLabFTW's HTML escaping ("&gt; ").
+        return _html.unescape(base) if self.target.body_format == "md" else base
 
     def load_synced_local(self, filename):
         """Local body as of the last sync, or None if not recorded."""
@@ -1834,8 +1838,11 @@ class EachDocsSyncer:
                 actual = self._remote_signature(data, uploads)
                 if any(actual[k] != pending[f.name]["guard"][k] for k in ("category", "tags")):
                     raise ConflictError("完了確認時にリモートのカテゴリ・タグが期待値と異なります")
-                self._save_baseline(f.name, raw_body, data, uploads,
-                                    base=self.remote_base(data, uploads, eid, mapping, links, f))
+                base = self.remote_base(data, uploads, eid, mapping, links, f)
+                # When eLabFTW dropped <...>, record what it kept as the synced local
+                # body: the file stays "送信待ち", and pull merges instead of
+                # overwriting the original with the lossy remote body.
+                self._save_baseline(f.name, base if dropped else raw_body, data, uploads, base=base)
                 pending.pop(f.name, None)
                 self._save_pending(pending)
                 sync_log.record(self.project_root / sync_log.DEFAULT_LOG_PATH, action="push", target=f.stem,
@@ -1846,8 +1853,8 @@ class EachDocsSyncer:
                     self.failures += 1
                     shown = ", ".join(dropped[:5]) + (f" ほか{len(dropped) - 5}件" if len(dropped) > 5 else "")
                     print(f"  [{f.stem}] 警告: eLabFTW が本文の <…> を削除しました: {shown}")
-                    print("    ローカルの原稿はそのままですが、eLabFTW 上の本文（と他の環境での pull 結果）からは失われています。"
-                          "表記を見直して再度 push してください")
+                    print("    ローカルの原稿はそのままですが、eLabFTW 上の本文からは失われています。"
+                          "解消するまで、この文書は「送信待ち」のままになります。表記を見直して再度 push してください")
             except Exception as exc:
                 self.failures += 1
                 print(f"  [{f.stem}] 同期失敗: {exc}")
