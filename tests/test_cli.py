@@ -1852,3 +1852,15 @@ def test_tag_and_relate_direct_id_uses_selected_target_profile(tmp_path, command
     with patch("elab_doc_sync.cli.ELabFTWClient", side_effect=factory):
         command(Namespace(config=str(cfg), target="B", force=False, id=50, entity="items", **action))
     assert list(clients) == ["https://server-b.com"]
+
+
+@pytest.mark.parametrize("command,action", [
+    (cmd_relate, dict(relate_action="add", target_ids=[9], to="items")),
+    (cmd_tag, dict(tag_action="add", tag_name="x")),
+])
+def test_tag_and_relate_direct_id_unknown_target_sends_nothing(tmp_path, command, action):
+    cfg, clients, factory = _write_two_profile_config(tmp_path)
+    with patch("elab_doc_sync.cli.ELabFTWClient", side_effect=factory):
+        with pytest.raises(ValueError, match="B-typo"):
+            command(Namespace(config=str(cfg), target="B-typo", force=False, id=50, entity="items", **action))
+    assert clients == {}

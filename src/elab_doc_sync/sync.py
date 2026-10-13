@@ -1802,13 +1802,17 @@ class EachDocsSyncer:
                 continue
             jobs.append((f, result, resuming))
 
+        def resumed(f, resuming, step):
+            """再開時、前回の未完了記録でその手順が必要だったか（記録がない旧形式は必要とみなす）。"""
+            return resuming and (pending.get(f.name) or {}).get("needs", {}).get(step, True)
+
         def needs_meta(f, result, resuming):
-            return (force or result.get("data") is None or resuming
+            return (force or result.get("data") is None or resumed(f, resuming, "meta")
                     or self._has_meta_changed(f.name, f.stem, self.target.category, self.target.tags))
 
         def needs_links(f, result, resuming):
-            # リンクの追加はタグ・カテゴリと別に判定する（リンクだけの変更でタグ・カテゴリを再適用しない）
-            return (force or result.get("data") is None or resuming or self._links_pending(f.name))
+            # リンクの追加はタグ・カテゴリと別に判定する（リンクだけの変更・再試行でタグ・カテゴリを再適用しない）
+            return (force or result.get("data") is None or resumed(f, resuming, "links") or self._links_pending(f.name))
 
         # Resolve the category before any body update, so an unresolvable name
         # never leaves documents half-synced (body updated, category not).
@@ -1866,10 +1870,12 @@ class EachDocsSyncer:
                 previous = result.get("data") or self._get_entity(eid)
                 before = {key: previous.get(key) for key in expected}
                 guard = {k: v for k, v in self._remote_signature(previous, self.client.list_uploads(self.entity, eid)).items() if k not in ("body", "title", "content_type")}
-                pending[f.name] = {"eid": eid, "expected": expected, "before": before, "guard": guard}
+                meta_changed = needs_meta(f, result, resuming)
+                links_changed = needs_links(f, result, resuming)
+                pending[f.name] = {"eid": eid, "expected": expected, "before": before, "guard": guard,
+                                   "needs": {"meta": meta_changed, "links": links_changed}}
                 self._save_pending(pending)
                 self._update_entity(eid, **expected)
-                meta_changed = needs_meta(f, result, resuming)
                 def checkpoint(expected_changes=None):
                     """Confirm the predicted result, never adopt an unknown update.
 
@@ -1901,7 +1907,6 @@ class EachDocsSyncer:
                     raise RuntimeError("本文更新後にカテゴリ同期が失敗しました。リモートを確認して再実行してください")
                 if meta_changed:
                     checkpoint({"category": _category_value(category_id)} if category_id is not None else None)
-                links_changed = needs_links(f, result, resuming)
                 links_ok = _sync_links(self.client, self.entity, eid, self.target.links) if links_changed else True
                 if not links_ok:
                     raise RuntimeError("本文更新後にリンク同期が失敗しました。リモートを確認して再実行してください")

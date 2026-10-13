@@ -50,6 +50,9 @@ def _make_client_for_target(config, target):
 def _direct_client(config, selector):
     """--id 直接指定時の接続先。-t でターゲットを選んだ場合はそのプロファイルを使う。"""
     targets = [t for t in config.targets if _matches_target(t, selector)] if selector else []
+    if selector and not targets:
+        # 送信先を取り違えないよう、指定ミスを default 接続で代用しない
+        raise ValueError(f"-t {selector} に一致するターゲットがありません")
     connections = {get_client_for_target(config, t) for t in targets}
     if len(connections) > 1:
         raise ValueError(f"-t {selector} に一致するターゲットの接続先が複数あります。ターゲットを一意に指定してください")

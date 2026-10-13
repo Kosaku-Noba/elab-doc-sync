@@ -1708,9 +1708,10 @@ def test_pulled_document_gets_configured_links_on_next_push(project):
     client.remove_link.assert_not_called()
 
 
-def test_links_only_change_does_not_reapply_tags_or_category(project):
+@pytest.mark.parametrize('fail_first', [False, True])
+def test_links_only_change_does_not_reapply_tags_or_category(project, fail_first):
     root, client, remote, syncer, args = project
-    _fake_links(client)
+    links = _fake_links(client)
     raw = yaml.safe_load((root / '.elab-sync.yaml').read_text())
     raw['targets'][0].update(tags=['t'], category=5)
     (root / '.elab-sync.yaml').write_text(yaml.safe_dump(raw))
@@ -1725,8 +1726,16 @@ def test_links_only_change_does_not_reapply_tags_or_category(project):
     client.patch_entity.reset_mock()
     syncer.target.links = {'items': [7]}
     assert syncer.inspect('a.md', 1)['state'] == '送信待ち'
+    if fail_first:
+        # リンク追加が失敗した後の再試行（未完了記録からの再開）でも、タグ・カテゴリは再適用しない
+        add = client.add_link.side_effect
+        client.add_link.side_effect = requests.HTTPError("404")
+        assert syncer.sync() == 0
+        client.add_link.side_effect = add
+        client.add_link.reset_mock()
     assert syncer.sync() == 1
     client.add_link.assert_called_once_with('items', 1, 'items', 7)
+    assert links == {(1, 'items'): [7]}
     client.add_tag.assert_not_called()
     client.patch_entity.assert_not_called()
     assert remote[1]['category'] == 9 and remote[1]['tags'] == []
