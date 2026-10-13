@@ -586,3 +586,29 @@ def test_get_tags_null_is_empty(mock_req, client):
     response.json.return_value = None
     mock_req.return_value = response
     assert client.get_tags("items", 42) == []
+
+
+# CL-links: リンクの一覧・追加・削除
+@patch("elab_doc_sync.client.requests.request")
+def test_links_endpoints(mock_req, client):
+    mock_req.return_value = _mock_response([{"entityid": 7, "title": "x"}])
+    assert client.list_links("experiments", 1, "items") == [{"entityid": 7, "title": "x"}]
+    assert mock_req.call_args[0][0] == "GET"
+    assert mock_req.call_args[0][1].endswith("/api/v2/experiments/1/items_links")
+
+    mock_req.return_value = _mock_response()
+    client.add_link("items", 2, "experiments", 9)
+    assert mock_req.call_args[0][0] == "POST"
+    assert mock_req.call_args[0][1].endswith("/api/v2/items/2/experiments_links/9")
+    assert mock_req.call_args[1]["json"] == {"action": "create"}
+
+    client.remove_link("items", 2, "experiments", 9)
+    assert mock_req.call_args[0][0] == "DELETE"
+    assert mock_req.call_args[0][1].endswith("/api/v2/items/2/experiments_links/9")
+
+
+@patch("elab_doc_sync.client.requests.request")
+def test_list_links_null_is_empty(mock_req, client):
+    mock_req.return_value = _mock_response()
+    mock_req.return_value.json.return_value = None
+    assert client.list_links("items", 1, "experiments") == []

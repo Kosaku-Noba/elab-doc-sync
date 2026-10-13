@@ -239,6 +239,39 @@ esync tag add "new-tag" --id 42 --entity items
 esync category set "試薬" --id 42 --entity items
 ```
 
+### 実験ノートやリソースどうしをリンクしたい
+
+eLabFTW の「リンク」（実験ノート・リソースの関連付け）を張れます。リンク先 ID は複数まとめて指定できます。
+
+```bash
+# リソース #42 から実験ノート #12, #15 にリンク
+esync relate add 12 15 --to experiments --id 42 --entity items
+
+# リンク一覧
+esync relate list --id 42 --entity items
+
+# リンクを外す（リンク先の記事は消えません）
+esync relate remove 15 --to experiments --id 42 --entity items
+```
+
+`--id` を省略すると、そのターゲット（`-t` で指定）で同期済みの全文書が対象になります。
+
+push のたびにリンクを張りたい場合は、ターゲットに `links` を書きます。そのターゲットの全文書から、指定した記事へのリンクを追加します。
+
+```yaml
+targets:
+  - docs_dir: "docs/"
+    entity: experiments
+    links:
+      items: [42, 43]        # リソース（resources とも書ける）
+      experiments: [12]      # 実験ノート
+```
+
+- push は不足しているリンクを追加するだけで、削除はしません。eLabFTW の画面で張ったリンクも残ります。設定から ID を消しても、張ったリンクは外れません（`esync relate remove` で外す）
+- `links` に ID を足すと、本文が変わっていなくても対象の文書が「送信待ち」になり、次の push でリンクを追加します
+- pull・`esync link` は eLabFTW にリンクを張りません。新しく取得・紐付けした文書は「送信待ち」になり、次の push でリンクを追加します。一度張った文書は、リモートの変更を pull しても「送信待ち」に戻りません
+- 文書自身へのリンクは張りません
+
 ### リモートに何があるか見たい
 
 ```bash
@@ -438,6 +471,7 @@ esync pull --id 42 --entity items --auto
 | `esync clone`                       | プロジェクトを構築          |
 | `esync tag list/add/remove`         | タグ操作                    |
 | `esync category list/show/set`      | カテゴリ操作                |
+| `esync relate list/add/remove`      | 実験ノート・リソース間のリンク操作 |
 | `esync profile list/add/remove`     | 接続プロファイル管理        |
 | `esync link <ID>`                   | 手動紐付け                  |
 | `esync rm <ファイルパス>`           | 追跡解除（`--local` でローカルファイルも削除） |
@@ -490,6 +524,7 @@ profiles:
 | `profile`             | —        | `default` | 使用する接続プロファイル                           |
 | `tags`                | —        | `[]`      | push 時に自動追加するタグ（pull 振り分けにも使用） |
 | `category`            | —        | —          | push 時のカテゴリ。名前または数字の ID（pull 振り分けにも使用）。一覧 API に出ない（読み取り権限のない）カテゴリは ID で指定 |
+| `links`               | —        | —          | push 時に追加するリンク。`experiments` / `items`（`resources`）ごとの ID のリスト。削除はしない |
 | `title_pattern`       | —        | —          | pull 振り分け用タイトル glob                       |
 | `body_format`         | —        | `html`    | `md` / `html`                                  |
 | `attachments_dir`     | —        | —          | 添付ファイルディレクトリ                           |

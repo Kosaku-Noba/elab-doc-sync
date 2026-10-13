@@ -1073,6 +1073,26 @@ def _sync_tags(client: ELabFTWClient, entity_type: str, entity_id: int, desired_
     return True
 
 
+def _sync_links(client: ELabFTWClient, entity_type: str, entity_id: int, desired_links: dict) -> bool:
+    """設定のリンクを追加し（既存のリンクは削除しない）、取得・作成に失敗した場合はFalseを返す。"""
+    try:
+        for link_type, ids in (desired_links or {}).items():
+            # 自分自身へのリンクは作らない（ターゲットの全文書に同じ設定を適用するため）
+            wanted = [i for i in ids if not (link_type == entity_type and i == entity_id)]
+            if not wanted:
+                continue
+            existing = {link.get("entityid") for link in client.list_links(entity_type, entity_id, link_type)}
+            for target_id in wanted:
+                if target_id not in existing:
+                    client.add_link(entity_type, entity_id, link_type, target_id)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).debug("リンク同期失敗", exc_info=True)
+        print(f"    ⚠ リンク同期に失敗しました（本文の同期は成功しています）")
+        return False
+    return True
+
+
 def _shell_quote(value, windows=None):
     """Quote an argument so a suggested command can be pasted into the shell.
 
@@ -1243,10 +1263,24 @@ class EachDocsSyncer:
             return True
         hp = self._meta_hash_path(filename)
         saved = state["meta_hash"] if state else hp.read_text().strip() if hp.exists() else None
-        return saved is not None and saved != _compute_meta_hash(title, category, tags)
+        return (saved is not None and saved != _compute_meta_hash(title, category, tags)) or self._links_pending(filename)
 
     def _save_meta_hash(self, filename, title, category, tags):
         atomic_write(self._meta_hash_path(filename), _compute_meta_hash(title, category, tags) + "\n")
+
+    def applied_links(self, filename):
+        """push で張り終えたと記録したリンク {"experiments": [...], "items": [...]}。"""
+        state = self._state(filename)
+        return (state or {}).get("links") or {}
+
+    def _links_pending(self, filename):
+        """設定の links のうち、この文書でまだ張り終えていないものがあるか。
+
+        pull・link は eLabFTW にリンクを張らないため、張り終えた記録を引き継ぐだけで、
+        新しく取得した文書は次の push でリンクを追加する。設定から外した ID は削除しない。
+        """
+        applied = self.applied_links(filename)
+        return any(set(ids) - set(applied.get(t, [])) for t, ids in self.target.links.items())
 
     def _get_entity(self, eid):
         return self.client.get_experiment(eid) if self.entity == "experiments" else self.client.get_item(eid)
@@ -1427,8 +1461,12 @@ class EachDocsSyncer:
         body = _normalize_remote_image_urls(body, self.entity, eid, self.client, uploads=uploads)
         return _rewrite_elab_links_to_local(body, self.client.base_url, mapping, self.entity, source=source, links=links)
 
-    def _save_baseline(self, filename, raw_body, data, uploads, base=None):
-        """Record a completed sync. base defaults to raw_body (pull/link write the remote body)."""
+    def _save_baseline(self, filename, raw_body, data, uploads, base=None, links=None):
+        """Record a completed sync. base defaults to raw_body (pull/link write the remote body).
+
+        links is the record of links already applied; pull and link pass the
+        previous record, so they never claim links they did not create.
+        """
         self._save_base(filename, raw_body if base is None else base, data)
         atomic_write(self.hash_dir / f"{filename}.synced", raw_body)
         self._save_hash(filename, raw_body)
@@ -1441,6 +1479,7 @@ class EachDocsSyncer:
             "local_hash": _compute_hash(raw_body), "assets_hash": self._compute_assets_hash(raw_body, filename),
             "meta_hash": _compute_meta_hash(Path(filename).stem, self.target.category, self.target.tags),
             "remote": self._remote_signature(data, uploads),
+            **({"links": links} if links else {}),
         })
 
     def label(self, filename):
@@ -1837,6 +1876,9 @@ class EachDocsSyncer:
                     raise RuntimeError("本文更新後にカテゴリ同期が失敗しました。リモートを確認して再実行してください")
                 if meta_changed:
                     checkpoint({"category": _category_value(category_id)} if category_id is not None else None)
+                links_ok = _sync_links(self.client, self.entity, eid, self.target.links) if meta_changed else True
+                if not links_ok:
+                    raise RuntimeError("本文更新後にリンク同期が失敗しました。リモートを確認して再実行してください")
                 att_ok = True
                 if self.target.attachments_dir:
                     att_ok = _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, eid, self.client,
@@ -1857,7 +1899,11 @@ class EachDocsSyncer:
                 # When eLabFTW dropped <...>, record what it kept as the synced local
                 # body: the file stays "送信待ち", and pull merges instead of
                 # overwriting the original with the lossy remote body.
-                self._save_baseline(f.name, base if dropped else raw_body, data, uploads, base=base)
+                applied = self.applied_links(f.name)
+                if links_ok and meta_changed:
+                    applied = {t: sorted(set(applied.get(t, [])) | set(ids))
+                               for t, ids in {**applied, **self.target.links}.items()}
+                self._save_baseline(f.name, base if dropped else raw_body, data, uploads, base=base, links=applied)
                 pending.pop(f.name, None)
                 self._save_pending(pending)
                 sync_log.record(self.project_root / sync_log.DEFAULT_LOG_PATH, action="push", target=f.stem,

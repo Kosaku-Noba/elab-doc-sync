@@ -634,6 +634,7 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
         if old_path and old_path != filepath:
             old_path.unlink(missing_ok=True)
         if not is_temp_export:
+            applied_links = syncer.applied_links(old_name or filename)
             if old_name and old_name != filename:
                 for suffix in syncer.SUFFIXES:
                     src = syncer.hash_dir / f"{old_name}{suffix}"
@@ -647,7 +648,7 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
             if merge:
                 syncer.save_merge_baseline(filename, body_md, data, uploads, metadata_pending)
             else:
-                syncer._save_baseline(filename, body_md, data, uploads)
+                syncer._save_baseline(filename, body_md, data, uploads, links=applied_links)
             pending = syncer._pending()
             pending.pop(old_name or filename, None)
             syncer._save_pending(pending)
@@ -1120,6 +1121,65 @@ def _tag_action(client, args, entity_type, entity_id):
             print(f"  {label}: タグ「{args.tag_name}」を外しました")
         else:
             print(f"  {label}: タグ「{args.tag_name}」が見つかりません")
+
+
+def cmd_relate(args):
+    config_path = Path(args.config)
+    project_root = config_path.parent or Path(".")
+    config = load_config(config_path)
+    client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
+
+    # --id と --entity が指定されたら直接操作
+    direct_id = getattr(args, "id", None)
+    direct_entity = getattr(args, "entity", None)
+    if direct_entity and not direct_id:
+        raise ValueError("--entity 指定時は --id も指定してください")
+    if direct_id and not direct_entity:
+        raise ValueError("--id 指定時は --entity も指定してください（items / experiments / resources）")
+    if direct_id and direct_entity:
+        _relate_action(client, args, _normalize_entity(direct_entity), direct_id)
+        return
+
+    for target in config.targets:
+        if not _matches_target(target, args.target):
+            continue
+        syncer = _make_syncer(client, target, project_root)
+        ids = _get_entity_ids(client, syncer, target)
+        if not ids:
+            print(f"  [{target.title or target.docs_dir}] 同期済みエンティティなし")
+            continue
+        for eid, etype in ids:
+            _relate_action(client, args, etype, eid)
+
+
+def _relate_action(client, args, entity_type, entity_id):
+    label = f"{_entity_label(entity_type)} #{entity_id}"
+    if args.relate_action == "list":
+        print(f"  {label}:")
+        for link_type in ("experiments", "items"):
+            links = client.list_links(entity_type, entity_id, link_type)
+            shown = ", ".join(f"#{l.get('entityid')} {l.get('title') or ''}".rstrip() for l in links)
+            print(f"    {_entity_label(link_type)}: {shown or '(リンクなし)'}")
+        return
+    link_type = _normalize_entity(args.to)
+    target_label = _entity_label(link_type)
+    for target_id in args.target_ids:
+        if link_type == entity_type and target_id == entity_id:
+            print(f"  {label}: 自分自身へのリンクはスキップしました")
+            continue
+        existing = {l.get("entityid") for l in client.list_links(entity_type, entity_id, link_type)}
+        if args.relate_action == "add":
+            if target_id in existing:
+                print(f"  {label}: {target_label} #{target_id} へのリンクは既にあります")
+            else:
+                client.add_link(entity_type, entity_id, link_type, target_id)
+                print(f"  {label}: {target_label} #{target_id} へのリンクを追加しました")
+        elif args.relate_action == "remove":
+            if target_id in existing:
+                client.remove_link(entity_type, entity_id, link_type, target_id)
+                print(f"  {label}: {target_label} #{target_id} へのリンクを外しました")
+            else:
+                print(f"  {label}: {target_label} #{target_id} へのリンクが見つかりません")
 
 
 def cmd_metadata(args):
@@ -1848,6 +1908,19 @@ def main():
     tag_rm_p.add_argument("--id", type=int, default=None, help="エンティティ ID")
     tag_rm_p.add_argument("--entity", default=None, choices=["items", "experiments", "resources"], help="items / experiments / resources")
 
+    relate_parser = sub.add_parser("relate", help="実験ノート・リソース間のリンクを管理", parents=[common])
+    relate_sub = relate_parser.add_subparsers(dest="relate_action", required=True)
+    relate_list_p = relate_sub.add_parser("list", help="リンク一覧を表示")
+    relate_add_p = relate_sub.add_parser("add", help="リンクを追加（複数指定可）")
+    relate_add_p.add_argument("target_ids", type=int, nargs="+", help="リンク先 ID")
+    relate_rm_p = relate_sub.add_parser("remove", help="リンクを外す（リンク先は削除しない）")
+    relate_rm_p.add_argument("target_ids", type=int, nargs="+", help="リンク先 ID")
+    for p in (relate_add_p, relate_rm_p):
+        p.add_argument("--to", required=True, choices=["items", "experiments", "resources"], help="リンク先の種別")
+    for p in (relate_list_p, relate_add_p, relate_rm_p):
+        p.add_argument("--id", type=int, default=None, help="リンク元エンティティ ID（省略時は同期済みの全文書）")
+        p.add_argument("--entity", default=None, choices=["items", "experiments", "resources"], help="リンク元の種別")
+
     meta_parser = sub.add_parser("metadata", help="メタデータを管理", parents=[common])
     meta_sub = meta_parser.add_subparsers(dest="meta_action")
     meta_sub.add_parser("get", help="メタデータを表示")
@@ -1924,7 +1997,7 @@ def main():
     commands = {
         None: cmd_sync, "push": cmd_sync, "status": cmd_status, "init": cmd_init,
         "pull": cmd_pull, "diff": cmd_diff, "update": cmd_update, "log": cmd_log,
-        "clone": cmd_clone, "tag": cmd_tag, "metadata": cmd_metadata,
+        "clone": cmd_clone, "tag": cmd_tag, "relate": cmd_relate, "metadata": cmd_metadata,
         "entity-status": cmd_entity_status, "category": cmd_category,
         "whoami": cmd_whoami, "new": cmd_new, "list": cmd_list,
         "link": cmd_link, "rm": cmd_rm, "verify": cmd_verify, "profile": cmd_profile,
@@ -1935,6 +2008,7 @@ def main():
         other_write = args.command in ("init", "new") or (
             args.command == "profile" and args.profile_action in ("add", "remove")) or (
             args.command == "tag" and args.tag_action in ("add", "remove")) or (
+            args.command == "relate" and args.relate_action in ("add", "remove")) or (
             args.command == "metadata" and args.meta_action == "set") or (
             args.command == "entity-status" and args.status_action == "set") or (
             args.command == "category" and args.cat_action == "set")

@@ -322,3 +322,34 @@ def test_team_matches_case_insensitive():
     assert _team_matches("CellStats", "cellstats") is True
     assert _team_matches("FLAIRS", "flairs") is True
     assert _team_matches("TeamA", "TeamB") is False
+
+
+# C-links: links の読み込み（resources は items に正規化、重複は除去）
+def test_config_links(tmp_path):
+    from elab_doc_sync.config import load_config
+    data = {
+        "elabftw": {"url": "https://x.com", "api_key": "k"},
+        "targets": [{"title": "T", "docs_dir": "docs/",
+                     "links": {"experiments": [15, 12, 15], "resources": [42], "items": [3], }}],
+    }
+    p = tmp_path / ".elab-sync.yaml"
+    p.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    assert load_config(p).targets[0].links == {"experiments": [12, 15], "items": [3, 42]}
+
+
+def test_config_links_default(tmp_path):
+    from elab_doc_sync.config import load_config
+    data = {"elabftw": {"url": "https://x.com", "api_key": "k"}, "targets": [{"docs_dir": "docs/"}]}
+    p = tmp_path / ".elab-sync.yaml"
+    p.write_text(yaml.dump(data), encoding="utf-8")
+    assert load_config(p).targets[0].links == {}
+
+
+@pytest.mark.parametrize("links", [[1, 2], {"notes": [1]}, {"items": "1"}, {"items": [0]}, {"items": ["a"]}, {"items": [True]}])
+def test_config_links_invalid(tmp_path, links):
+    from elab_doc_sync.config import load_config
+    data = {"elabftw": {"url": "https://x.com", "api_key": "k"}, "targets": [{"docs_dir": "docs/", "links": links}]}
+    p = tmp_path / ".elab-sync.yaml"
+    p.write_text(yaml.dump(data), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        load_config(p)

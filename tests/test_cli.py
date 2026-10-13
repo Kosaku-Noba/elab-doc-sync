@@ -1738,3 +1738,68 @@ def test_cmd_profile_remove_not_found(tmp_path, capsys):
     cmd_profile(args)
     out = capsys.readouterr().out
     assert "見つかりません" in out
+
+
+# ── relate コマンド ─────────────────────────────────────
+
+from elab_doc_sync.cli import cmd_relate
+
+
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_relate_add_direct_multiple(MockClient, tmp_path, capsys):
+    cfg, _ = _write_config(tmp_path)
+    client = MockClient.return_value
+    client.list_links.return_value = [{"entityid": 12}]
+    args = Namespace(config=str(cfg), target=None, relate_action="add", target_ids=[12, 15, 16],
+                     to="experiments", id=42, entity="resources")
+    cmd_relate(args)
+    assert client.add_link.call_args_list == [
+        (("items", 42, "experiments", 15),), (("items", 42, "experiments", 16),)]
+    out = capsys.readouterr().out
+    assert "既にあります" in out and "実験ノート #15 へのリンクを追加しました" in out
+
+
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_relate_add_skips_self(MockClient, tmp_path, capsys):
+    cfg, _ = _write_config(tmp_path)
+    client = MockClient.return_value
+    args = Namespace(config=str(cfg), target=None, relate_action="add", target_ids=[42],
+                     to="items", id=42, entity="items")
+    cmd_relate(args)
+    client.add_link.assert_not_called()
+    assert "自分自身" in capsys.readouterr().out
+
+
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_relate_remove_tracked(MockClient, tmp_path, capsys):
+    cfg, docs = _write_config(tmp_path)
+    (docs / "a.md").write_text("# A\n", encoding="utf-8")
+    id_dir = tmp_path / ".elab-sync-ids"
+    id_dir.mkdir()
+    import json as _json
+    (id_dir / "mapping.json").write_text(_json.dumps({"a.md": 42}))
+    client = MockClient.return_value
+    client.list_links.return_value = [{"entityid": 5}]
+    args = Namespace(config=str(cfg), target=None, relate_action="remove", target_ids=[5, 6],
+                     to="resources", id=None, entity=None)
+    cmd_relate(args)
+    client.remove_link.assert_called_once_with("items", 42, "items", 5)
+    assert "見つかりません" in capsys.readouterr().out
+
+
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_cmd_relate_list_direct(MockClient, tmp_path, capsys):
+    cfg, _ = _write_config(tmp_path)
+    client = MockClient.return_value
+    client.list_links.side_effect = lambda e, i, t: [{"entityid": 3, "title": "試薬A"}] if t == "items" else []
+    args = Namespace(config=str(cfg), target=None, relate_action="list", id=7, entity="experiments")
+    cmd_relate(args)
+    out = capsys.readouterr().out
+    assert "実験ノート #7" in out and "#3 試薬A" in out and "(リンクなし)" in out
+
+
+def test_cmd_relate_id_without_entity(tmp_path):
+    cfg, _ = _write_config(tmp_path)
+    args = Namespace(config=str(cfg), target=None, relate_action="list", id=7, entity=None)
+    with pytest.raises(ValueError):
+        cmd_relate(args)

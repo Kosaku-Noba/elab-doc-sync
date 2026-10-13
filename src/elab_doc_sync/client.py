@@ -324,3 +324,19 @@ class ELabFTWClient:
     def update_metadata(self, entity_type: str, entity_id: int, metadata: dict[str, Any]) -> None:
         self._req("PATCH", f"/api/v2/{entity_type}/{entity_id}",
                   json={"metadata": json.dumps(metadata)})
+
+    # ── links ────────────────────────────────────────────────
+
+    def list_links(self, entity_type: str, entity_id: int, link_type: str) -> list[dict]:
+        """エンティティから link_type（experiments / items）へのリンク一覧を返す。"""
+        data = self._req("GET", f"/api/v2/{entity_type}/{entity_id}/{link_type}_links").json()
+        return [] if data is None else data
+
+    def add_link(self, entity_type: str, entity_id: int, link_type: str, target_id: int) -> None:
+        """エンティティから link_type の target_id へのリンクを作成する。"""
+        self._req("POST", f"/api/v2/{entity_type}/{entity_id}/{link_type}_links/{target_id}",
+                  json={"action": "create"})
+
+    def remove_link(self, entity_type: str, entity_id: int, link_type: str, target_id: int) -> None:
+        """エンティティから link_type の target_id へのリンクを削除する（リンク先は削除しない）。"""
+        self._req("DELETE", f"/api/v2/{entity_type}/{entity_id}/{link_type}_links/{target_id}")

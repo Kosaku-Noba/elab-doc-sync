@@ -1639,3 +1639,70 @@ def test_suggested_recreation_works_with_several_targets(project, capsys):
             except SystemExit as exc:
                 assert not exc.code
     assert client.create_item.call_count == 3
+
+
+def test_push_adds_configured_links_and_resends_after_config_change(project):
+    root, client, remote, syncer, args = project
+    links = {}
+    client.list_links.side_effect = lambda entity, eid, t: [{"entityid": i} for i in links.get((eid, t), [])]
+    client.add_link.side_effect = lambda entity, eid, t, tid: links.setdefault((eid, t), []).append(tid)
+    root, client, remote, syncer, args = push_note(project)
+    client.add_link.assert_not_called()
+    # 設定にリンクを追加すると、本文が未変更でも送信待ちになり、push でリンクだけ追加される
+    syncer.target.links = {"experiments": [12], "items": [1, 5]}
+    assert syncer.inspect('a.md', 1)['state'] == '送信待ち'
+    assert syncer.sync() == 1
+    assert links == {(1, "experiments"): [12], (1, "items"): [5]}
+    assert syncer.inspect('a.md', 1)['state'] == '最新'
+    # Web 画面で張った別のリンクは消さない
+    links[(1, "items")].append(77)
+    syncer.target.links = {"experiments": [12, 13], "items": [5]}
+    assert syncer.sync() == 1
+    assert links == {(1, "experiments"): [12, 13], (1, "items"): [5, 77]}
+    client.remove_link.assert_not_called()
+
+
+def test_push_link_failure_keeps_document_pending(project):
+    root, client, remote, syncer, args = push_note(project)
+    syncer.target.links = {"experiments": [99]}
+    client.list_links.return_value = []
+    client.add_link.side_effect = requests.HTTPError("404")
+    assert syncer.sync() == 0
+    assert syncer.failures == 1
+    client.add_link.side_effect = None
+    assert syncer.sync() == 1
+    assert syncer.inspect('a.md', 1)['state'] == '最新'
+
+
+def _fake_links(client):
+    links = {}
+    client.list_links.side_effect = lambda entity, eid, t: [{"entityid": i} for i in links.get((eid, t), [])]
+    client.add_link.side_effect = lambda entity, eid, t, tid: links.setdefault((eid, t), []).append(tid)
+    return links
+
+
+def test_pulled_document_gets_configured_links_on_next_push(project):
+    root, client, remote, syncer, args = project
+    links = _fake_links(client)
+    remote[42] = {'id': 42, 'body': 'remote body', 'title': 'note', 'content_type': 2}
+    raw = yaml.safe_load((root / '.elab-sync.yaml').read_text())
+    raw['targets'][0]['links'] = {'experiments': [12]}
+    (root / '.elab-sync.yaml').write_text(yaml.safe_dump(raw))
+    syncer.target.links = {'experiments': [12]}
+    with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
+        assert cmd_pull(args(id=[42], entity='items', auto=True)) == 0
+    client.add_link.assert_not_called()  # pull は eLabFTW に書き込まない
+    assert syncer.inspect('note.md', 42)['state'] == '送信待ち'
+    assert syncer.sync() == 1
+    assert links == {(42, 'experiments'): [12]}
+    assert syncer.inspect('note.md', 42)['state'] == '最新'
+    # 張り終えた後は、リモートの変更を pull しても送信待ちに戻らない
+    remote[42]['body'] = 'changed remotely'
+    with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
+        assert cmd_pull(args()) == 0
+    assert (root / 'docs/note.md').read_text().strip() == 'changed remotely'
+    assert syncer.inspect('note.md', 42)['state'] == '最新'
+    # 設定から ID を外しても送信待ちにならず、リンクも外さない
+    syncer.target.links = {}
+    assert syncer.inspect('note.md', 42)['state'] == '最新'
+    client.remove_link.assert_not_called()

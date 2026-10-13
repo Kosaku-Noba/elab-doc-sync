@@ -49,10 +49,13 @@ class TargetConfig:
     title_pattern: str | None = None    # pull 時のタイトルマッチング用 glob パターン
     profile: str = "default"  # 使用するプロファイル名
     team: str | int | None = None  # 送信先チーム名 or ID（profileを自動選択）
+    links: dict[str, list[int]] = None  # push 時に追加するリンク {"experiments": [...], "items": [...]}
 
     def __post_init__(self):
         if self.tags is None:
             self.tags = []
+        if self.links is None:
+            self.links = {}
 
 
 @dataclass
@@ -71,6 +74,26 @@ class Config:
 def _abort(msg: str) -> None:
     print(f"エラー: {msg}", file=sys.stderr)
     sys.exit(2)
+
+
+def _parse_links(raw) -> dict[str, list[int]]:
+    """ターゲットの links を {"experiments": [ID...], "items": [ID...]} に正規化する。
+
+    resources は items のエイリアス。空のリストは省く。
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        _abort("linksは experiments / items（resources）をキーにしたID一覧で指定してください")
+    links: dict[str, set[int]] = {}
+    for key, ids in raw.items():
+        link_type = "items" if key in ("resources", "resource") else key
+        if link_type not in ("items", "experiments"):
+            _abort(f"linksのキーはexperiments・items・resourcesのいずれかを指定してください（現在: {key!r}）")
+        if not isinstance(ids, list) or any(isinstance(i, bool) or not isinstance(i, int) or i <= 0 for i in ids):
+            _abort(f"links.{key}は正の整数IDのリストで指定してください")
+        links.setdefault(link_type, set()).update(ids)
+    return {k: sorted(v) for k, v in links.items() if v}
 
 
 def _parse_profiles(raw: dict) -> dict[str, ProfileConfig]:
@@ -200,6 +223,7 @@ def load_config(config_path: Path) -> Config:
             title_pattern=t.get("title_pattern"),
             profile=t.get("profile", "default"),
             team=t.get("team"),
+            links=_parse_links(t.get("links")),
         ))
 
     if not targets:

@@ -1471,3 +1471,33 @@ def test_rewrite_file_links_normalizes_image_syntax(tmp_path):
     result = _rewrite_file_links(body, "items", 1, client, docs_dir, tmp_path)
     assert result.startswith("[プロトコル](")
     assert "!" not in result
+
+
+# ── リンク同期テスト ─────────────────────────────────────
+
+from elab_doc_sync.sync import _sync_links
+
+
+def test_sync_links_adds_missing_only():
+    client = MagicMock()
+    client.list_links.side_effect = lambda e, i, t: [{"entityid": 12}] if t == "experiments" else []
+    assert _sync_links(client, "items", 42, {"experiments": [12, 15], "items": [3]})
+    assert client.add_link.call_args_list == [
+        (("items", 42, "experiments", 15),), (("items", 42, "items", 3),)]
+    client.remove_link.assert_not_called()
+
+
+def test_sync_links_skips_self_and_empty():
+    client = MagicMock()
+    assert _sync_links(client, "items", 42, {"items": [42]})
+    assert _sync_links(client, "items", 42, {})
+    client.list_links.assert_not_called()
+    client.add_link.assert_not_called()
+
+
+def test_sync_links_failure_returns_false(capsys):
+    client = MagicMock()
+    client.list_links.return_value = []
+    client.add_link.side_effect = RuntimeError("404")
+    assert _sync_links(client, "items", 42, {"experiments": [99]}) is False
+    assert "リンク同期に失敗" in capsys.readouterr().out
