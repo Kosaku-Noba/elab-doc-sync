@@ -223,7 +223,7 @@ esync rm --id 42 --entity experiments --local --dry-run
 esync relate list --id 42 --entity items
 esync relate add 12 15 --to experiments --id 42 --entity items
 esync relate remove 15 --to experiments --id 42 --entity items
-esync relate add 42 --to resources -t "実験メモ"     # ターゲットの同期済み全文書から #42 へ
+esync relate -t "実験メモ" add 42 --to resources     # ターゲットの同期済み全文書から #42 へ
 ```
 
 | 引数・オプション | 説明 |
@@ -231,9 +231,9 @@ esync relate add 42 --to resources -t "実験メモ"     # ターゲットの同
 | `<ID>...` | リンク先 ID（`add` / `remove`、複数指定可） |
 | `--to` | リンク先の種別 `experiments` / `items` / `resources`（`add` / `remove` で必須） |
 | `--id` / `--entity` | リンク元。両方指定するか両方省略する |
-| `-t`, `--target` | 対象ターゲット（`title` または `docs_dir`） |
+| `-t`, `--target` | 対象ターゲット（`title` または `docs_dir`）。`relate` の直後、`add` などの前に書く |
 
-`--id` と `--entity` を省略すると、全ターゲット（`-t` 指定時はそのターゲット）の同期済みの全文書が対象になります。各ターゲットの接続プロファイルで送信します。`--id` 指定時の接続先は `-t` で選んだターゲットのプロファイル、`-t` を省略すると default です。`-t` に一致するターゲットがない場合は何も送信せずエラー（終了コード 2）になります。
+`--id` と `--entity` を省略すると、全ターゲット（`-t` 指定時はそのターゲット）の同期済みの全文書が対象になります。各ターゲットの接続プロファイルで送信します。`--id` 指定時の接続先は `-t` で選んだターゲットのプロファイル、`-t` を省略すると default です。`--id` 指定時に `-t` に一致するターゲットがない場合は、何も送信せずエラー（終了コード 2）になります。`--id` を省略した場合に `-t` に一致するターゲットがないときは、対象の文書がないため何もせず終了します（終了コード 0）。
 
 既にあるリンクの追加・ないリンクの削除・文書自身へのリンクは、その旨を表示して飛ばします。`remove` はリンクだけを外し、リンク先の記事は削除しません。`add` / `remove` は `--dry-run` に対応していません。push 時に自動でリンクを張る設定は [設定ファイル仕様](04_CONFIGURATION.md) の `links` を参照してください。
 

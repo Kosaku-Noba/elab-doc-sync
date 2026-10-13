@@ -1864,3 +1864,20 @@ def test_tag_and_relate_direct_id_unknown_target_sends_nothing(tmp_path, command
         with pytest.raises(ValueError, match="B-typo"):
             command(Namespace(config=str(cfg), target="B-typo", force=False, id=50, entity="items", **action))
     assert clients == {}
+
+
+@pytest.mark.parametrize("argv,expected_url", [
+    (["relate", "-t", "B", "add", "9", "--to", "items", "--id", "50", "--entity", "items"], "https://server-b.com"),
+    (["tag", "-t", "team_b", "add", "x", "--id", "50", "--entity", "items"], "https://server-b.com"),
+])
+def test_tag_and_relate_target_option_via_cli(tmp_path, monkeypatch, argv, expected_url):
+    """README の例と同じ引数順（-t はサブコマンドの前）で解析できる。"""
+    from elab_doc_sync.cli import main
+    cfg, clients, factory = _write_two_profile_config(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["esync", argv[0], "--config", str(cfg), *argv[1:]])
+    for c in clients.values():
+        c.list_links.return_value = []
+    with patch("elab_doc_sync.cli.ELabFTWClient", side_effect=factory):
+        main()
+    assert list(clients) == [expected_url]
