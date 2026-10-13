@@ -61,11 +61,27 @@ targets:
 | `profile` | — | `default` | 使用する接続プロファイル |
 | `tags` | — | `[]` | push 時に自動追加するタグ（pull 振り分けにも使用） |
 | `category` | — | — | push 時のカテゴリ（pull 振り分けにも使用） |
+| `links` | — | — | push 時に追加するリンク。キーは `experiments` / `items`（`resources` は `items` と同じ）、値は正の整数 ID のリスト。追加のみで削除はしない |
 | `title_pattern` | — | — | pull 振り分け用タイトル glob |
 | `body_format` | — | `html` | `md` / `html` |
 | `attachments_dir` | — | — | 添付ファイルディレクトリ |
 | `attachments_pattern` | — | `*` | 添付ファイル glob フィルタ |
 | `id_file` | — | `.elab-sync-ids/{docs_dir}/default.id` | 状態ファイルのパス |
+
+### links（実験ノート・リソースへのリンク）
+
+```yaml
+targets:
+  - docs_dir: "experiments/"
+    entity: experiments
+    links:
+      items: [42, 43]      # リソース
+      experiments: [12]    # 実験ノート
+```
+
+push 時に、ターゲットの全文書から指定した記事へのリンクのうち、まだないものを追加します。既存のリンク（eLabFTW の画面で張ったものを含む）は削除せず、設定から ID を外してもリンクは外しません。文書自身へのリンクは張りません。
+
+張り終えたリンクは文書ごとの同期状態（`state.json` の `links`）に記録します。設定に未記録の ID がある文書は「送信待ち」になり、次の push でリンクだけを追加します（タグ・カテゴリは再適用しません）。pull・`esync link` はリンクを張らず、新しく取得・紐付けした文書は次の push で追加します。張り終えた後に外したリンクは通常の push では張り直さないため、`esync relate add` または `push --force` を使います。
 
 ### 同期モードとターゲット名
 

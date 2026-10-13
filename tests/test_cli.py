@@ -1803,3 +1803,52 @@ def test_cmd_relate_id_without_entity(tmp_path):
     args = Namespace(config=str(cfg), target=None, relate_action="list", id=7, entity=None)
     with pytest.raises(ValueError):
         cmd_relate(args)
+
+
+def _write_two_profile_config(tmp_path):
+    data = {
+        "profiles": {"default": {"url": "https://server-a.com", "api_key": "key-a"},
+                     "team-b": {"url": "https://server-b.com", "api_key": "key-b"}},
+        "targets": [{"title": "A", "docs_dir": "docs/", "id_file": ".ids/a/default.id"},
+                    {"title": "B", "docs_dir": "team_b/", "id_file": ".ids/b/default.id", "profile": "team-b"}],
+    }
+    p = tmp_path / ".elab-sync.yaml"
+    p.write_text(yaml.dump(data), encoding="utf-8")
+    import json as _json
+    for sub, eid in (("a", 1), ("b", 2)):
+        (tmp_path / ".ids" / sub).mkdir(parents=True)
+        (tmp_path / ".ids" / sub / "mapping.json").write_text(_json.dumps({"x.md": eid}))
+    clients = {}
+    def factory(url, api_key, verify_ssl=True):
+        return clients.setdefault(url, MagicMock(name=url, base_url=url))
+    return p, clients, factory
+
+
+@pytest.mark.parametrize("command,action", [
+    (cmd_relate, dict(relate_action="add", target_ids=[9], to="items")),
+    (cmd_tag, dict(tag_action="add", tag_name="x")),
+])
+def test_tag_and_relate_use_each_target_profile(tmp_path, command, action):
+    cfg, clients, factory = _write_two_profile_config(tmp_path)
+    with patch("elab_doc_sync.cli.ELabFTWClient", side_effect=factory):
+        for c in clients.values():
+            c.list_links.return_value = []
+        command(Namespace(config=str(cfg), target=None, force=False, id=None, entity=None, **action))
+    a, b = clients["https://server-a.com"], clients["https://server-b.com"]
+    if command is cmd_relate:
+        a.add_link.assert_called_once_with("items", 1, "items", 9)
+        b.add_link.assert_called_once_with("items", 2, "items", 9)
+    else:
+        a.add_tag.assert_called_once_with("items", 1, "x")
+        b.add_tag.assert_called_once_with("items", 2, "x")
+
+
+@pytest.mark.parametrize("command,action", [
+    (cmd_relate, dict(relate_action="add", target_ids=[9], to="items")),
+    (cmd_tag, dict(tag_action="add", tag_name="x")),
+])
+def test_tag_and_relate_direct_id_uses_selected_target_profile(tmp_path, command, action):
+    cfg, clients, factory = _write_two_profile_config(tmp_path)
+    with patch("elab_doc_sync.cli.ELabFTWClient", side_effect=factory):
+        command(Namespace(config=str(cfg), target="B", force=False, id=50, entity="items", **action))
+    assert list(clients) == ["https://server-b.com"]

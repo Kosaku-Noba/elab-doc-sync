@@ -47,6 +47,17 @@ def _make_client_for_target(config, target):
     return ELabFTWClient(url, api_key, verify_ssl)
 
 
+def _direct_client(config, selector):
+    """--id 直接指定時の接続先。-t でターゲットを選んだ場合はそのプロファイルを使う。"""
+    targets = [t for t in config.targets if _matches_target(t, selector)] if selector else []
+    connections = {get_client_for_target(config, t) for t in targets}
+    if len(connections) > 1:
+        raise ValueError(f"-t {selector} に一致するターゲットの接続先が複数あります。ターゲットを一意に指定してください")
+    if connections:
+        return ELabFTWClient(*connections.pop())
+    return ELabFTWClient(config.url, config.api_key, config.verify_ssl)
+
+
 def _make_syncer(client, target, project_root):
     return EachDocsSyncer(client, target, project_root)
 
@@ -1078,7 +1089,6 @@ def cmd_tag(args):
     config_path = Path(args.config)
     project_root = config_path.parent or Path(".")
     config = load_config(config_path)
-    client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
 
     # --id と --entity が指定されたら直接操作
     direct_id = getattr(args, "id", None)
@@ -1091,12 +1101,13 @@ def cmd_tag(args):
         sys.exit(1)
     if direct_id and direct_entity:
         entity_type = _normalize_entity(direct_entity)
-        _tag_action(client, args, entity_type, direct_id)
+        _tag_action(_direct_client(config, args.target), args, entity_type, direct_id)
         return
 
     for target in config.targets:
         if not _matches_target(target, args.target):
             continue
+        client = _make_client_for_target(config, target)
         syncer = _make_syncer(client, target, project_root)
         ids = _get_entity_ids(client, syncer, target, direct_id)
         if not ids:
@@ -1127,7 +1138,6 @@ def cmd_relate(args):
     config_path = Path(args.config)
     project_root = config_path.parent or Path(".")
     config = load_config(config_path)
-    client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
 
     # --id と --entity が指定されたら直接操作
     direct_id = getattr(args, "id", None)
@@ -1137,12 +1147,13 @@ def cmd_relate(args):
     if direct_id and not direct_entity:
         raise ValueError("--id 指定時は --entity も指定してください（items / experiments / resources）")
     if direct_id and direct_entity:
-        _relate_action(client, args, _normalize_entity(direct_entity), direct_id)
+        _relate_action(_direct_client(config, args.target), args, _normalize_entity(direct_entity), direct_id)
         return
 
     for target in config.targets:
         if not _matches_target(target, args.target):
             continue
+        client = _make_client_for_target(config, target)
         syncer = _make_syncer(client, target, project_root)
         ids = _get_entity_ids(client, syncer, target)
         if not ids:

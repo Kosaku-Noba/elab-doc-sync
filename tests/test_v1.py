@@ -1706,3 +1706,27 @@ def test_pulled_document_gets_configured_links_on_next_push(project):
     syncer.target.links = {}
     assert syncer.inspect('note.md', 42)['state'] == '最新'
     client.remove_link.assert_not_called()
+
+
+def test_links_only_change_does_not_reapply_tags_or_category(project):
+    root, client, remote, syncer, args = project
+    _fake_links(client)
+    raw = yaml.safe_load((root / '.elab-sync.yaml').read_text())
+    raw['targets'][0].update(tags=['t'], category=5)
+    (root / '.elab-sync.yaml').write_text(yaml.safe_dump(raw))
+    syncer.target.tags, syncer.target.category = ['t'], 5
+    push_note(project)
+    # eLabFTW 側でタグを外しカテゴリを変え、pull で受け入れる
+    remote[1]['tags'] = []
+    remote[1]['category'] = 9
+    with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
+        assert cmd_pull(args()) == 0
+    client.add_tag.reset_mock()
+    client.patch_entity.reset_mock()
+    syncer.target.links = {'items': [7]}
+    assert syncer.inspect('a.md', 1)['state'] == '送信待ち'
+    assert syncer.sync() == 1
+    client.add_link.assert_called_once_with('items', 1, 'items', 7)
+    client.add_tag.assert_not_called()
+    client.patch_entity.assert_not_called()
+    assert remote[1]['category'] == 9 and remote[1]['tags'] == []

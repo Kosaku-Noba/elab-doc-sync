@@ -1074,23 +1074,43 @@ def _sync_tags(client: ELabFTWClient, entity_type: str, entity_id: int, desired_
 
 
 def _sync_links(client: ELabFTWClient, entity_type: str, entity_id: int, desired_links: dict) -> bool:
-    """設定のリンクを追加し（既存のリンクは削除しない）、取得・作成に失敗した場合はFalseを返す。"""
-    try:
-        for link_type, ids in (desired_links or {}).items():
-            # 自分自身へのリンクは作らない（ターゲットの全文書に同じ設定を適用するため）
-            wanted = [i for i in ids if not (link_type == entity_type and i == entity_id)]
-            if not wanted:
-                continue
+    """設定のリンクを追加し（既存のリンクは削除しない）、取得・作成に失敗した場合はFalseを返す。
+
+    失敗しても残りのリンクは試し、失敗したリンク先と原因（HTTP ステータスなど）を表示する。
+    """
+    ok = True
+    for link_type, ids in (desired_links or {}).items():
+        # 自分自身へのリンクは作らない（ターゲットの全文書に同じ設定を適用するため）
+        wanted = [i for i in ids if not (link_type == entity_type and i == entity_id)]
+        if not wanted:
+            continue
+        label = "実験ノート" if link_type == "experiments" else "リソース"
+        try:
             existing = {link.get("entityid") for link in client.list_links(entity_type, entity_id, link_type)}
-            for target_id in wanted:
-                if target_id not in existing:
-                    client.add_link(entity_type, entity_id, link_type, target_id)
-    except Exception:
-        import logging
-        logging.getLogger(__name__).debug("リンク同期失敗", exc_info=True)
-        print(f"    ⚠ リンク同期に失敗しました（本文の同期は成功しています）")
-        return False
-    return True
+        except Exception as exc:
+            print(f"    ⚠ {label}へのリンク一覧の取得に失敗しました: {_describe_error(exc)}")
+            ok = False
+            continue
+        for target_id in wanted:
+            if target_id in existing:
+                continue
+            try:
+                client.add_link(entity_type, entity_id, link_type, target_id)
+            except Exception as exc:
+                print(f"    ⚠ {label} #{target_id} へのリンク追加に失敗しました: {_describe_error(exc)}")
+                ok = False
+    if not ok:
+        print("    （本文・タグ・カテゴリは送信済みです。リンク先の ID と権限を確認し、再度 push してください）")
+    return ok
+
+
+def _describe_error(exc):
+    """利用者向けの失敗理由。HTTP エラーはステータスのみ（URL やヘッダーは出さない）。"""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status is not None:
+        reason = {401: "認証エラー", 403: "権限がありません", 404: "見つかりません"}.get(status, "")
+        return f"HTTP {status}" + (f"（{reason}）" if reason else "")
+    return type(exc).__name__
 
 
 def _shell_quote(value, windows=None):
@@ -1263,7 +1283,7 @@ class EachDocsSyncer:
             return True
         hp = self._meta_hash_path(filename)
         saved = state["meta_hash"] if state else hp.read_text().strip() if hp.exists() else None
-        return (saved is not None and saved != _compute_meta_hash(title, category, tags)) or self._links_pending(filename)
+        return saved is not None and saved != _compute_meta_hash(title, category, tags)
 
     def _save_meta_hash(self, filename, title, category, tags):
         atomic_write(self._meta_hash_path(filename), _compute_meta_hash(title, category, tags) + "\n")
@@ -1579,7 +1599,8 @@ class EachDocsSyncer:
                 hp.read_text().strip() != _compute_hash(data.get("body") or "") if hp.exists() else False)
             local_known = bool(state or self._hash_path(filename).exists())
             local_changed = (self._has_changed(filename, body) or self._assets_changed(filename, body)
-                             or self._has_meta_changed(filename, path.stem, self.target.category, self.target.tags))
+                             or self._has_meta_changed(filename, path.stem, self.target.category, self.target.tags)
+                             or self._links_pending(filename))
             result.update(local_changed=local_changed, remote_changed=remote_changed)
             if not local_exists:
                 result["state"] = "ローカル削除"
@@ -1785,6 +1806,10 @@ class EachDocsSyncer:
             return (force or result.get("data") is None or resuming
                     or self._has_meta_changed(f.name, f.stem, self.target.category, self.target.tags))
 
+        def needs_links(f, result, resuming):
+            # リンクの追加はタグ・カテゴリと別に判定する（リンクだけの変更でタグ・カテゴリを再適用しない）
+            return (force or result.get("data") is None or resuming or self._links_pending(f.name))
+
         # Resolve the category before any body update, so an unresolvable name
         # never leaves documents half-synced (body updated, category not).
         category_id = None
@@ -1876,7 +1901,8 @@ class EachDocsSyncer:
                     raise RuntimeError("本文更新後にカテゴリ同期が失敗しました。リモートを確認して再実行してください")
                 if meta_changed:
                     checkpoint({"category": _category_value(category_id)} if category_id is not None else None)
-                links_ok = _sync_links(self.client, self.entity, eid, self.target.links) if meta_changed else True
+                links_changed = needs_links(f, result, resuming)
+                links_ok = _sync_links(self.client, self.entity, eid, self.target.links) if links_changed else True
                 if not links_ok:
                     raise RuntimeError("本文更新後にリンク同期が失敗しました。リモートを確認して再実行してください")
                 att_ok = True
@@ -1900,7 +1926,7 @@ class EachDocsSyncer:
                 # body: the file stays "送信待ち", and pull merges instead of
                 # overwriting the original with the lossy remote body.
                 applied = self.applied_links(f.name)
-                if links_ok and meta_changed:
+                if links_ok and links_changed:
                     applied = {t: sorted(set(applied.get(t, [])) | set(ids))
                                for t, ids in {**applied, **self.target.links}.items()}
                 self._save_baseline(f.name, base if dropped else raw_body, data, uploads, base=base, links=applied)

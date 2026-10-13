@@ -1495,9 +1495,15 @@ def test_sync_links_skips_self_and_empty():
     client.add_link.assert_not_called()
 
 
-def test_sync_links_failure_returns_false(capsys):
+def test_sync_links_failure_reports_each_target_and_continues(capsys):
+    import requests
     client = MagicMock()
     client.list_links.return_value = []
-    client.add_link.side_effect = RuntimeError("404")
-    assert _sync_links(client, "items", 42, {"experiments": [99]}) is False
-    assert "リンク同期に失敗" in capsys.readouterr().out
+    resp = requests.Response()
+    resp.status_code = 404
+    client.add_link.side_effect = lambda e, i, t, tid: (_ for _ in ()).throw(requests.HTTPError("https://x/api?secret", response=resp)) if tid == 99 else None
+    assert _sync_links(client, "items", 42, {"experiments": [99, 100]}) is False
+    assert client.add_link.call_count == 2  # 失敗後も残りを試す
+    out = capsys.readouterr().out
+    assert "実験ノート #99 へのリンク追加に失敗しました: HTTP 404（見つかりません）" in out
+    assert "#100" not in out and "secret" not in out

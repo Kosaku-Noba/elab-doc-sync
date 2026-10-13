@@ -100,6 +100,9 @@ eLabFTW API v2 クライアント。
 | `download_upload(entity_type, entity_id, upload_id)` | アップロードダウンロード |
 | `get_tags(entity_type, entity_id)` | タグ取得 |
 | `add_tag(entity_type, entity_id, tag)` | タグ追加 |
+| `list_links(entity_type, entity_id, link_type)` | `link_type`（`experiments` / `items`）へのリンク一覧（`GET /{entity_type}/{id}/{link_type}_links`） |
+| `add_link(entity_type, entity_id, link_type, target_id)` | リンク作成（`POST .../{link_type}_links/{target_id}`、`{"action": "create"}`） |
+| `remove_link(entity_type, entity_id, link_type, target_id)` | リンク削除（リンク先は削除しない） |
 | `untag(entity_type, entity_id, tag_id)` | タグ削除 |
 | `resolve_category_id(entity_type, category)` | カテゴリ名→ID 解決 |
 | `get_user_info()` | ユーザー情報 |

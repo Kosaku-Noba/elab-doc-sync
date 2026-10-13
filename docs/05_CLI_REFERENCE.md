@@ -14,6 +14,7 @@
 | `esync status` | 同期状態を確認 |
 | `esync tag list/add/remove` | タグ操作 |
 | `esync category list/show/set` | カテゴリ操作 |
+| `esync relate list/add/remove` | 実験ノート・リソース間のリンク操作 |
 | `esync metadata get/set` | メタデータ操作 |
 | `esync entity-status show/set` | エンティティステータス操作 |
 | `esync list` | リモートのリソース/実験ノート一覧 |
@@ -215,6 +216,28 @@ esync rm --id 42 --entity experiments --local --dry-run
 除外するファイル名は `id_file` の親ディレクトリの `excluded.json` に保存します。同名ファイルを再作成しても除外は続きます。`esync link <ID> --file <ファイル名> --target <ターゲット>` で既存記事との紐付けと追跡を再開できます。対応記事が存在しないと確認済みの場合は `esync link --new --file <ファイル名>` を使います。明示的な `pull --id` だけでは除外を解除しません。
 
 他文書から解除対象への相対リンク（例: `[note](note.md)`）は、対応表の削除後はリモート URL に変換されません。参照元を次に push する前に、保持された eLabFTW 文書の URL に書き換えてください。`rm` は実行時と dry-run 時にこの移行方法を表示します。
+
+## relate — 実験ノート・リソース間のリンク
+
+```bash
+esync relate list --id 42 --entity items
+esync relate add 12 15 --to experiments --id 42 --entity items
+esync relate remove 15 --to experiments --id 42 --entity items
+esync relate add 42 --to resources -t "実験メモ"     # ターゲットの同期済み全文書から #42 へ
+```
+
+| 引数・オプション | 説明 |
+|---|---|
+| `<ID>...` | リンク先 ID（`add` / `remove`、複数指定可） |
+| `--to` | リンク先の種別 `experiments` / `items` / `resources`（`add` / `remove` で必須） |
+| `--id` / `--entity` | リンク元。両方指定するか両方省略する |
+| `-t`, `--target` | 対象ターゲット（`title` または `docs_dir`） |
+
+`--id` と `--entity` を省略すると、全ターゲット（`-t` 指定時はそのターゲット）の同期済みの全文書が対象になります。各ターゲットの接続プロファイルで送信します。`--id` 指定時の接続先は `-t` で選んだターゲットのプロファイル、`-t` を省略すると default です。
+
+既にあるリンクの追加・ないリンクの削除・文書自身へのリンクは、その旨を表示して飛ばします。`remove` はリンクだけを外し、リンク先の記事は削除しません。`add` / `remove` は `--dry-run` に対応していません。push 時に自動でリンクを張る設定は [設定ファイル仕様](04_CONFIGURATION.md) の `links` を参照してください。
+
+`esync tag` も同じく、各ターゲットの接続プロファイルで送信します（`--id` 指定時は `-t` で選んだターゲットのプロファイル）。
 
 ## mv / backup / restore / link
 
