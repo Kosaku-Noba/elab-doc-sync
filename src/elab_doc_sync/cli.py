@@ -17,7 +17,7 @@ from .config import TargetConfig
 from .client import ELabFTWClient
 from .config import load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, append_target_to_yaml
 from .merge import merge_text
-from .sync import EachDocsSyncer, ConflictError, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
+from .sync import EachDocsSyncer, ConflictError, _hosts_match, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
 from . import sync_log
 
 DEFAULT_CONFIG = ".elab-sync.yaml"
@@ -1142,14 +1142,23 @@ def _tag_action(client, args, entity_type, entity_id):
 
 
 def _tracked_documents(config, project_root, targets):
-    """同期済みの文書を (ターゲット, パス, エンティティ ID) で列挙する。"""
+    """同期済みの文書を (ターゲット, パス, エンティティ ID, 紐付けが現在の設定と一致するか) で列挙する。"""
     docs = []
     for target in targets:
         syncer = _make_syncer(None, target, project_root)
+        server = get_client_for_target(config, target)[0].rstrip("/")
         for name, eid in (syncer._load_mapping(migrate=False) or {}).items():
             # 同期エンジンのキーはファイル名。状態ファイル由来の外部パスは扱わない。
-            if Path(name).name == name and name not in ("", ".", ".."):
-                docs.append((target, syncer.docs_dir / name, eid))
+            if Path(name).name != name or name in ("", ".", ".."):
+                continue
+            try:
+                path = syncer.file_path(name)
+            except ValueError:
+                continue  # 同名ファイルが複数ある文書は特定できない
+            # 同期後に接続先や種別を変えた紐付けの ID は、別の記事を指す
+            state = syncer._state(name)
+            current = state is None or (state["server"] == server and state["entity"] == target.entity)
+            docs.append((target, path, eid, current))
     return docs
 
 
@@ -1159,7 +1168,11 @@ def _select_tracked(docs, spec, hint):
     hits = [doc for doc in docs if matches(doc[1])]
     if not hits:
         raise ValueError(f"同期済みの文書が見つかりません: {spec}（{hint}）")
-    return hits
+    for target, path, eid, current in hits:
+        if not current:
+            raise ValueError(f"{path} は同期後に接続先または種別が変わっています。"
+                             f"esync pull か esync link で紐付け直してから指定してください")
+    return [(target, path, eid) for target, path, eid, current in hits]
 
 
 def _resolve_link_destinations(config, project_root, specs, to):
@@ -1227,7 +1240,7 @@ def cmd_relate(args):
 
     for connection, etype, eid in sources:
         for dest_type, dest_id, dest_url in dests:
-            if dest_url is not None and dest_url != connection[0]:
+            if dest_url is not None and not (dest_url == connection[0] or _hosts_match(dest_url, connection[0])):
                 raise ValueError(f"{_entity_label(etype)} #{eid} と{_entity_label(dest_type)} #{dest_id} は"
                                  f"接続先のサーバーが異なるため、リンクできません")
 

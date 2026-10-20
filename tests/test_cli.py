@@ -1995,3 +1995,33 @@ def test_cmd_relate_paths_via_cli(tmp_path, monkeypatch):
         main()
     assert clients["https://server-a.com"].add_link.call_args_list == [
         call("experiments", 7, "items", 42), call("experiments", 8, "items", 42)]
+
+
+@pytest.mark.parametrize("sub,name,state,kw", [
+    # リンク先: 旧サーバーで同期した紐付け
+    ("spec", "F-Labo 仕様書.md", {"server": "https://old-server.com", "entity": "items"},
+     dict(target_ids=["SPECIFICATION/F-Labo 仕様書.md"])),
+    # リンク元: 同期後に entity を変えた紐付け
+    ("exp", "a.md", {"server": "https://server-a.com", "entity": "items"}, dict(target_ids=["9"], to="items")),
+])
+def test_cmd_relate_path_stale_mapping_sends_nothing(tmp_path, monkeypatch, sub, name, state, kw):
+    """同期後に接続先・種別が変わった紐付けの ID は別の記事を指すため、何も送信しない。"""
+    cfg, clients, factory = _write_relate_docs_config(tmp_path)
+    (tmp_path / ".ids" / sub / f"{name}.state.json").write_text(
+        json.dumps({**state, "remote": {}}), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    with patch("elab_doc_sync.cli.ELabFTWClient", side_effect=factory):
+        with pytest.raises(ValueError, match="接続先または種別が変わって"):
+            cmd_relate(_relate_ns(cfg, from_docs=["exp/a.md"], **kw))
+    assert clients == {}
+
+
+def test_cmd_relate_path_current_state_is_used(tmp_path, monkeypatch):
+    """同期状態が現在の設定と一致する文書は通常どおり使う。"""
+    cfg, clients, factory = _write_relate_docs_config(tmp_path)
+    (tmp_path / ".ids" / "spec" / "F-Labo 仕様書.md.state.json").write_text(
+        json.dumps({"server": "https://server-a.com", "entity": "items", "remote": {}}), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    with patch("elab_doc_sync.cli.ELabFTWClient", side_effect=factory):
+        cmd_relate(_relate_ns(cfg, from_docs=["exp/a.md"], target_ids=["SPECIFICATION/F-Labo 仕様書.md"]))
+    clients["https://server-a.com"].add_link.assert_called_once_with("experiments", 7, "items", 42)
