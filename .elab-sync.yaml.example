@@ -51,11 +51,11 @@
 #   verify_ssl: false
 #
 # targets:
-#   # プロジェクト全体のドキュメントを 1 アイテムにまとめる
+#   # プロジェクトのドキュメントを 1 ファイル = 1 アイテムで送る
 #   - title: "プロジェクト概要"
 #     docs_dir: "docs/"
 #     pattern: "*.md"
-#     mode: merge
+#     mode: each
 #     entity: items
 #     body_format: md            # md: Markdown のまま送信（デフォルト） / html: HTML に変換して送信
 #     id_file: ".elab-sync-ids/overview.id"
@@ -71,11 +71,11 @@
 #     entity: experiments
 #     id_file: ".elab-sync-ids/experiments.id"
 #
-#   # 特定のファイルだけ送る
+#   # 特定のディレクトリのファイルだけ送る
 #   - title: "HPO 実験まとめ"
-#     docs_dir: "docs/"
+#     docs_dir: "hpo/"
 #     pattern: "*HPO*.md"
-#     mode: merge
+#     mode: each
 #     entity: items
 #     id_file: ".elab-sync-ids/hpo.id"
 
