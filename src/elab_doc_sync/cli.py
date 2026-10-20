@@ -49,6 +49,10 @@ def _make_client_for_target(config, target):
 
 def _direct_client(config, selector):
     """--id 直接指定時の接続先。-t でターゲットを選んだ場合はそのプロファイルを使う。"""
+    return ELabFTWClient(*_direct_connection(config, selector))
+
+
+def _direct_connection(config, selector):
     targets = [t for t in config.targets if _matches_target(t, selector)] if selector else []
     if selector and not targets:
         # 送信先を取り違えないよう、指定ミスを default 接続で代用しない
@@ -57,8 +61,8 @@ def _direct_client(config, selector):
     if len(connections) > 1:
         raise ValueError(f"-t {selector} に一致するターゲットの接続先が複数あります。ターゲットを一意に指定してください")
     if connections:
-        return ELabFTWClient(*connections.pop())
-    return ELabFTWClient(config.url, config.api_key, config.verify_ssl)
+        return connections.pop()
+    return (config.url, config.api_key, config.verify_ssl)
 
 
 def _make_syncer(client, target, project_root):
@@ -1137,58 +1141,125 @@ def _tag_action(client, args, entity_type, entity_id):
             print(f"  {label}: タグ「{args.tag_name}」が見つかりません")
 
 
+def _tracked_documents(config, project_root, targets):
+    """同期済みの文書を (ターゲット, パス, エンティティ ID) で列挙する。"""
+    docs = []
+    for target in targets:
+        syncer = _make_syncer(None, target, project_root)
+        for name, eid in (syncer._load_mapping(migrate=False) or {}).items():
+            # 同期エンジンのキーはファイル名。状態ファイル由来の外部パスは扱わない。
+            if Path(name).name == name and name not in ("", ".", ".."):
+                docs.append((target, syncer.docs_dir / name, eid))
+    return docs
+
+
+def _select_tracked(docs, spec, hint):
+    """push と同じ解釈（ファイル・ディレクトリ・glob）で同期済みの文書を選ぶ。"""
+    matches = _path_selector("file", spec)
+    hits = [doc for doc in docs if matches(doc[1])]
+    if not hits:
+        raise ValueError(f"同期済みの文書が見つかりません: {spec}（{hint}）")
+    return hits
+
+
+def _resolve_link_destinations(config, project_root, specs, to):
+    """リンク先の指定（ID またはパス）を [(種別, ID, 接続先 URL または None)] に解決する。"""
+    to_type = _normalize_entity(to) if to else None
+    docs = None
+    dests = []
+    for spec in map(str, specs):
+        if spec.isdigit():
+            if not to_type:
+                raise ValueError(f"ID {spec} のリンク先の種別を --to で指定してください")
+            dests.append((to_type, int(spec), None))
+            continue
+        if docs is None:
+            docs = _tracked_documents(config, project_root, config.targets)
+        for target, path, eid in _select_tracked(docs, spec, "push 前の文書はリンク先に指定できません"):
+            if to_type and target.entity != to_type:
+                raise ValueError(f"{path} は{_entity_label(target.entity)}です（--to {to} と一致しません）")
+            dests.append((target.entity, eid, get_client_for_target(config, target)[0]))
+    return list(dict.fromkeys(dests))
+
+
 def cmd_relate(args):
-    config_path = Path(args.config)
-    project_root = config_path.parent or Path(".")
+    config_path = Path(args.config).resolve()
+    project_root = config_path.parent
     config = load_config(config_path)
 
     # --id と --entity が指定されたら直接操作
     direct_id = getattr(args, "id", None)
     direct_entity = getattr(args, "entity", None)
+    from_specs = getattr(args, "from_docs", None) or []
     if direct_entity and not direct_id:
         raise ValueError("--entity 指定時は --id も指定してください")
     if direct_id and not direct_entity:
         raise ValueError("--id 指定時は --entity も指定してください（items / experiments / resources）")
+    if direct_id and from_specs:
+        raise ValueError("--from と --id は同時に指定できません")
+    dests = []
+    if args.relate_action != "list":
+        dests = _resolve_link_destinations(config, project_root, args.target_ids, getattr(args, "to", None))
+
+    # リンク元を (接続先, 種別, ID) で集める。送信前にすべて解決し、指定ミスでは何も変更しない。
+    sources = []
     if direct_id and direct_entity:
-        _relate_action(_direct_client(config, args.target), args, _normalize_entity(direct_entity), direct_id)
-        return
+        sources.append((_direct_connection(config, args.target), _normalize_entity(direct_entity), direct_id))
+    elif from_specs:
+        targets = [t for t in config.targets if _matches_target(t, args.target)]
+        docs = _tracked_documents(config, project_root, targets)
+        hint = "push 前の文書か、-t の対象外です" if args.target else "push 前の文書はリンク元に指定できません"
+        for spec in from_specs:
+            for target, path, eid in _select_tracked(docs, spec, hint):
+                sources.append((get_client_for_target(config, target), target.entity, eid))
+    else:
+        for target in config.targets:
+            if not _matches_target(target, args.target):
+                continue
+            syncer = _make_syncer(None, target, project_root)
+            ids = _get_entity_ids(None, syncer, target)
+            if not ids:
+                print(f"  [{target.title or target.docs_dir}] 同期済みエンティティなし")
+                continue
+            connection = get_client_for_target(config, target)
+            sources.extend((connection, etype, eid) for eid, etype in ids)
+    sources = list(dict.fromkeys(sources))
 
-    for target in config.targets:
-        if not _matches_target(target, args.target):
-            continue
-        client = _make_client_for_target(config, target)
-        syncer = _make_syncer(client, target, project_root)
-        ids = _get_entity_ids(client, syncer, target)
-        if not ids:
-            print(f"  [{target.title or target.docs_dir}] 同期済みエンティティなし")
-            continue
-        for eid, etype in ids:
-            _relate_action(client, args, etype, eid)
+    for connection, etype, eid in sources:
+        for dest_type, dest_id, dest_url in dests:
+            if dest_url is not None and dest_url != connection[0]:
+                raise ValueError(f"{_entity_label(etype)} #{eid} と{_entity_label(dest_type)} #{dest_id} は"
+                                 f"接続先のサーバーが異なるため、リンクできません")
+
+    clients = {}
+    for connection, etype, eid in sources:
+        if connection not in clients:
+            clients[connection] = ELabFTWClient(*connection)
+        _relate_action(clients[connection], args.relate_action, etype, eid, [(t, i) for t, i, _ in dests])
 
 
-def _relate_action(client, args, entity_type, entity_id):
+def _relate_action(client, action, entity_type, entity_id, dests):
     label = f"{_entity_label(entity_type)} #{entity_id}"
-    if args.relate_action == "list":
+    if action == "list":
         print(f"  {label}:")
         for link_type in ("experiments", "items"):
             links = client.list_links(entity_type, entity_id, link_type)
             shown = ", ".join(f"#{l.get('entityid')} {l.get('title') or ''}".rstrip() for l in links)
             print(f"    {_entity_label(link_type)}: {shown or '(リンクなし)'}")
         return
-    link_type = _normalize_entity(args.to)
-    target_label = _entity_label(link_type)
-    for target_id in args.target_ids:
+    for link_type, target_id in dests:
+        target_label = _entity_label(link_type)
         if link_type == entity_type and target_id == entity_id:
             print(f"  {label}: 自分自身へのリンクはスキップしました")
             continue
         existing = {l.get("entityid") for l in client.list_links(entity_type, entity_id, link_type)}
-        if args.relate_action == "add":
+        if action == "add":
             if target_id in existing:
                 print(f"  {label}: {target_label} #{target_id} へのリンクは既にあります")
             else:
                 client.add_link(entity_type, entity_id, link_type, target_id)
                 print(f"  {label}: {target_label} #{target_id} へのリンクを追加しました")
-        elif args.relate_action == "remove":
+        elif action == "remove":
             if target_id in existing:
                 client.remove_link(entity_type, entity_id, link_type, target_id)
                 print(f"  {label}: {target_label} #{target_id} へのリンクを外しました")
@@ -1926,12 +1997,15 @@ def main():
     relate_sub = relate_parser.add_subparsers(dest="relate_action", required=True)
     relate_list_p = relate_sub.add_parser("list", help="リンク一覧を表示")
     relate_add_p = relate_sub.add_parser("add", help="リンクを追加（複数指定可）")
-    relate_add_p.add_argument("target_ids", type=int, nargs="+", help="リンク先 ID")
     relate_rm_p = relate_sub.add_parser("remove", help="リンクを外す（リンク先は削除しない）")
-    relate_rm_p.add_argument("target_ids", type=int, nargs="+", help="リンク先 ID")
     for p in (relate_add_p, relate_rm_p):
-        p.add_argument("--to", required=True, choices=["items", "experiments", "resources"], help="リンク先の種別")
+        p.add_argument("target_ids", nargs="+", metavar="リンク先",
+                       help="リンク先の ID（--to が必要）、または同期済みの文書のパス・ディレクトリ・glob（種別は自動判定）")
+        p.add_argument("--to", default=None, choices=["items", "experiments", "resources"],
+                       help="ID で指定したリンク先の種別")
     for p in (relate_list_p, relate_add_p, relate_rm_p):
+        p.add_argument("--from", dest="from_docs", action="append", metavar="パス",
+                       help="リンク元の文書（パス・ディレクトリ・glob、複数指定可）")
         p.add_argument("--id", type=int, default=None, help="リンク元エンティティ ID（省略時は同期済みの全文書）")
         p.add_argument("--entity", default=None, choices=["items", "experiments", "resources"], help="リンク元の種別")
 

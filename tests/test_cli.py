@@ -1881,3 +1881,117 @@ def test_tag_and_relate_target_option_via_cli(tmp_path, monkeypatch, argv, expec
     with patch("elab_doc_sync.cli.ELabFTWClient", side_effect=factory):
         main()
     assert list(clients) == [expected_url]
+
+
+def _write_relate_docs_config(tmp_path, spec_profile="default"):
+    """実験ノート（exp/）と仕様書（SPECIFICATION/、リソース）の 2 ターゲット。"""
+    data = {
+        "profiles": {"default": {"url": "https://server-a.com", "api_key": "key-a"},
+                     "team-b": {"url": "https://server-b.com", "api_key": "key-b"}},
+        "targets": [{"title": "実験", "docs_dir": "exp/", "entity": "experiments", "id_file": ".ids/exp/default.id"},
+                    {"title": "SPECIFICATION", "docs_dir": "SPECIFICATION/", "entity": "items",
+                     "id_file": ".ids/spec/default.id", "profile": spec_profile}],
+    }
+    p = tmp_path / ".elab-sync.yaml"
+    p.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    for sub, docs_dir, mapping in (("exp", "exp", {"a.md": 7, "b.md": 8}),
+                                   ("spec", "SPECIFICATION", {"F-Labo 仕様書.md": 42, "詳細.md": 43})):
+        (tmp_path / ".ids" / sub).mkdir(parents=True)
+        (tmp_path / ".ids" / sub / "mapping.json").write_text(json.dumps(mapping, ensure_ascii=False), encoding="utf-8")
+        (tmp_path / docs_dir).mkdir()
+        for name in mapping:
+            (tmp_path / docs_dir / name).write_text("# x\n", encoding="utf-8")
+    (tmp_path / "exp" / "draft.md").write_text("# 未同期\n", encoding="utf-8")
+    clients = {}
+    def factory(url, api_key, verify_ssl=True):
+        if url not in clients:
+            clients[url] = MagicMock(name=url, base_url=url)
+            clients[url].list_links.return_value = []
+        return clients[url]
+    return p, clients, factory
+
+
+def _relate_ns(cfg, **kw):
+    defaults = dict(config=str(cfg), target=None, force=False, relate_action="add", target_ids=[],
+                    to=None, from_docs=None, id=None, entity=None)
+    defaults.update(kw)
+    return Namespace(**defaults)
+
+
+def test_cmd_relate_from_path_to_path(tmp_path, monkeypatch):
+    """リンク元・リンク先をパスで指定でき、リンク先の種別はターゲットから決まる。"""
+    cfg, clients, factory = _write_relate_docs_config(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    with patch("elab_doc_sync.cli.ELabFTWClient", side_effect=factory):
+        cmd_relate(_relate_ns(cfg, from_docs=["exp/a.md"], target_ids=["SPECIFICATION/F-Labo 仕様書.md"]))
+    clients["https://server-a.com"].add_link.assert_called_once_with("experiments", 7, "items", 42)
+
+
+def test_cmd_relate_path_directory_and_ids_mixed(tmp_path, monkeypatch):
+    """ディレクトリ指定は配下の同期済み文書すべて。ID と混在でき、ID の種別は --to で指定する。"""
+    cfg, clients, factory = _write_relate_docs_config(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    with patch("elab_doc_sync.cli.ELabFTWClient", side_effect=factory):
+        cmd_relate(_relate_ns(cfg, from_docs=["exp/b.md"], target_ids=["SPECIFICATION", "9"], to="resources"))
+    assert clients["https://server-a.com"].add_link.call_args_list == [
+        call("experiments", 8, "items", 42), call("experiments", 8, "items", 43), call("experiments", 8, "items", 9)]
+
+
+def test_cmd_relate_remove_by_path(tmp_path, monkeypatch):
+    cfg, clients, factory = _write_relate_docs_config(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    with patch("elab_doc_sync.cli.ELabFTWClient", side_effect=factory):
+        factory("https://server-a.com", "key-a").list_links.return_value = [{"entityid": 42}]
+        cmd_relate(_relate_ns(cfg, relate_action="remove", from_docs=["exp/a.md"],
+                              target_ids=["SPECIFICATION/F-Labo 仕様書.md"]))
+    clients["https://server-a.com"].remove_link.assert_called_once_with("experiments", 7, "items", 42)
+
+
+def test_cmd_relate_list_from_path(tmp_path, monkeypatch, capsys):
+    cfg, clients, factory = _write_relate_docs_config(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    with patch("elab_doc_sync.cli.ELabFTWClient", side_effect=factory):
+        cmd_relate(_relate_ns(cfg, relate_action="list", from_docs=["exp/a.md"]))
+    out = capsys.readouterr().out
+    assert "実験ノート #7" in out and "#8" not in out
+
+
+@pytest.mark.parametrize("kw,message", [
+    (dict(target_ids=["9"]), "--to"),
+    (dict(target_ids=["SPECIFICATION/F-Labo 仕様書.md"], to="experiments"), "--to experiments"),
+    (dict(target_ids=["exp/draft.md"]), "push 前"),
+    (dict(target_ids=["9"], to="items", from_docs=["exp/draft.md"]), "push 前"),
+    (dict(target_ids=["9"], to="items", from_docs=["exp/a.md"], target="SPECIFICATION"), "-t の対象外"),
+    (dict(target_ids=["9"], to="items", from_docs=["exp/a.md"], id=1, entity="items"), "--from と --id"),
+])
+def test_cmd_relate_path_errors_send_nothing(tmp_path, monkeypatch, kw, message):
+    cfg, clients, factory = _write_relate_docs_config(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    kw.setdefault("from_docs", ["exp/a.md"])
+    with patch("elab_doc_sync.cli.ELabFTWClient", side_effect=factory):
+        with pytest.raises(ValueError, match=message):
+            cmd_relate(_relate_ns(cfg, **kw))
+    assert clients == {}
+
+
+def test_cmd_relate_path_on_other_server_sends_nothing(tmp_path, monkeypatch):
+    """リンク先の文書が別サーバーのターゲットなら、ID が別の記事を指すため何も送信しない。"""
+    cfg, clients, factory = _write_relate_docs_config(tmp_path, spec_profile="team-b")
+    monkeypatch.chdir(tmp_path)
+    with patch("elab_doc_sync.cli.ELabFTWClient", side_effect=factory):
+        with pytest.raises(ValueError, match="サーバーが異なる"):
+            cmd_relate(_relate_ns(cfg, target_ids=["SPECIFICATION/F-Labo 仕様書.md"]))
+    assert clients == {}
+
+
+def test_cmd_relate_paths_via_cli(tmp_path, monkeypatch):
+    """--from とパスのリンク先を CLI の引数として解析できる（--to は省略可）。"""
+    from elab_doc_sync.cli import main
+    cfg, clients, factory = _write_relate_docs_config(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["esync", "relate", "--config", str(cfg), "add",
+                                      "SPECIFICATION/F-Labo 仕様書.md", "--from", "exp/a.md", "--from", "exp/b.md"])
+    with patch("elab_doc_sync.cli.ELabFTWClient", side_effect=factory):
+        main()
+    assert clients["https://server-a.com"].add_link.call_args_list == [
+        call("experiments", 7, "items", 42), call("experiments", 8, "items", 42)]

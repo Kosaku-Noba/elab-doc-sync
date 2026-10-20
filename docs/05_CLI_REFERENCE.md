@@ -224,16 +224,21 @@ esync relate list --id 42 --entity items
 esync relate add 12 15 --to experiments --id 42 --entity items
 esync relate remove 15 --to experiments --id 42 --entity items
 esync relate -t "実験メモ" add 42 --to resources     # ターゲットの同期済み全文書から #42 へ
+esync relate add "SPECIFICATION/F-Labo システム総合詳細仕様書.md" --from exp/2026-10-20.md   # 文書から文書へ
+esync relate list --from exp/2026-10-20.md
 ```
 
 | 引数・オプション | 説明 |
 |---|---|
-| `<ID>...` | リンク先 ID（`add` / `remove`、複数指定可） |
-| `--to` | リンク先の種別 `experiments` / `items` / `resources`（`add` / `remove` で必須） |
+| `<リンク先>...` | リンク先（`add` / `remove`、複数指定可）。数字は ID、それ以外は同期済みの文書のパス・ディレクトリ・glob（push と同じ解釈。種別はターゲットの `entity` で決まる）。混在可 |
+| `--to` | ID で指定したリンク先の種別 `experiments` / `items` / `resources`。ID を含む場合は必須。パスと併用した場合、パスの文書の種別とも一致が必要 |
+| `--from <パス>` | リンク元の同期済み文書（パス・ディレクトリ・glob、複数指定可）。`-t` 指定時はそのターゲットの文書から選ぶ。`--id` とは併用不可 |
 | `--id` / `--entity` | リンク元。両方指定するか両方省略する |
 | `-t`, `--target` | 対象ターゲット（`title` または `docs_dir`）。`relate` の直後、`add` などの前に書く |
 
 `--id` と `--entity` を省略すると、全ターゲット（`-t` 指定時はそのターゲット）の同期済みの全文書が対象になります。各ターゲットの接続プロファイルで送信します。`--id` 指定時の接続先は `-t` で選んだターゲットのプロファイル、`-t` を省略すると default です。`--id` 指定時に `-t` に一致するターゲットがない場合は、何も送信せずエラー（終了コード 2）になります。`--id` を省略した場合に `-t` に一致するターゲットがないときは、対象の文書がないため何もせず終了します（終了コード 0）。
+
+パスはカレントディレクトリからの相対パスです。一致する同期済みの文書がない指定（push 前の文書を含む）、`--to` と種別が合わない文書、リンク元と別サーバーのターゲットにあるリンク先の文書があれば、何も送信せずエラー（終了コード 2）になります。
 
 既にあるリンクの追加・ないリンクの削除・文書自身へのリンクは、その旨を表示して飛ばします。`remove` はリンクだけを外し、リンク先の記事は削除しません。`add` / `remove` は `--dry-run` に対応していません。push 時に自動でリンクを張る設定は [設定ファイル仕様](04_CONFIGURATION.md) の `links` を参照してください。
 
