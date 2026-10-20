@@ -11,12 +11,12 @@
 | FR-03 | エンティティ種別（items(resources) / experiments） | ✅ |
 | FR-04 | 画像の自動アップロード・URL 書き換え | ✅ |
 | FR-05 | Pull（eLabFTW → ローカル、`--id`、`--force`） | ✅ |
-| FR-06 | Diff（unified diff 形式） | ✅ |
+| FR-06 | Diff（前回の同期からのローカル・eLabFTW 側の変更を文書ごとに unified diff で表示） | ✅ |
 | FR-07 | Status（同期状態確認） | ✅ |
 | FR-08 | Init（対話的セットアップ） | ✅ |
 | FR-09 | Update（自動更新） | ✅ |
 | FR-10 | エイリアス（`esync` / `elab-doc-sync`） | ✅ |
-| FR-11 | 競合検出（リモートハッシュ比較） | ✅ |
+| FR-11 | 競合検出（リモートハッシュ・リモート署名の比較） | ✅ |
 | FR-12 | Clone（リモートからプロジェクト構築） | ✅ |
 | FR-13 | 同期ログ（JSONL 記録・表示） | ✅ |
 | FR-15 | タグ・メタデータ管理（CLI から操作） | ✅ |
@@ -30,9 +30,20 @@
 | FR-23 | Pull 自動振り分け（タグ/カテゴリ/タイトルスコアリング、`--auto`） | ✅ |
 | FR-24 | 添付ファイル（attachments_dir, `--prune-attachments`） | ✅ |
 | FR-25 | body_format（md/html 選択、MathJax 対応） | ✅ |
-| FR-26 | カテゴリ管理（category list/show/set + push 時自動設定） | ✅ |
+| FR-26 | カテゴリ管理（category list/show/set + push 時自動設定、名前の事前解決） | ✅ |
+| FR-29 | 追跡解除（rm。ファイル・ディレクトリ・glob・`--regex`・ID、`--local`） | ✅ v1.0.1 |
+| FR-30 | 差し替えた画像・添付の古い版の自動削除 | ✅ v1.0.2 |
+| FR-31 | 別ターゲットの文書へのリンク変換 | ✅ v1.0.3 |
+| FR-32 | 文書を指定した push・diff | ✅ v1.0.4 |
+| FR-33 | pull の 3-way マージと競合マーカー | ✅ v1.0.4 |
+| FR-34 | 状態ごとの次の操作の案内（PowerShell 対応の引用） | ✅ v1.0.4 |
+| FR-35 | Markdown 本文の HTML エスケープの復元と、削除された `<…>` の警告 | ✅ v1.0.5 |
+| FR-36 | 実験ノート・リソース間のリンク（`relate`、ターゲット設定 `links`） | ✅ v1.1.0 |
+| FR-37 | `relate` のリンク元・リンク先をパスで指定 | ✅ v1.1.1 |
 
 ## v1.0の追加・変更
+
+v1.0.1 以降の追加は上表の FR-29〜FR-37 と [CHANGELOG](../CHANGELOG.md) を参照。
 
 | 機能 | 内容 |
 |---|---|
@@ -73,6 +84,8 @@
 
 ## 依存ライブラリ
 
+`pyproject.toml` の `dependencies` と同じ。テストには `pytest>=7.0`（extra `test`）を使う。
+
 | ライブラリ | バージョン | 用途 |
 |---|---|---|
 | requests | >=2.28 | HTTP 通信 |
@@ -80,4 +93,3 @@
 | markdownify | >=0.11 | HTML → Markdown 変換（pull 用） |
 | pyyaml | >=6.0 | YAML 設定読み込み |
 | urllib3 | >=2.0 | SSL 警告制御 |
-| beautifulsoup4 | >=4.0 | HTML パース |

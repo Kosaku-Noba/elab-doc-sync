@@ -18,8 +18,11 @@
 | `esync metadata get/set` | メタデータ操作 |
 | `esync entity-status show/set` | エンティティステータス操作 |
 | `esync list` | リモートのリソース/実験ノート一覧 |
-| `esync link <ID>` | 手動紐付け |
+| `esync link <ID>` | 手動紐付け（`--new` で新規追跡を再開） |
 | `esync rm <ファイルパス>` | 追跡解除（`--local` でローカルファイルも削除） |
+| `esync mv <旧パス> <新パス>` | 文書と紐付けを移動 |
+| `esync backup list` | ローカルバックアップ一覧 |
+| `esync restore <ID>` | ローカル復元・リモート退避データの取り出し |
 | `esync verify` | 整合性チェック |
 | `esync profile list/add/remove` | 接続プロファイル管理 |
 | `esync whoami` | 現在のユーザー情報 |
@@ -68,10 +71,11 @@ esync push docs/note.md --dry-run          # 対象と変更有無を確認
 
 **push 処理フロー:**
 1. 本文ハッシュが一致する一意なリネームを検出し、紐付けを更新（タイトル送信は競合確認後）
-2. パス1: 対象の全ファイル（文書を指定した場合はその文書だけ）の ID を確定（新規作成含む）
-3. パス2: リンク変換 + body 送信
+2. 設定のカテゴリ名をターゲットごとに 1 回 ID に解決（解決できなければ、カテゴリの設定が必要な文書だけ eLabFTW を変更せずにスキップ）
+3. パス1: 対象の全ファイル（文書を指定した場合はその文書だけ）の ID を確定（新規作成含む）
+4. パス2: リンク変換 + body 送信
    - 画像 → 動画 → ファイルリンク → ローカルリンク変換
-4. タグ・カテゴリ・添付を同期し、同期の基準情報を保存
+5. タグ・カテゴリ・`links` のリンク・添付を同期し、同期の基準情報を保存
    - 同じファイル名で中身が変わった画像・動画・ファイルリンクは、新しい版をアップロードします。古い版の添付は、文書ごとに本文・タグ・カテゴリ・添付の同期が済んだあとで削除を試みます。`--prune-attachments` を付けなくても削除します
    - 削除するのは、差し替えた古い版のうち、現在の本文から参照されていないもの（`long_name` または `/uploads/{id}` で判定）だけです。削除に失敗した場合は警告を出して古い版を残します。その文書の同期が途中で失敗した場合も削除しません。ただし、push 全体の成功を待つわけではないため、別の文書の失敗では取り消されません
    - 削除した添付は、esync のバックアップ（本文の退避）からは復元できません
@@ -182,12 +186,22 @@ esync clone --url URL --entity TYPE --id ID [--dir DIR] [--no-verify]
 リモートの eLabFTW エンティティからローカルプロジェクトを構築する。
 `.elab-sync.yaml` とディレクトリ構造を自動生成。
 
+`ELABFTW_API_KEY` 環境変数が必須です。`--entity` の既定は `items`、`--id` は複数指定できます。`--dir` を省略すると `elab-clone-<最初のID>` を作成します。生成する `.gitignore` には `.elab-sync.yaml`・`.elab-sync-ids/`・`.elab-sync-backups/`・`.elab-sync-operations/`・`.elab-sync-recovery.json` を含みます。
+
 ## グローバルオプション
+
+ほとんどのサブコマンドで共通に使えます（`update`・`whoami` を除く）。
 
 | オプション | 説明 |
 |---|---|
-| `--config PATH` | 設定ファイルパス（デフォルト: `.elab-sync.yaml`） |
+| `--config`, `-c PATH` | 設定ファイルパス（デフォルト: `.elab-sync.yaml`）。プロジェクトのルートはこのファイルのあるディレクトリ |
+| `--target`, `-t NAME` | 対象ターゲット（`title` または `docs_dir`）。省略時は全ターゲット |
+| `--force`, `-f` | push: 変更がなくても強制送信 / pull: 既存ファイルを上書き |
+| `--dry-run`, `-n` | 実行せずに内容を確認 |
+| `--prune-attachments` | ローカルに存在しないリモート添付を削除 |
 | `--version`, `-V` | バージョン表示 |
+
+`esync -h`、`esync <コマンド> -h` で各コマンドのヘルプを表示します。
 
 ## rm — 追跡解除
 
@@ -242,7 +256,100 @@ esync relate list --from exp/2026-10-20.md
 
 既にあるリンクの追加・ないリンクの削除・文書自身へのリンクは、その旨を表示して飛ばします。`remove` はリンクだけを外し、リンク先の記事は削除しません。`add` / `remove` は `--dry-run` に対応していません。push 時に自動でリンクを張る設定は [設定ファイル仕様](04_CONFIGURATION.md) の `links` を参照してください。
 
-`esync tag` も同じく、各ターゲットの接続プロファイルで送信します（`--id` 指定時は `-t` で選んだターゲットのプロファイル）。
+## tag — タグ操作
+
+```bash
+esync tag list                                   # 同期済みの全文書のタグ
+esync tag add "重要"                             # 同期済みの全文書にタグを追加
+esync tag remove "下書き"
+esync tag -t "週報" add "2026"                   # ターゲットを限定
+esync tag add "重要" --id 42 --entity items      # 記事を直接指定
+esync tag -t shared_docs/ add "共同" --id 42 --entity items   # 別プロファイルのターゲットの記事
+```
+
+`--id` と `--entity` は両方指定するか両方省略します。省略時は各ターゲットの同期済み文書が対象で、各ターゲットの接続プロファイルで送信します。`--id` 指定時は `-t` で選んだターゲットのプロファイル（`-t` 省略時は default）を使い、`-t` に一致するターゲットがなければ何も送信せずエラー（終了コード 2）になります。`remove` は名前が一致するタグを外します。push 時のタグ同期は追記のみのため、設定から外したタグは `tag remove` で外します。
+
+## category — カテゴリ操作
+
+```bash
+esync category list --entity items
+esync category show --id 42 --entity items
+esync category set "試薬" --id 42 --entity items
+esync category set 7 --id 42 --entity experiments
+```
+
+`list` の `--entity` を省略するとリソース（items）のカテゴリを表示します。読み取り権限のないカテゴリは一覧に表示されません（記事のカテゴリは `show` で確認できます）。`set` には名前または数字の ID を指定できます。記事のカテゴリが既に目的の値なら、変更せず成功として扱います。default の接続先を使います。
+
+## metadata — メタデータ操作
+
+```bash
+esync metadata get
+esync metadata set key1=value1 key2=value2 --id 42
+```
+
+`--id` を省略すると、各ターゲット（`-t` で限定可）の同期済みの全文書が対象です。`set` は既存のメタデータ（JSON）に `key=value` を追記・上書きします。既存のメタデータが読めない場合は警告を出して上書きします。default の接続先を使います。
+
+## entity-status — ステータス操作
+
+```bash
+esync entity-status show
+esync entity-status set 2 --id 42
+esync entity-status set 2          # 複数件なら確認プロンプト
+```
+
+ステータスはチーム設定の ID で指定します（名前は不可）。`--id` を省略して複数の文書が対象になる場合は、確認してから変更します。default の接続先を使います。
+
+## list — リモート一覧
+
+```bash
+esync list                         # リソース 20 件
+esync list --entity experiments --limit 100
+```
+
+`--entity` は `items`（既定）/ `experiments` / `resources`。サーバー側の表示件数に制限される場合があります。default の接続先を使います。
+
+## verify — 整合性チェック
+
+```bash
+esync verify [-t TARGET]
+```
+
+紐付けごとに、ローカルファイルの存在とリモート記事の取得可否を確認します。問題があれば `⚠` で表示します。default の接続先を使います。
+
+## profile — 接続プロファイル
+
+```bash
+esync profile list
+esync profile add team-b --url https://elab.example.com --api-key KEY [--no-verify]
+esync profile remove team-b
+```
+
+`.elab-sync.yaml` の `profiles` セクションを編集します。`list` は URL・API キーの有無（✓/✗）・SSL 検証の有無を表示し、キー自体は表示しません。`elabftw` セクションは `default` として表示します。
+
+## whoami — ユーザー情報
+
+```bash
+esync whoami
+```
+
+プロファイルごとに、API キーに紐づくユーザー名・メール・ユーザー ID・現在のチームを表示します。接続確認にも使えます。
+
+## new — テンプレートから文書作成
+
+```bash
+esync new --list
+esync new --template-id 3 [--title "名前"] [-o path/to/file.md] [-t "ターゲット名"] [--force]
+```
+
+eLabFTW の実験テンプレート（`experiments_templates`）の本文を Markdown に変換して保存します。`-o` を省略すると、`-t` の `title` に一致するターゲット（なければ最初のターゲット）の `docs_dir` にタイトル名のファイルを作ります。既存ファイルは `--force` なしでは上書きしません。
+
+## log — 同期ログ
+
+```bash
+esync log [--limit 50]
+```
+
+`.elab-sync-ids/sync-log.jsonl` に記録した push・pull の履歴のうち、最新の N 件（既定 20 件）を古い順に表示します。
 
 ## mv / backup / restore / link
 
