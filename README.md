@@ -352,7 +352,7 @@ targets:
   - docs_dir: "docs/"
     team: "TeamA"          # 同じ team のプロファイルのキーで送信
   - docs_dir: "TeamA_docs/"
-    team: "TeamB"
+    team: "TeamA"
   - docs_dir: "TeamB_docs/"
     profile: TeamB          # プロファイル名で直接指定することもできる
     tags: ['共同研究']
@@ -391,8 +391,8 @@ esync category set "試薬" --id 42 --entity items
 `--id` を省略すると、各ターゲットの同期済み文書に、そのターゲットの接続プロファイルで送信します。`--id` を指定した場合、接続先は `-t` で選んだターゲットのプロファイルです（`-t` を省略すると default、一致するターゲットがなければ何も送信せずエラー）。
 
 ```bash
-# 上の例の shared_docs/ 側の記事 #42 にタグを追加
-esync tag -t shared_docs add "new-tag" --id 42 --entity items
+# 上の例の TeamB_docs/（profile: TeamB）側の記事 #42 にタグを追加
+esync tag -t TeamB_docs add "new-tag" --id 42 --entity items
 ```
 
 push のたびに付けたいタグ・カテゴリは、ターゲットの `tags`・`category` に書きます。push はタグを追加するだけで外さないため、外すときは `esync tag remove` を使います。
