@@ -302,8 +302,15 @@ esync pull --id 42 --id 43 --entity items
 ```bash
 esync list                                        # 記事の ID を確認
 esync link 42 --file note.md --target docs        # --file は docs_dir からの相対パス
-esync status                                      # 差分を確認してから push / pull
+esync diff docs/note.md                           # 紐付けた時点の eLabFTW の本文との差を確認
 ```
+
+**紐付けた直後の差は pull ではマージされません。** `link` は紐付けた時点の eLabFTW の本文を同期の基準にするため、手元の文書との差はすべて「ローカルの変更」（送信待ち）として扱われます。手元の文書が古いまま push すると、eLabFTW 側にしかない追記が消えます。紐付けたら `esync diff` で差を確認し、次のどちらかにしてください。
+
+- eLabFTW の内容を採用する: `esync pull --id 42 --entity items --force`（手元の文書はバックアップされる）
+- 両方の内容が必要: 手元の文書を手で統合してから `esync push`
+
+差がなければ（`diff` に「ローカルの変更」が出なければ）そのまま使えます。紐付けの前に `git pull` で文書を最新にしておくと、差を小さくできます。
 
 紐付けた後は、普段どおり作業の前に `esync pull`、後に `esync push` します。eLabFTW の画面で誰かが編集していても、pull で両側の変更をマージできます（同じ箇所の変更はマーカーで残ります）。
 
@@ -332,22 +339,22 @@ eLabFTW の API キーはチームごとに発行します。プロファイル�
 
 ```yaml
 profiles:
-  cellstats:
+  TeamA:
     url: "https://elab.example.com"
     api_key: "59-xxxx..."
-    team: "CellStats"
-  membrane:
+    team: "TeamA"
+  TeamB:
     url: "https://elab.example.com"
     api_key: "60-yyyy..."
-    team: "高耐久膜チーム"
+    team: "TeamB"
 
 targets:
   - docs_dir: "docs/"
-    team: "CellStats"          # 同じ team のプロファイルのキーで送信
-  - docs_dir: "membrane_docs/"
-    team: "高耐久膜チーム"
-  - docs_dir: "shared_docs/"
-    profile: membrane          # プロファイル名で直接指定することもできる
+    team: "TeamA"          # 同じ team のプロファイルのキーで送信
+  - docs_dir: "TeamA_docs/"
+    team: "TeamB"
+  - docs_dir: "TeamB_docs/"
+    profile: TeamB          # プロファイル名で直接指定することもできる
     tags: ['共同研究']
 ```
 
@@ -494,11 +501,12 @@ push 時にローカルリンクが eLabFTW の記事 URL に、pull 時に記�
 
 ```bash
 export ELABFTW_API_KEY="your_key"
-esync pull --auto || echo "要確認（終了コード $?）"
+set -e                 # 失敗したらそこで止め、非ゼロで終了する
+esync pull --auto      # 競合マーカーが残った・通信に失敗したなどは終了コード 1
 esync push
 ```
 
-- 終了コードは、成功・変更なしで 0、競合・通信失敗・部分失敗で 1、設定や引数の不正で 2 です
+- 終了コードは、成功・変更なしで 0、競合・通信失敗・部分失敗で 1、設定や引数の不正で 2 です。pull が失敗したまま push に進まないよう、上の例のように失敗で止めてください
 - `pull --auto` は、保存先の振り分けが曖昧でも対話で聞かずにスコア最大のターゲットを選びます
 - `entity-status set` は複数件を変更するとき確認を求めます。自動化では `--id` で 1 件ずつ指定してください
 - 同じプロジェクトで esync が既に動いている場合は「別のesyncが実行中です」で終了します（終了コード 1）
