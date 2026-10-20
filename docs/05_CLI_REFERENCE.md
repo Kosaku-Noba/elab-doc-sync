@@ -190,7 +190,11 @@ esync clone --url URL --entity TYPE --id ID [--dir DIR] [--no-verify]
 
 ## グローバルオプション
 
-ほとんどのサブコマンドで共通に使えます（`update`・`whoami` を除く）。
+サブコマンドの直後（`tag` などは下位の `add` などの前）に書きます（`update`・`whoami` を除く）。サブコマンドを省略した push では `esync` の直後に書きます。`esync -t X push` のようにサブコマンドより前に書くと無視されるので注意してください。各コマンドで意味を持つものだけが効きます。
+
+- `--dry-run` に対応するのは push・pull・`clone`・`rm`・`mv`・`link`・`restore` です（`status`・`diff` などの読み取りコマンドでは効果がありません）。`init`・`new`・`profile add/remove`・`tag add/remove`・`relate add/remove`・`metadata set`・`entity-status set`・`category set` に付けると、何もせずエラー（終了コード 2）になります
+- `--force`・`--prune-attachments` は push・pull（`new` の `--force` は上書き）で使います
+- `--version` は `esync --version` の形でだけ使えます
 
 | オプション | 説明 |
 |---|---|
@@ -199,7 +203,7 @@ esync clone --url URL --entity TYPE --id ID [--dir DIR] [--no-verify]
 | `--force`, `-f` | push: 変更がなくても強制送信 / pull: 既存ファイルを上書き |
 | `--dry-run`, `-n` | 実行せずに内容を確認 |
 | `--prune-attachments` | ローカルに存在しないリモート添付を削除 |
-| `--version`, `-V` | バージョン表示 |
+| `--version`, `-V` | バージョン表示（`esync -V` のみ） |
 
 `esync -h`、`esync <コマンド> -h` で各コマンドのヘルプを表示します。
 
@@ -284,20 +288,20 @@ esync category set 7 --id 42 --entity experiments
 
 ```bash
 esync metadata get
-esync metadata set key1=value1 key2=value2 --id 42
+esync metadata -t "週報" set key1=value1 key2=value2 --id 42
 ```
 
-`--id` を省略すると、各ターゲット（`-t` で限定可）の同期済みの全文書が対象です。`set` は既存のメタデータ（JSON）に `key=value` を追記・上書きします。既存のメタデータが読めない場合は警告を出して上書きします。default の接続先を使います。
+`--id` を省略すると、各ターゲット（`-t` で限定可）の同期済みの全文書が対象です。`--id` は `--entity` を取らず、対象の各ターゲットの `entity` の記事として扱います。`-t` を省略すると、全ターゲットそれぞれの種別の #42（items と experiments のターゲットがあれば両方）を変更するため、`-t` でターゲットを 1 つに絞ってください（`-t` は `set` などの前に書く）。`set` は既存のメタデータ（JSON）に `key=value` を追記・上書きします。既存のメタデータが読めない場合は警告を出して上書きします。default の接続先を使います。
 
 ## entity-status — ステータス操作
 
 ```bash
 esync entity-status show
-esync entity-status set 2 --id 42
+esync entity-status -t "週報" set 2 --id 42
 esync entity-status set 2          # 複数件なら確認プロンプト
 ```
 
-ステータスはチーム設定の ID で指定します（名前は不可）。`--id` を省略して複数の文書が対象になる場合は、確認してから変更します。default の接続先を使います。
+ステータスはチーム設定の ID で指定します（名前は不可）。`--id` を省略して複数の文書が対象になる場合は、確認してから変更します。`--id` の扱いは `metadata` と同じで、`-t` を省略すると全ターゲットそれぞれの種別の同じ ID を確認なしで変更します。default の接続先を使います。
 
 ## list — リモート一覧
 
