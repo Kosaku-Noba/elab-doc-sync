@@ -2025,3 +2025,27 @@ def test_cmd_relate_path_current_state_is_used(tmp_path, monkeypatch):
     with patch("elab_doc_sync.cli.ELabFTWClient", side_effect=factory):
         cmd_relate(_relate_ns(cfg, from_docs=["exp/a.md"], target_ids=["SPECIFICATION/F-Labo 仕様書.md"]))
     clients["https://server-a.com"].add_link.assert_called_once_with("experiments", 7, "items", 42)
+
+
+def test_cmd_relate_path_same_host_other_instance_sends_nothing(tmp_path, monkeypatch):
+    """同じホストでもパスが違う eLabFTW は別環境として扱い、ID を送らない。"""
+    cfg, clients, factory = _write_relate_docs_config(tmp_path, spec_profile="team-b")
+    data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    data["profiles"]["default"]["url"] = "https://example.test/instance-a"
+    data["profiles"]["team-b"]["url"] = "https://example.test/instance-b/"
+    cfg.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    with patch("elab_doc_sync.cli.ELabFTWClient", side_effect=factory):
+        with pytest.raises(ValueError, match="サーバーが異なる"):
+            cmd_relate(_relate_ns(cfg, from_docs=["exp/a.md"], target_ids=["SPECIFICATION/F-Labo 仕様書.md"]))
+    assert clients == {}
+
+
+def test_cmd_relate_stale_mapping_guides_link(tmp_path, monkeypatch):
+    cfg, clients, factory = _write_relate_docs_config(tmp_path)
+    (tmp_path / ".ids" / "exp" / "a.md.state.json").write_text(
+        json.dumps({"server": "https://old-server.com", "entity": "experiments", "remote": {}}), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ValueError, match=r"esync link <ID> --file a\.md --target 実験") as exc:
+        cmd_relate(_relate_ns(cfg, from_docs=["exp/a.md"], target_ids=["9"], to="items"))
+    assert "esync rm" in str(exc.value) and "pull" not in str(exc.value)
