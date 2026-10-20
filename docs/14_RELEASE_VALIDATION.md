@@ -136,3 +136,20 @@ wheel/sdist のビルド（新しいモジュール `merge.py` を含む）と�
 wheel/sdist のビルドと、独立した Python 3.12 環境への wheel インストール後の `esync --version`（1.0.5）・`esync pull --help` を確認しました。
 
 eLabFTW の保存時の書き換え（`>`・`&` のエスケープ、`<…>` の削除）は、状態付きのモックで再現してテストしました。旧版で保存した基準からのマージ、`body_format` の変更後のマージ、原稿に `&gt;` を文字どおり書いた場合も含みます。実機の eLabFTW との往復同期は、このリリース作業では実行していません。
+
+
+## v1.1.0 の追加検証（2026-10-20）
+
+今回の変更は、実験ノート・リソースどうしのリンクを操作する `esync relate` と、push 時にリンクを追加するターゲット設定 `links` の追加、`esync tag` がターゲットの接続プロファイルを無視していた問題の修正です。同期状態（`state.json`）にリンクの記録（`links`）を追加しましたが、`links` を設定していないターゲットの状態は変わりません。
+
+| 環境 | 結果 |
+|---|---|
+| Linux / Python 3.10 | 538 passed、16 skipped |
+| Linux / Python 3.12 | 538 passed、16 skipped |
+| Linux / Python 3.14 | 538 passed、16 skipped |
+
+16件のスキップは、実機接続テスト 11 件と、PowerShell がない環境で実行しない引用のテスト 5 件です。Windows は GitHub Actions の結果で確認します。
+
+wheel/sdist のビルドと、独立した Python 3.12 環境への wheel インストール後の `esync --version`（1.1.0）・`esync relate --help` を確認しました。
+
+リンクの追加・削除、push 時のリンク追加と再試行、ターゲットごとのプロファイルでの送信は、モックでテストしました。実機の eLabFTW との往復同期は、このリリース作業では実行していません。
