@@ -2066,3 +2066,22 @@ def test_cmd_relate_stale_mapping_guides_link_with_subdir(tmp_path, monkeypatch)
     monkeypatch.chdir(tmp_path)
     with pytest.raises(ValueError, match=r"--file 'sub/深い 仕様\.md' --target SPECIFICATION"):
         cmd_relate(_relate_ns(cfg, from_docs=["exp/a.md"], target_ids=["SPECIFICATION/sub"]))
+
+
+def test_cmd_relate_stale_mapping_guidance_is_powershell_safe(tmp_path, monkeypatch):
+    """案内のファイル名は push の案内と同じ引用（PowerShell の ’ も二重化）を使う。"""
+    from functools import partial
+    from elab_doc_sync.sync import _shell_quote
+    cfg, clients, factory = _write_relate_docs_config(tmp_path)
+    name = "a’; Write-Output UNEXPECTED; #.md"
+    (tmp_path / "exp" / name).write_text("# x\n", encoding="utf-8")
+    ids = tmp_path / ".ids" / "exp"
+    (ids / "mapping.json").write_text(json.dumps({name: 7}, ensure_ascii=False), encoding="utf-8")
+    (ids / f"{name}.state.json").write_text(
+        json.dumps({"server": "https://old-server.com", "entity": "experiments", "remote": {}}), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("elab_doc_sync.cli._shell_quote", partial(_shell_quote, windows=True))
+    with pytest.raises(ValueError) as exc:
+        cmd_relate(_relate_ns(cfg, from_docs=["exp"], target_ids=["9"], to="items"))
+    assert f"--file {_shell_quote(name, windows=True)} " in str(exc.value)
+    assert "’’" in str(exc.value)

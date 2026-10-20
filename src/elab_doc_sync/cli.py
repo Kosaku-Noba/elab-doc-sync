@@ -5,7 +5,6 @@ import difflib
 import glob
 import re
 import json
-import shlex
 import shutil
 import sys
 from pathlib import Path
@@ -18,7 +17,7 @@ from .config import TargetConfig
 from .client import ELabFTWClient
 from .config import load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, append_target_to_yaml
 from .merge import merge_text
-from .sync import EachDocsSyncer, ConflictError, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
+from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
 from . import sync_log
 
 DEFAULT_CONFIG = ".elab-sync.yaml"
@@ -1172,8 +1171,8 @@ def _select_tracked(docs, spec, hint):
     for target, path, eid, link_file, current in hits:
         if not current:
             raise ValueError(f"{path} は同期後に接続先または種別が変わっています。現在の接続先で ID を確認し、"
-                             f"esync link <ID> --file {shlex.quote(link_file)} --target {shlex.quote(target.title or target.docs_dir)} で"
-                             f"紐付け直してください（ID が変わる場合は先に esync rm {shlex.quote(str(path))} で解除）")
+                             f"esync link <ID> --file {_shell_quote(link_file)} --target {_shell_quote(target.title or target.docs_dir)} で"
+                             f"紐付け直してください（ID が変わる場合は先に esync rm {_shell_quote(str(path))} で解除）")
     return [(target, path, eid) for target, path, eid, link_file, current in hits]
 
 
