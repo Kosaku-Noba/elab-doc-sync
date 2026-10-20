@@ -170,3 +170,20 @@ wheel/sdist のビルドと、独立した Python 3.12 環境への wheel イン
 wheel/sdist のビルドと、独立した Python 3.12 環境への wheel インストール後の `esync --version`（1.1.1）・`esync relate add --help` を確認しました。
 
 パスの解決（ファイル・ディレクトリ・glob、空白や階層を含む名前）、ID との混在、送信前の検証（push 前の文書、種別の不一致、別サーバー・同一ホストの別インスタンス、同期後に接続先・種別を変えた文書）で何も送信しないことは、モックでテストしました。実機の eLabFTW との往復同期は、このリリース作業では実行していません。
+
+
+## v1.1.2 の追加検証（2026-10-20）
+
+今回の変更は、`esync relate --from` がシェルの展開した複数のパスを受け取れるようにした修正です。
+
+| 環境 | 結果 |
+|---|---|
+| Linux / Python 3.10 | 558 passed、16 skipped |
+| Linux / Python 3.12 | 558 passed、16 skipped |
+| Linux / Python 3.14 | 558 passed、16 skipped |
+
+16件のスキップは、実機接続テスト 11 件と、PowerShell がない環境で実行しない引用のテスト 5 件です。Windows は GitHub Actions の結果で確認します。
+
+wheel/sdist のビルドと、独立した Python 3.12 環境への wheel インストール後の `esync --version`（1.1.2）・`esync relate add --help` を確認しました。
+
+`--from` に空白を含む複数のパスを続けて書く指定と、`--from` の繰り返しは、CLI の引数解析からモックの送信までテストしました。実機の eLabFTW との往復同期は、このリリース作業では実行していません。
