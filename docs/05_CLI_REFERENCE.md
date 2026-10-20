@@ -193,7 +193,8 @@ esync clone --url URL --entity TYPE --id ID [--dir DIR] [--no-verify]
 サブコマンドの直後（`tag` などは下位の `add` などの前）に書きます（`update`・`whoami` を除く）。サブコマンドを省略した push では `esync` の直後に書きます。`esync -t X push` のようにサブコマンドより前に書くと無視されるので注意してください。各コマンドで意味を持つものだけが効きます。
 
 - `--dry-run` に対応するのは push・pull・`clone`・`rm`・`mv`・`link`・`restore` です（`status`・`diff` などの読み取りコマンドでは効果がありません）。`init`・`new`・`profile add/remove`・`tag add/remove`・`relate add/remove`・`metadata set`・`entity-status set`・`category set` に付けると、何もせずエラー（終了コード 2）になります
-- `--force`・`--prune-attachments` は push・pull（`new` の `--force` は上書き）で使います
+- `--force` は push・pull で使います（`new` では既存ファイルの上書き）
+- `--prune-attachments` は push 専用です。pull など他のコマンドに付けても無視され、添付は削除されません
 - `--version` は `esync --version` の形でだけ使えます
 
 | オプション | 説明 |
@@ -202,7 +203,7 @@ esync clone --url URL --entity TYPE --id ID [--dir DIR] [--no-verify]
 | `--target`, `-t NAME` | 対象ターゲット（`title` または `docs_dir`）。省略時は全ターゲット |
 | `--force`, `-f` | push: 変更がなくても強制送信 / pull: 既存ファイルを上書き |
 | `--dry-run`, `-n` | 実行せずに内容を確認 |
-| `--prune-attachments` | ローカルに存在しないリモート添付を削除 |
+| `--prune-attachments` | ローカルに存在しないリモート添付を削除（push のみ） |
 | `--version`, `-V` | バージョン表示（`esync -V` のみ） |
 
 `esync -h`、`esync <コマンド> -h` で各コマンドのヘルプを表示します。
