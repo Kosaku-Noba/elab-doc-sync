@@ -2085,3 +2085,18 @@ def test_cmd_relate_stale_mapping_guidance_is_powershell_safe(tmp_path, monkeypa
         cmd_relate(_relate_ns(cfg, from_docs=["exp"], target_ids=["9"], to="items"))
     assert f"--file {_shell_quote(name, windows=True)} " in str(exc.value)
     assert "’’" in str(exc.value)
+
+
+def test_cmd_relate_from_accepts_shell_expanded_paths(tmp_path, monkeypatch):
+    """--from SPECIFICATION/F* をシェルが展開した複数のパス（空白を含む）を受け取れる。"""
+    from elab_doc_sync.cli import main
+    cfg, clients, factory = _write_relate_docs_config(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["esync", "relate", "--config", str(cfg), "add", "SPECIFICATION/詳細.md",
+                                      "--from", "SPECIFICATION/F-Labo 仕様書.md", "SPECIFICATION/詳細.md",
+                                      "--from", "exp/a.md"])
+    with patch("elab_doc_sync.cli.ELabFTWClient", side_effect=factory):
+        main()
+    # 自分自身（詳細.md → 詳細.md）は飛ばす
+    assert clients["https://server-a.com"].add_link.call_args_list == [
+        call("items", 42, "items", 43), call("experiments", 7, "items", 43)]

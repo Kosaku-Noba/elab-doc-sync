@@ -2019,8 +2019,9 @@ def main():
         p.add_argument("--to", default=None, choices=["items", "experiments", "resources"],
                        help="ID で指定したリンク先の種別")
     for p in (relate_list_p, relate_add_p, relate_rm_p):
-        p.add_argument("--from", dest="from_docs", action="append", metavar="パス",
-                       help="リンク元の文書（パス・ディレクトリ・glob、複数指定可）")
+        # シェルが glob を展開した複数のパスも受け取る（--from a.md b.md）
+        p.add_argument("--from", dest="from_docs", action="extend", nargs="+", metavar="パス",
+                       help="リンク元の文書（パス・ディレクトリ・glob、複数指定可）。リンク先より後に書く")
         p.add_argument("--id", type=int, default=None, help="リンク元エンティティ ID（省略時は同期済みの全文書）")
         p.add_argument("--entity", default=None, choices=["items", "experiments", "resources"], help="リンク元の種別")
 
