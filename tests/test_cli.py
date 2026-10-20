@@ -2046,6 +2046,23 @@ def test_cmd_relate_stale_mapping_guides_link(tmp_path, monkeypatch):
     (tmp_path / ".ids" / "exp" / "a.md.state.json").write_text(
         json.dumps({"server": "https://old-server.com", "entity": "experiments", "remote": {}}), encoding="utf-8")
     monkeypatch.chdir(tmp_path)
-    with pytest.raises(ValueError, match=r"esync link <ID> --file a\.md --target 実験") as exc:
+    with pytest.raises(ValueError, match=r"esync link <ID> --file a\.md --target '実験'") as exc:
         cmd_relate(_relate_ns(cfg, from_docs=["exp/a.md"], target_ids=["9"], to="items"))
     assert "esync rm" in str(exc.value) and "pull" not in str(exc.value)
+
+
+def test_cmd_relate_stale_mapping_guides_link_with_subdir(tmp_path, monkeypatch):
+    """docs_dir 配下の階層を保った --file を案内する（link は docs_dir 基準で解決する）。"""
+    cfg, clients, factory = _write_relate_docs_config(tmp_path)
+    data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    data["targets"][1]["pattern"] = "**/*.md"
+    cfg.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    (tmp_path / "SPECIFICATION" / "sub").mkdir()
+    (tmp_path / "SPECIFICATION" / "sub" / "深い 仕様.md").write_text("# x\n", encoding="utf-8")
+    ids = tmp_path / ".ids" / "spec"
+    (ids / "mapping.json").write_text(json.dumps({"深い 仕様.md": 50}, ensure_ascii=False), encoding="utf-8")
+    (ids / "深い 仕様.md.state.json").write_text(
+        json.dumps({"server": "https://old-server.com", "entity": "items", "remote": {}}), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ValueError, match=r"--file 'sub/深い 仕様\.md' --target SPECIFICATION"):
+        cmd_relate(_relate_ns(cfg, from_docs=["exp/a.md"], target_ids=["SPECIFICATION/sub"]))

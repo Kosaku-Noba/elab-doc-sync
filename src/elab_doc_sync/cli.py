@@ -5,6 +5,7 @@ import difflib
 import glob
 import re
 import json
+import shlex
 import shutil
 import sys
 from pathlib import Path
@@ -1142,7 +1143,7 @@ def _tag_action(client, args, entity_type, entity_id):
 
 
 def _tracked_documents(config, project_root, targets):
-    """同期済みの文書を (ターゲット, パス, エンティティ ID, 紐付けが現在の設定と一致するか) で列挙する。"""
+    """同期済みの文書を (ターゲット, パス, エンティティ ID, docs_dir からの相対パス, 紐付けが現在の設定と一致するか) で列挙する。"""
     docs = []
     for target in targets:
         syncer = _make_syncer(None, target, project_root)
@@ -1158,7 +1159,7 @@ def _tracked_documents(config, project_root, targets):
             # 同期後に接続先や種別を変えた紐付けの ID は、別の記事を指す
             state = syncer._state(name)
             current = state is None or (state["server"] == server and state["entity"] == target.entity)
-            docs.append((target, path, eid, current))
+            docs.append((target, path, eid, path.relative_to(syncer.docs_dir).as_posix(), current))
     return docs
 
 
@@ -1168,12 +1169,12 @@ def _select_tracked(docs, spec, hint):
     hits = [doc for doc in docs if matches(doc[1])]
     if not hits:
         raise ValueError(f"同期済みの文書が見つかりません: {spec}（{hint}）")
-    for target, path, eid, current in hits:
+    for target, path, eid, link_file, current in hits:
         if not current:
             raise ValueError(f"{path} は同期後に接続先または種別が変わっています。現在の接続先で ID を確認し、"
-                             f"esync link <ID> --file {path.name} --target {target.title or target.docs_dir} で"
-                             f"紐付け直してください（ID が変わる場合は先に esync rm {path} で解除）")
-    return [(target, path, eid) for target, path, eid, current in hits]
+                             f"esync link <ID> --file {shlex.quote(link_file)} --target {shlex.quote(target.title or target.docs_dir)} で"
+                             f"紐付け直してください（ID が変わる場合は先に esync rm {shlex.quote(str(path))} で解除）")
+    return [(target, path, eid) for target, path, eid, link_file, current in hits]
 
 
 def _resolve_link_destinations(config, project_root, specs, to):
