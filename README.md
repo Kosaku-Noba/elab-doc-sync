@@ -4,13 +4,20 @@ Markdown ドキュメントを eLabFTW に同期する CLI ツール。`esync` �
 
 ## これは何？
 
-ローカルの Markdown ファイルを eLabFTW のリソースや実験ノートとして管理するツールです。普段使い慣れたエディタで書いて、コマンド一発で eLabFTW に反映できます。
+ローカルの Markdown ファイルを eLabFTW のリソースや実験ノートとして管理するツールです。普段使い慣れたエディタで書いて、コマンド一発で eLabFTW に反映できます。eLabFTW 側で編集された内容の取り込み（両側の変更のマージを含む）、画像・添付ファイル・文書間リンクの変換、タグ・カテゴリ・リンクの設定にも対応しています。
 
-## 1.0で変わること
+## 最近の主な変更
 
-通常のpullはローカル未編集の文書を更新し、両側に変更がある場合は競合として停止します（v1.0.4 からは、両側の変更をマージします。[競合を確認・復旧する](#競合を確認復旧する) を参照）。バックアップ・復元、紐付けを保持する `mv`、途中失敗からの再開に対応しました。同期モードは `each` のみです。
+| バージョン | 内容 |
+|---|---|
+| v1.0 | 安全な pull、バックアップ・復元、紐付けを保持する `mv`、途中失敗からの再開。同期モードは `each` のみ |
+| v1.0.1 | `esync rm` でディレクトリ・glob・正規表現を指定 |
+| v1.0.2〜v1.0.3 | 差し替えた画像の古い版の削除、別ターゲットの文書へのリンク変換 |
+| v1.0.4 | pull で両側の変更を 3-way マージ、前回の同期からの変更を表示する `diff`、文書を指定した `push`、状態ごとの次の操作の案内 |
+| v1.0.5 | pull した Markdown の `&gt;` などを戻す、eLabFTW が削除した `<…>` を警告 |
+| v1.1.0〜v1.1.2 | 実験ノート・リソースどうしのリンク（`esync relate`、ターゲット設定 `links`）、リンク元・リンク先をパスで指定 |
 
-既存ユーザーは更新前に [v1.0への移行と復旧](docs/13_MIGRATION_V1.md) を確認してください。変更履歴は [Changelog](CHANGELOG.md)、検証環境・結果は [リリース検証](docs/14_RELEASE_VALIDATION.md) に記載しています。
+v0.x からの更新は、先に [v1.0への移行と復旧](docs/13_MIGRATION_V1.md) を確認してください。変更履歴は [Changelog](CHANGELOG.md)、検証環境・結果は [リリース検証](docs/14_RELEASE_VALIDATION.md)、詳しい仕様は [docs/](docs/01_README.md) にあります。
 
 ---
 
@@ -76,15 +83,17 @@ elabftw:
   verify_ssl: false
 ```
 
-あるいは環境変数でもOK:
+あるいは環境変数でもOK（設定ファイルより優先されます）:
 
 ```bash
 export ELABFTW_API_KEY="your_key"
 ```
 
+接続できるかは `esync whoami` で確認できます。ユーザー名と現在のチームが表示されれば準備完了です。
+
 ### Git管理から除外する
 
-プロジェクトの `.gitignore` に次を追加してください。APIキーや退避した本文の公開を防ぎ、同期・復旧記録を手元に保持します。
+`esync init` が作る `.gitignore` には次が含まれます。既に `.gitignore` がある場合は追記されないので、手動で追加してください。APIキーや退避した本文の公開を防ぎ、同期・復旧記録を手元に保持します。
 
 ```gitignore
 .elab-sync.yaml
@@ -119,6 +128,37 @@ $ esync
 esync --dry-run
 ```
 
+### 今の状態を確認する（status）
+
+```bash
+esync status
+```
+
+文書ごとに「最新」「送信待ち」「取得待ち」「競合」などの状態を表示し、続けて次に実行できるコマンドを `→` で案内します。
+
+```text
+  [a.md] 競合（#42）
+    → 両方の変更をマージ: esync pull（同じ箇所の変更はマーカーで残る）
+    → ローカルを採用（eLabFTW を上書き）: esync push --force docs/a.md
+    → eLabFTW を採用（ローカルを上書き）: esync pull --id 42 --entity items --force
+```
+
+状態ごとの対処は [競合を確認・復旧する](#競合を確認復旧する) を参照してください。
+
+### ローカルと eLabFTW の差分を見る（diff）
+
+```bash
+esync diff                 # 全文書
+esync diff docs/note.md    # 指定した文書だけ（push と同じ指定方法）
+```
+
+文書ごとに、前回の同期からの変更を次の 2 つに分けて表示します。
+
+- **ローカルの変更**: 前回同期した時点から、手元で編集した箇所
+- **eLabFTW 側の変更**: 前回同期した時点から、eLabFTW で変わった本文・タイトル・カテゴリ・タグ・添付
+
+前回の同期時点と比べるため、eLabFTW が保存時に本文を書き換えた分（箇条書きの記号など）や画像パスの違いは差分に出ません。
+
 ### eLabFTW から最新を取得する（pull）
 
 既に同期済みのファイルを再取得:
@@ -126,6 +166,8 @@ esync --dry-run
 ```bash
 esync pull
 ```
+
+ローカルを編集していない文書は eLabFTW の内容で更新し、ローカルだけを編集した文書はそのまま残します。両側が編集した文書はマージします（[競合を確認・復旧する](#競合を確認復旧する)）。
 
 eLabFTW 上の特定の記事をローカルに持ってくる:
 
@@ -144,233 +186,7 @@ esync pull --id 42 --entity items
 esync pull --id 42 --id 43 --id 44 --entity items
 ```
 
-pull 時、ローカルのどのディレクトリに保存するかは **タグ・カテゴリ・タイトル** から自動判定されます。判定できない場合は対話で聞かれます。
-
-### ローカルと eLabFTW の差分を見る
-
-```bash
-esync diff
-```
-
----
-
-### 文書の追跡解除
-
-```bash
-esync rm elab_doc/elab*                      # ワイルドカードで複数選択
-esync rm 'docs/*' --local --dry-run          # 一致するディレクトリ配下も含めて予定を確認
-esync rm 'docs/note*.md'                     # esync 側で glob を解釈
-esync rm docs/subdir                        # 配下の追跡文書を再帰的に選択
-esync rm --regex '^note.*\.md$'              # ファイル名に正規表現で一致
-esync rm docs/note.md                         # 文書を保持して同期対象から除外
-esync rm --id 42 --entity items               # リモート ID で指定
-esync rm docs/note.md --local                 # ローカル Markdown も削除
-esync rm docs/note.md --local --dry-run       # 実行前に確認
-```
-
-リモートのデータは保持します。解除したファイルは今後の push・status の対象から除外されます。複数指定や再登録方法は [CLI リファレンス](docs/05_CLI_REFERENCE.md#rm--追跡解除) を参照してください。
-
-## 応用: こういう場面ではこうする
-
-### eLabFTW にある既存プロジェクトをローカルに持ってきたい
-
-```bash
-export ELABFTW_API_KEY="your_key"
-esync clone --url https://elab.example.com --entity items --id 42
-```
-
-プロジェクトディレクトリ一式が生成されます。
-
-### 週報と実験メモを別ディレクトリで管理したい
-
-`.elab-sync.yaml` でターゲットを分ける:
-
-```yaml
-targets:
-  - docs_dir: "weekly_reports/"
-    mode: each
-    entity: items
-    tags: ['週報']
-    title_pattern: "*週報*"    # pull 時のタイトル自動振り分け
-
-  - docs_dir: "experiments/"
-    mode: each
-    entity: experiments
-```
-
-push 時は各 `docs_dir` から送信され、pull 時はタグやタイトルから適切なディレクトリに自動配置されます。
-
-### 別チームの eLabFTW にも投稿したい（複数 API キー）
-
-プロファイルを追加:
-
-```bash
-esync profile add team-b --url https://elab.example.com --api-key "team-b-key"
-```
-
-ターゲットごとにプロファイルを指定:
-
-```yaml
-targets:
-  - docs_dir: "my_docs/"
-    profile: default
-
-  - docs_dir: "shared_docs/"
-    profile: team-b
-    tags: ['共同研究']
-```
-
-プロファイル一覧の確認:
-
-```bash
-esync profile list
-```
-
-### タグやカテゴリを操作したい
-
-```bash
-# タグ一覧
-esync tag list --id 42 --entity items
-
-# タグ追加
-esync tag add "new-tag" --id 42 --entity items
-
-# カテゴリ設定
-esync category set "試薬" --id 42 --entity items
-```
-
-`esync tag` の `--id` を省略すると、各ターゲットの同期済み文書に、そのターゲットの接続プロファイルで送信します。`--id` を指定した場合、接続先は `-t` で選んだターゲットのプロファイルです（`-t` を省略すると default、一致するターゲットがなければ何も送信せずエラー）。`-t` は `tag` の直後（`add` などの前）か、`esync -t shared_docs tag add ...` のように `tag` より前に書きます。
-
-```bash
-# 上の例の shared_docs/（profile: team-b）側の記事 #42 にタグを追加
-esync tag -t shared_docs add "new-tag" --id 42 --entity items
-```
-
-### 実験ノートやリソースどうしをリンクしたい
-
-eLabFTW の「リンク」（実験ノート・リソースの関連付け）を張れます。リンク先 ID は複数まとめて指定できます。
-
-```bash
-# リソース #42 から実験ノート #12, #15 にリンク
-esync relate add 12 15 --to experiments --id 42 --entity items
-
-# リンク一覧
-esync relate list --id 42 --entity items
-
-# リンクを外す（リンク先の記事は消えません）
-esync relate remove 15 --to experiments --id 42 --entity items
-```
-
-同期済みの文書は、ID の代わりにファイルのパスで指定できます。リンク元は `--from`、リンク先は ID と同じ位置に書きます。パスで指定したリンク先の種別は自動で決まるため、`--to` は不要です。
-
-```bash
-# 実験ノート exp/2026-10-20.md から仕様書へリンク
-esync relate add "SPECIFICATION/F-Labo システム総合詳細仕様書.md" --from exp/2026-10-20.md
-
-# ディレクトリや glob も使える（push と同じ解釈）。ID と混ぜる場合、--to は ID の種別で、
-# 一緒に指定したパスの文書も同じ種別である必要がある（ここではどちらもリソース）
-esync relate add SPECIFICATION/ 42 --to resources --from "exp/2026-10-*.md"
-
-# 文書のリンク一覧
-esync relate list --from exp/2026-10-20.md
-```
-
-パスはカレントディレクトリからの相対パスです。`--from` はクォートしない glob（`--from SPECIFICATION/F*`）をシェルが展開した複数のパスも受け取ります。その場合、`--from` の後ろはすべてリンク元になるため、リンク先は `--from` より前に書いてください。push 前の文書は eLabFTW に記事がないため指定できません。リンク元とリンク先が別サーバーのターゲットにある場合や、同期後に接続先・種別を変えた文書を指定した場合は、何も送信せずエラーにします。
-
-`--id` と `--entity` は両方指定するか、両方省略します。`--from` と `--id` は同時に使えません。どちらも省略すると、**全ターゲットの同期済みの全文書**が対象になります。`esync relate -t "名前" add ...` のように `-t` を `relate` の直後に付けると、そのターゲットの文書だけに絞れます。`--id` を指定した場合、接続先は `-t` で選んだターゲットのプロファイル（省略時は default、一致するターゲットがなければ何も送信せずエラー）です。
-
-同期する文書に決まったリンクを張りたい場合は、ターゲットに `links` を書きます。push 時に、そのターゲットの全文書から指定した記事へのリンクを追加します。
-
-```yaml
-targets:
-  - docs_dir: "docs/"
-    entity: experiments
-    links:
-      items: [42, 43]        # リソース（resources とも書ける）
-      experiments: [12]      # 実験ノート
-```
-
-- push は不足しているリンクを追加するだけで、削除はしません。eLabFTW の画面で張ったリンクも残ります。設定から ID を消しても、張ったリンクは外れません（`esync relate remove` で外す）
-- `links` に ID を足すと、本文が変わっていなくても対象の文書が「送信待ち」になり、次の push でリンクを追加します
-- pull・`esync link` は eLabFTW にリンクを張りません。新しく取得・紐付けした文書は「送信待ち」になり、次の push でリンクを追加します。一度張った文書は、リモートの変更を pull しても「送信待ち」に戻りません
-- リンクを張り終えた記録は文書ごとに残るため、毎回の push でリンクを確かめ直すわけではありません。張り終えた後に eLabFTW の画面や `esync relate remove` で外したリンクは、通常の push では張り直しません。張り直すには `esync relate add` を使います。`push --force` でもリンクを確かめ直しますが、本文の強制送信と設定のタグ・カテゴリの再適用も行うため、リンクだけを張り直す場合は `relate add` を使ってください
-- リンクの追加に失敗すると、失敗したリンク先と原因（`HTTP 404（見つかりません）` など）を表示し、その文書は失敗として扱います。本文・タグ・カテゴリは送信済みの場合があります。リンク先の ID と権限を確認し、もう一度 push すると不足分だけ追加します
-- リンクの追加だけが必要な文書では、失敗後の再試行を含めて、タグ・カテゴリを再適用しません（eLabFTW 側で変えたタグ・カテゴリは保持されます）。`push --force` は除きます
-- 文書自身へのリンクは張りません
-
-### リモートに何があるか見たい
-
-```bash
-esync list                        # リソース一覧
-esync list --entity experiments   # 実験ノート一覧
-```
-
-### ファイルを既存のエンティティに手動で紐付けたい
-
-```bash
-esync link 42 --file "実験メモ.md"
-```
-
-### PDF や CSV も一緒に送りたい（添付ファイル）
-
-```yaml
-targets:
-  - docs_dir: "docs/"
-    attachments_dir: "attachments/"
-    entity: items
-```
-
-`attachments/` に置いたファイルが push 時に自動アップロードされます。
-
-本文から参照している画像・ファイルを同じ名前のまま差し替えると、push 時に新しい版をアップロードし、本文から参照されなくなった古い版の添付を削除します。この削除は `--prune-attachments` を付けなくても行います（`--prune-attachments` は、ローカルの `attachments/` にないリモート添付を削除するオプションです）。削除した添付は esync のバックアップからは復元できません。詳しくは [CLI リファレンスの push](docs/05_CLI_REFERENCE.md#pushデフォルトコマンド) を参照してください。
-
-画像・動画・ファイルリンク・添付の送信対象は、プロジェクト内の通常ファイルに限定します。プロジェクト外への参照、隠しファイル・隠しディレクトリ、シンボリックリンクは拒否します。必要な実体をプロジェクト内の通常ディレクトリへ配置してください。[送信制約と復旧](docs/13_MIGRATION_V1.md#バックアップと復元) も参照してください。
-
-### 数式を使いたい
-
-```yaml
-targets:
-  - docs_dir: "docs/"
-    body_format: md    # ← Markdown のまま送信（MathJax でレンダリング）
-```
-
-```markdown
-インライン: $E = mc^2$
-
-ブロック:
-$$\frac{\partial f}{\partial x} = 2x + 1$$
-```
-
-### ファイル間リンクを貼りたい
-
-`each` モードでは、同期済みの `.md` ファイル同士をリンクできます:
-
-```markdown
-詳しくは [セットアップガイド](./setup.md) を参照。
-```
-
-**push 時**: ローカルリンクが eLabFTW の記事 URL に自動変換されます。
-
-```
-[セットアップガイド](./setup.md)
-  → [セットアップガイド](https://elab.example.com/items.php?mode=view&id=42)
-```
-
-**pull 時**: eLabFTW の記事 URL がローカルリンクに逆変換されます。リンク先がこの PC で置かれている場所への相対パスになるため、別の PC や別のディレクトリ構成でも使えます。
-
-```
-[セットアップガイド](https://elab.example.com/database.php?mode=view&id=42)
-  → [セットアップガイド](../docs/setup.md)
-```
-
-**仕様:**
-- 対象: `.md` ファイルへのリンクのみ（画像、外部URL、アンカーリンクはスキップ）
-- 別のターゲット（`docs_dir`）の文書へのリンクも変換する。接続先のホストが同じターゲットに限る
-- `%E6...` のように URL エンコードされたファイル名のリンクも変換する
-- リンク先が同期済み（mapping に存在する）場合のみ変換。未同期のリンクはそのまま残る
-- pull でリンク先を後から取得した場合、既に取得済みでローカル未編集の文書のリンクもローカルのパスに更新する。この更新は `pull --id` や `--target` で指定した文書に限らず、設定にある全ターゲットの文書が対象になる（変更前の内容はバックアップされ、`esync restore` で戻せる）。ローカルで編集中の文書は変更しない
-- 接続先（`url`）を変える前に同期した文書の紐付けは、保存済みの同期状態から接続先の違いを確認できる場合、リンクの解決に使わない。同期状態の記録がない旧形式の紐付けは接続先を判定できないため、そのまま使う
-- フラグメント（`#section`）は保持される
+pull 時、ローカルのどのディレクトリに保存するかは **タグ・カテゴリ・タイトル** から自動判定されます（[pull の自動振り分け](#pull-の自動振り分け)）。判定できない場合は対話で聞かれます。
 
 ### 一部の文書だけ push する
 
@@ -381,7 +197,7 @@ esync push 'docs/note*.md'         # glob
 esync push --regex '^2026-'        # ファイル名に正規表現で一致
 ```
 
-指定の解釈は `esync rm` と同じです。未追跡の文書は新規作成します。指定しなかった文書は送信しないため、変更は次回の push まで残ります。詳細は [CLI リファレンスの push](docs/05_CLI_REFERENCE.md#pushデフォルトコマンド) を参照してください。
+未追跡の文書は新規作成します。指定しなかった文書は送信しないため、変更は次回の push まで残ります。詳細は [CLI リファレンスの push](docs/05_CLI_REFERENCE.md#pushデフォルトコマンド) を参照してください。
 
 ### ファイル名を変える
 
@@ -391,6 +207,17 @@ esync push
 ```
 
 紐付けを保持して移動し、次のpushでタイトルを更新します。自動検出は本文ハッシュが一致し、対応が一意な場合だけ行います。本文編集も伴う移動は `esync mv` を使ってください。
+
+### 文書の追跡解除
+
+```bash
+esync rm docs/note.md                  # 文書を保持して同期対象から除外
+esync rm 'docs/old*' --dry-run         # glob で選び、対象を事前に確認
+esync rm docs/note.md --local          # ローカル Markdown も削除
+esync rm --id 42 --entity items        # リモート ID で指定
+```
+
+リモートのデータは保持します。解除したファイルは今後の push・status の対象から除外されます。ディレクトリ・正規表現での指定や再登録方法は [CLI リファレンス](docs/05_CLI_REFERENCE.md#rm--追跡解除) を参照してください。
 
 ### 競合を確認・復旧する
 
@@ -403,7 +230,7 @@ esync restore <バックアップID> --dry-run
 esync restore <バックアップID>
 ```
 
-通常のpullはローカル未編集の文書を更新し、ローカルだけの変更は保持します。両側が変更された場合はマージします（下記）。上書き・削除・移動前にバックアップを保存し、復元直前の状態も退避します。
+通常のpullはローカル未編集の文書を更新し、ローカルだけの変更は保持します。上書き・削除・移動前にバックアップを保存し、復元直前の状態も退避します。
 
 両側が本文を変更した文書（状態「競合」）は、pull で git と同じようにマージします。
 
@@ -423,16 +250,13 @@ eLabFTW の内容
 - 判定に使うのは esync が付けるマーカー（`<<<<<<< ローカル` と `>>>>>>> eLabFTW`）だけです。文書中の git のマーカー例や、見出しの下線の `=======` は競合と扱いません
 - v1.0.4 より前に同期した文書は基準の本文が保存されていないため、両側の差がある箇所をすべてマーカーで示します。次に同期した時点から基準を保存します
 - マージ時、既にあるローカルの画像・添付ファイルは上書きしません。eLabFTW 側で同じ名前のまま差し替えた画像・添付は取り込まれないため、必要なら `pull --force` で取得してください
-- 変更前の文書はバックアップされ、`esync restore` で戻せます。マージせずにどちらかを採用する場合は、従来どおり `pull --force` または `push --force` を使います
-
+- マージせずにどちらかを採用する場合は、`pull --force` または `push --force` を使います
 
 **復元はバックアップに記録されたディレクトリまたはファイル全体に適用されます。** 保存後に追加したファイルも復元先から取り除かれるため、必ず `restore --dry-run` で範囲を確認してください。バックアップは自動削除されません。不要な世代は復旧不要と確認してから手動で削除できます。
 
 `pull --force` はローカルを退避して上書きします。`push --force` はリモート本文を退避して上書きします。リモート本文の退避データは復元時にJSONへ取り出し、確認後に手動で反映します。
 
-追跡解除した文書は `esync link <ID> --file <ファイル名>` で追跡再開できます。複数ターゲットでは `--target <名前またはdocs_dir>` を指定してください。
-
-`status` はサーバーに接続して状態を確認し、文書ごとに次に実行できるコマンドを `→` で表示します（`diff` と push の失敗時も同様）。主な状態と対処は次のとおりです。
+主な状態と対処は次のとおりです。
 
 | 状態 | 対処 |
 |---|---|
@@ -449,6 +273,235 @@ eLabFTW の内容
 新規作成の応答が失われた場合は、重複作成を避けるため停止します。サーバー上の記事を確認し、存在すれば `link`、存在しないと確認できた場合だけ `link --new --file <ファイル名>` で再開します。
 
 移行・復元範囲・途中失敗の扱いは [v1.0への移行と復旧](docs/13_MIGRATION_V1.md) を参照してください。
+
+---
+
+## 応用: こういう場面ではこうする
+
+### eLabFTW にある既存プロジェクトをローカルに持ってきたい
+
+```bash
+export ELABFTW_API_KEY="your_key"
+esync clone --url https://elab.example.com --entity items --id 42 --id 43
+```
+
+`elab-clone-42/` にプロジェクトディレクトリ一式（`.elab-sync.yaml`・`.gitignore`・取得した文書）が生成されます。`--dir` で名前を変えられます。
+
+### 別の PC や共同編集者と同じ文書を扱いたい
+
+同期状態（`.elab-sync-ids/`）は PC ごとに持ち、Git では共有しません。別の PC で同じ記事を扱うときは、その PC で記事と文書を紐付けてから使います。紐付けずに push すると、eLabFTW に別の記事として新規作成されます。
+
+**文書を Git で共有していない場合**: eLabFTW から取得します。
+
+```bash
+esync pull --id 42 --id 43 --entity items
+```
+
+**文書を Git で共有している場合**: 既にある文書を記事に紐付けます。
+
+```bash
+esync list                                        # 記事の ID を確認
+esync link 42 --file note.md --target docs        # --file は docs_dir からの相対パス
+esync status                                      # 差分を確認してから push / pull
+```
+
+紐付けた後は、普段どおり作業の前に `esync pull`、後に `esync push` します。eLabFTW の画面で誰かが編集していても、pull で両側の変更をマージできます（同じ箇所の変更はマーカーで残ります）。
+
+### 週報と実験メモを別ディレクトリで管理したい
+
+`.elab-sync.yaml` でターゲットを分ける:
+
+```yaml
+targets:
+  - title: "週報"
+    docs_dir: "weekly_reports/"
+    entity: items
+    tags: ['週報']
+    title_pattern: "*週報*"    # pull 時のタイトル自動振り分け
+
+  - title: "実験メモ"
+    docs_dir: "experiments/"
+    entity: experiments
+```
+
+push 時は各 `docs_dir` から送信され、pull 時はタグやタイトルから適切なディレクトリに自動配置されます。`esync -t 週報` のように `title`（または `docs_dir`）で 1 つのターゲットだけを対象にできます。
+
+### 別チームの eLabFTW にも投稿したい（複数 API キー）
+
+eLabFTW の API キーはチームごとに発行します。プロファイルにキーとチームを登録し、ターゲットで `team`（または `profile`）を指定します。
+
+```yaml
+profiles:
+  cellstats:
+    url: "https://elab.example.com"
+    api_key: "59-xxxx..."
+    team: "CellStats"
+  membrane:
+    url: "https://elab.example.com"
+    api_key: "60-yyyy..."
+    team: "高耐久膜チーム"
+
+targets:
+  - docs_dir: "docs/"
+    team: "CellStats"          # 同じ team のプロファイルのキーで送信
+  - docs_dir: "membrane_docs/"
+    team: "高耐久膜チーム"
+  - docs_dir: "shared_docs/"
+    profile: membrane          # プロファイル名で直接指定することもできる
+    tags: ['共同研究']
+```
+
+プロファイルはコマンドでも追加できます。各キーのチームは `esync whoami` で確認できます。
+
+```bash
+esync profile add team-b --url https://elab.example.com --api-key "team-b-key"
+esync profile list
+esync whoami
+```
+
+push・pull・`tag`・`relate`・`metadata`・`entity-status`・`verify` は、ターゲットごとにその接続先で送信します。`category`・`list`・`new` は `-t` で選んだターゲットの接続先を使います。
+
+### eLabFTW のテンプレートから実験ノートを書き始めたい
+
+```bash
+esync new --list                                  # 実験テンプレートの一覧
+esync new --template-id 3 --title "2026-10-21 培養" -t 実験メモ
+esync push
+```
+
+テンプレートの本文を Markdown に変換し、`-t` のターゲット（省略時は最初のターゲット）の `docs_dir` に保存します。`-o` で保存先を指定できます。
+
+### タグやカテゴリを操作したい
+
+```bash
+esync tag list                                      # 同期済みの全文書のタグ
+esync tag add "重要"                                # 同期済みの全文書に追加
+esync tag add "new-tag" --id 42 --entity items      # 記事を指定
+esync category list --entity items
+esync category set "試薬" --id 42 --entity items
+```
+
+`--id` を省略すると、各ターゲットの同期済み文書に、そのターゲットの接続プロファイルで送信します。`--id` を指定した場合、接続先は `-t` で選んだターゲットのプロファイルです（`-t` を省略すると default、一致するターゲットがなければ何も送信せずエラー）。
+
+```bash
+# 上の例の shared_docs/ 側の記事 #42 にタグを追加
+esync tag -t shared_docs add "new-tag" --id 42 --entity items
+```
+
+push のたびに付けたいタグ・カテゴリは、ターゲットの `tags`・`category` に書きます。push はタグを追加するだけで外さないため、外すときは `esync tag remove` を使います。
+
+### ステータスやメタデータをまとめて変更したい
+
+```bash
+esync entity-status -t 実験メモ show                 # 各文書の現在のステータス
+esync entity-status -t 実験メモ set 2                # 全文書を変更（確認あり）
+esync metadata -t 実験メモ set project=A phase=2     # メタデータ（JSON）に追記
+```
+
+`-t` は `show`・`set` などより前に書きます。ステータスはチーム設定のステータス ID で指定します。`--id 42` で 1 件に絞れますが、`-t` を省略すると全ターゲットそれぞれの #42 が対象になるため、`-t` と組み合わせてください。
+
+### 実験ノートやリソースどうしをリンクしたい
+
+eLabFTW の「リンク」（実験ノート・リソースの関連付け）を張れます。
+
+```bash
+# リソース #42 から実験ノート #12, #15 にリンク
+esync relate add 12 15 --to experiments --id 42 --entity items
+
+# 同期済みの文書はパスで指定できる（リンク元は --from、種別は自動で決まる）
+esync relate add "SPECIFICATION/仕様書.md" --from exp/2026-10-20.md
+
+# リンク一覧・解除（リンク先の記事は消えません）
+esync relate list --from exp/2026-10-20.md
+esync relate remove 15 --to experiments --id 42 --entity items
+```
+
+`--from` の後ろはすべてリンク元になるため、リンク先は `--from` より前に書きます。`--from` も `--id` も省略すると、全ターゲット（`-t` 指定時はそのターゲット）の同期済みの全文書がリンク元になります。
+
+同期する文書に決まったリンクを張りたい場合は、ターゲットに `links` を書きます。push 時に、そのターゲットの全文書から指定した記事へのリンクを追加します（追加のみで、既存のリンクは外しません）。
+
+```yaml
+targets:
+  - docs_dir: "docs/"
+    entity: experiments
+    links:
+      items: [42, 43]        # リソース（resources とも書ける）
+      experiments: [12]      # 実験ノート
+```
+
+指定方法の詳細とエラーの条件は [CLI リファレンスの relate](docs/05_CLI_REFERENCE.md#relate--実験ノートリソース間のリンク)、`links` の挙動（記録・再試行・張り直し）は [設定ファイル仕様の links](docs/04_CONFIGURATION.md#links実験ノートリソースへのリンク) を参照してください。
+
+### リモートに何があるか・何をしたか見たい
+
+```bash
+esync list                        # リソース一覧
+esync list --entity experiments   # 実験ノート一覧
+esync verify                      # 紐付けた記事にアクセスできるか確認
+esync log                         # 最近の push・pull の履歴
+```
+
+### ファイルを既存のエンティティに手動で紐付けたい
+
+```bash
+esync link 42 --file "実験メモ.md"
+```
+
+`--file` は `docs_dir` からの相対パスです。ターゲットが複数ある場合は `--target` も指定します。
+
+### PDF や CSV も一緒に送りたい（添付ファイル）
+
+```yaml
+targets:
+  - docs_dir: "docs/"
+    attachments_dir: "attachments/"
+    entity: items
+```
+
+`attachments/` に置いたファイルが push 時に自動アップロードされます。本文から `[データ](data/result.csv)` のようにリンクしたファイルもアップロードされ、リンクが eLabFTW の URL に変わります。
+
+本文から参照している画像・ファイルを同じ名前のまま差し替えると、push 時に新しい版をアップロードし、本文から参照されなくなった古い版の添付を削除します（`--prune-attachments` は不要）。`--prune-attachments` は、ローカルの `attachments/` にないリモート添付を削除する push のオプションです。削除した添付は esync のバックアップからは復元できません。
+
+画像・動画・ファイルリンク・添付の送信対象は、プロジェクト内の通常ファイルに限定します。プロジェクト外への参照、隠しファイル・隠しディレクトリ、シンボリックリンクは拒否します。[送信制約と復旧](docs/13_MIGRATION_V1.md#バックアップと復元) も参照してください。
+
+### 数式を使いたい
+
+```yaml
+targets:
+  - docs_dir: "docs/"
+    body_format: md    # ← Markdown のまま送信（MathJax でレンダリング）
+```
+
+```markdown
+インライン: $E = mc^2$
+
+ブロック:
+$$\frac{\partial f}{\partial x} = 2x + 1$$
+```
+
+`body_format: md` では、eLabFTW が本文の `<…>`（`array<string>` の `<string>` など）を HTML タグとして削除します。esync は警告を出すので、山かっこを使わない表記に改めてください。
+
+### ファイル間リンクを貼りたい
+
+同期済みの `.md` ファイル同士は、普通の Markdown のリンクで参照できます:
+
+```markdown
+詳しくは [セットアップガイド](./setup.md) を参照。
+```
+
+push 時にローカルリンクが eLabFTW の記事 URL に、pull 時に記事 URL がローカルリンクに変換されます。別のターゲット（`docs_dir`）の文書へのリンクも変換されます（接続先のホストが同じ場合）。未同期の文書へのリンクはそのまま残るので、リンク先を先に push してください。変換の詳細は [同期エンジンの文書間リンクの変換](docs/07_SYNC_ENGINE.md#文書間リンクの変換) を参照してください。
+
+### スクリプトや定期実行で使いたい
+
+```bash
+export ELABFTW_API_KEY="your_key"
+esync pull --auto || echo "要確認（終了コード $?）"
+esync push
+```
+
+- 終了コードは、成功・変更なしで 0、競合・通信失敗・部分失敗で 1、設定や引数の不正で 2 です
+- `pull --auto` は、保存先の振り分けが曖昧でも対話で聞かずにスコア最大のターゲットを選びます
+- `entity-status set` は複数件を変更するとき確認を求めます。自動化では `--id` で 1 件ずつ指定してください
+- 同じプロジェクトで esync が既に動いている場合は「別のesyncが実行中です」で終了します（終了コード 1）
 
 ---
 
@@ -473,7 +526,7 @@ eLabFTW の内容
 esync pull --id 42 --entity items --auto
 ```
 
-マッチするターゲットがない場合、リモートのメタデータから新しいターゲットが `.elab-sync.yaml` に自動追記されます。
+`--dir` で保存先を明示することもできます。マッチするターゲットがない場合、リモートのメタデータから新しいターゲットが `.elab-sync.yaml` に自動追記されます。
 
 ---
 
@@ -485,31 +538,33 @@ esync pull --id 42 --entity items --auto
 
 ## コマンド一覧
 
-| コマンド                              | やること                    |
-| ------------------------------------- | --------------------------- |
-| `esync`                             | push（ローカル → eLabFTW） |
-| `esync push <ファイルパス>`         | 指定した文書だけ push（ディレクトリ・glob・`--regex` も可） |
-| `esync pull`                        | pull（eLabFTW → ローカル） |
-| `esync pull --id 42 --entity items` | 指定 ID を取得              |
-| `esync diff [ファイルパス]`         | 前回の同期からのローカル・eLabFTW の変更を文書ごとに表示 |
-| `esync status`                      | 同期状態を確認              |
-| `esync list`                        | リモート一覧                |
-| `esync clone`                       | プロジェクトを構築          |
-| `esync tag list/add/remove`         | タグ操作                    |
-| `esync category list/show/set`      | カテゴリ操作                |
-| `esync relate list/add/remove`      | 実験ノート・リソース間のリンク操作 |
-| `esync profile list/add/remove`     | 接続プロファイル管理        |
-| `esync link <ID>`                   | 手動紐付け                  |
-| `esync rm <ファイルパス>`           | 追跡解除（`--local` でローカルファイルも削除） |
+| コマンド | やること |
+|---|---|
+| `esync` / `esync push [ファイル]` | push（ローカル → eLabFTW）。ファイル・ディレクトリ・glob・`--regex` で文書を指定可 |
+| `esync pull` | pull（eLabFTW → ローカル）。`--id 42 --entity items` で記事を指定 |
+| `esync status` | 同期状態と次の操作の案内 |
+| `esync diff [ファイル]` | 前回の同期からのローカル・eLabFTW の変更を文書ごとに表示 |
+| `esync clone` | eLabFTW の記事からプロジェクトを構築 |
+| `esync list` | リモート一覧 |
+| `esync link <ID>` | 手動紐付け（`--new` で新規追跡を再開） |
+| `esync rm <ファイル>` | 追跡解除（`--local` でローカルファイルも削除） |
 | `esync mv <旧パス> <新パス>` | 文書と紐付けを移動 |
 | `esync backup list` | バックアップ一覧 |
 | `esync restore <ID>` | ローカル復元・リモート退避データの取り出し |
-| `esync verify`                      | 整合性チェック              |
-| `esync init`                        | 初期設定                    |
-| `esync update`                      | ツール更新                  |
-| `esync --dry-run`                   | 実行せず確認                |
-| `esync --force`                     | 強制同期                    |
-| `esync -t "名前"`                   | 特定ターゲットだけ          |
+| `esync tag list/add/remove` | タグ操作 |
+| `esync category list/show/set` | カテゴリ操作 |
+| `esync relate list/add/remove` | 実験ノート・リソース間のリンク操作 |
+| `esync metadata get/set` | メタデータ操作 |
+| `esync entity-status show/set` | ステータス操作 |
+| `esync new` | 実験テンプレートから文書を作成 |
+| `esync verify` | 紐付けの整合性チェック |
+| `esync log` | 同期ログ表示 |
+| `esync profile list/add/remove` | 接続プロファイル管理 |
+| `esync whoami` | API キーのユーザー・チームを表示 |
+| `esync init` | 初期設定 |
+| `esync update` | ツール更新 |
+
+共通オプション: `--dry-run`（`-n`）実行せず確認、`--force`（`-f`）強制同期、`-t "名前"` 特定ターゲットだけ、`--config`（`-c`）設定ファイル。`esync -t 名前 push` と `esync push -t 名前` のどちらの順でも書けます。全オプションは [CLI リファレンス](docs/05_CLI_REFERENCE.md) を参照してください。
 
 ---
 
@@ -530,43 +585,52 @@ profiles:
     url: "https://elab.example.com"
     api_key: "key-a"
     verify_ssl: true
+    team: "TeamA"        # 任意。ターゲットの team からプロファイルを選ぶのに使う
   team-b:
     url: "https://elab.example.com"
     api_key: "key-b"
     verify_ssl: true
+    team: "TeamB"
 ```
 
-環境変数 `ELABFTW_API_KEY` は default プロファイルの api_key を上書きします。
+環境変数 `ELABFTW_API_KEY` は default プロファイルの api_key を上書きします。記入例は [`.elab-sync.yaml.example`](.elab-sync.yaml.example) にあります。
 
 ### ターゲット設定
 
-| キー                    | 必須      | デフォルト  | 説明                                               |
-| ----------------------- | --------- | ----------- | -------------------------------------------------- |
-| `docs_dir`            | ✅        | —          | Markdown ディレクトリ                              |
+| キー | 必須 | デフォルト | 説明 |
+|---|---|---|---|
+| `docs_dir` | ✅ | — | Markdown ディレクトリ |
 | `title` | — | 空文字 | CLIでターゲットを指定する名前。記事タイトルはファイル名から決定 |
-| `pattern`             | —        | `*.md`    | Glob パターン                                      |
-| `mode` | — | `each` | 1ファイル＝1記事 |
-| `entity`              | —        | `items`   | `items` / `experiments`                        |
-| `profile`             | —        | `default` | 使用する接続プロファイル                           |
-| `tags`                | —        | `[]`      | push 時に自動追加するタグ（pull 振り分けにも使用） |
-| `category`            | —        | —          | push 時のカテゴリ。名前または数字の ID（pull 振り分けにも使用）。一覧 API に出ない（読み取り権限のない）カテゴリは ID で指定 |
-| `links`               | —        | —          | push 時に追加するリンク。`experiments` / `items`（`resources`）ごとの ID のリスト。削除はしない |
-| `title_pattern`       | —        | —          | pull 振り分け用タイトル glob                       |
-| `body_format`         | —        | `html`    | `md` / `html`                                  |
-| `attachments_dir`     | —        | —          | 添付ファイルディレクトリ                           |
-| `attachments_pattern` | —        | `*`       | 添付ファイル glob フィルタ                         |
+| `pattern` | — | `*.md` | Glob パターン |
+| `mode` | — | `each` | 1ファイル＝1記事（`each` のみ） |
+| `entity` | — | `items` | `items`（`resources`） / `experiments` |
+| `profile` | — | `default` | 使用する接続プロファイル |
+| `team` | — | — | 送信先チーム名または ID。`profile` を省略した場合、同じ `team` のプロファイルを使う |
+| `tags` | — | `[]` | push 時に自動追加するタグ（pull 振り分けにも使用） |
+| `category` | — | — | push 時のカテゴリ。名前または数字の ID（pull 振り分けにも使用）。一覧 API に出ない（読み取り権限のない）カテゴリは ID で指定 |
+| `links` | — | — | push 時に追加するリンク。`experiments` / `items`（`resources`）ごとの ID のリスト。削除はしない |
+| `title_pattern` | — | — | pull 振り分け用タイトル glob |
+| `body_format` | — | `html` | `md` / `html`（`esync init` で作ると `md`） |
+| `attachments_dir` | — | — | 添付ファイルディレクトリ |
+| `attachments_pattern` | — | `*` | 添付ファイル glob フィルタ |
+| `id_file` | — | `.elab-sync-ids/{docs_dir}/default.id` | 状態ディレクトリの指定（このパスの親ディレクトリを使う） |
+
+詳細は [設定ファイル仕様](docs/04_CONFIGURATION.md) を参照してください。
 
 ---
 
 ## トラブルシューティング
 
-| メッセージ                       | やること                               |
-| -------------------------------- | -------------------------------------- |
-| `API キーが設定されていません` | `.elab-sync.yaml` の api_key を確認  |
-| `設定ファイルが見つかりません` | `esync init` を実行                  |
-| `ファイルがありません`         | `docs_dir` に `.md` ファイルを置く |
+| メッセージ | やること |
+|---|---|
+| `API キーが設定されていません` | `.elab-sync.yaml` の api_key を確認 |
+| `設定ファイルが見つかりません` | `esync init` を実行 |
+| `… に一致するファイルがありません` | `docs_dir` に `.md` ファイルを置く |
 | タイムアウト | 状態と未完了記録を確認して再実行。記事の作成結果が不明ならlist/linkで確認 |
-| `警告: eLabFTW が本文の <…> を削除しました` | eLabFTW が `array<string>` の `<string>` などをタグとして消しています。eLabFTW 側では失われ、pull でも戻りません。ローカルの原稿で表記を見直して再度 push（解消するまで「送信待ち」のまま） |
+| `警告: eLabFTW が本文の <…> を削除しました` | eLabFTW が `array<string>` の `<string>` などをタグとして消しています（コードで囲んでも消えます）。eLabFTW 側では失われ、pull でも戻りません。ローカルの原稿で山かっこを使わない表記に改めて再度 push（解消するまで「送信待ち」のまま） |
+| `別のesyncが実行中です` | 同じプロジェクトで実行中の esync の終了を待って再実行 |
+
+その他のエラーは [トラブルシューティング](docs/09_TROUBLESHOOTING.md) を参照してください。
 
 ### `esync update` したのにバージョンが古いまま
 
