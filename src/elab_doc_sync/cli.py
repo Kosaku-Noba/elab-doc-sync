@@ -1286,11 +1286,11 @@ def cmd_metadata(args):
     config_path = Path(args.config)
     project_root = config_path.parent or Path(".")
     config = load_config(config_path)
-    client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
 
     for target in config.targets:
         if not _matches_target(target, args.target):
             continue
+        client = _make_client_for_target(config, target)
         syncer = _make_syncer(client, target, project_root)
         ids = _get_entity_ids(client, syncer, target, getattr(args, "id", None))
         if not ids:
@@ -1378,7 +1378,7 @@ def cmd_new(args):
     config_path = Path(args.config)
     project_root = config_path.parent or Path(".")
     config = load_config(config_path)
-    client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
+    client = _direct_client(config, args.target)
 
     if args.list_templates:
         templates = client._req("GET", "/api/v2/experiments_templates").json()
@@ -1405,7 +1405,7 @@ def cmd_new(args):
         # --target で指定されたターゲット、なければ最初のターゲットの docs_dir
         target = None
         if args.target:
-            target = next((t for t in config.targets if t.title == args.target), None)
+            target = next((t for t in config.targets if _matches_target(t, args.target)), None)
         if not target and config.targets:
             target = config.targets[0]
         if target:
@@ -1426,7 +1426,7 @@ def cmd_list(args):
     """リモートのリソース/実験ノート一覧を表示する。"""
     config_path = Path(args.config)
     config = load_config(config_path)
-    client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
+    client = _direct_client(config, args.target)
     entity_type = _normalize_entity(args.entity_type or "items")
     limit = args.limit or 20
     if entity_type == "items":
@@ -1732,12 +1732,12 @@ def cmd_verify(args):
     config_path = Path(args.config)
     project_root = config_path.parent or Path(".")
     config = load_config(config_path)
-    client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
     issues = 0
 
     for target in config.targets:
         if not _matches_target(target, args.target):
             continue
+        client = _make_client_for_target(config, target)
         syncer = _make_syncer(client, target, project_root)
 
         if target.mode == "each":
@@ -1856,38 +1856,39 @@ def cmd_entity_status(args):
     config_path = Path(args.config)
     project_root = config_path.parent or Path(".")
     config = load_config(config_path)
-    client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
 
+    # (client, eid, etype): 各ターゲットの接続プロファイルで送信する
     all_ids = []
     for target in config.targets:
         if not _matches_target(target, args.target):
             continue
+        client = _make_client_for_target(config, target)
         syncer = _make_syncer(client, target, project_root)
         target_id = getattr(args, "id", None)
         ids = _get_entity_ids(client, syncer, target, target_id)
         if not ids:
             print(f"  [{target.title or target.docs_dir}] 同期済みエンティティなし")
             continue
-        all_ids.extend(ids)
+        all_ids.extend((client, eid, etype) for eid, etype in ids)
 
     if not all_ids:
         return
 
     if args.status_action == "show":
-        for eid, etype in all_ids:
+        for client, eid, etype in all_ids:
             entity = client.get_entity(etype, eid)
             status_name = entity.get("status_title") or entity.get("status", {}).get("title", "不明")
             print(f"  {_entity_label(etype)} #{eid}: {status_name}")
     elif args.status_action == "set":
         if len(all_ids) > 1 and not getattr(args, "id", None):
             print(f"  対象: {len(all_ids)} 件のエンティティ")
-            for eid, etype in all_ids:
+            for _, eid, etype in all_ids:
                 print(f"    - {_entity_label(etype)} #{eid}")
             answer = input("  全て変更しますか？ [y/N]: ").strip().lower()
             if answer != "y":
                 print("  中断しました")
                 return
-        for eid, etype in all_ids:
+        for client, eid, etype in all_ids:
             client.patch_entity(etype, eid, status=int(args.status_id))
             print(f"  {_entity_label(etype)} #{eid}: ステータスを変更しました")
 
@@ -1895,7 +1896,7 @@ def cmd_entity_status(args):
 def cmd_category(args):
     config_path = Path(args.config)
     config = load_config(config_path)
-    client = ELabFTWClient(config.url, config.api_key, config.verify_ssl)
+    client = _direct_client(config, args.target)
     project_root = config_path.parent or Path(".")
 
     direct_id = getattr(args, "id", None)
@@ -1950,6 +1951,13 @@ def main():
     common.add_argument("--force", "-f", action="store_true", help="変更がなくても強制同期 / pull 時は既存ファイルを上書き")
     common.add_argument("--dry-run", "-n", action="store_true", help="実行せずに同期内容を確認")
     common.add_argument("--prune-attachments", action="store_true", help="ローカルに存在しないリモート添付を削除")
+    # サブコマンド側の既定値が `esync -t X push` の -t を上書きしないよう、既定値を持たない複製を使う
+    sub_common = argparse.ArgumentParser(add_help=False, argument_default=argparse.SUPPRESS)
+    sub_common.add_argument("--config", "-c", help="設定ファイルのパス（デフォルト: .elab-sync.yaml）")
+    sub_common.add_argument("--target", "-t", help="同期するターゲット名（指定しない場合は全ターゲット）")
+    sub_common.add_argument("--force", "-f", action="store_true", help="変更がなくても強制同期 / pull 時は既存ファイルを上書き")
+    sub_common.add_argument("--dry-run", "-n", action="store_true", help="実行せずに同期内容を確認")
+    sub_common.add_argument("--prune-attachments", action="store_true", help="ローカルに存在しないリモート添付を削除")
 
     from importlib.metadata import version as _pkg_version
     try:
@@ -1967,34 +1975,34 @@ def main():
     parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {_version}")
 
     sub = parser.add_subparsers(dest="command")
-    sub.add_parser("status", help="同期状態を確認", parents=[common])
-    push_parser = sub.add_parser("push", help="ローカル → eLabFTW に同期（esync と同じ）", parents=[common])
+    sub.add_parser("status", help="同期状態を確認", parents=[sub_common])
+    push_parser = sub.add_parser("push", help="ローカル → eLabFTW に同期（esync と同じ）", parents=[sub_common])
     push_parser.add_argument("files", nargs="*", help="同期するファイル・ディレクトリ・glob（カレントディレクトリ基準、複数指定可。省略時は全文書）")
     push_parser.add_argument("--regex", action="append", help="同期するファイル名に部分一致する正規表現（複数指定可）")
-    sub.add_parser("init", help="対話的に設定ファイルを作成", parents=[common])
-    diff_parser = sub.add_parser("diff", help="前回の同期からのローカルと eLabFTW の変更を表示", parents=[common])
+    sub.add_parser("init", help="対話的に設定ファイルを作成", parents=[sub_common])
+    diff_parser = sub.add_parser("diff", help="前回の同期からのローカルと eLabFTW の変更を表示", parents=[sub_common])
     diff_parser.add_argument("files", nargs="*", help="表示するファイル・ディレクトリ・glob（push と同じ指定。省略時は全文書）")
     diff_parser.add_argument("--regex", action="append", help="表示するファイル名に部分一致する正規表現（複数指定可）")
     sub.add_parser("update", help="ツールを最新版に更新")
 
-    pull_parser = sub.add_parser("pull", help="eLabFTW からエンティティを取得してローカルに保存", parents=[common])
+    pull_parser = sub.add_parser("pull", help="eLabFTW からエンティティを取得してローカルに保存", parents=[sub_common])
     pull_parser.add_argument("--id", type=int, action="append", default=None, help="取得するエンティティ ID（複数指定可）")
     pull_parser.add_argument("--entity", default=None, choices=["items", "experiments", "resources"],
                              help="エンティティ種別（resources は items のエイリアス）")
     pull_parser.add_argument("--dir", default=None, help="保存先ディレクトリ（未指定時は自動振り分け）")
     pull_parser.add_argument("--auto", action="store_true", help="曖昧な振り分けもスコア最大で自動決定")
 
-    log_parser = sub.add_parser("log", help="同期ログを表示", parents=[common])
+    log_parser = sub.add_parser("log", help="同期ログを表示", parents=[sub_common])
     log_parser.add_argument("--limit", "-l", type=int, default=20, help="表示件数（デフォルト: 20）")
 
-    clone_parser = sub.add_parser("clone", help="eLabFTW からプロジェクトを構築", parents=[common])
+    clone_parser = sub.add_parser("clone", help="eLabFTW からプロジェクトを構築", parents=[sub_common])
     clone_parser.add_argument("--url", required=True, help="eLabFTW の URL")
     clone_parser.add_argument("--id", type=int, action="append", required=True, help="取得するエンティティ ID（複数指定可）")
     clone_parser.add_argument("--dir", default=None, help="プロジェクトディレクトリ名")
     clone_parser.add_argument("--entity", default="items", choices=["items", "experiments", "resources"], help="エンティティ種別")
     clone_parser.add_argument("--no-verify", action="store_true", help="SSL 検証を無効化")
 
-    tag_parser = sub.add_parser("tag", help="タグを管理", parents=[common])
+    tag_parser = sub.add_parser("tag", help="タグを管理", parents=[sub_common])
     tag_sub = tag_parser.add_subparsers(dest="tag_action")
     tag_list_p = tag_sub.add_parser("list", help="タグ一覧を表示")
     tag_list_p.add_argument("--id", type=int, default=None, help="エンティティ ID")
@@ -2008,7 +2016,7 @@ def main():
     tag_rm_p.add_argument("--id", type=int, default=None, help="エンティティ ID")
     tag_rm_p.add_argument("--entity", default=None, choices=["items", "experiments", "resources"], help="items / experiments / resources")
 
-    relate_parser = sub.add_parser("relate", help="実験ノート・リソース間のリンクを管理", parents=[common])
+    relate_parser = sub.add_parser("relate", help="実験ノート・リソース間のリンクを管理", parents=[sub_common])
     relate_sub = relate_parser.add_subparsers(dest="relate_action", required=True)
     relate_list_p = relate_sub.add_parser("list", help="リンク一覧を表示")
     relate_add_p = relate_sub.add_parser("add", help="リンクを追加（複数指定可）")
@@ -2025,17 +2033,17 @@ def main():
         p.add_argument("--id", type=int, default=None, help="リンク元エンティティ ID（省略時は同期済みの全文書）")
         p.add_argument("--entity", default=None, choices=["items", "experiments", "resources"], help="リンク元の種別")
 
-    meta_parser = sub.add_parser("metadata", help="メタデータを管理", parents=[common])
+    meta_parser = sub.add_parser("metadata", help="メタデータを管理", parents=[sub_common])
     meta_sub = meta_parser.add_subparsers(dest="meta_action")
     meta_sub.add_parser("get", help="メタデータを表示")
     meta_set_p = meta_sub.add_parser("set", help="メタデータを設定")
     meta_set_p.add_argument("keyvalues", nargs="+", help="key=value ペア")
     meta_set_p.add_argument("--id", type=int, default=None, help="エンティティ ID")
 
-    estatus_parser = sub.add_parser("entity-status", help="エンティティのステータスを管理", parents=[common])
+    estatus_parser = sub.add_parser("entity-status", help="エンティティのステータスを管理", parents=[sub_common])
     sub.add_parser("whoami", help="現在のユーザー情報を表示")
 
-    cat_parser = sub.add_parser("category", help="カテゴリを管理", parents=[common])
+    cat_parser = sub.add_parser("category", help="カテゴリを管理", parents=[sub_common])
     cat_sub = cat_parser.add_subparsers(dest="cat_action")
     cat_list_p = cat_sub.add_parser("list", help="カテゴリ一覧を表示")
     cat_list_p.add_argument("--entity", default=None, choices=["items", "experiments", "resources"], help="items / experiments / resources")
@@ -2047,32 +2055,32 @@ def main():
     cat_set_p.add_argument("--id", type=int, required=True, help="エンティティ ID")
     cat_set_p.add_argument("--entity", required=True, choices=["items", "experiments", "resources"], help="items / experiments / resources")
 
-    new_parser = sub.add_parser("new", help="テンプレートから新規ドキュメントを作成", parents=[common])
+    new_parser = sub.add_parser("new", help="テンプレートから新規ドキュメントを作成", parents=[sub_common])
     new_parser.add_argument("--list", dest="list_templates", action="store_true", help="テンプレート一覧を表示")
     new_parser.add_argument("--template-id", type=int, default=None, help="テンプレート ID")
     new_parser.add_argument("--title", default=None, help="ファイルのタイトル（省略時はテンプレート名）")
     new_parser.add_argument("--output", "-o", default=None, help="出力ファイルパス")
 
-    list_parser = sub.add_parser("list", help="リモートのリソース/実験ノート一覧を表示", parents=[common])
+    list_parser = sub.add_parser("list", help="リモートのリソース/実験ノート一覧を表示", parents=[sub_common])
     list_parser.add_argument("--entity", dest="entity_type", default="items", choices=["items", "experiments", "resources"], help="エンティティ種別")
     list_parser.add_argument("--limit", type=int, default=20, help="表示件数（デフォルト: 20）")
 
-    link_parser = sub.add_parser("link", help="既存リモートエンティティとローカルを紐付け", parents=[common])
+    link_parser = sub.add_parser("link", help="既存リモートエンティティとローカルを紐付け", parents=[sub_common])
     link_parser.add_argument("entity_id", type=int, nargs="?", help="リモートエンティティ ID")
     link_parser.add_argument("--file", default=None, help="紐付けるローカルファイル名（each モード時）")
 
     link_parser.add_argument("--new", action="store_true", help="対応するリモート記事が存在しないと確認後、新規追跡を再開")
 
-    rm_parser = sub.add_parser("rm", help="文書を保持して追跡解除し、今後の同期から除外", parents=[common])
+    rm_parser = sub.add_parser("rm", help="文書を保持して追跡解除し、今後の同期から除外", parents=[sub_common])
     rm_parser.add_argument("files", nargs="*", help="解除するファイル・ディレクトリ・glob（カレントディレクトリ基準、複数指定可）")
     rm_parser.add_argument("--regex", action="append", help="ファイル名に部分一致する正規表現（複数指定可）")
     rm_parser.add_argument("--id", type=int, action="append", help="解除するリモート ID（複数指定可）")
     rm_parser.add_argument("--entity", choices=["items", "experiments", "resources"], help="ID のエンティティ種別")
     rm_parser.add_argument("--local", action="store_true", help="対象のローカル Markdown ファイルも削除する")
 
-    sub.add_parser("verify", help="ローカルとリモートの整合性チェック", parents=[common])
+    sub.add_parser("verify", help="ローカルとリモートの整合性チェック", parents=[sub_common])
 
-    profile_parser = sub.add_parser("profile", help="接続プロファイルを管理", parents=[common])
+    profile_parser = sub.add_parser("profile", help="接続プロファイルを管理", parents=[sub_common])
     profile_sub = profile_parser.add_subparsers(dest="profile_action")
     profile_sub.add_parser("list", help="プロファイル一覧を表示")
     profile_add_p = profile_sub.add_parser("add", help="プロファイルを追加")
@@ -2089,11 +2097,11 @@ def main():
     estatus_set_p.add_argument("status_id", help="ステータス ID")
     estatus_set_p.add_argument("--id", type=int, default=None, help="対象エンティティ ID（省略時は全同期済みエンティティ）")
 
-    backup_parser = sub.add_parser("backup", help="バックアップ一覧", parents=[common])
+    backup_parser = sub.add_parser("backup", help="バックアップ一覧", parents=[sub_common])
     backup_parser.add_argument("backup_action", choices=["list"])
-    restore_parser = sub.add_parser("restore", help="ローカルバックアップを復元", parents=[common])
+    restore_parser = sub.add_parser("restore", help="ローカルバックアップを復元", parents=[sub_common])
     restore_parser.add_argument("backup_id")
-    mv_parser = sub.add_parser("mv", help="文書と紐付けを移動", parents=[common])
+    mv_parser = sub.add_parser("mv", help="文書と紐付けを移動", parents=[sub_common])
     mv_parser.add_argument("old")
     mv_parser.add_argument("new")
 

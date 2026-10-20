@@ -87,7 +87,7 @@ targets:
 2. `team` があれば、同じ `team` を持つプロファイルを使う（チーム名は大文字小文字を区別せず、数字は ID として比較）。見つからなければ警告を出して次へ
 3. `profile`（既定 `default`）のプロファイル、なければ既定の接続先
 
-push・pull・`tag`・`relate` はターゲットごとにこの接続先で送信する。
+push・pull・`tag`・`relate`・`metadata`・`entity-status`・`verify` はターゲットごとにこの接続先で送信する。`category`・`list`・`new` は `-t` で選んだターゲットの接続先（`-t` 省略時は既定の接続先）を使う。
 
 ### category
 

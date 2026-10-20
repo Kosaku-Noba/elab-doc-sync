@@ -2100,3 +2100,72 @@ def test_cmd_relate_from_accepts_shell_expanded_paths(tmp_path, monkeypatch):
     # 自分自身（詳細.md → 詳細.md）は飛ばす
     assert clients["https://server-a.com"].add_link.call_args_list == [
         call("items", 42, "items", 43), call("experiments", 7, "items", 43)]
+
+
+@pytest.mark.parametrize("command,action", [
+    (cmd_metadata, dict(meta_action="set", keyvalues=["k=v"])),
+    (cmd_entity_status, dict(status_action="set", status_id="2")),
+    (cmd_verify, dict()),
+])
+def test_per_target_commands_use_each_target_profile(tmp_path, monkeypatch, command, action):
+    """metadata・entity-status・verify も各ターゲットの接続プロファイルで送信する。"""
+    cfg, clients, factory = _write_two_profile_config(tmp_path)
+    for sub in ("docs", "team_b"):
+        (tmp_path / sub).mkdir()
+        (tmp_path / sub / "x.md").write_text("# x\n", encoding="utf-8")
+    monkeypatch.setattr("builtins.input", lambda _: "y")
+    with patch("elab_doc_sync.cli.ELabFTWClient", side_effect=factory):
+        for url in ("https://server-a.com", "https://server-b.com"):
+            factory(url, "").get_metadata.return_value = {}
+            factory(url, "").get_metadata_raw.return_value = None
+        command(Namespace(config=str(cfg), target=None, force=False, id=None, **action))
+    a, b = clients["https://server-a.com"], clients["https://server-b.com"]
+    if command is cmd_metadata:
+        a.update_metadata.assert_called_once_with("items", 1, {"k": "v"})
+        b.update_metadata.assert_called_once_with("items", 2, {"k": "v"})
+    elif command is cmd_entity_status:
+        a.patch_entity.assert_called_once_with("items", 1, status=2)
+        b.patch_entity.assert_called_once_with("items", 2, status=2)
+    else:
+        a.get_entity.assert_called_once_with("items", 1)
+        b.get_entity.assert_called_once_with("items", 2)
+
+
+@pytest.mark.parametrize("command,action", [
+    (cmd_category, dict(cat_action="show", id=50, entity="items")),
+    (cmd_list, dict(entity_type="items", limit=5)),
+    (cmd_new, dict(list_templates=True, template_id=None, title=None, output=None)),
+])
+def test_direct_commands_use_selected_target_profile(tmp_path, command, action):
+    """category・list・new は -t で選んだターゲットのプロファイルを使い、不明な -t では送信しない。"""
+    cfg, clients, factory = _write_two_profile_config(tmp_path)
+    with patch("elab_doc_sync.cli.ELabFTWClient", side_effect=factory):
+        command(Namespace(config=str(cfg), target="B", force=False, **action))
+        assert list(clients) == ["https://server-b.com"]
+        clients.clear()
+        with pytest.raises(ValueError, match="B-typo"):
+            command(Namespace(config=str(cfg), target="B-typo", force=False, **action))
+    assert clients == {}
+
+
+def test_common_options_before_subcommand_are_kept(tmp_path, monkeypatch):
+    """esync -t B tag ... のように共通オプションをサブコマンドより前に書いても無視しない。"""
+    from elab_doc_sync.cli import main
+    cfg, clients, factory = _write_two_profile_config(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["esync", "--config", str(cfg), "-t", "B", "tag", "add", "x"])
+    with patch("elab_doc_sync.cli.ELabFTWClient", side_effect=factory):
+        main()
+    assert list(clients) == ["https://server-b.com"]
+    clients["https://server-b.com"].add_tag.assert_called_once_with("items", 2, "x")
+
+
+def test_subcommand_options_override_options_before_it(tmp_path, monkeypatch):
+    """サブコマンドの後に書いた共通オプションが優先される。"""
+    from elab_doc_sync.cli import main
+    cfg, clients, factory = _write_two_profile_config(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["esync", "-t", "A", "tag", "--config", str(cfg), "-t", "B", "add", "x"])
+    with patch("elab_doc_sync.cli.ELabFTWClient", side_effect=factory):
+        main()
+    assert list(clients) == ["https://server-b.com"]

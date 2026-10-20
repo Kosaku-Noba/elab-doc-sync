@@ -353,3 +353,25 @@ def test_config_links_invalid(tmp_path, links):
     p.write_text(yaml.dump(data), encoding="utf-8")
     with pytest.raises(SystemExit):
         load_config(p)
+
+
+def test_env_api_key_keeps_default_profile_team(tmp_path, monkeypatch):
+    """ELABFTW_API_KEY で default の api_key を上書きしても team は残る。"""
+    from elab_doc_sync.config import get_client_for_target
+    monkeypatch.setenv("ELABFTW_API_KEY", "env-key")
+    p = _write_config(tmp_path, {
+        "profiles": {"default": {"url": "https://a.example", "api_key": "file-key", "team": "TeamA"},
+                     "other": {"url": "https://b.example", "api_key": "key-b", "team": "TeamB"}},
+        "targets": [{"docs_dir": "docs/", "team": "TeamA"}],
+    })
+    cfg = load_config(p)
+    assert cfg.profiles["default"].team == "TeamA"
+    assert get_client_for_target(cfg, cfg.targets[0]) == ("https://a.example", "env-key", True)
+
+
+def test_init_template_gitignore_lists_all_local_state():
+    """init で置く .gitignore に、clone と同じ同期用のローカルファイルを含める。"""
+    text = (Path(__file__).resolve().parents[1] / "template" / ".gitignore").read_text(encoding="utf-8")
+    for entry in (".elab-sync.yaml", ".elab-sync-ids/", ".elab-sync-backups/",
+                  ".elab-sync-operations/", ".elab-sync-recovery.json"):
+        assert entry in text.splitlines()

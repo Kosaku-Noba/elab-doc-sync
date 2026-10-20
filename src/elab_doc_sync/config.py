@@ -153,6 +153,7 @@ def load_config(config_path: Path) -> Config:
                 url=profiles["default"].url,
                 api_key=env_key,
                 verify_ssl=profiles["default"].verify_ssl,
+                team=profiles["default"].team,
             )
 
     # url / api_key のバリデーション（default プロファイルベース）

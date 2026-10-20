@@ -65,5 +65,5 @@
 | 双方向同期 | 自動の双方向同期はしない（push と pull は独立操作。両側の変更は pull で 3-way マージ） |
 | リトライ | アップロードのみ1回自動リトライ（Timeout/5xx） |
 | レート制限 | 未実装（eLabFTW 側の制限に依存） |
-| プロファイル切替 | ターゲット単位（push・pull・`tag`・`relate`）。`metadata`・`entity-status`・`category`・`list`・`verify`・`new` は default の接続先のみ |
+| プロファイル切替 | ターゲット単位。`category`・`list`・`new` は `-t` で選んだターゲットの接続先 |
 | 削除済み記事 | eLabFTW 5.5 は DELETE 後も GET が `state=3` を返す。リソース・実験ノートの取得ではこれを 404 と同じ「リモート削除」として扱う |

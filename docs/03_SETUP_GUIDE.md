@@ -58,7 +58,7 @@ elabftw:
 
 ## ④ Git 管理から除外する
 
-設定ファイルには API キーが含まれる場合があるため、次を Git 管理対象外にする。`esync clone` が生成する `.gitignore` にはすべて含まれる。`esync init` は一覧を表示するが、テンプレートの `.gitignore` には `.elab-sync.yaml` と `.elab-sync-ids/` しか含まれないため、残りは手動で追記する。
+設定ファイルには API キーが含まれる場合があるため、次を Git 管理対象外にする。`esync init` / `esync clone` が生成する `.gitignore` にはすべて含まれる（`esync init` は既存の `.gitignore` を上書きしないため、既にある場合は手動で追記する）。
 
 ```gitignore
 .elab-sync.yaml

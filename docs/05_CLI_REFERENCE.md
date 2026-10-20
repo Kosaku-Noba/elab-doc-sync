@@ -190,7 +190,7 @@ esync clone --url URL --entity TYPE --id ID [--dir DIR] [--no-verify]
 
 ## グローバルオプション
 
-サブコマンドの直後（`tag` などは下位の `add` などの前）に書きます（`update`・`whoami` を除く）。サブコマンドを省略した push では `esync` の直後に書きます。`esync -t X push` のようにサブコマンドより前に書くと無視されるので注意してください。各コマンドで意味を持つものだけが効きます。
+`esync` の直後（`esync -t X push`）またはサブコマンドの直後（`esync push -t X`。`tag` などは下位の `add` などの前）に書きます（`update`・`whoami` を除く）。両方に書いた場合はサブコマンドの後の値が優先されます。各コマンドで意味を持つものだけが効きます。
 
 - `--dry-run` に対応するのは push・pull・`clone`・`rm`・`mv`・`link`・`restore` です（`status`・`diff` などの読み取りコマンドでは効果がありません）。`init`・`new`・`profile add/remove`・`tag add/remove`・`relate add/remove`・`metadata set`・`entity-status set`・`category set` に付けると、何もせずエラー（終了コード 2）になります
 - `--force` は push・pull で使います（`new` では既存ファイルの上書き）
@@ -283,7 +283,7 @@ esync category set "試薬" --id 42 --entity items
 esync category set 7 --id 42 --entity experiments
 ```
 
-`list` の `--entity` を省略するとリソース（items）のカテゴリを表示します。読み取り権限のないカテゴリは一覧に表示されません（記事のカテゴリは `show` で確認できます）。`set` には名前または数字の ID を指定できます。記事のカテゴリが既に目的の値なら、変更せず成功として扱います。default の接続先を使います。
+`list` の `--entity` を省略するとリソース（items）のカテゴリを表示します。読み取り権限のないカテゴリは一覧に表示されません（記事のカテゴリは `show` で確認できます）。`set` には名前または数字の ID を指定できます。記事のカテゴリが既に目的の値なら、変更せず成功として扱います。接続先は `-t` で選んだターゲットのプロファイル（`-t` 省略時は既定の接続先）で、`-t` に一致するターゲットがなければ何も送信せずエラー（終了コード 2）になります。
 
 ## metadata — メタデータ操作
 
@@ -292,7 +292,7 @@ esync metadata get
 esync metadata -t "週報" set key1=value1 key2=value2 --id 42
 ```
 
-`--id` を省略すると、各ターゲット（`-t` で限定可）の同期済みの全文書が対象です。`--id` は `--entity` を取らず、対象の各ターゲットの `entity` の記事として扱います。`-t` を省略すると、全ターゲットそれぞれの種別の #42（items と experiments のターゲットがあれば両方）を変更するため、`-t` でターゲットを 1 つに絞ってください（`-t` は `set` などの前に書く）。`set` は既存のメタデータ（JSON）に `key=value` を追記・上書きします。既存のメタデータが読めない場合は警告を出して上書きします。default の接続先を使います。
+`--id` を省略すると、各ターゲット（`-t` で限定可）の同期済みの全文書が対象です。`--id` は `--entity` を取らず、対象の各ターゲットの `entity` の記事として扱います。`-t` を省略すると、全ターゲットそれぞれの種別の #42（items と experiments のターゲットがあれば両方）を変更するため、`-t` でターゲットを 1 つに絞ってください（`-t` は `set` などの前に書く）。`set` は既存のメタデータ（JSON）に `key=value` を追記・上書きします。既存のメタデータが読めない場合は警告を出して上書きします。各ターゲットの接続プロファイルで送信します。
 
 ## entity-status — ステータス操作
 
@@ -302,7 +302,7 @@ esync entity-status -t "週報" set 2 --id 42
 esync entity-status set 2          # 複数件なら確認プロンプト
 ```
 
-ステータスはチーム設定の ID で指定します（名前は不可）。`--id` を省略して複数の文書が対象になる場合は、確認してから変更します。`--id` の扱いは `metadata` と同じで、`-t` を省略すると全ターゲットそれぞれの種別の同じ ID を確認なしで変更します。default の接続先を使います。
+ステータスはチーム設定の ID で指定します（名前は不可）。`--id` を省略して複数の文書が対象になる場合は、確認してから変更します。`--id` の扱いは `metadata` と同じで、`-t` を省略すると全ターゲットそれぞれの種別の同じ ID を確認なしで変更します。各ターゲットの接続プロファイルで送信します。
 
 ## list — リモート一覧
 
@@ -311,7 +311,7 @@ esync list                         # リソース 20 件
 esync list --entity experiments --limit 100
 ```
 
-`--entity` は `items`（既定）/ `experiments` / `resources`。サーバー側の表示件数に制限される場合があります。default の接続先を使います。
+`--entity` は `items`（既定）/ `experiments` / `resources`。サーバー側の表示件数に制限される場合があります。接続先は `category` と同じく `-t` で選びます。
 
 ## verify — 整合性チェック
 
@@ -319,7 +319,7 @@ esync list --entity experiments --limit 100
 esync verify [-t TARGET]
 ```
 
-紐付けごとに、ローカルファイルの存在とリモート記事の取得可否を確認します。問題があれば `⚠` で表示します。default の接続先を使います。
+紐付けごとに、ローカルファイルの存在とリモート記事の取得可否を確認します。問題があれば `⚠` で表示します。各ターゲットの接続プロファイルで確認します。
 
 ## profile — 接続プロファイル
 
@@ -346,7 +346,7 @@ esync new --list
 esync new --template-id 3 [--title "名前"] [-o path/to/file.md] [-t "ターゲット名"] [--force]
 ```
 
-eLabFTW の実験テンプレート（`experiments_templates`）の本文を Markdown に変換して保存します。`-o` を省略すると、`-t` の `title` に一致するターゲット（なければ最初のターゲット）の `docs_dir` にタイトル名のファイルを作ります。既存ファイルは `--force` なしでは上書きしません。
+eLabFTW の実験テンプレート（`experiments_templates`）の本文を Markdown に変換して保存します。`-o` を省略すると、`-t`（`title` または `docs_dir`）に一致するターゲット（`-t` 省略時は最初のターゲット）の `docs_dir` にタイトル名のファイルを作ります。テンプレートは `category` と同じく `-t` で選んだ接続先から取得します。既存ファイルは `--force` なしでは上書きしません。
 
 ## log — 同期ログ
 

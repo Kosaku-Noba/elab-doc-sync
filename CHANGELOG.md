@@ -1,5 +1,15 @@
 # Changelog
 
+## 未リリース
+
+### 修正
+
+- `esync -t X push` のように共通オプション（`-t`・`-c`・`-f`・`-n`・`--prune-attachments`）をサブコマンドより前に書くと、エラーにならずに無視されていた。サブコマンドの前後どちらに書いても効くようにした（両方に書いた場合はサブコマンドの後の値を使う）。
+- `esync metadata`・`esync entity-status`・`esync verify` が、ターゲットの接続プロファイル（`profile` / `team`）を無視してデフォルトの接続先に送信していた。各ターゲットのプロファイルで送信するようにした（v1.1.0 で `esync tag` を直したのと同じ問題）。
+- `esync category`・`esync list`・`esync new` は、`-t` で選んだターゲットの接続先を使うようにした。一致するターゲットがなければ何も送信せずエラー（終了コード 2）にする。`esync new` の `-t` は `docs_dir` でも指定できるようにした。
+- `profiles` に `default` があるときに環境変数 `ELABFTW_API_KEY` を設定すると、`default` プロファイルの `team` が失われていた。
+- `esync init` で作る `.gitignore` に `.elab-sync-backups/`・`.elab-sync-operations/`・`.elab-sync-recovery.json` が含まれていなかった。`esync clone` と同じ 5 項目を含めるようにした。
+
 ## v1.1.2 (2026-10-20)
 
 ### 修正
