@@ -51,6 +51,10 @@
 #   verify_ssl: false
 #
 # targets:
+#   # 紐付け・同期状態は docs_dir ごとに .elab-sync-ids/<docs_dir>/ へ自動で分けて保存される。
+#   # id_file を指定する場合は、ターゲットごとに親ディレクトリを分けること
+#   # （例: .elab-sync-ids/overview/default.id）。
+#
 #   # プロジェクトのドキュメントを 1 ファイル = 1 アイテムで送る
 #   - title: "プロジェクト概要"
 #     docs_dir: "docs/"
@@ -58,7 +62,6 @@
 #     mode: each
 #     entity: items
 #     body_format: md            # md: Markdown のまま送信（デフォルト） / html: HTML に変換して送信
-#     id_file: ".elab-sync-ids/overview.id"
 #     attachments_dir: "attachments/"  # 画像以外の添付ファイルディレクトリ（省略可）
 #     tags:                      # push 時に自動追加するタグ（追記のみ）
 #       - "プロジェクトA"
@@ -69,7 +72,6 @@
 #     pattern: "*.md"
 #     mode: each
 #     entity: experiments
-#     id_file: ".elab-sync-ids/experiments.id"
 #
 #   # 特定のディレクトリのファイルだけ送る
 #   - title: "HPO 実験まとめ"
@@ -77,7 +79,6 @@
 #     pattern: "*HPO*.md"
 #     mode: each
 #     entity: items
-#     id_file: ".elab-sync-ids/hpo.id"
 
 elabftw:
   url: "https://your-elabftw.example.com"
