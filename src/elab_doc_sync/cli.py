@@ -1857,7 +1857,7 @@ def cmd_entity_status(args):
     project_root = config_path.parent or Path(".")
     config = load_config(config_path)
 
-    # (client, eid, etype): 各ターゲットの接続プロファイルで送信する
+    # (client, ターゲット名, eid, etype): 各ターゲットの接続プロファイルで送信し、表示で接続先を区別する
     all_ids = []
     for target in config.targets:
         if not _matches_target(target, args.target):
@@ -1869,28 +1869,29 @@ def cmd_entity_status(args):
         if not ids:
             print(f"  [{target.title or target.docs_dir}] 同期済みエンティティなし")
             continue
-        all_ids.extend((client, eid, etype) for eid, etype in ids)
+        label = target.title or target.docs_dir
+        all_ids.extend((client, label, eid, etype) for eid, etype in ids)
 
     if not all_ids:
         return
 
     if args.status_action == "show":
-        for client, eid, etype in all_ids:
+        for client, label, eid, etype in all_ids:
             entity = client.get_entity(etype, eid)
             status_name = entity.get("status_title") or entity.get("status", {}).get("title", "不明")
-            print(f"  {_entity_label(etype)} #{eid}: {status_name}")
+            print(f"  [{label}] {_entity_label(etype)} #{eid}: {status_name}")
     elif args.status_action == "set":
         if len(all_ids) > 1 and not getattr(args, "id", None):
             print(f"  対象: {len(all_ids)} 件のエンティティ")
-            for _, eid, etype in all_ids:
-                print(f"    - {_entity_label(etype)} #{eid}")
+            for client, label, eid, etype in all_ids:
+                print(f"    - [{label}] {_entity_label(etype)} #{eid}（{client.base_url}）")
             answer = input("  全て変更しますか？ [y/N]: ").strip().lower()
             if answer != "y":
                 print("  中断しました")
                 return
-        for client, eid, etype in all_ids:
+        for client, label, eid, etype in all_ids:
             client.patch_entity(etype, eid, status=int(args.status_id))
-            print(f"  {_entity_label(etype)} #{eid}: ステータスを変更しました")
+            print(f"  [{label}] {_entity_label(etype)} #{eid}: ステータスを変更しました")
 
 
 def cmd_category(args):
@@ -1947,14 +1948,14 @@ def main():
     # 共通オプション（全サブコマンドで使える）
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--config", "-c", default=DEFAULT_CONFIG, help="設定ファイルのパス（デフォルト: .elab-sync.yaml）")
-    common.add_argument("--target", "-t", default=None, help="同期するターゲット名（指定しない場合は全ターゲット）")
+    common.add_argument("--target", "-t", default=None, help="対象ターゲット（title または docs_dir。省略時は全ターゲット。category・list・new と --id 指定時は接続先の選択に使い、省略時は既定の接続先）")
     common.add_argument("--force", "-f", action="store_true", help="変更がなくても強制同期 / pull 時は既存ファイルを上書き")
     common.add_argument("--dry-run", "-n", action="store_true", help="実行せずに同期内容を確認")
     common.add_argument("--prune-attachments", action="store_true", help="ローカルに存在しないリモート添付を削除")
     # サブコマンド側の既定値が `esync -t X push` の -t を上書きしないよう、既定値を持たない複製を使う
     sub_common = argparse.ArgumentParser(add_help=False, argument_default=argparse.SUPPRESS)
     sub_common.add_argument("--config", "-c", help="設定ファイルのパス（デフォルト: .elab-sync.yaml）")
-    sub_common.add_argument("--target", "-t", help="同期するターゲット名（指定しない場合は全ターゲット）")
+    sub_common.add_argument("--target", "-t", help="対象ターゲット（title または docs_dir。省略時は全ターゲット。category・list・new と --id 指定時は接続先の選択に使い、省略時は既定の接続先）")
     sub_common.add_argument("--force", "-f", action="store_true", help="変更がなくても強制同期 / pull 時は既存ファイルを上書き")
     sub_common.add_argument("--dry-run", "-n", action="store_true", help="実行せずに同期内容を確認")
     sub_common.add_argument("--prune-attachments", action="store_true", help="ローカルに存在しないリモート添付を削除")

@@ -239,7 +239,7 @@ esync tag add "new-tag" --id 42 --entity items
 esync category set "試薬" --id 42 --entity items
 ```
 
-`esync tag` の `--id` を省略すると、各ターゲットの同期済み文書に、そのターゲットの接続プロファイルで送信します。`--id` を指定した場合、接続先は `-t` で選んだターゲットのプロファイルです（`-t` を省略すると default、一致するターゲットがなければ何も送信せずエラー）。`-t` は `tag` の直後（`add` などの前）に書きます。
+`esync tag` の `--id` を省略すると、各ターゲットの同期済み文書に、そのターゲットの接続プロファイルで送信します。`--id` を指定した場合、接続先は `-t` で選んだターゲットのプロファイルです（`-t` を省略すると default、一致するターゲットがなければ何も送信せずエラー）。`-t` は `tag` の直後（`add` などの前）か、`esync -t shared_docs tag add ...` のように `tag` より前に書きます。
 
 ```bash
 # 上の例の shared_docs/（profile: team-b）側の記事 #42 にタグを追加

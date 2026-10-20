@@ -2169,3 +2169,20 @@ def test_subcommand_options_override_options_before_it(tmp_path, monkeypatch):
     with patch("elab_doc_sync.cli.ELabFTWClient", side_effect=factory):
         main()
     assert list(clients) == ["https://server-b.com"]
+
+
+def test_entity_status_confirmation_shows_target_and_server(tmp_path, monkeypatch, capsys):
+    """別サーバーに同じ ID がある構成でも、確認・完了表示で変更先を区別できる。"""
+    cfg, clients, factory = _write_two_profile_config(tmp_path)
+    for sub in ("a", "b"):
+        (tmp_path / ".ids" / sub / "mapping.json").write_text(json.dumps({"x.md": 42}))
+    prompts = []
+    monkeypatch.setattr("builtins.input", lambda msg: prompts.append(msg) or "y")
+    with patch("elab_doc_sync.cli.ELabFTWClient", side_effect=factory):
+        cmd_entity_status(Namespace(config=str(cfg), target=None, force=False, id=None,
+                                    status_action="set", status_id="2"))
+    out = capsys.readouterr().out
+    assert "- [A] リソース #42（https://server-a.com）" in out
+    assert "- [B] リソース #42（https://server-b.com）" in out
+    assert "[A] リソース #42: ステータスを変更しました" in out
+    assert "[B] リソース #42: ステータスを変更しました" in out
