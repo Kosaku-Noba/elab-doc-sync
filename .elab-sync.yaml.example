@@ -51,7 +51,8 @@
 #   verify_ssl: false
 #
 # targets:
-#   # 紐付け・同期状態は docs_dir ごとに .elab-sync-ids/<docs_dir>/ へ自動で分けて保存される。
+#   # 紐付け・同期状態は docs_dir ごとに .elab-sync-ids/ の下へ自動で分けて保存される
+#   # （docs_dir の末尾の / を除き、/ を _ に置き換えた名前。例: docs/team/ → .elab-sync-ids/docs_team/）。
 #   # id_file を指定する場合は、ターゲットごとに親ディレクトリを分けること
 #   # （例: .elab-sync-ids/overview/default.id）。
 #
