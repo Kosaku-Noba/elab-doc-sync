@@ -312,6 +312,20 @@ def _resolve_asset_path(docs_dir: Path, project_root: Path, source: str, strict=
     raise FileNotFoundError(source)
 
 
+def _cache_uploaded(existing: dict[str, list[dict]], real_name: str, url: str,
+                    size: int, upload_id, file_hash: str | None = None) -> None:
+    """アップロード成功結果を Upload_Cache に登録し、以降の同一 real_name 参照で再利用させる。
+
+    同一実行内で同じ real_name を複数回参照しても再アップロードせず、ここで登録した
+    URL を再利用できるようにする。``fresh=True`` は本実行で新規アップロードした分を示し、
+    stale 削除対象から除外するためのマーカーとなる。``file_hash`` は画像のみ利用し、
+    動画・ファイルリンクでは ``None`` を渡す。
+    """
+    existing.setdefault(real_name, []).append(
+        {"url": url, "size": size, "id": upload_id, "hash": file_hash, "fresh": True}
+    )
+
+
 def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None) -> str:
     """Markdown 内のローカル画像を eLabFTW にアップロードし URL に書き換える。
 
@@ -391,8 +405,10 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
         result = client.upload_file(entity, entity_id, upload_path)
         if result.get("url"):
             for e in entries:
-                if e.get("id") is not None:
+                if e is not reuse and e.get("id") is not None and not e.get("fresh"):
                     stale_ids.append(e["id"])
+            _cache_uploaded(existing, real_name, result["url"],
+                            local_size, result.get("id"), local_hash)
             print(f"    ✓ {real_name}")
             return f"![{alt}]({result['url']})"
         if strict:
@@ -706,8 +722,9 @@ def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClien
         result = client.upload_file(entity, entity_id, str(video_path))
         if result.get("url"):
             for e in entries:
-                if e.get("id") is not None:
+                if e is not reuse and e.get("id") is not None and not e.get("fresh"):
                     stale_ids.append(e["id"])
+            _cache_uploaded(existing, real_name, result["url"], local_size, result.get("id"))
             print(f"    ✓ {real_name}")
             return f'<video src="{result["url"]}" controls>{alt}</video>'
         if strict:
@@ -828,8 +845,9 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
         result = client.upload_file(entity, entity_id, str(file_path))
         if result.get("url"):
             for e in entries:
-                if e.get("id") is not None:
+                if e is not reuse and e.get("id") is not None and not e.get("fresh"):
                     stale_ids.append(e["id"])
+            _cache_uploaded(existing, real_name, result["url"], local_size, result.get("id"))
             print(f"    ✓ {real_name}")
             return f'[{alt}]({result["url"]})'
         if strict:
