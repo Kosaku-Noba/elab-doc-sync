@@ -9,6 +9,7 @@ Covers the marker-heading spec: タイトルは front matter の title →
 from pathlib import Path
 from types import SimpleNamespace
 
+import yaml
 from hypothesis import given, settings, strategies as st
 
 from elab_doc_sync.sync import resolve_title
@@ -49,7 +50,7 @@ def test_priority_order(fm, marker, mapped, stem, data):
     """存在する最上位ソースの値が返る: front matter > marker heading > title_map > stem。"""
     parts = []
     if fm is not None:
-        parts.append(f'---\ntitle: "{fm}"\n---')
+        parts.append('---\n' + yaml.dump({'title': fm}, allow_unicode=True) + '---')
     if marker is not None:
         parts.append(f"# title: {marker}")
     parts.append("本文テキスト")
@@ -108,7 +109,7 @@ def test_marker_case_insensitive(marker, stem):
 def test_deterministic(fm, marker, mapped, stem):
     parts = []
     if fm is not None:
-        parts.append(f'---\ntitle: "{fm}"\n---')
+        parts.append('---\n' + yaml.dump({'title': fm}, allow_unicode=True) + '---')
     if marker is not None:
         parts.append(f"# title: {marker}")
     parts.append("本文")

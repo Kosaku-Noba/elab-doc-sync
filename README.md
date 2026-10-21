@@ -608,7 +608,7 @@ profiles:
 | キー | 必須 | デフォルト | 説明 |
 |---|---|---|---|
 | `docs_dir` | ✅ | — | Markdown ディレクトリ |
-| `title` | — | 空文字 | CLIでターゲットを指定する名前。記事タイトルはファイル名から決定 |
+| `title` | — | 空文字 | CLIでターゲットを指定する名前。記事タイトルは front matter / 本文先頭の `# title: ...` / `title_map` / ファイル名 の優先順で決定 |
 | `pattern` | — | `*.md` | Glob パターン |
 | `mode` | — | `each` | 1ファイル＝1記事（`each` のみ） |
 | `entity` | — | `items` | `items`（`resources`） / `experiments` |
@@ -617,6 +617,7 @@ profiles:
 | `tags` | — | `[]` | push 時に自動追加するタグ（pull 振り分けにも使用） |
 | `category` | — | — | push 時のカテゴリ。名前または数字の ID（pull 振り分けにも使用）。一覧 API に出ない（読み取り権限のない）カテゴリは ID で指定 |
 | `links` | — | — | push 時に追加するリンク。`experiments` / `items`（`resources`）ごとの ID のリスト。削除はしない |
+| `title_map` | — | `{}` | ローカルファイル名 → eLabFTW タイトルの別名（値は非空文字列） |
 | `title_pattern` | — | — | pull 振り分け用タイトル glob |
 | `body_format` | — | `html` | `md` / `html`（`esync init` で作ると `md`） |
 | `attachments_dir` | — | — | 添付ファイルディレクトリ |
