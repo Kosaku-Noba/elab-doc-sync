@@ -11,6 +11,7 @@ import shlex
 import shutil
 import tempfile
 import markdown
+import yaml
 from markdownify import markdownify as html_to_md
 import html as _html
 from pathlib import Path
@@ -310,6 +311,70 @@ def _resolve_asset_path(docs_dir: Path, project_root: Path, source: str, strict=
         if candidate.exists() or index == len(candidates) - 1:
             return candidate.resolve()
     raise FileNotFoundError(source)
+
+
+# Title_Resolver: ローカルファイルの Resolved_Title を一貫した優先順位で決定する。
+_FRONT_MATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*(?:\n|\Z)", re.DOTALL)
+# 本文（front matter 除去後）の先頭の非空行が ATX レベル 1（`#` 1 個）見出しのときのみ捕捉する。
+# 見出しの前に通常テキストがある場合は対象外（先頭宣言のみ）。先頭空白行は呼び出し側で除去済み。
+_LEADING_HEADING_RE = re.compile(r"\A#\s+(.+?)\s*#*\s*(?:\n|\Z)")
+# その見出しが `title:`（大文字小文字区別なし）で始まる場合のみタイトルとして採用
+_TITLE_MARKER_RE = re.compile(r"^title:\s*(.+?)\s*$", re.IGNORECASE)
+
+
+def _extract_front_matter_title(text: str) -> str | None:
+    """先頭 YAML front matter の title を返す。無効・不在は None。"""
+    m = _FRONT_MATTER_RE.match(text)
+    if not m:
+        return None
+    try:
+        data = yaml.safe_load(m.group(1))
+    except yaml.YAMLError:
+        return None
+    if isinstance(data, dict):
+        title = data.get("title")
+        if isinstance(title, str) and title.strip():
+            return title.strip()
+    return None
+
+
+def _extract_marker_heading_title(text: str) -> str | None:
+    """front matter 除去後の本文の先頭 ATX レベル 1 見出しが
+    ``# title: <タイトル>`` 形式のときだけタイトルを返す。
+
+    素の見出し（``# 通常の見出し``）は None を返し、タイトルに採用しない。
+    判定対象は本文の先頭の非空行のみ。見出しの前に通常テキストがある場合や本文途中の ``# title:`` は拾わない。
+    ``title:`` は大文字小文字を区別しない。
+    """
+    m = _FRONT_MATTER_RE.match(text)
+    body = text[m.end():] if m else text
+    h = _LEADING_HEADING_RE.match(body.lstrip())
+    if not h:
+        return None
+    marker = _TITLE_MARKER_RE.match(h.group(1).strip())
+    if not marker:
+        return None
+    title = marker.group(1).strip()
+    return title or None
+
+
+def resolve_title(text: str, filename: str, target: TargetConfig) -> str:
+    """Resolved_Title を一貫した優先順位で決定する（純関数）。
+
+    優先順位（要件 3.5）:
+      1. Front_Matter_Title
+      2. Marker_Heading_Title（先頭見出しが `# title: ...` のとき）
+      3. title_map[filename]
+      4. Path(filename).stem
+
+    タイトル決定専用であり、送信本文（raw_body）には影響を与えない。
+    """
+    return (
+        _extract_front_matter_title(text)
+        or _extract_marker_heading_title(text)
+        or (target.title_map or {}).get(filename)
+        or Path(filename).stem
+    )
 
 
 def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None) -> str:
@@ -1491,13 +1556,14 @@ class EachDocsSyncer:
         atomic_write(self.hash_dir / f"{filename}.synced", raw_body)
         self._save_hash(filename, raw_body)
         self._save_remote_hash(filename, data.get("body") or "")
-        self._save_meta_hash(filename, Path(filename).stem, self.target.category, self.target.tags)
+        resolved_title = resolve_title(raw_body, filename, self.target)
+        self._save_meta_hash(filename, resolved_title, self.target.category, self.target.tags)
         self._save_assets_hash(filename, raw_body)
         write_json(self.hash_dir / f"{filename}.state.json", {
             "version": 1, "server": str(self.client.base_url), "entity": self.entity,
             "profile": self.target.profile, "team": self.target.team, "body_format": self.target.body_format,
             "local_hash": _compute_hash(raw_body), "assets_hash": self._compute_assets_hash(raw_body, filename),
-            "meta_hash": _compute_meta_hash(Path(filename).stem, self.target.category, self.target.tags),
+            "meta_hash": _compute_meta_hash(resolved_title, self.target.category, self.target.tags),
             "remote": self._remote_signature(data, uploads),
             **({"links": links} if links else {}),
         })
@@ -1566,9 +1632,10 @@ class EachDocsSyncer:
         """
         self._save_base(filename, base, data)
         self._save_remote_hash(filename, data.get("body") or "")
-        meta_hash = _compute_meta_hash(Path(filename).stem, self.target.category, self.target.tags)
+        resolved_title = resolve_title(base, filename, self.target)
+        meta_hash = _compute_meta_hash(resolved_title, self.target.category, self.target.tags)
         if not metadata_pending:
-            self._save_meta_hash(filename, Path(filename).stem, self.target.category, self.target.tags)
+            self._save_meta_hash(filename, resolved_title, self.target.category, self.target.tags)
         state = self._state(filename)
         if state:
             write_json(self.hash_dir / f"{filename}.state.json", {
@@ -1599,7 +1666,7 @@ class EachDocsSyncer:
                 hp.read_text().strip() != _compute_hash(data.get("body") or "") if hp.exists() else False)
             local_known = bool(state or self._hash_path(filename).exists())
             local_changed = (self._has_changed(filename, body) or self._assets_changed(filename, body)
-                             or self._has_meta_changed(filename, path.stem, self.target.category, self.target.tags)
+                             or self._has_meta_changed(filename, resolve_title(body, filename, self.target), self.target.category, self.target.tags)
                              or self._links_pending(filename))
             result.update(local_changed=local_changed, remote_changed=remote_changed)
             if not local_exists:
@@ -1669,7 +1736,15 @@ class EachDocsSyncer:
 
     def move_tracking(self, old, new, mapping):
         if not self._meta_hash_path(old).exists() and not self._state(old):
-            self._save_meta_hash(old, Path(old).stem, self.target.category, self.target.tags)
+            # タイトルは新ファイル new の本文から決めるが、title_map は旧ファイル名 old で引く。
+            # front matter / 先頭マーカー見出しはリネームで変わらない前提。本文が読めなければ File_Stem にフォールバック。
+            new_path = self.file_path(new)
+            try:
+                new_text = new_path.read_text(encoding="utf-8") if new_path.is_file() else ""
+            except OSError:
+                new_text = ""
+            resolved_title = resolve_title(new_text, old, self.target) if new_text else Path(old).stem
+            self._save_meta_hash(old, resolved_title, self.target.category, self.target.tags)
         mapping[new] = mapping.pop(old)
         for suffix in self.SUFFIXES:
             src, dest = self.hash_dir / f"{old}{suffix}", self.hash_dir / f"{new}{suffix}"
@@ -1704,7 +1779,7 @@ class EachDocsSyncer:
 
     def dry_run(self, only=None):
         mapping = self._load_mapping(migrate=False)
-        return [{"filename": f.name, "title": f.stem, "images": _count_local_images(body),
+        return [{"filename": f.name, "title": resolve_title(body, f.name, self.target), "images": _count_local_images(body),
                  "videos": _count_local_videos(body), "file_links": _count_local_file_links(body),
                  "changed": self._has_changed(f.name, body), "entity_id": mapping.get(f.name)}
                 for f in self.collect_files() if only is None or f.name in only
@@ -1808,7 +1883,7 @@ class EachDocsSyncer:
 
         def needs_meta(f, result, resuming):
             return (force or result.get("data") is None or resumed(f, resuming, "meta")
-                    or self._has_meta_changed(f.name, f.stem, self.target.category, self.target.tags))
+                    or self._has_meta_changed(f.name, resolve_title(result["body"], f.name, self.target), self.target.category, self.target.tags))
 
         def needs_links(f, result, resuming):
             # リンクの追加はタグ・カテゴリと別に判定する（リンクだけの変更・再試行でタグ・カテゴリを再適用しない）
@@ -1838,7 +1913,7 @@ class EachDocsSyncer:
                 write_json(receipt, {"filename": f.name, "eid": None})
                 pending[f.name] = {"eid": None}
                 self._save_pending(pending)
-                eid = self._create_entity(f.stem)
+                eid = self._create_entity(resolve_title(result["body"], f.name, self.target))
                 if not isinstance(eid, int) or eid <= 0 or eid in mapping.values():
                     raise RuntimeError("新規作成IDを取得できませんでした。listとlinkで確認してください")
                 write_json(receipt, {"filename": f.name, "eid": eid})
@@ -1866,7 +1941,7 @@ class EachDocsSyncer:
                 body = _rewrite_file_links(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads)
                 body = _rewrite_local_links(body, self.entity, self.client.base_url, mapping, source=f, links=links)
                 body = body if self.target.body_format == "md" else _md_to_html(body)
-                expected = {"body": body, "title": f.stem, "content_type": 2 if self.target.body_format == "md" else 1}
+                expected = {"body": body, "title": resolve_title(raw_body, f.name, self.target), "content_type": 2 if self.target.body_format == "md" else 1}
                 previous = result.get("data") or self._get_entity(eid)
                 before = {key: previous.get(key) for key in expected}
                 guard = {k: v for k, v in self._remote_signature(previous, self.client.list_uploads(self.entity, eid)).items() if k not in ("body", "title", "content_type")}

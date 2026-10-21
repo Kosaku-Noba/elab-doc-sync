@@ -50,12 +50,15 @@ class TargetConfig:
     profile: str = "default"  # 使用するプロファイル名
     team: str | int | None = None  # 送信先チーム名 or ID（profileを自動選択）
     links: dict[str, list[int]] = None  # push 時に追加するリンク {"experiments": [...], "items": [...]}
+    title_map: dict[str, str] = None  # ローカルファイル名 → eLabFTW タイトルの別名 {"report01.md": "..."}
 
     def __post_init__(self):
         if self.tags is None:
             self.tags = []
         if self.links is None:
             self.links = {}
+        if self.title_map is None:
+            self.title_map = {}
 
 
 @dataclass
@@ -94,6 +97,20 @@ def _parse_links(raw) -> dict[str, list[int]]:
             _abort(f"links.{key}は正の整数IDのリストで指定してください")
         links.setdefault(link_type, set()).update(ids)
     return {k: sorted(v) for k, v in links.items() if v}
+
+
+def _parse_title_map(raw) -> dict[str, str]:
+    """ターゲットの title_map を {ファイル名: タイトル} に正規化する。"""
+    if raw is None:
+        return {}  # 要件 2.3: 未指定は空 dict
+    if not isinstance(raw, dict):
+        _abort("title_mapはファイル名をキー・タイトルを値にしたマッピングで指定してください")  # 要件 2.4
+    result: dict[str, str] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or not isinstance(value, str) or not value.strip():
+            _abort("title_mapのキーとタイトルは文字列で、タイトルは空にできません")  # 要件 2.5
+        result[key] = value
+    return result
 
 
 def _parse_profiles(raw: dict) -> dict[str, ProfileConfig]:
@@ -225,6 +242,7 @@ def load_config(config_path: Path) -> Config:
             profile=t.get("profile", "default"),
             team=t.get("team"),
             links=_parse_links(t.get("links")),
+            title_map=_parse_title_map(t.get("title_map")),
         ))
 
     if not targets:

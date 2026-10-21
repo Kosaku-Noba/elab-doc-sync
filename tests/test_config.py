@@ -375,3 +375,82 @@ def test_init_template_gitignore_lists_all_local_state():
     for entry in (".elab-sync.yaml", ".elab-sync-ids/", ".elab-sync-backups/",
                   ".elab-sync-operations/", ".elab-sync-recovery.json"):
         assert entry in text.splitlines()
+
+
+# ---------------------------------------------------------------------------
+# title_map property tests
+# Feature: dedup-upload-and-title-alias
+# ---------------------------------------------------------------------------
+import contextlib
+import io as _io
+import tempfile
+
+from hypothesis import given, settings, strategies as st
+
+
+_fname = st.text(
+    alphabet=st.characters(whitelist_categories=("Ll", "Lu", "Nd"), whitelist_characters="_-"),
+    min_size=1, max_size=15,
+).map(lambda s: f"{s}.md")
+
+_title = st.text(
+    alphabet=st.characters(blacklist_categories=("Cc", "Cs")),
+    min_size=1, max_size=30,
+).filter(lambda s: bool(s.strip()))
+
+
+def _load_with_title_map(value):
+    """title_map=value を持つ設定を一時ファイルに書いて load_config する。
+
+    @given 配下では function-scoped フィクスチャ (tmp_path 等) を使えないため、
+    tempfile で都度ファイルを作る。
+    """
+    data = _base_data()
+    data["targets"][0]["title_map"] = value
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / ".elab-sync.yaml"
+        p.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+        return load_config(p)
+
+
+# Property 2: title_map のパースは入力マッピングを保存する
+# Validates: Requirements 2.1, 2.2
+@settings(max_examples=150)
+@given(mapping=st.dictionaries(_fname, _title, max_size=6))
+def test_title_map_roundtrip(mapping):
+    cfg = _load_with_title_map(mapping) if mapping else _load_with_title_map({})
+    assert cfg.targets[0].title_map == dict(mapping)
+
+
+# Property 7: 不正な title_map (dict 以外) は終了コード 2 で拒否される
+# Validates: Requirement 2.4
+@settings(max_examples=100)
+@given(bad=st.one_of(st.text(min_size=1), st.integers(), st.lists(st.text()), st.booleans()))
+def test_title_map_non_dict_rejected(bad):
+    err = _io.StringIO()
+    with pytest.raises(SystemExit) as exc, contextlib.redirect_stderr(err):
+        _load_with_title_map(bad)
+    assert exc.value.code == 2
+    assert err.getvalue().strip()
+
+
+# Property 7: 非文字列/空のタイトルは終了コード 2 で拒否される
+# Validates: Requirement 2.5
+@settings(max_examples=100)
+@given(
+    key=st.text(min_size=1, max_size=10).filter(lambda s: bool(s)),
+    bad_value=st.one_of(st.integers(), st.booleans(), st.just(""), st.just("   ")),
+)
+def test_title_map_bad_value_rejected(key, bad_value):
+    err = _io.StringIO()
+    with pytest.raises(SystemExit) as exc, contextlib.redirect_stderr(err):
+        _load_with_title_map({key: bad_value})
+    assert exc.value.code == 2
+    assert err.getvalue().strip()
+
+
+# 回帰: title_map 未指定の既存 YAML は従来どおり読め、title_map == {}
+# Validates: Requirement 6.3
+def test_title_map_absent_defaults_empty(tmp_path):
+    cfg = load_config(_write_config(tmp_path, _base_data()))
+    assert cfg.targets[0].title_map == {}

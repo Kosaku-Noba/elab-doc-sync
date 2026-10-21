@@ -17,7 +17,7 @@ from .config import TargetConfig
 from .client import ELabFTWClient
 from .config import load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, append_target_to_yaml
 from .merge import merge_text
-from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
+from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS, resolve_title
 from . import sync_log
 
 DEFAULT_CONFIG = ".elab-sync.yaml"
@@ -611,7 +611,9 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
                 raise ConflictError(f"{old_name}: {state}。esync diff で確認してください")
             # Both sides changed: merge the remote body into the local edits.
             merge = state == "競合" and not is_temp_export
-            metadata_pending = merge and syncer._has_meta_changed(old_name, Path(old_name).stem, target.category, target.tags)
+            old_text = old_path.read_text(encoding="utf-8") if (old_path and old_path.is_file()) else ""
+            resolved_old_title = resolve_title(old_text, old_name, target) if old_name else Path(old_name).stem
+            metadata_pending = merge and syncer._has_meta_changed(old_name, resolved_old_title, target.category, target.tags)
             if merge and dry_run:
                 print(f"  [{title}] #{eid} → {filepath}（ローカル編集とマージ予定）")
                 return 1

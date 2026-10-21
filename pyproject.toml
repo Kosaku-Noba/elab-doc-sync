@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=7.0"]
+test = ["pytest>=7.0", "hypothesis>=6.0"]
 
 [project.scripts]
 elab-doc-sync = "elab_doc_sync.cli:main"
