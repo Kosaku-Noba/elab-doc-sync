@@ -64,6 +64,11 @@
 #     entity: items
 #     body_format: md            # md: Markdown のまま送信（esync init の既定） / html: HTML に変換して送信（省略時の既定）
 #     attachments_dir: "attachments/"  # 画像以外の添付ファイルディレクトリ（省略可）
+#     title_map:                 # ローカルファイル名 → eLabFTW タイトルの別名（任意）
+#       report01.md: "2026年度 第1四半期レポート"
+#       memo.md: "設計メモ"
+#     # タイトルの決定優先順位: front matter の title → 本文先頭の `# title: ...` → title_map → ファイル名（拡張子除く）
+#     # ※ 本文先頭行を `# title: 任意のタイトル` と書くとその行をタイトルとして採用。通常の見出し（`# 見出し`）はタイトルにはならない
 #     tags:                      # push 時に自動追加するタグ（追記のみ）
 #       - "プロジェクトA"
 #       - "2026Q2"
