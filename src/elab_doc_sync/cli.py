@@ -19,6 +19,7 @@ from .config import load_config, BODY_FORMAT_INIT, _read_yaml_text, update_targe
 from .merge import merge_text
 from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
 from . import sync_log
+from . import update_check
 
 DEFAULT_CONFIG = ".elab-sync.yaml"
 
@@ -2130,6 +2131,7 @@ def main():
                 raise ValueError("このコマンドは --dry-run に対応していません（変更は行いません）")
             handler = project_command(handler)
         result = handler(args)
+        update_check.notify_if_update_available(_version, args.command)
     except ValueError as exc:
         print(f"設定・引数エラー: {exc}", file=sys.stderr)
         raise SystemExit(2)
