@@ -28,6 +28,7 @@ import requests
 
 VERSION_URL = "https://raw.githubusercontent.com/Kosaku-Noba/elab-doc-sync/main/pyproject.toml"
 CHECK_INTERVAL_SEC = 24 * 60 * 60
+TAG_RETRY_SEC = 60 * 60  # タグ確認自体に失敗したときの再試行間隔
 FETCH_TIMEOUT_SEC = 2
 DISABLE_ENV = "ELAB_SYNC_NO_UPDATE_CHECK"
 AUTO_UPDATE_ENV = "ELAB_SYNC_AUTO_UPDATE"
@@ -103,12 +104,18 @@ def _auto_update_enabled() -> bool:
     return os.environ.get(AUTO_UPDATE_ENV, "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def tag_exists(version: str) -> bool:
-    """検出したバージョンのタグ（v<version>）が公開されているか。"""
+def tag_exists(version: str):
+    """検出したバージョンのタグ（v<version>）が公開されているか。
+
+    True=公開済み、False=未公開（404）、None=確認できなかった（通信エラー・レート制限など）。
+    """
     try:
-        return requests.get(TAG_API_URL.format(version=version), timeout=FETCH_TIMEOUT_SEC).status_code == 200
+        status = requests.get(TAG_API_URL.format(version=version), timeout=FETCH_TIMEOUT_SEC).status_code
     except Exception:
-        return False
+        return None
+    if status == 200:
+        return True
+    return False if status == 404 else None
 
 
 def start_background_update(version: str) -> bool:
@@ -141,13 +148,15 @@ def _try_auto_update(latest: str, current: str) -> bool:
     cache = _load_cache(path)
     if cache.get("auto_update_attempted") == latest:
         return False
-    # タグ未公開は 1 日 1 回だけ再確認する（毎回 API を叩かない）
+    # タグ未公開は 1 日 1 回、確認できなかったときは 1 時間後に再確認する（毎回 API を叩かない）
     now = time.time()
     checked = cache.get("tag_checked")
-    if isinstance(checked, dict) and checked.get("version") == latest             and 0 <= now - checked.get("at", 0) < CHECK_INTERVAL_SEC:
+    if isinstance(checked, dict) and checked.get("version") == latest             and 0 <= now - checked.get("at", 0) < checked.get("wait", CHECK_INTERVAL_SEC):
         return False
-    if not tag_exists(latest):
-        _save_cache(path, {**cache, "tag_checked": {"version": latest, "at": now}})
+    exists = tag_exists(latest)
+    if not exists:
+        wait = CHECK_INTERVAL_SEC if exists is False else TAG_RETRY_SEC
+        _save_cache(path, {**cache, "tag_checked": {"version": latest, "at": now, "wait": wait}})
         return False
     # 起動の成否に関わらず記録し、失敗しても毎回再試行しない
     _save_cache(path, {**cache, "auto_update_attempted": latest})

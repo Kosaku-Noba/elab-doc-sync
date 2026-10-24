@@ -158,7 +158,25 @@ def test_tag_exists(monkeypatch):
     def boom(*a, **k):
         raise OSError("offline")
     monkeypatch.setattr(uc.requests, "get", boom)
-    assert not uc.tag_exists("1.2.0")
+    assert uc.tag_exists("1.2.0") is None
+    monkeypatch.setattr(uc.requests, "get", lambda *a, **k: MagicMock(status_code=403))
+    assert uc.tag_exists("1.2.0") is None
+
+
+def test_tag_check_error_is_retried_sooner_than_missing(monkeypatch, popen):
+    _tty(monkeypatch)
+    monkeypatch.setenv(uc.AUTO_UPDATE_ENV, "1")
+    monkeypatch.setattr(uc, "tag_exists", lambda version: None)
+    assert not uc._try_auto_update("1.2.0", "1.1.2")
+    entry = json.loads(uc._cache_path().read_text())["tag_checked"]
+    assert entry["wait"] == uc.TAG_RETRY_SEC
+    monkeypatch.setattr(uc, "tag_exists", lambda version: False)
+    entry["at"] -= uc.TAG_RETRY_SEC + 1  # 1 時間経過後は再確認される
+    cache = json.loads(uc._cache_path().read_text())
+    cache["tag_checked"] = entry
+    uc._save_cache(uc._cache_path(), cache)
+    assert not uc._try_auto_update("1.2.0", "1.1.2")
+    assert json.loads(uc._cache_path().read_text())["tag_checked"]["wait"] == uc.CHECK_INTERVAL_SEC
 
 
 def test_auto_update_skipped_for_major(monkeypatch, capsys, popen):
