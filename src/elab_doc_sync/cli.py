@@ -2138,7 +2138,7 @@ def main():
         print(f"エラー: {exc}", file=sys.stderr)
         raise SystemExit(1)
     finally:
-        # eLabFTW 側の成否に関わらず通知する（確認自体に失敗したときだけ黙る）
+        # eLabFTW 側の成否に関わらず通知する（通知しない条件は update_check.py 参照）
         update_check.notify_if_update_available(_version, args.command)
     if isinstance(result, int) and result:
         raise SystemExit(result)
