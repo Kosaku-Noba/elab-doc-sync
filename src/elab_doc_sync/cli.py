@@ -2131,12 +2131,14 @@ def main():
                 raise ValueError("このコマンドは --dry-run に対応していません（変更は行いません）")
             handler = project_command(handler)
         result = handler(args)
-        update_check.notify_if_update_available(_version, args.command)
     except ValueError as exc:
         print(f"設定・引数エラー: {exc}", file=sys.stderr)
         raise SystemExit(2)
     except Exception as exc:
         print(f"エラー: {exc}", file=sys.stderr)
         raise SystemExit(1)
+    finally:
+        # eLabFTW 側の成否に関わらず通知する（確認自体に失敗したときだけ黙る）
+        update_check.notify_if_update_available(_version, args.command)
     if isinstance(result, int) and result:
         raise SystemExit(result)

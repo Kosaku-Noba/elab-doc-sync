@@ -1,5 +1,8 @@
 """新バージョンの有無を確認し、あれば stderr で知らせる。
 
+コマンド自体の成否（eLabFTW への接続失敗など）とは無関係に通知する。
+通知しないのは、GitHub 上のバージョンを読めなかったときだけ。
+
 1 日 1 回だけ GitHub 上の pyproject.toml のバージョンを取得し、結果をキャッシュする。
 ネットワークエラー等はすべて黙って無視する（本来のコマンドを妨げない）。
 `ELAB_SYNC_NO_UPDATE_CHECK=1` で無効化できる。
@@ -72,8 +75,9 @@ def get_latest_version(now=None):
     checked_at = cache.get("checked_at")
     if isinstance(checked_at, (int, float)) and 0 <= now - checked_at < CHECK_INTERVAL_SEC:
         return cache.get("latest")
-    latest = fetch_latest_version() or cache.get("latest")
-    # 取得失敗でも checked_at を更新し、オフライン時に毎回待たされないようにする
+    latest = fetch_latest_version()
+    # 取得失敗でも checked_at を更新し、オフライン時に毎回待たされないようにする。
+    # 失敗時は古い値を使い回さず None（通知しない）にする
     _save_cache(path, {"checked_at": now, "latest": latest})
     return latest
 

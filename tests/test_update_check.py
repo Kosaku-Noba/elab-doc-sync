@@ -47,14 +47,14 @@ def test_get_latest_version_uses_fresh_cache(monkeypatch):
     assert len(calls) == 2
 
 
-def test_failed_fetch_keeps_old_value_and_throttles(monkeypatch):
+def test_failed_fetch_returns_none_and_throttles(monkeypatch):
     uc._save_cache(uc._cache_path(), {"checked_at": 0, "latest": "1.5.0"})
     calls = []
     monkeypatch.setattr(uc, "fetch_latest_version", lambda: calls.append(1))
-    assert uc.get_latest_version(now=uc.CHECK_INTERVAL_SEC + 1) == "1.5.0"
-    uc.get_latest_version(now=uc.CHECK_INTERVAL_SEC + 2)
+    assert uc.get_latest_version(now=uc.CHECK_INTERVAL_SEC + 1) is None
+    assert uc.get_latest_version(now=uc.CHECK_INTERVAL_SEC + 2) is None
     assert len(calls) == 1
-    assert json.loads(uc._cache_path().read_text())["latest"] == "1.5.0"
+    assert json.loads(uc._cache_path().read_text())["latest"] is None
 
 
 def _tty(monkeypatch):
@@ -67,6 +67,29 @@ def test_notify_prints_when_newer(monkeypatch, capsys):
     uc.notify_if_update_available("1.1.2", "push")
     err = capsys.readouterr().err
     assert "1.1.2 → 9.0.0" in err and "esync update" in err
+
+
+@pytest.mark.parametrize("exc", [SystemExit(1), ValueError("bad"), RuntimeError("eLabFTW down")])
+def test_main_notifies_even_when_command_fails(monkeypatch, capsys, exc):
+    from elab_doc_sync import cli
+    _tty(monkeypatch)
+    monkeypatch.setattr(uc, "get_latest_version", lambda: "9.0.0")
+    monkeypatch.setattr(cli, "cmd_status", lambda args: (_ for _ in ()).throw(exc))
+    monkeypatch.setattr(uc.sys, "argv", ["esync", "status"])
+    with pytest.raises(SystemExit):
+        cli.main()
+    assert "→ 9.0.0" in capsys.readouterr().err
+
+
+def test_main_notifies_on_nonzero_return(monkeypatch, capsys):
+    from elab_doc_sync import cli
+    _tty(monkeypatch)
+    monkeypatch.setattr(uc, "get_latest_version", lambda: "9.0.0")
+    monkeypatch.setattr(cli, "cmd_status", lambda args: 1)
+    monkeypatch.setattr(uc.sys, "argv", ["esync", "status"])
+    with pytest.raises(SystemExit):
+        cli.main()
+    assert "→ 9.0.0" in capsys.readouterr().err
 
 
 def test_notify_silent_cases(monkeypatch, capsys):
