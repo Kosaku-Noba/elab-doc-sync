@@ -8,11 +8,17 @@
 1 日 1 回だけ GitHub 上の pyproject.toml のバージョンを取得し、結果をキャッシュする。
 ネットワークエラー等はすべて黙って無視する（本来のコマンドを妨げない）。
 `ELAB_SYNC_NO_UPDATE_CHECK=1` で無効化できる。
+
+`ELAB_SYNC_AUTO_UPDATE=1` を設定していると、マイナー・パッチ更新に限り自動で更新する。
+更新は実行中の esync とは別プロセスで切り離して起動する（Windows は実行中の exe を
+上書きできないため）。メジャー更新は通知のみ。
 """
 
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -23,6 +29,8 @@ VERSION_URL = "https://raw.githubusercontent.com/Kosaku-Noba/elab-doc-sync/main/
 CHECK_INTERVAL_SEC = 24 * 60 * 60
 FETCH_TIMEOUT_SEC = 2
 DISABLE_ENV = "ELAB_SYNC_NO_UPDATE_CHECK"
+AUTO_UPDATE_ENV = "ELAB_SYNC_AUTO_UPDATE"
+REPO_URL = "git+https://github.com/Kosaku-Noba/elab-doc-sync.git"
 _VERSION_RE = re.compile(r'^version\s*=\s*"([^"]+)"', re.MULTILINE)
 
 
@@ -40,6 +48,11 @@ def parse_version(text: str):
 def is_newer(latest: str, current: str) -> bool:
     a, b = parse_version(latest), parse_version(current)
     return a is not None and b is not None and a > b
+
+
+def is_major_update(latest: str, current: str) -> bool:
+    a, b = parse_version(latest), parse_version(current)
+    return a is not None and b is not None and a[0] > b[0]
 
 
 def fetch_latest_version():
@@ -80,23 +93,72 @@ def get_latest_version(now=None):
     latest = fetch_latest_version()
     # 取得失敗でも checked_at を更新し、オフライン時に毎回待たされないようにする。
     # 失敗時は古い値を使い回さず None（通知しない）にする
-    _save_cache(path, {"checked_at": now, "latest": latest})
+    _save_cache(path, {**cache, "checked_at": now, "latest": latest})
     return latest
 
 
+def _auto_update_enabled() -> bool:
+    return os.environ.get(AUTO_UPDATE_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def start_background_update() -> bool:
+    """`uv tool install --force` を切り離したプロセスで起動する。起動できたら True。"""
+    uv = shutil.which("uv")
+    if not uv:
+        return False
+    kwargs = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    if sys.platform == "win32":
+        # 親（実行中の esync.exe）が終了してから上書きできるよう、数秒待ってから実行する
+        cmd = f'ping -n 4 127.0.0.1 > nul & "{uv}" tool install --force {REPO_URL}'
+        kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        args = f"cmd /c {cmd}"  # 文字列のまま渡す（list だと内側の引用符が cmd に解釈されない）
+    else:
+        kwargs["start_new_session"] = True
+        args = ["sh", "-c", f'sleep 3; exec "$0" tool install --force "$1"', uv, REPO_URL]
+    try:
+        subprocess.Popen(args, **kwargs)
+        return True
+    except Exception:
+        return False
+
+
+def _try_auto_update(latest: str, current: str) -> bool:
+    """自動更新を起動した場合 True。同じバージョンへは 1 度しか試さない。"""
+    if not _auto_update_enabled() or is_major_update(latest, current):
+        return False
+    path = _cache_path()
+    cache = _load_cache(path)
+    if cache.get("auto_update_attempted") == latest:
+        return False
+    # 起動の成否に関わらず記録し、失敗しても毎回再試行しない
+    _save_cache(path, {**cache, "auto_update_attempted": latest})
+    return start_background_update()
+
+
 def notify_if_update_available(current: str, command=None) -> None:
-    """新バージョンがあれば stderr に案内を出す。"""
+    """新バージョンがあれば stderr に案内を出し、設定されていれば自動更新を起動する。"""
     if os.environ.get(DISABLE_ENV) or command == "update":
         return
     if not sys.stderr.isatty() or parse_version(current) is None:
         return
     try:
         latest = get_latest_version()
-        if latest and is_newer(latest, current):
+        if not (latest and is_newer(latest, current)):
+            return
+        if _try_auto_update(latest, current):
             print(
                 f"\n💡 新しいバージョンがあります: {current} → {latest}\n"
-                f"   `esync update` で更新できます（通知を止めるには {DISABLE_ENV}=1）",
+                f"   自動更新をバックグラウンドで開始しました（反映は次回の実行から）",
                 file=sys.stderr,
             )
+            return
+        hint = ""
+        if _auto_update_enabled() and is_major_update(latest, current):
+            hint = "（メジャー更新のため自動更新しません）"
+        print(
+            f"\n💡 新しいバージョンがあります: {current} → {latest}{hint}\n"
+            f"   `esync update` で更新できます（通知を止めるには {DISABLE_ENV}=1）",
+            file=sys.stderr,
+        )
     except Exception:
         pass

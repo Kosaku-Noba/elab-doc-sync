@@ -986,7 +986,7 @@ def cmd_clone(args):
     return 0 if cloned == len(ids) else 1
 
 
-REPO_URL = "git+https://github.com/Kosaku-Noba/elab-doc-sync.git"
+REPO_URL = update_check.REPO_URL
 
 
 def cmd_log(args):

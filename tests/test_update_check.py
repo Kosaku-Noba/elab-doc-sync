@@ -104,3 +104,67 @@ def test_notify_silent_cases(monkeypatch, capsys):
     monkeypatch.setenv(uc.DISABLE_ENV, "1")
     uc.notify_if_update_available("1.1.2", "push")
     assert capsys.readouterr().err == ""
+
+
+def test_is_major_update():
+    assert uc.is_major_update("2.0.0", "1.9.9")
+    assert not uc.is_major_update("1.2.0", "1.1.2")
+    assert not uc.is_major_update("x", "1.0.0")
+
+
+@pytest.fixture
+def popen(monkeypatch):
+    calls = []
+    monkeypatch.setattr(uc.shutil, "which", lambda name: "/bin/uv")
+    monkeypatch.setattr(uc.subprocess, "Popen", lambda args, **kw: calls.append((args, kw)))
+    return calls
+
+
+def test_auto_update_runs_detached_for_minor(monkeypatch, capsys, popen):
+    _tty(monkeypatch)
+    monkeypatch.setenv(uc.AUTO_UPDATE_ENV, "1")
+    monkeypatch.setattr(uc, "get_latest_version", lambda: "1.2.0")
+    uc.notify_if_update_available("1.1.2", "push")
+    assert len(popen) == 1
+    args = popen[0][0]
+    assert uc.REPO_URL in (args if isinstance(args, str) else " ".join(args))
+    assert "自動更新をバックグラウンドで開始" in capsys.readouterr().err
+    # 同じバージョンへは再度起動しない（通知だけ出る）
+    uc.notify_if_update_available("1.1.2", "push")
+    assert len(popen) == 1
+    assert "esync update" in capsys.readouterr().err
+
+
+def test_auto_update_skipped_for_major(monkeypatch, capsys, popen):
+    _tty(monkeypatch)
+    monkeypatch.setenv(uc.AUTO_UPDATE_ENV, "1")
+    monkeypatch.setattr(uc, "get_latest_version", lambda: "2.0.0")
+    uc.notify_if_update_available("1.1.2", "push")
+    assert popen == []
+    err = capsys.readouterr().err
+    assert "メジャー更新のため自動更新しません" in err and "esync update" in err
+
+
+def test_auto_update_off_by_default(monkeypatch, popen):
+    _tty(monkeypatch)
+    monkeypatch.setattr(uc, "get_latest_version", lambda: "1.2.0")
+    uc.notify_if_update_available("1.1.2", "push")
+    assert popen == []
+
+
+def test_auto_update_without_uv_falls_back_to_notice(monkeypatch, capsys):
+    _tty(monkeypatch)
+    monkeypatch.setenv(uc.AUTO_UPDATE_ENV, "1")
+    monkeypatch.setattr(uc.shutil, "which", lambda name: None)
+    monkeypatch.setattr(uc, "get_latest_version", lambda: "1.2.0")
+    uc.notify_if_update_available("1.1.2", "push")
+    assert "esync update" in capsys.readouterr().err
+
+
+def test_auto_update_not_started_when_not_tty_or_update_command(monkeypatch, popen):
+    monkeypatch.setenv(uc.AUTO_UPDATE_ENV, "1")
+    monkeypatch.setattr(uc, "get_latest_version", lambda: "1.2.0")
+    uc.notify_if_update_available("1.1.2", "push")  # 非 TTY
+    _tty(monkeypatch)
+    uc.notify_if_update_available("1.1.2", "update")
+    assert popen == []
