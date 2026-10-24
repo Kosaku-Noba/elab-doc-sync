@@ -19,6 +19,7 @@ from .config import load_config, BODY_FORMAT_INIT, _read_yaml_text, update_targe
 from .merge import merge_text
 from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
 from . import sync_log
+from . import update_check
 
 DEFAULT_CONFIG = ".elab-sync.yaml"
 
@@ -985,7 +986,7 @@ def cmd_clone(args):
     return 0 if cloned == len(ids) else 1
 
 
-REPO_URL = "git+https://github.com/Kosaku-Noba/elab-doc-sync.git"
+REPO_URL = update_check.REPO_URL
 
 
 def cmd_log(args):
@@ -2136,5 +2137,8 @@ def main():
     except Exception as exc:
         print(f"エラー: {exc}", file=sys.stderr)
         raise SystemExit(1)
+    finally:
+        # eLabFTW 側の成否に関わらず通知する（通知しない条件は update_check.py 参照）
+        update_check.notify_if_update_available(_version, args.command)
     if isinstance(result, int) and result:
         raise SystemExit(result)
