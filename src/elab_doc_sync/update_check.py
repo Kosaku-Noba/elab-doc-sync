@@ -12,6 +12,7 @@
 `ELAB_SYNC_AUTO_UPDATE=1` を設定していると、マイナー・パッチ更新に限り自動で更新する。
 更新は実行中の esync とは別プロセスで切り離して起動する（Windows は実行中の exe を
 上書きできないため）。メジャー更新は通知のみ。
+更新対象は検出したバージョンのタグ（`v<version>`）に固定する。タグがまだ無いときは自動更新しない。
 """
 
 import json
@@ -31,6 +32,7 @@ FETCH_TIMEOUT_SEC = 2
 DISABLE_ENV = "ELAB_SYNC_NO_UPDATE_CHECK"
 AUTO_UPDATE_ENV = "ELAB_SYNC_AUTO_UPDATE"
 REPO_URL = "git+https://github.com/Kosaku-Noba/elab-doc-sync.git"
+TAG_API_URL = "https://api.github.com/repos/Kosaku-Noba/elab-doc-sync/git/ref/tags/v{version}"
 _VERSION_RE = re.compile(r'^version\s*=\s*"([^"]+)"', re.MULTILINE)
 
 
@@ -101,20 +103,29 @@ def _auto_update_enabled() -> bool:
     return os.environ.get(AUTO_UPDATE_ENV, "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def start_background_update() -> bool:
+def tag_exists(version: str) -> bool:
+    """検出したバージョンのタグ（v<version>）が公開されているか。"""
+    try:
+        return requests.get(TAG_API_URL.format(version=version), timeout=FETCH_TIMEOUT_SEC).status_code == 200
+    except Exception:
+        return False
+
+
+def start_background_update(version: str) -> bool:
     """`uv tool install --force` を切り離したプロセスで起動する。起動できたら True。"""
     uv = shutil.which("uv")
     if not uv:
         return False
+    target = f"{REPO_URL}@v{version}"
     kwargs = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
     if sys.platform == "win32":
         # 親（実行中の esync.exe）が終了してから上書きできるよう、数秒待ってから実行する
-        cmd = f'ping -n 4 127.0.0.1 > nul & "{uv}" tool install --force {REPO_URL}'
+        cmd = f'ping -n 4 127.0.0.1 > nul & "{uv}" tool install --force {target}'
         kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
         args = f"cmd /c {cmd}"  # 文字列のまま渡す（list だと内側の引用符が cmd に解釈されない）
     else:
         kwargs["start_new_session"] = True
-        args = ["sh", "-c", f'sleep 3; exec "$0" tool install --force "$1"', uv, REPO_URL]
+        args = ["sh", "-c", f'sleep 3; exec "$0" tool install --force "$1"', uv, target]
     try:
         subprocess.Popen(args, **kwargs)
         return True
@@ -130,9 +141,17 @@ def _try_auto_update(latest: str, current: str) -> bool:
     cache = _load_cache(path)
     if cache.get("auto_update_attempted") == latest:
         return False
+    # タグ未公開は 1 日 1 回だけ再確認する（毎回 API を叩かない）
+    now = time.time()
+    checked = cache.get("tag_checked")
+    if isinstance(checked, dict) and checked.get("version") == latest             and 0 <= now - checked.get("at", 0) < CHECK_INTERVAL_SEC:
+        return False
+    if not tag_exists(latest):
+        _save_cache(path, {**cache, "tag_checked": {"version": latest, "at": now}})
+        return False
     # 起動の成否に関わらず記録し、失敗しても毎回再試行しない
     _save_cache(path, {**cache, "auto_update_attempted": latest})
-    return start_background_update()
+    return start_background_update(latest)
 
 
 def notify_if_update_available(current: str, command=None) -> None:

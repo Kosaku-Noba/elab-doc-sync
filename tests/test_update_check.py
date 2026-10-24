@@ -116,6 +116,7 @@ def test_is_major_update():
 def popen(monkeypatch):
     calls = []
     monkeypatch.setattr(uc.shutil, "which", lambda name: "/bin/uv")
+    monkeypatch.setattr(uc, "tag_exists", lambda version: True)
     monkeypatch.setattr(uc.subprocess, "Popen", lambda args, **kw: calls.append((args, kw)))
     return calls
 
@@ -127,12 +128,37 @@ def test_auto_update_runs_detached_for_minor(monkeypatch, capsys, popen):
     uc.notify_if_update_available("1.1.2", "push")
     assert len(popen) == 1
     args = popen[0][0]
-    assert uc.REPO_URL in (args if isinstance(args, str) else " ".join(args))
+    assert f"{uc.REPO_URL}@v1.2.0" in (args if isinstance(args, str) else " ".join(args))
     assert "自動更新をバックグラウンドで開始" in capsys.readouterr().err
     # 同じバージョンへは再度起動しない（通知だけ出る）
     uc.notify_if_update_available("1.1.2", "push")
     assert len(popen) == 1
     assert "esync update" in capsys.readouterr().err
+
+
+def test_auto_update_skipped_when_tag_not_published(monkeypatch, capsys, popen):
+    _tty(monkeypatch)
+    calls = []
+    monkeypatch.setattr(uc, "tag_exists", lambda version: calls.append(version) or False)
+    monkeypatch.setenv(uc.AUTO_UPDATE_ENV, "1")
+    monkeypatch.setattr(uc, "get_latest_version", lambda: "1.2.0")
+    uc.notify_if_update_available("1.1.2", "push")
+    uc.notify_if_update_available("1.1.2", "push")
+    assert popen == []
+    assert calls == ["1.2.0"]  # 1 日以内は再確認しない
+    assert "esync update" in capsys.readouterr().err
+
+
+def test_tag_exists(monkeypatch):
+    monkeypatch.setattr(uc.requests, "get", lambda *a, **k: MagicMock(status_code=200))
+    assert uc.tag_exists("1.2.0")
+    monkeypatch.setattr(uc.requests, "get", lambda *a, **k: MagicMock(status_code=404))
+    assert not uc.tag_exists("1.2.0")
+
+    def boom(*a, **k):
+        raise OSError("offline")
+    monkeypatch.setattr(uc.requests, "get", boom)
+    assert not uc.tag_exists("1.2.0")
 
 
 def test_auto_update_skipped_for_major(monkeypatch, capsys, popen):
