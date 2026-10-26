@@ -16,6 +16,7 @@ Markdown ドキュメントを eLabFTW に同期する CLI ツール。`esync` �
 | v1.0.4 | pull で両側の変更を 3-way マージ、前回の同期からの変更を表示する `diff`、文書を指定した `push`、状態ごとの次の操作の案内 |
 | v1.0.5 | pull した Markdown の `&gt;` などを戻す、eLabFTW が削除した `<…>` を警告 |
 | v1.1.0〜v1.1.2 | 実験ノート・リソースどうしのリンク（`esync relate`、ターゲット設定 `links`）、リンク元・リンク先をパスで指定 |
+| v1.2.0 | 新バージョンの更新通知と任意の自動更新（`ELAB_SYNC_AUTO_UPDATE`）、共通オプションをサブコマンド前にも書ける、各コマンドがターゲットのプロファイルで送信 |
 
 v0.x からの更新は、先に [v1.0への移行と復旧](docs/13_MIGRATION_V1.md) を確認してください。変更履歴は [Changelog](CHANGELOG.md)、検証環境・結果は [リリース検証](docs/14_RELEASE_VALIDATION.md)、詳しい仕様は [docs/](docs/01_README.md) にあります。
 
