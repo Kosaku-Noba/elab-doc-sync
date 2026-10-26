@@ -69,3 +69,9 @@ def sample_config_path(tmp_path):
     p = tmp_path / ".elab-sync.yaml"
     p.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
     return p
+
+
+@pytest.fixture(autouse=True)
+def _no_update_check(monkeypatch):
+    """テスト中に新バージョン確認でネットワークへ出ないようにする。"""
+    monkeypatch.setenv("ELAB_SYNC_NO_UPDATE_CHECK", "1")
