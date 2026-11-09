@@ -337,7 +337,7 @@ eLabFTW のブラウザの検索と同じ条件で、リソース・実験ノー
 | `--category` / `--status` | 名前（完全一致、大文字小文字は区別しない）または ID。ID は種別ごとに異なるため `--entity items` か `experiments` が必要 |
 | `--scope` | `mine`: 自分の記事 / `team`: 現在のチームの記事 / `all`: 読めるすべて。省略時は eLabFTW のユーザー設定 |
 | `--order` / `--sort` | 並び順（`date`・`lastchange`・`title`・`id` など）と昇順・降順（既定 `desc`）。省略時は eLabFTW の設定。`all` と最終更新日の指定時は `lastchange` |
-| `--limit` / `--offset` | 表示件数（既定 20）と、先頭から飛ばす件数。続きがあれば次の `--offset` を表示する |
+| `--limit` / `--offset` | 表示件数（既定 20）と、先頭から飛ばす件数。続きがあれば次の `--offset` を表示する（走査上限で打ち切ったときは表示しない。下の制約を参照） |
 | `--json` | JSON で出力（AI エージェント・スクリプト向け） |
 | `--body` | 本文も出力（pull と同じ変換をした Markdown。記事ごとに 1 回取得する）。人向けの出力は先頭 300 文字まで、`--json` では全文 |
 
