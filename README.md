@@ -17,6 +17,7 @@ Markdown ドキュメントを eLabFTW に同期する CLI ツール。`esync` �
 | v1.0.5 | pull した Markdown の `&gt;` などを戻す、eLabFTW が削除した `<…>` を警告 |
 | v1.1.0〜v1.1.2 | 実験ノート・リソースどうしのリンク（`esync relate`、ターゲット設定 `links`）、リンク元・リンク先をパスで指定 |
 | v1.2.0 | 新バージョンの更新通知と任意の自動更新（`ELAB_SYNC_AUTO_UPDATE`）、共通オプションをサブコマンド前にも書ける、各コマンドがターゲットのプロファイルで送信 |
+| v1.3.0 | `esync search` でキーワード・作成者・日付・最終更新日・タグ・カテゴリ・ステータスによる検索。`--json`・`--body` で AI エージェントに渡せる |
 
 v0.x からの更新は、先に [v1.0への移行と復旧](docs/13_MIGRATION_V1.md) を確認してください。変更履歴は [Changelog](CHANGELOG.md)、検証環境・結果は [リリース検証](docs/14_RELEASE_VALIDATION.md)、詳しい仕様は [docs/](docs/01_README.md) にあります。
 
@@ -444,6 +445,8 @@ targets:
 ```bash
 esync list                        # リソース一覧
 esync list --entity experiments   # 実験ノート一覧
+esync search --author me --updated-since 2026-11-01   # 自分が最近更新した記事を検索
+esync search PCR --tag 週報 --json                     # キーワード・タグで検索して JSON で出力
 esync verify                      # 紐付けた記事にアクセスできるか確認
 esync log                         # 最近の push・pull の履歴
 ```
@@ -555,6 +558,7 @@ esync pull --id 42 --entity items --auto
 | `esync diff [ファイル]` | 前回の同期からのローカル・eLabFTW の変更を文書ごとに表示 |
 | `esync clone` | eLabFTW の記事からプロジェクトを構築 |
 | `esync list` | リモート一覧 |
+| `esync search` | 作成者・日付・タグ・カテゴリなどで検索（`--json` で機械可読） |
 | `esync link <ID>` | 手動紐付け（`--new` で新規追跡を再開） |
 | `esync rm <ファイル>` | 追跡解除（`--local` でローカルファイルも削除） |
 | `esync mv <旧パス> <新パス>` | 文書と紐付けを移動 |
