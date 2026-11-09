@@ -444,6 +444,8 @@ targets:
 ```bash
 esync list                        # リソース一覧
 esync list --entity experiments   # 実験ノート一覧
+esync search --author me --updated-since 2026-11-01   # 自分が最近更新した記事を検索
+esync search PCR --tag 週報 --json                     # キーワード・タグで検索して JSON で出力
 esync verify                      # 紐付けた記事にアクセスできるか確認
 esync log                         # 最近の push・pull の履歴
 ```
@@ -555,6 +557,7 @@ esync pull --id 42 --entity items --auto
 | `esync diff [ファイル]` | 前回の同期からのローカル・eLabFTW の変更を文書ごとに表示 |
 | `esync clone` | eLabFTW の記事からプロジェクトを構築 |
 | `esync list` | リモート一覧 |
+| `esync search` | 作成者・日付・タグ・カテゴリなどで検索（`--json` で機械可読） |
 | `esync link <ID>` | 手動紐付け（`--new` で新規追跡を再開） |
 | `esync rm <ファイル>` | 追跡解除（`--local` でローカルファイルも削除） |
 | `esync mv <旧パス> <新パス>` | 文書と紐付けを移動 |

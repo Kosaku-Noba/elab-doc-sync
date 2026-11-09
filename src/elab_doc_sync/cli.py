@@ -1064,6 +1064,8 @@ HELP_EPILOG = """\
   elab-doc-sync pull --id 42     指定 ID のエンティティを取得
   elab-doc-sync diff             ローカルと eLabFTW の差分を表示
   elab-doc-sync status           同期状態を確認
+  elab-doc-sync search 語 --author me --tag T --since 2026-01-01 --json
+                                 作成者・日付・タグ・カテゴリで検索
   elab-doc-sync tag list         リモートのタグ一覧を表示
   elab-doc-sync tag add "タグ"   タグを追加
   elab-doc-sync tag remove "タグ" タグを外す
@@ -1445,6 +1447,47 @@ def cmd_list(args):
         suffix = f" [{status}]" if status else ""
         print(f"  #{eid}: {title}{suffix}")
     print(f"\n  {label} {len(entities)} 件表示（--limit で件数変更可）")
+
+
+def cmd_search(args):
+    """ブラウザの検索と同じ条件でリソース/実験ノートを検索する。"""
+    from . import search as _search
+    config_path = Path(args.config)
+    project_root = config_path.parent or Path(".")
+    config = load_config(config_path)
+    client = _direct_client(config, args.target)
+    entity = _normalize_entity(args.entity_type or "all")
+    query = _search.SearchQuery(
+        keyword=" ".join(args.keyword or []),
+        entities=_search.ENTITY_TYPES if entity == "all" else (entity,),
+        author=args.author,
+        since=_search.parse_date(args.since, "--since"),
+        until=_search.parse_date(args.until, "--until"),
+        updated_since=_search.parse_date(args.updated_since, "--updated-since"),
+        updated_until=_search.parse_date(args.updated_until, "--updated-until"),
+        tags=list(args.tag or []),
+        category=args.category,
+        status=args.status,
+        scope=args.scope,
+        order=args.order,
+        sort=args.sort,
+        limit=args.limit,
+        offset=args.offset,
+    )
+    found = _search.search(client, query)
+    locals_ = _search.local_paths(config, project_root, client.base_url)
+    records = []
+    for entity_type, data in found["results"]:
+        record = _search.to_record(entity_type, data, client.base_url, locals_.get((entity_type, data.get("id"))))
+        if args.body:
+            # 一覧 API は本文を返さないことがあるため、記事ごとに取得する
+            record["body"] = _search.body_markdown(client.get_entity(entity_type, data["id"]))
+        records.append(record)
+    if args.json:
+        print(json.dumps({"results": records, "count": len(records), "has_more": found["has_more"],
+                          "next_offset": found["next_offset"]}, ensure_ascii=False, indent=2))
+    else:
+        print(_search.format_text(records, found["has_more"], found["next_offset"]))
 
 
 def _select_target(config, name):
@@ -1949,14 +1992,14 @@ def main():
     # 共通オプション（全サブコマンドで使える）
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--config", "-c", default=DEFAULT_CONFIG, help="設定ファイルのパス（デフォルト: .elab-sync.yaml）")
-    common.add_argument("--target", "-t", default=None, help="対象ターゲット（title または docs_dir。省略時は全ターゲット。category・list・new と tag・relate の --id 指定時は接続先の選択に使い、省略時は既定の接続先）")
+    common.add_argument("--target", "-t", default=None, help="対象ターゲット（title または docs_dir。省略時は全ターゲット。category・list・search・new と tag・relate の --id 指定時は接続先の選択に使い、省略時は既定の接続先）")
     common.add_argument("--force", "-f", action="store_true", help="変更がなくても強制同期 / pull 時は既存ファイルを上書き")
     common.add_argument("--dry-run", "-n", action="store_true", help="実行せずに同期内容を確認")
     common.add_argument("--prune-attachments", action="store_true", help="ローカルに存在しないリモート添付を削除")
     # サブコマンド側の既定値が `esync -t X push` の -t を上書きしないよう、既定値を持たない複製を使う
     sub_common = argparse.ArgumentParser(add_help=False, argument_default=argparse.SUPPRESS)
     sub_common.add_argument("--config", "-c", help="設定ファイルのパス（デフォルト: .elab-sync.yaml）")
-    sub_common.add_argument("--target", "-t", help="対象ターゲット（title または docs_dir。省略時は全ターゲット。category・list・new と tag・relate の --id 指定時は接続先の選択に使い、省略時は既定の接続先）")
+    sub_common.add_argument("--target", "-t", help="対象ターゲット（title または docs_dir。省略時は全ターゲット。category・list・search・new と tag・relate の --id 指定時は接続先の選択に使い、省略時は既定の接続先）")
     sub_common.add_argument("--force", "-f", action="store_true", help="変更がなくても強制同期 / pull 時は既存ファイルを上書き")
     sub_common.add_argument("--dry-run", "-n", action="store_true", help="実行せずに同期内容を確認")
     sub_common.add_argument("--prune-attachments", action="store_true", help="ローカルに存在しないリモート添付を削除")
@@ -2067,6 +2110,28 @@ def main():
     list_parser.add_argument("--entity", dest="entity_type", default="items", choices=["items", "experiments", "resources"], help="エンティティ種別")
     list_parser.add_argument("--limit", type=int, default=20, help="表示件数（デフォルト: 20）")
 
+    search_parser = sub.add_parser("search", help="リソース/実験ノートを検索（作成者・日付・タグ・カテゴリで絞り込み）", parents=[sub_common])
+    search_parser.add_argument("keyword", nargs="*", help="タイトル・本文・eLabID に含まれる語（省略可）")
+    search_parser.add_argument("--entity", dest="entity_type", default="all",
+                               choices=["all", "items", "experiments", "resources"], help="検索する種別（デフォルト: all）")
+    search_parser.add_argument("--author", default=None, help="作成者（名前の部分一致・me・ユーザー ID）")
+    search_parser.add_argument("--since", default=None, metavar="YYYY-MM-DD", help="記事の日付がこの日以降")
+    search_parser.add_argument("--until", default=None, metavar="YYYY-MM-DD", help="記事の日付がこの日以前")
+    search_parser.add_argument("--updated-since", default=None, metavar="YYYY-MM-DD", help="最終更新日がこの日以降")
+    search_parser.add_argument("--updated-until", default=None, metavar="YYYY-MM-DD", help="最終更新日がこの日以前")
+    search_parser.add_argument("--tag", action="append", default=None, help="タグ（複数指定ですべてを含む記事）")
+    search_parser.add_argument("--category", default=None, help="カテゴリ名（完全一致）または ID")
+    search_parser.add_argument("--status", default=None, help="ステータス名（完全一致）または ID")
+    search_parser.add_argument("--scope", default=None, choices=["mine", "team", "all"],
+                               help="範囲（mine: 自分 / team: 現在のチーム / all: 読めるすべて。省略時は eLabFTW の設定）")
+    search_parser.add_argument("--order", default=None, choices=["date", "lastchange", "title", "id", "cat", "status",
+                                                                  "user", "rating", "customid", "comment"], help="並び順")
+    search_parser.add_argument("--sort", default=None, choices=["asc", "desc"], help="昇順 / 降順（デフォルト: desc）")
+    search_parser.add_argument("--limit", type=int, default=20, help="表示件数（デフォルト: 20）")
+    search_parser.add_argument("--offset", type=int, default=0, help="先頭から飛ばす件数")
+    search_parser.add_argument("--json", action="store_true", help="JSON で出力（AI エージェント・スクリプト向け）")
+    search_parser.add_argument("--body", action="store_true", help="本文（Markdown）も出力")
+
     link_parser = sub.add_parser("link", help="既存リモートエンティティとローカルを紐付け", parents=[sub_common])
     link_parser.add_argument("entity_id", type=int, nargs="?", help="リモートエンティティ ID")
     link_parser.add_argument("--file", default=None, help="紐付けるローカルファイル名（each モード時）")
@@ -2113,7 +2178,7 @@ def main():
         "pull": cmd_pull, "diff": cmd_diff, "update": cmd_update, "log": cmd_log,
         "clone": cmd_clone, "tag": cmd_tag, "relate": cmd_relate, "metadata": cmd_metadata,
         "entity-status": cmd_entity_status, "category": cmd_category,
-        "whoami": cmd_whoami, "new": cmd_new, "list": cmd_list,
+        "whoami": cmd_whoami, "new": cmd_new, "list": cmd_list, "search": cmd_search,
         "link": cmd_link, "rm": cmd_rm, "verify": cmd_verify, "profile": cmd_profile,
         "mv": cmd_mv, "backup": cmd_backup, "restore": cmd_restore,
     }

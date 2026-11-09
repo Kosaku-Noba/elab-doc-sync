@@ -140,7 +140,7 @@ eLabFTW API v2 クライアント（`ELabFTWClient(base_url, api_key, verify_ssl
 | `create_experiment(title, body)` | 実験ノート作成（ID を返す） |
 | `update_experiment(exp_id, **fields)` | 実験ノート更新 |
 | `delete_experiment(exp_id)` | 実験ノート削除 |
-| `search_experiments(tags)` | タグで実験ノートを検索 |
+| `search_experiments(tags)` | タグで実験ノートを検索（`esync search` は `search.py` が `/items`・`/experiments` の検索パラメータを直接使う） |
 | `append_body(exp_id, text)` / `replace_body(exp_id, body)` | 実験ノート本文の追記・置換 |
 | `get_entity(entity_type, entity_id)` | 汎用エンティティ取得（削除済みの判定はしない） |
 | `patch_entity(entity_type, entity_id, **fields)` | 汎用エンティティ更新 |

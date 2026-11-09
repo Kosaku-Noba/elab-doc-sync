@@ -41,6 +41,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q
 | test_push_select.py | 18 | 文書を指定した push |
 | test_sync_log.py | 13 | 同期ログ |
 | test_merge.py | 10 | 3-way マージ |
+| test_search.py | 15 | `esync search`（未リリース時点で追加） |
 | test_integration.py | 6 | 実機（既存） |
 | test_integration_v1.py | 5 | 実機（v1.0 以降） |
 
@@ -107,6 +108,12 @@ UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q
 ### 3.8 test_merge.py
 
 - 片側だけの変更の取り込み、同じ箇所の変更のマーカー、基準なしのマージ、マーカーに似た行の扱い
+
+### 3.8.1 test_search.py
+
+- 条件から検索パラメータへの変換（`q`・`extended`・`owner`・`cat`・`tags[]`）、値の引用とワイルドカードの無効化、種別をまたぐ ID 指定・逆転した日付の拒否
+- `limit`/`offset` と続きの有無、最終更新日のクライアント側絞り込みと打ち切り（ピン留めを除く）、`all` の統合順、`--scope team`
+- 人向け出力・`--json`（ローカルパス・取得コマンド・本文）、argparse からの呼び出し
 
 ### 3.9 実機テスト（test_integration.py / test_integration_v1.py）
 

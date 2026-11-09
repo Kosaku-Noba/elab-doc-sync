@@ -18,6 +18,7 @@
 | `esync metadata get/set` | メタデータ操作 |
 | `esync entity-status show/set` | エンティティステータス操作 |
 | `esync list` | リモートのリソース/実験ノート一覧 |
+| `esync search` | 作成者・日付・タグ・カテゴリなどで検索（`--json` で機械可読） |
 | `esync link <ID>` | 手動紐付け（`--new` で新規追跡を再開） |
 | `esync rm <ファイルパス>` | 追跡解除（`--local` でローカルファイルも削除） |
 | `esync mv <旧パス> <新パス>` | 文書と紐付けを移動 |
@@ -312,6 +313,68 @@ esync list --entity experiments --limit 100
 ```
 
 `--entity` は `items`（既定）/ `experiments` / `resources`。サーバー側の表示件数に制限される場合があります。接続先は `category` と同じく `-t` で選びます。
+
+## search — 検索
+
+```bash
+esync search [キーワード ...] [--entity all|items|experiments|resources]
+  [--author 名前|me|ユーザーID] [--since 日付] [--until 日付]
+  [--updated-since 日付] [--updated-until 日付] [--tag タグ ...]
+  [--category 名前|ID] [--status 名前|ID] [--scope mine|team|all]
+  [--order 並び順] [--sort asc|desc] [--limit 20] [--offset 0] [--json] [--body]
+```
+
+eLabFTW のブラウザの検索と同じ条件で、リソース・実験ノートを検索します。条件はすべて AND です。
+
+| オプション | 説明 |
+|---|---|
+| `キーワード` | タイトル・本文・eLabID に含まれる語（複数の語は 1 つの検索語として送る） |
+| `--entity` | 検索する種別。既定は `all`（リソースと実験ノートの両方） |
+| `--author` | 作成者。名前は「名 姓」への部分一致、`me` は自分、数字はユーザー ID |
+| `--since` / `--until` | 記事の日付（ブラウザの「日付」欄。既定は作成日）の範囲。両端を含む |
+| `--updated-since` / `--updated-until` | 最終更新日の範囲。両端を含む |
+| `--tag` | タグ。複数指定すると、すべてのタグを持つ記事 |
+| `--category` / `--status` | 名前（完全一致、大文字小文字は区別しない）または ID。ID は種別ごとに異なるため `--entity items` か `experiments` が必要 |
+| `--scope` | `mine`: 自分の記事 / `team`: 現在のチームの記事 / `all`: 読めるすべて。省略時は eLabFTW のユーザー設定 |
+| `--order` / `--sort` | 並び順（`date`・`lastchange`・`title`・`id` など）と昇順・降順（既定 `desc`）。省略時は eLabFTW の設定。`all` と最終更新日の指定時は `lastchange` |
+| `--limit` / `--offset` | 表示件数（既定 20）と、先頭から飛ばす件数。続きがあれば次の `--offset` を表示する |
+| `--json` | JSON で出力（AI エージェント・スクリプト向け） |
+| `--body` | 本文も出力（pull と同じ変換をした Markdown。記事ごとに 1 回取得する） |
+
+```bash
+esync search PCR                                       # キーワード
+esync search --author me --updated-since 2026-11-01    # 自分が最近更新した記事
+esync search --author 山田 --since 2026-04-01 --until 2026-09-30 --entity experiments
+esync search --tag 週報 --tag 2026 --category "Protocol"
+esync search 緩衝液 --json --body --limit 5            # エージェントに本文ごと渡す
+```
+
+人向けの出力は、記事ごとに作成者・日付・最終更新・カテゴリ・ステータス・タグを表示します。追跡中の文書にはローカルのパスを、未取得の記事には最後にまとめて `esync pull --id … --entity …` を案内します。
+
+`--json` の出力:
+
+```json
+{
+  "results": [
+    {
+      "entity": "items", "id": 42, "title": "…", "author": "Taro Yamada", "userid": 7,
+      "date": "2026-11-02", "created_at": "2026-11-02 10:00:00", "modified_at": "2026-11-05 18:12:03",
+      "category": {"id": 4, "title": "Protocol"}, "status": {"id": 1, "title": "Running"},
+      "tags": ["週報"], "url": "https://…/database.php?mode=view&id=42",
+      "local_path": "docs/週報.md", "pull_command": null, "body": "…（--body 指定時のみ）"
+    }
+  ],
+  "count": 1, "has_more": false, "next_offset": null
+}
+```
+
+`local_path` は同じ接続先のターゲットで追跡中の文書（カレントディレクトリ基準）、`pull_command` は追跡していない記事の取得コマンドです。接続先は `list` と同じく `-t` で選びます。
+
+**制約:**
+
+- 最終更新日は eLabFTW の検索条件にないため、esync が取得しながら絞り込みます。種別ごとに最大 5,000 件まで確認します（並び順が `lastchange` 降順なら、範囲より古い記事に達した時点で打ち切ります）。
+- `--scope team` は、eLabFTW がユーザー設定によってはチームで絞らないため、esync 側でも現在のチームの記事だけに絞ります。
+- `--entity all` は種別ごとに取得してから並び順で統合します。固定表示（ピン留め）の記事も他の記事と同じ基準で並べます。
 
 ## verify — 整合性チェック
 
