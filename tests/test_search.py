@@ -4,6 +4,7 @@ import datetime as dt
 import json
 import sys
 from argparse import Namespace
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -195,7 +196,8 @@ def test_cmd_search_json_with_local_path_and_body(tmp_path, capsys, monkeypatch)
     out = json.loads(capsys.readouterr().out)
     assert out["count"] == 2 and out["has_more"] is False
     first, second = out["results"]
-    assert first["local_path"] == "docs/a.md" and first["pull_command"] is None
+    # パス区切りは OS 標準（Windows では docs\a.md）
+    assert first["local_path"] == str(Path("docs/a.md")) and first["pull_command"] is None
     assert second["local_path"] is None and second["pull_command"] == "esync pull --id 2 --entity items"
     assert first["body"] == "Hello" and second["body"] == "> quote"
     assert first["url"] == "https://elab.example.com/database.php?mode=view&id=1"
