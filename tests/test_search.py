@@ -224,3 +224,67 @@ def test_main_parses_search(tmp_path, monkeypatch):
         cli.main()
     assert seen["keyword"] == ["pcr"] and seen["entity_type"] == "resources"
     assert seen["tag"] == ["a", "b"] and seen["updated_since"] == "2026-01-01" and seen["json"] is True
+
+
+# SRCH-15: -t で検索したときは取得コマンドにも -t を付ける
+def test_pull_command_keeps_target():
+    rec = to_record("items", _item(1), "https://e", None, target="週報 A")
+    assert rec["pull_command"] == "esync pull --id 1 --entity items -t '週報 A'"
+    out = format_text([rec], False, None, target="週報 A")
+    assert "→ 取得: esync pull --id 1 --entity items -t '週報 A'" in out
+
+
+# SRCH-16: 走査上限で打ち切ったときは続きを案内せず、警告と truncated を返す
+def test_search_scan_limit_is_reported(monkeypatch):
+    monkeypatch.setattr("elab_doc_sync.search.MAX_SCAN", 200)
+    items = [_item(i, modified_at="2026-01-01 00:00:00") for i in range(1, 400)]
+    r = search(FakeClient(items=items),
+               SearchQuery(entities=("items",), order="id", updated_since=dt.date(2026, 3, 1)))
+    assert r["results"] == [] and r["truncated"] is True
+    assert r["has_more"] is False and r["next_offset"] is None
+    assert "打ち切りました" in format_text([], False, None, truncated=True)
+
+
+# SRCH-17: 1 種別・クライアント側の絞り込みなしならサーバーの offset を使う
+def test_search_single_entity_uses_server_offset():
+    client = FakeClient(items=[_item(i) for i in range(1, 30)])
+    r = search(client, SearchQuery(entities=("items",), limit=5, offset=20))
+    assert [e["id"] for _, e in r["results"]] == [21, 22, 23, 24, 25]
+    assert client.requests == [("items", {"limit": 6, "offset": 20})]
+    assert r["next_offset"] == 25
+
+
+# SRCH-18: 種別をまたぐ検索で、先頭のピン留めが上位の記事の取得枠を使わない
+def test_search_all_pinned_do_not_hide_newer_entries():
+    items = [_item(1, modified_at="2020-01-01 00:00:00", is_pinned=1),
+             _item(2, modified_at="2026-03-05 00:00:00")]
+    exps = [_item(10, modified_at="2026-03-03 00:00:00")]
+    r = search(FakeClient(items=items, experiments=exps), SearchQuery(limit=1))
+    assert [(t, e["id"]) for t, e in r["results"]] == [("items", 2)]
+    assert r["has_more"] is True
+
+
+# SRCH-19: --scope team はチームを確認できない記事を除き、現在のチーム不明ならエラー
+def test_search_scope_team_requires_team():
+    items = [_item(1, team=3), _item(2, team=None), _item(3)]
+    del items[2]["team"]
+    r = search(FakeClient(items=items), SearchQuery(entities=("items",), scope="team"))
+    assert [e["id"] for _, e in r["results"]] == [1]
+    with pytest.raises(ValueError, match="チーム"):
+        search(FakeClient(items=items, user={"userid": 7}), SearchQuery(entities=("items",), scope="team"))
+
+
+# SRCH-20: 同じホストでもパスが異なる接続先の追跡情報は使わない
+def test_local_paths_requires_same_base_path(tmp_path):
+    from elab_doc_sync.config import load_config
+    from elab_doc_sync.search import local_paths
+    cfg = _write_config(tmp_path)
+    data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    data["elabftw"]["url"] = "https://elab.example.com/lab-a/"
+    cfg.write_text(yaml.dump(data), encoding="utf-8")
+    (tmp_path / "docs" / "a.md").write_text("x", encoding="utf-8")
+    (tmp_path / ".elab-sync-ids").mkdir()
+    (tmp_path / ".elab-sync-ids" / "mapping.json").write_text(json.dumps({"a.md": 1}), encoding="utf-8")
+    config = load_config(cfg)
+    assert local_paths(config, tmp_path, "https://elab.example.com/lab-b") == {}
+    assert ("items", 1) in local_paths(config, tmp_path, "https://ELAB.example.com/lab-a")

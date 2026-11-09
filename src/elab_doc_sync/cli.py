@@ -1478,16 +1478,19 @@ def cmd_search(args):
     locals_ = _search.local_paths(config, project_root, client.base_url)
     records = []
     for entity_type, data in found["results"]:
-        record = _search.to_record(entity_type, data, client.base_url, locals_.get((entity_type, data.get("id"))))
+        record = _search.to_record(entity_type, data, client.base_url, locals_.get((entity_type, data.get("id"))),
+                                   args.target)
         if args.body:
             # 一覧 API は本文を返さないことがあるため、記事ごとに取得する
             record["body"] = _search.body_markdown(client.get_entity(entity_type, data["id"]))
         records.append(record)
     if args.json:
         print(json.dumps({"results": records, "count": len(records), "has_more": found["has_more"],
-                          "next_offset": found["next_offset"]}, ensure_ascii=False, indent=2))
+                          "next_offset": found["next_offset"], "truncated": found["truncated"]},
+                         ensure_ascii=False, indent=2))
     else:
-        print(_search.format_text(records, found["has_more"], found["next_offset"]))
+        print(_search.format_text(records, found["has_more"], found["next_offset"], found["truncated"],
+                                  args.target))
 
 
 def _select_target(config, name):

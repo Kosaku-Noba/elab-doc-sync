@@ -20,6 +20,8 @@ ENTITY_TYPES = ("items", "experiments")
 ORDER_CHOICES = ("date", "lastchange", "title", "id", "cat", "status", "user", "rating", "customid", "comment")
 SCOPE_VALUES = {"mine": 1, "team": 2, "all": 3}
 PAGE_SIZE = 100
+# Characters of the body shown in the text output (--json prints the whole body)
+BODY_PREVIEW = 300
 # Upper bound of entries scanned per entity when filtering on the client side
 MAX_SCAN = 5000
 
@@ -152,38 +154,50 @@ def _modified_date(entity: dict) -> _dt.date | None:
         return None
 
 
-def _fetch(client, entity_type: str, params: dict, query: SearchQuery, team_id: int | None) -> tuple[list[dict], bool]:
-    """Return up to offset+limit matches (in server order) and whether more exist."""
-    need = query.offset + query.limit
+def _fetch(client, entity_type: str, params: dict, query: SearchQuery, team_id: int | None, *,
+           start: int, need: int, count_pinned: bool) -> tuple[list[dict], bool, bool]:
+    """Collect matches in server order, starting at the server offset `start`.
+
+    Stops once `need` matches are found (pinned entries do not count unless
+    count_pinned). Returns (matches, more matches exist, scan limit reached).
+    """
     client_filter = bool(query.updated_since or query.updated_until or team_id)
     stop_early = query.updated_since is not None and params.get("order") == "lastchange" and params.get("sort") == "desc"
     matches: list[dict] = []
-    offset = 0
+    counted = 0
+    scanned = 0
     while True:
-        page_size = PAGE_SIZE if client_filter else min(PAGE_SIZE, need + 1 - len(matches))
+        exact = count_pinned and not client_filter
+        page_size = min(PAGE_SIZE, need + 1 - counted) if exact else PAGE_SIZE
         page_params = {**params, "limit": page_size}
-        if offset:
-            page_params["offset"] = offset
+        if start + scanned:
+            page_params["offset"] = start + scanned
         page = client._req("GET", f"/api/v2/{entity_type}", params=page_params).json() or []
         for entity in page:
+            pinned = bool(entity.get("is_pinned"))
             modified = _modified_date(entity)
             if stop_early and modified is not None and modified < query.updated_since:
                 # Pinned entries come first regardless of the order, so only skip them
-                if not entity.get("is_pinned"):
-                    return matches, False
+                if not pinned:
+                    return matches, False, False
                 continue
             if query.updated_since and (modified is None or modified < query.updated_since):
                 continue
             if query.updated_until and (modified is None or modified > query.updated_until):
                 continue
-            if team_id and entity.get("team") not in (None, team_id):
+            # Entries whose team cannot be confirmed are left out of --scope team
+            if team_id and str(entity.get("team")) != str(team_id):
                 continue
+            counts = count_pinned or not pinned
+            if counts and counted >= need:
+                return matches, True, False
             matches.append(entity)
-            if len(matches) > need:
-                return matches[:need], True
-        offset += len(page)
-        if len(page) < page_size or offset >= MAX_SCAN:
-            return matches, len(page) == page_size
+            counted += counts
+        scanned += len(page)
+        if len(page) < page_size:
+            return matches, False, False
+        if scanned >= MAX_SCAN:
+            return matches, False, True
 
 
 def _sort_key(entity: dict, order: str):
@@ -197,7 +211,11 @@ def _sort_key(entity: dict, order: str):
 
 
 def search(client, query: SearchQuery) -> dict:
-    """Run the search. Returns {"results": [(entity_type, entity), ...], "has_more", "next_offset"}."""
+    """Run the search.
+
+    Returns {"results": [(entity_type, entity), ...], "has_more", "next_offset", "truncated"}.
+    truncated means the scan limit was reached, so matching entries may be missing.
+    """
     if query.limit < 1:
         raise ValueError("--limit は 1 以上を指定してください")
     if query.offset < 0:
@@ -205,25 +223,38 @@ def search(client, query: SearchQuery) -> dict:
     needs_user = query.author == "me" or query.scope in ("mine", "team")
     user = client.get_user_info() if needs_user else {}
     params = build_params(query, user.get("userid"))
-    # eLabFTW only restricts scope=2 to the team when the user's own preference is "team"
-    team_id = user.get("team") if query.scope == "team" else None
+    team_id = None
+    if query.scope == "team":
+        # eLabFTW only restricts scope=2 to the team when the user's own preference is "team"
+        team_id = user.get("team")
+        if not team_id:
+            raise ValueError("現在のチームを取得できないため --scope team で絞り込めません（esync whoami で確認してください）")
+    merge = len(query.entities) > 1
+    client_filter = bool(query.updated_since or query.updated_until or team_id)
+    # Without merging or client-side filtering, the server offset can be used directly
+    server_offset = not merge and not client_filter
+    start = query.offset if server_offset else 0
+    skip = 0 if server_offset else query.offset
     combined: list[tuple[str, dict]] = []
-    has_more = False
+    has_more = truncated = False
     for entity_type in query.entities:
-        found, more = _fetch(client, entity_type, params, query, team_id)
+        # The server lists pinned entries first; when both types are merged and
+        # re-sorted they must not use up the quota of entries ranked after them
+        found, more, cut = _fetch(client, entity_type, params, query, team_id,
+                                  start=start, need=skip + query.limit, count_pinned=not merge)
         combined.extend((entity_type, e) for e in found)
         has_more = has_more or more
+        truncated = truncated or cut
     order = params.get("order")
-    if len(query.entities) > 1 and order in _ORDER_FIELDS:
+    if merge and order in _ORDER_FIELDS:
         reverse = params.get("sort", "desc") == "desc"
         present = [r for r in combined if _sort_key(r[1], order)[0] == 0]
         missing = [r for r in combined if _sort_key(r[1], order)[0] != 0]
         present.sort(key=lambda r: _sort_key(r[1], order), reverse=reverse)
         combined = present + missing
-    total = len(combined)
-    page = combined[query.offset:query.offset + query.limit]
-    has_more = has_more or total > query.offset + query.limit
-    return {"results": page, "has_more": has_more,
+    page = combined[skip:skip + query.limit]
+    has_more = has_more or len(combined) > skip + query.limit
+    return {"results": page, "has_more": has_more, "truncated": truncated,
             "next_offset": query.offset + len(page) if has_more else None}
 
 
@@ -250,14 +281,21 @@ def body_markdown(entity: dict) -> str:
     return _remote_markdown(entity, SimpleNamespace(body_format="html"))
 
 
+def _server_key(url: str) -> tuple[str, str]:
+    from urllib.parse import urlparse
+    parsed = urlparse(url.strip())
+    return (parsed.netloc.lower(), parsed.path.rstrip("/"))
+
+
 def local_paths(config, project_root: Path, base_url: str) -> dict[tuple[str, int], Path]:
     """Map (entity_type, id) to tracked local files on the same server."""
     from .config import get_client_for_target
-    from .sync import EachDocsSyncer, _hosts_match
+    from .sync import EachDocsSyncer
     found: dict[tuple[str, int], Path] = {}
     for target in config.targets:
         url = get_client_for_target(config, target)[0]
-        if url.rstrip("/") != base_url.rstrip("/") and not _hosts_match(url, base_url):
+        # Different paths on one host can be separate eLabFTW installations
+        if _server_key(url) != _server_key(base_url):
             continue
         syncer = EachDocsSyncer(SimpleNamespace(base_url=url), target, project_root)
         try:
@@ -279,7 +317,15 @@ def display_path(path: Path) -> str:
         return str(path)
 
 
-def to_record(entity_type: str, entity: dict, base_url: str, local: Path | None) -> dict:
+def pull_command(ids: list, entity_type: str, target: str | None = None) -> str:
+    """Suggested pull command. -t keeps the connection the search used."""
+    from .sync import _shell_quote
+    target_opt = f" -t {_shell_quote(target)}" if target else ""
+    return "esync pull " + " ".join(f"--id {i}" for i in ids) + f" --entity {entity_type}{target_opt}"
+
+
+def to_record(entity_type: str, entity: dict, base_url: str, local: Path | None,
+              target: str | None = None) -> dict:
     eid = entity.get("id")
     record = {
         "entity": entity_type,
@@ -296,14 +342,19 @@ def to_record(entity_type: str, entity: dict, base_url: str, local: Path | None)
         "tags": split_tags(entity.get("tags")),
         "url": entity_url(base_url, entity_type, eid),
         "local_path": display_path(local) if local else None,
-        "pull_command": None if local else f"esync pull --id {eid} --entity {entity_type}",
+        "pull_command": None if local else pull_command([eid], entity_type, target),
     }
     return record
 
 
-def format_text(records: list[dict], has_more: bool, next_offset: int | None) -> str:
+TRUNCATED_WARNING = (f"  ⚠ 種別ごとに {MAX_SCAN:,} 件まで確認して打ち切りました。"
+                     "条件に合う記事が他にもある可能性があります。条件を絞ってください")
+
+
+def format_text(records: list[dict], has_more: bool, next_offset: int | None,
+                truncated: bool = False, target: str | None = None) -> str:
     if not records:
-        return "  該当する記事はありません"
+        return "\n".join(["  該当する記事はありません"] + ([TRUNCATED_WARNING] if truncated else []))
     lines = []
     for r in records:
         label = "実験ノート" if r["entity"] == "experiments" else "リソース"
@@ -325,15 +376,17 @@ def format_text(records: list[dict], has_more: bool, next_offset: int | None) ->
             lines.append(f"    ローカル: {r['local_path']}")
         if r.get("body") is not None:
             body = r["body"].strip()
-            preview = body if len(body) <= 300 else body[:300] + "…"
+            preview = body if len(body) <= BODY_PREVIEW else body[:BODY_PREVIEW] + "…（全文は --json --body）"
             lines.extend("    | " + line for line in (preview.splitlines() or [""]))
     lines.append("")
     summary = f"  {len(records)} 件表示"
     if has_more:
         summary += f"（続きは --offset {next_offset}）"
     lines.append(summary)
+    if truncated:
+        lines.append(TRUNCATED_WARNING)
     for entity_type in ENTITY_TYPES:
         ids = [r["id"] for r in records if r["entity"] == entity_type and not r["local_path"]]
         if ids:
-            lines.append("  → 取得: esync pull " + " ".join(f"--id {i}" for i in ids) + f" --entity {entity_type}")
+            lines.append("  → 取得: " + pull_command(ids, entity_type, target))
     return "\n".join(lines)
