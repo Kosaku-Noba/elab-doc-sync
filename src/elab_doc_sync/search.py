@@ -196,7 +196,8 @@ def _fetch(client, entity_type: str, params: dict, query: SearchQuery, team_id: 
         scanned += len(page)
         if len(page) < page_size:
             return matches, False, False
-        if scanned >= MAX_SCAN:
+        # The server-offset path fetches exactly what is needed, so no limit applies
+        if not exact and scanned >= MAX_SCAN:
             return matches, False, True
 
 
@@ -254,8 +255,9 @@ def search(client, query: SearchQuery) -> dict:
         combined = present + missing
     page = combined[skip:skip + query.limit]
     has_more = has_more or len(combined) > skip + query.limit
+    # A truncated scan may have missed entries, so paging on would not be reliable
     return {"results": page, "has_more": has_more, "truncated": truncated,
-            "next_offset": query.offset + len(page) if has_more else None}
+            "next_offset": query.offset + len(page) if has_more and not truncated else None}
 
 
 # ── presentation ────────────────────────────────────────────
@@ -380,7 +382,7 @@ def format_text(records: list[dict], has_more: bool, next_offset: int | None,
             lines.extend("    | " + line for line in (preview.splitlines() or [""]))
     lines.append("")
     summary = f"  {len(records)} 件表示"
-    if has_more:
+    if has_more and next_offset is not None:
         summary += f"（続きは --offset {next_offset}）"
     lines.append(summary)
     if truncated:

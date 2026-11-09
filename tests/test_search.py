@@ -288,3 +288,24 @@ def test_local_paths_requires_same_base_path(tmp_path):
     config = load_config(cfg)
     assert local_paths(config, tmp_path, "https://elab.example.com/lab-b") == {}
     assert ("items", 1) in local_paths(config, tmp_path, "https://ELAB.example.com/lab-a")
+
+
+# SRCH-21: 一方の種別が打ち切られたら、他方に続きがあっても next_offset を返さない
+def test_search_truncated_suppresses_next_offset(monkeypatch):
+    monkeypatch.setattr("elab_doc_sync.search.MAX_SCAN", 100)
+    items = [_item(i, team=9) for i in range(1, 200)]
+    exps = [_item(1000 + i) for i in range(1, 10)]
+    r = search(FakeClient(items=items, experiments=exps), SearchQuery(scope="team", limit=3))
+    assert len(r["results"]) == 3 and r["truncated"] is True
+    assert r["has_more"] is True and r["next_offset"] is None
+    out = format_text([to_record(t, e, "https://e", None) for t, e in r["results"]],
+                      r["has_more"], r["next_offset"], r["truncated"])
+    assert "--offset" not in out and "打ち切りました" in out
+
+
+# SRCH-22: サーバーの offset で取得する 1 種別の検索には走査上限がかからない
+def test_search_server_offset_path_has_no_scan_limit(monkeypatch):
+    monkeypatch.setattr("elab_doc_sync.search.MAX_SCAN", 100)
+    r = search(FakeClient(items=[_item(i) for i in range(1, 300)]), SearchQuery(entities=("items",), limit=250))
+    assert len(r["results"]) == 250 and r["truncated"] is False
+    assert r["has_more"] is True and r["next_offset"] == 250
