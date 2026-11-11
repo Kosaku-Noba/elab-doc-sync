@@ -386,9 +386,11 @@ esync push
 esync tag list                                      # 同期済みの全文書のタグ
 esync tag add "重要"                                # 同期済みの全文書に追加
 esync tag add "new-tag" --id 42 --entity items      # 記事を指定
-esync category list --entity items
+esync category list --entity items                 # API キーの現在のチームのカテゴリ
 esync category set "試薬" --id 42 --entity items
 ```
+
+実験ノートのカテゴリ一覧は eLabFTW 4.9 以降で使えます（それ以前の版には実験ノートのカテゴリがありません）。
 
 `--id` を省略すると、各ターゲットの同期済み文書に、そのターゲットの接続プロファイルで送信します。`--id` を指定した場合、接続先は `-t` で選んだターゲットのプロファイルです（`-t` を省略すると default、一致するターゲットがなければ何も送信せずエラー）。
 
@@ -620,7 +622,7 @@ profiles:
 | `profile` | — | `default` | 使用する接続プロファイル |
 | `team` | — | — | 送信先チーム名または ID。`profile` を省略した場合、同じ `team` のプロファイルを使う |
 | `tags` | — | `[]` | push 時に自動追加するタグ（pull 振り分けにも使用） |
-| `category` | — | — | push 時のカテゴリ。名前または数字の ID（pull 振り分けにも使用）。一覧 API に出ない（読み取り権限のない）カテゴリは ID で指定 |
+| `category` | — | — | push 時のカテゴリ。名前または数字の ID（pull 振り分けにも使用）。一覧 API に出ない（API キーの現在のチーム以外の、読み取り権限のないなど）カテゴリは ID で指定 |
 | `links` | — | — | push 時に追加するリンク。`experiments` / `items`（`resources`）ごとの ID のリスト。削除はしない |
 | `title_pattern` | — | — | pull 振り分け用タイトル glob |
 | `body_format` | — | `html` | `md` / `html`（`esync init` で作ると `md`） |

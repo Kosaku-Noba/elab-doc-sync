@@ -237,15 +237,35 @@ class ELabFTWClient:
     # ── categories ───────────────────────────────────────────
 
     def list_items_types(self) -> list[dict]:
-        return self._req("GET", "/api/v2/items_types").json()
+        """リソースのテンプレート一覧（旧版の eLabFTW ではリソースのカテゴリ一覧）。"""
+        return self._req("GET", "/api/v2/items_types").json() or []
+
+    def list_resources_categories(self) -> list[dict]:
+        """現在のチームのリソースのカテゴリ一覧。
+
+        eLabFTW 5.3 以降は items_types がリソースのテンプレートの一覧になり、
+        カテゴリは teams/{id}/resources_categories で取得する。この API がない
+        旧版（5.2 以前。400 / 404）では、カテゴリ一覧だった items_types を使う。
+        """
+        try:
+            return self._req("GET", "/api/v2/teams/current/resources_categories").json() or []
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code in (400, 404):
+                return self.list_items_types()
+            raise
 
     def list_experiments_categories(self) -> list[dict]:
-        return self._req("GET", "/api/v2/experiments_categories").json()
+        """現在のチームの実験ノートのカテゴリ一覧。
+
+        実験ノートのカテゴリは eLabFTW 4.9 からチームのサブモデルとしてだけ提供され、
+        /api/v2/experiments_categories という API はどの版にもないため、旧版向けの代替はない。
+        """
+        return self._req("GET", "/api/v2/teams/current/experiments_categories").json() or []
 
     def list_categories(self, entity_type: str) -> list[dict]:
         if entity_type == "experiments":
             return self.list_experiments_categories()
-        return self.list_items_types()
+        return self.list_resources_categories()
 
     def resolve_category_id(self, entity_type: str, category: str | int, current: dict | None = None) -> int:
         """カテゴリ名または ID を ID に解決する。

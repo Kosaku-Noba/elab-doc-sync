@@ -460,6 +460,87 @@ def test_resolve_category_id_not_found_suggests_numeric_id(mock_req, client):
         client.resolve_category_id("items", "SPECIFICATION", current={"category": 65, "category_title": "OTHER"})
 
 
+# ── カテゴリ一覧の取得先テスト ────────────────────────
+
+
+def _http_error_response(status_code):
+    import requests
+    resp = _mock_response({"code": status_code}, status_code=status_code)
+    resp.raise_for_status.side_effect = requests.HTTPError(f"{status_code}", response=resp)
+    return resp
+
+
+@patch("elab_doc_sync.client.requests.request")
+def test_list_categories_items_uses_resources_categories(mock_req, client):
+    # 新しい eLabFTW では items_types はテンプレート一覧。カテゴリはチームの resources_categories から読む
+    mock_req.return_value = _mock_response([{"id": 7, "title": "試薬"}, {"id": 8, "title": "機器"}])
+    assert client.list_categories("items") == [{"id": 7, "title": "試薬"}, {"id": 8, "title": "機器"}]
+    mock_req.assert_called_once()
+    assert mock_req.call_args[0] == ("GET", "https://elab.example.com/api/v2/teams/current/resources_categories")
+
+
+@pytest.mark.parametrize("status_code", [400, 404])
+@patch("elab_doc_sync.client.requests.request")
+def test_list_categories_items_falls_back_to_items_types(mock_req, client, status_code):
+    # resources_categories がない旧版のサーバーでは、カテゴリ一覧だった items_types を使う
+    mock_req.side_effect = [_http_error_response(status_code), _mock_response([{"id": 3, "title": "試薬"}])]
+    assert client.list_categories("items") == [{"id": 3, "title": "試薬"}]
+    assert [c[0] for c in mock_req.call_args_list] == [
+        ("GET", "https://elab.example.com/api/v2/teams/current/resources_categories"),
+        ("GET", "https://elab.example.com/api/v2/items_types"),
+    ]
+
+
+@patch("elab_doc_sync.client.requests.request")
+def test_list_categories_items_other_errors_are_raised(mock_req, client):
+    import requests
+    mock_req.return_value = _http_error_response(403)
+    with pytest.raises(requests.HTTPError):
+        client.list_categories("items")
+    mock_req.assert_called_once()
+
+
+@patch("elab_doc_sync.client.requests.request")
+def test_list_categories_experiments_uses_team_endpoint(mock_req, client):
+    # /api/v2/experiments_categories は存在せず 400 になる。チームのサブモデルから読む
+    mock_req.return_value = _mock_response([{"id": 5, "title": "合成"}])
+    assert client.list_categories("experiments") == [{"id": 5, "title": "合成"}]
+    assert mock_req.call_args[0] == ("GET", "https://elab.example.com/api/v2/teams/current/experiments_categories")
+
+
+@patch("elab_doc_sync.client.requests.request")
+def test_list_categories_experiments_has_no_fallback(mock_req, client):
+    # /api/v2/experiments_categories はどの版にもないため、代替の API は呼ばない
+    import requests
+    mock_req.return_value = _http_error_response(400)
+    with pytest.raises(requests.HTTPError):
+        client.list_categories("experiments")
+    mock_req.assert_called_once()
+
+
+@patch("elab_doc_sync.client.requests.request")
+def test_list_categories_null_response_is_empty(mock_req, client):
+    resp = _mock_response()
+    resp.json.return_value = None
+    mock_req.return_value = resp
+    assert client.list_categories("items") == []
+    assert client.list_categories("experiments") == []
+
+
+@patch("elab_doc_sync.client.requests.request")
+def test_resolve_category_by_resources_categories_not_templates(mock_req, client):
+    # テンプレートとカテゴリの ID が重なっても、カテゴリ一覧の名前で解決する
+    templates = [{"id": 12, "title": "テンプレートA", "category": 12, "category_title": "依頼"}]
+    categories = [{"id": 11, "title": "仕様書"}, {"id": 12, "title": "依頼"}]
+
+    def fake_request(method, url, **kwargs):
+        return _mock_response(categories if url.endswith("/resources_categories") else templates)
+
+    mock_req.side_effect = fake_request
+    assert client.resolve_category_name("items", 12) == "依頼"
+    assert client.resolve_category_id("items", "仕様書") == 11
+
+
 # ── Phase 2: upload リトライテスト ──────────────────────────
 
 

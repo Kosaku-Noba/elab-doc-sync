@@ -42,8 +42,8 @@
 | リンク一覧 | GET | `/api/v2/{entity_type}/{entity_id}/{experiments\|items}_links` |
 | リンク作成 | POST | `/api/v2/{entity_type}/{entity_id}/{experiments\|items}_links/{target_id}` |
 | リンク削除 | DELETE | `/api/v2/{entity_type}/{entity_id}/{experiments\|items}_links/{target_id}` |
-| リソースのカテゴリ一覧 | GET | `/api/v2/items_types` |
-| 実験ノートのカテゴリ一覧 | GET | `/api/v2/experiments_categories` |
+| リソースのカテゴリ一覧 | GET | `/api/v2/teams/current/resources_categories`（400 / 404 のときは `/api/v2/items_types`） |
+| 実験ノートのカテゴリ一覧 | GET | `/api/v2/teams/current/experiments_categories` |
 | 実験テンプレート | GET | `/api/v2/experiments_templates[/{id}]` |
 | ユーザー情報 | GET | `/api/v2/users/me` |
 
