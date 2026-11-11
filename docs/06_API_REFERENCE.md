@@ -148,7 +148,8 @@ eLabFTW API v2 クライアント（`ELabFTWClient(base_url, api_key, verify_ssl
 | `list_uploads(entity_type, entity_id)` | アップロード一覧 |
 | `delete_upload(entity_type, entity_id, upload_id)` | アップロード削除 |
 | `download_upload(*, entity_type, entity_id, upload_id)` | アップロードダウンロード |
-| `list_items_types()` / `list_experiments_categories()` | カテゴリ一覧（リソース / 実験ノート） |
+| `list_resources_categories()` / `list_experiments_categories()` | 現在のチームのカテゴリ一覧（リソース / 実験ノート）。リソースは `resources_categories` がないサーバーでは `items_types` を使う |
+| `list_items_types()` | リソースのテンプレート一覧（旧版の eLabFTW ではカテゴリ一覧） |
 | `list_categories(entity_type)` | 種別に応じたカテゴリ一覧 |
 | `resolve_category_id(entity_type, category, current=None)` | カテゴリ名→ID 解決（一覧にない場合は `current` の `category_title` も使う） |
 | `resolve_category_name(entity_type, category_id)` | カテゴリ ID→名前 |

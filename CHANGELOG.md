@@ -1,5 +1,14 @@
 # Changelog
 
+## 未リリース
+
+### 修正
+
+- `esync category list --entity items` が、カテゴリではなくリソースのテンプレートの一覧（ID とテンプレート名）を表示していた。eLabFTW 5.3 以降は `/api/v2/items_types` がテンプレートの一覧になっているため（5.6.15 で確認）。カテゴリは `/api/v2/teams/current/resources_categories` から取得するようにした。この API がない 5.2 以前（400 / 404）では、従来どおり `items_types` を使う。
+  - 同じ一覧を使う、push・`esync category set` のカテゴリ名から ID への解決と、pull のカテゴリ ID から名前への解決も正しいカテゴリで行う。これまでは、テンプレートの一覧に同じ名前がないカテゴリ名は「見つかりません」になり、pull ではテンプレート名をカテゴリ名として扱うことがあった。
+- `esync category list --entity experiments` が 400 エラーになっていた（`/api/v2/experiments_categories` という API はない）。`/api/v2/teams/current/experiments_categories`（eLabFTW 4.9 以降）から取得するようにした。
+- `esync category list` の注記を、API キーの現在のチームのカテゴリを表示する旨に改めた。
+
 ## v1.3.0 (2026-11-09)
 
 ### 追加

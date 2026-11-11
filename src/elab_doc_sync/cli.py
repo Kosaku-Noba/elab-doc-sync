@@ -1957,7 +1957,7 @@ def cmd_category(args):
         cats = client.list_categories(entity_type)
         for c in cats:
             print(f"  #{c['id']}  {c.get('title', '?')}")
-        print("  ※ 読み取り権限のないカテゴリは一覧に表示されません。文書のカテゴリは「category show」で確認できます")
+        print("  ※ API キーの現在のチームのカテゴリを表示します。一覧にないカテゴリは、文書のカテゴリを「category show」で確認できます")
         return
 
     entity_type = _normalize_entity(direct_entity)

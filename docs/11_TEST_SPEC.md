@@ -63,6 +63,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q
 - タグ操作（add/remove/get/untag_by_name、null 応答）
 - メタデータ操作（正常/null/不正JSON/list型）
 - カテゴリ解決（数値/名前/不存在/一覧にないカテゴリ）
+- カテゴリ一覧の取得先（リソースは `resources_categories`、ない場合は `items_types`。実験ノートはチームの `experiments_categories`。テンプレートと ID が重なる場合の解決）
 - リンク操作（list_links/add_link/remove_link）
 - 汎用エンティティ操作、HTTP エラーハンドリング、verify_ssl=False
 

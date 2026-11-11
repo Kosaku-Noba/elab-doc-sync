@@ -73,7 +73,7 @@ targets:
 | `profile` | — | `default` | 使用する接続プロファイル |
 | `team` | — | — | 送信先チーム名または ID。`profile` を省略した場合、同じ `team` を持つプロファイルを自動選択する |
 | `tags` | — | `[]` | push 時に自動追加するタグ（pull 振り分けにも使用） |
-| `category` | — | — | push 時のカテゴリ。名前または数字の ID（pull 振り分けにも使用）。一覧 API に出ない（読み取り権限のない）カテゴリは ID で指定 |
+| `category` | — | — | push 時のカテゴリ。名前または数字の ID（pull 振り分けにも使用）。一覧 API に出ない（API キーの現在のチーム以外の、読み取り権限のないなど）カテゴリは ID で指定 |
 | `links` | — | — | push 時に追加するリンク。キーは `experiments` / `items`（`resources` は `items` と同じ）、値は正の整数 ID のリスト。追加のみで削除はしない |
 | `title_pattern` | — | — | pull 振り分け用タイトル glob |
 | `body_format` | — | `html` | `md` / `html`（`esync init` で作る場合の既定は `md`） |
