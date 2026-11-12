@@ -25,7 +25,8 @@ def _base_data(**overrides):
 
 
 # C-01
-def test_load_config_normal(tmp_path):
+def test_load_config_normal(tmp_path, monkeypatch):
+    monkeypatch.delenv("ELABFTW_API_KEY", raising=False)
     cfg = load_config(_write_config(tmp_path, _base_data()))
     assert cfg.url == "https://elab.example.com"
     assert cfg.api_key == "key123"
