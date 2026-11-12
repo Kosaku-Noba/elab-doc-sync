@@ -1,6 +1,7 @@
 """Load and validate .elab-sync.yaml configuration."""
 
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +32,7 @@ class ProfileConfig:
     api_key: str
     verify_ssl: bool = True
     team: str | int | None = None  # チーム名 or ID（宣言的。起動時に検証可能）
+    api_key_env: str | None = None  # API キーを読む環境変数の名前（指定時は api_key に環境変数の値が入る）
 
 
 @dataclass
@@ -96,6 +98,54 @@ def _parse_links(raw) -> dict[str, list[int]]:
     return {k: sorted(v) for k, v in links.items() if v}
 
 
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _parse_api_key_env(section: dict, where: str) -> str | None:
+    """api_key_env（API キーを読む環境変数の名前）を検証して返す。キーが無いときは None。空・null・空白だけはエラー。
+
+    キーの値を誤って書いた場合に値をエラーへ出さないよう、名前として不正なときは値を表示しない。
+    """
+    if "api_key_env" not in section:
+        return None
+    name = section["api_key_env"]
+    if name is None or (isinstance(name, str) and not name.strip()):
+        _abort(
+            f"{where}.api_key_env が空です\n"
+            "→ 環境変数の名前を指定するか、api_key_env の行を削除してください"
+            "（空のままでは ELABFTW_API_KEY や api_key には切り替わりません）"
+        )
+    if not isinstance(name, str) or not _ENV_NAME_RE.match(name.strip()):
+        _abort(
+            f"{where}.api_key_env には環境変数の名前を指定してください"
+            "（英数字とアンダースコア。キーの値そのものは書かないでください）"
+        )
+    return name.strip()
+
+
+def _resolve_api_key_env(name: str) -> str:
+    """名前の環境変数の値（前後の空白を除く）を返す。未設定・空なら空文字。"""
+    return os.environ.get(name, "").strip()
+
+
+def _missing_api_key_env_message(name: str, where: str) -> str:
+    return (
+        f"{where} の api_key_env に指定された環境変数 {name} が設定されていないか、空です\n"
+        f"→ 環境変数 {name} に API キーを設定してください"
+        "（api_key_env を指定したときは ELABFTW_API_KEY や api_key には切り替えません）"
+    )
+
+
+def profile_connection(profile: "ProfileConfig") -> tuple[str, str, bool]:
+    """プロファイルの (url, api_key, verify_ssl) を返す。
+
+    api_key_env を指定したのに環境変数が無い・空のときは ValueError（キーの値は含めない）。
+    """
+    if profile.api_key_env and not profile.api_key:
+        raise ValueError(_missing_api_key_env_message(profile.api_key_env, f"プロファイル '{profile.name}'"))
+    return profile.url, profile.api_key, profile.verify_ssl
+
+
 def _parse_profiles(raw: dict) -> dict[str, ProfileConfig]:
     """YAML の profiles セクションをパースする。"""
     profiles_raw = raw.get("profiles", {})
@@ -107,11 +157,15 @@ def _parse_profiles(raw: dict) -> dict[str, ProfileConfig]:
             continue
         url = pdata.get("url", "")
         api_key = pdata.get("api_key", "").strip()
+        api_key_env = _parse_api_key_env(pdata, f"profiles.{name}")
+        if api_key_env:
+            # 指定した環境変数だけを見る。無い・空でも api_key には戻さない（使うときにエラーにする）
+            api_key = _resolve_api_key_env(api_key_env)
         verify_ssl = pdata.get("verify_ssl", True)
         team = pdata.get("team")  # str (名前) or int (ID) or None
         profiles[name] = ProfileConfig(
             name=name, url=url, api_key=api_key, verify_ssl=verify_ssl,
-            team=team,
+            team=team, api_key_env=api_key_env,
         )
     return profiles
 
@@ -136,17 +190,23 @@ def load_config(config_path: Path) -> Config:
     # 後方互換: elabftw セクションがあれば default プロファイルとして扱う
     elab = raw.get("elabftw", {})
     url = elab.get("url", "")
-    api_key = os.environ.get("ELABFTW_API_KEY", "").strip() or elab.get("api_key", "").strip()
+    elab_key_env = _parse_api_key_env(elab, "elabftw")
+    if elab_key_env:
+        api_key = _resolve_api_key_env(elab_key_env)
+    else:
+        api_key = os.environ.get("ELABFTW_API_KEY", "").strip() or elab.get("api_key", "").strip()
     verify_ssl = elab.get("verify_ssl", True)
 
     # elabftw セクションから default プロファイルを構築（profiles に default がなければ）
     if "default" not in profiles and url:
         profiles["default"] = ProfileConfig(
-            name="default", url=url, api_key=api_key, verify_ssl=verify_ssl
+            name="default", url=url, api_key=api_key, verify_ssl=verify_ssl,
+            api_key_env=elab_key_env,
         )
     elif "default" in profiles:
         # profiles.default が存在する場合、環境変数は default プロファイルの api_key を上書き
-        env_key = os.environ.get("ELABFTW_API_KEY", "").strip()
+        # （api_key_env を指定したプロファイルは、その環境変数だけを見る）
+        env_key = "" if profiles["default"].api_key_env else os.environ.get("ELABFTW_API_KEY", "").strip()
         if env_key:
             profiles["default"] = ProfileConfig(
                 name="default",
@@ -154,6 +214,7 @@ def load_config(config_path: Path) -> Config:
                 api_key=env_key,
                 verify_ssl=profiles["default"].verify_ssl,
                 team=profiles["default"].team,
+                api_key_env=profiles["default"].api_key_env,
             )
 
     # url / api_key のバリデーション（default プロファイルベース）
@@ -175,10 +236,14 @@ def load_config(config_path: Path) -> Config:
         api_key = default_profile.api_key
         verify_ssl = default_profile.verify_ssl
 
+    if not api_key and default_profile.api_key_env:
+        _abort(_missing_api_key_env_message(
+            default_profile.api_key_env, f"プロファイル '{default_profile.name}'"))
     if not api_key:
         _abort(
             "API キーが設定されていません\n"
             "→ .elab-sync.yaml の elabftw.api_key に設定するか、\n"
+            "  api_key_env に環境変数の名前を指定するか、\n"
             '  環境変数を設定してください: export ELABFTW_API_KEY="your_key"'
         )
 
@@ -252,13 +317,13 @@ def get_client_for_target(config: Config, target: TargetConfig):
         profile = config.profiles.get(target.profile)
         if not profile:
             raise ValueError(f"接続プロファイルが見つかりません: {target.profile}")
-        return profile.url, profile.api_key, profile.verify_ssl
+        return profile_connection(profile)
 
     # team が指定されている場合、profiles から対応するものを探す
     if target.team is not None and config.profiles:
         for profile in config.profiles.values():
             if profile.team is not None and _team_matches(profile.team, target.team):
-                return profile.url, profile.api_key, profile.verify_ssl
+                return profile_connection(profile)
         # team 指定があるが対応するプロファイルが見つからない場合はエラー情報を出す
         print(
             f"警告: ターゲット '{target.docs_dir}' の team '{target.team}' に対応する"
@@ -269,7 +334,7 @@ def get_client_for_target(config: Config, target: TargetConfig):
     # フォールバック: profile 名で検索 → config のデフォルト値
     profile = config.profiles.get(target.profile)
     if profile:
-        return profile.url, profile.api_key, profile.verify_ssl
+        return profile_connection(profile)
     return config.url, config.api_key, config.verify_ssl
 
 
