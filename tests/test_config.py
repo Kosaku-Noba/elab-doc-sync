@@ -375,3 +375,172 @@ def test_init_template_gitignore_lists_all_local_state():
     for entry in (".elab-sync.yaml", ".elab-sync-ids/", ".elab-sync-backups/",
                   ".elab-sync-operations/", ".elab-sync-recovery.json"):
         assert entry in text.splitlines()
+
+
+
+# ── api_key_env（API キーを読む環境変数の名前を設定で指定する） ──
+
+def _env_data(**profiles):
+    return {"profiles": profiles, "targets": [{"docs_dir": "docs/"}]}
+
+
+def test_api_key_env_beats_elabftw_api_key_for_default(tmp_path, monkeypatch):
+    """default に api_key_env があれば、ELABFTW_API_KEY があってもその環境変数を使う。"""
+    from elab_doc_sync.config import get_client_for_target
+    monkeypatch.setenv("ELABFTW_API_KEY", "generic-key")
+    monkeypatch.setenv("UPTEST_KEY", "uptest-key")
+    p = _write_config(tmp_path, _env_data(default={
+        "url": "https://a.example", "api_key": "file-key", "api_key_env": "UPTEST_KEY", "team": "TeamA"}))
+    cfg = load_config(p)
+    assert cfg.api_key == "uptest-key"
+    assert cfg.profiles["default"].team == "TeamA"
+    assert get_client_for_target(cfg, cfg.targets[0]) == ("https://a.example", "uptest-key", True)
+
+
+def test_default_without_api_key_env_keeps_old_priority(tmp_path, monkeypatch):
+    """api_key_env を書かない設定は従来どおり（ELABFTW_API_KEY > ファイルの api_key）。"""
+    monkeypatch.setenv("UPTEST_KEY", "uptest-key")  # 書いていないので使われない
+    monkeypatch.setenv("ELABFTW_API_KEY", "generic-key")
+    cfg = load_config(_write_config(tmp_path, _env_data(default={
+        "url": "https://a.example", "api_key": "file-key"})))
+    assert cfg.api_key == "generic-key"
+    monkeypatch.delenv("ELABFTW_API_KEY")
+    cfg = load_config(_write_config(tmp_path, _env_data(default={
+        "url": "https://a.example", "api_key": "file-key"})))
+    assert cfg.api_key == "file-key"
+
+
+def test_api_key_env_legacy_elabftw_section(tmp_path, monkeypatch):
+    monkeypatch.setenv("ELABFTW_API_KEY", "generic-key")
+    monkeypatch.setenv("UPTEST_KEY", "uptest-key")
+    data = _base_data()
+    data["elabftw"]["api_key_env"] = "UPTEST_KEY"
+    cfg = load_config(_write_config(tmp_path, data))
+    assert cfg.api_key == "uptest-key"
+    assert cfg.profiles["default"].api_key == "uptest-key"
+
+
+@pytest.mark.parametrize("value", [None, "", "  "])
+def test_api_key_env_unset_or_empty_default_aborts_without_fallback(tmp_path, monkeypatch, capsys, value):
+    """api_key_env の環境変数が無い・空なら、ELABFTW_API_KEY にもファイルの api_key にも戻らず名前を示して終了する。"""
+    monkeypatch.setenv("ELABFTW_API_KEY", "generic-key-VALUE")
+    if value is None:
+        monkeypatch.delenv("UPTEST_KEY", raising=False)
+    else:
+        monkeypatch.setenv("UPTEST_KEY", value)
+    p = _write_config(tmp_path, _env_data(default={
+        "url": "https://a.example", "api_key": "file-key-VALUE", "api_key_env": "UPTEST_KEY"}))
+    with pytest.raises(SystemExit) as exc:
+        load_config(p)
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "UPTEST_KEY" in err
+    assert "generic-key-VALUE" not in err and "file-key-VALUE" not in err
+
+
+@pytest.mark.parametrize("value", [None, "", "   "])
+def test_api_key_env_blank_key_is_error_default(tmp_path, monkeypatch, capsys, value):
+    """api_key_env: のキーがあって空・null・空白だけなら、ELABFTW_API_KEY・api_key に戻らずエラーにする。"""
+    monkeypatch.setenv("ELABFTW_API_KEY", "generic-key-VALUE")
+    p = _write_config(tmp_path, _env_data(default={
+        "url": "https://a.example", "api_key": "file-key-VALUE", "api_key_env": value}))
+    with pytest.raises(SystemExit) as exc:
+        load_config(p)
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "api_key_env" in err
+    assert "generic-key-VALUE" not in err and "file-key-VALUE" not in err
+
+
+@pytest.mark.parametrize("value", [None, "", "   "])
+def test_api_key_env_blank_key_is_error_named_profile(tmp_path, monkeypatch, capsys, value):
+    monkeypatch.setenv("ELABFTW_API_KEY", "generic-key-VALUE")
+    p = _write_config(tmp_path, _env_data(
+        default={"url": "https://a.example", "api_key": "file-a"},
+        b={"url": "https://b.example", "api_key": "file-key-VALUE", "api_key_env": value}))
+    with pytest.raises(SystemExit) as exc:
+        load_config(p)
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "profiles.b.api_key_env" in err
+    assert "generic-key-VALUE" not in err and "file-key-VALUE" not in err
+
+
+@pytest.mark.parametrize("value", [None, "", "   "])
+def test_api_key_env_blank_key_is_error_legacy_section(tmp_path, monkeypatch, capsys, value):
+    monkeypatch.setenv("ELABFTW_API_KEY", "generic-key-VALUE")
+    data = _base_data()
+    data["elabftw"]["api_key_env"] = value
+    with pytest.raises(SystemExit) as exc:
+        load_config(_write_config(tmp_path, data))
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "elabftw.api_key_env" in err
+    assert "generic-key-VALUE" not in err
+
+
+def test_api_key_env_legacy_section_unset_aborts(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("ELABFTW_API_KEY", "generic-key")
+    monkeypatch.delenv("UPTEST_KEY", raising=False)
+    data = _base_data()
+    data["elabftw"]["api_key_env"] = "UPTEST_KEY"
+    with pytest.raises(SystemExit):
+        load_config(_write_config(tmp_path, data))
+    assert "UPTEST_KEY" in capsys.readouterr().err
+
+
+def test_api_key_env_named_profile(tmp_path, monkeypatch):
+    """名前付きのプロファイルは自分の api_key_env だけを見る。ELABFTW_API_KEY の影響は受けない。"""
+    from elab_doc_sync.config import get_client_for_target
+    monkeypatch.setenv("ELABFTW_API_KEY", "generic-key")
+    monkeypatch.setenv("KEY_B", "key-b")
+    data = _env_data(
+        default={"url": "https://a.example", "api_key": "file-a"},
+        b={"url": "https://b.example", "api_key_env": "KEY_B", "team": "TeamB"},
+    )
+    data["targets"] = [{"docs_dir": "docs/", "profile": "b"}, {"docs_dir": "other/", "team": "TeamB"}]
+    cfg = load_config(_write_config(tmp_path, data))
+    assert cfg.profiles["default"].api_key == "generic-key"
+    assert cfg.profiles["b"].api_key == "key-b"
+    assert get_client_for_target(cfg, cfg.targets[0]) == ("https://b.example", "key-b", True)
+    assert get_client_for_target(cfg, cfg.targets[1]) == ("https://b.example", "key-b", True)
+
+
+def test_api_key_env_named_profile_unset_errors_only_when_used(tmp_path, monkeypatch):
+    """使わない名前付きプロファイルの環境変数が無くても読み込める。使うときは名前を示す ValueError。"""
+    from elab_doc_sync.config import get_client_for_target
+    monkeypatch.delenv("ELABFTW_API_KEY", raising=False)
+    monkeypatch.delenv("KEY_B", raising=False)
+    data = _env_data(
+        default={"url": "https://a.example", "api_key": "file-a"},
+        b={"url": "https://b.example", "api_key": "file-b-VALUE", "api_key_env": "KEY_B"},
+    )
+    data["targets"] = [{"docs_dir": "docs/"}, {"docs_dir": "other/", "profile": "b"}]
+    cfg = load_config(_write_config(tmp_path, data))
+    assert get_client_for_target(cfg, cfg.targets[0])[1] == "file-a"
+    with pytest.raises(ValueError) as exc:
+        get_client_for_target(cfg, cfg.targets[1])
+    assert "KEY_B" in str(exc.value)
+    assert "file-b-VALUE" not in str(exc.value)
+
+
+def test_named_profile_without_api_key_env_ignores_generic_env(tmp_path, monkeypatch):
+    """api_key_env を書かない名前付きプロファイルは従来どおりファイルの api_key。"""
+    from elab_doc_sync.config import get_client_for_target
+    monkeypatch.setenv("ELABFTW_API_KEY", "generic-key")
+    data = _env_data(default={"url": "https://a.example", "api_key": "file-a"},
+                     b={"url": "https://b.example", "api_key": "file-b"})
+    data["targets"] = [{"docs_dir": "docs/", "profile": "b"}]
+    cfg = load_config(_write_config(tmp_path, data))
+    assert get_client_for_target(cfg, cfg.targets[0])[1] == "file-b"
+
+
+@pytest.mark.parametrize("bad", ["sk-1234 5678", "59-abcdef", 123, ["A"], "A=B"])
+def test_api_key_env_invalid_name_does_not_echo_value(tmp_path, capsys, bad):
+    p = _write_config(tmp_path, _env_data(default={
+        "url": "https://a.example", "api_key": "k", "api_key_env": bad}))
+    with pytest.raises(SystemExit):
+        load_config(p)
+    err = capsys.readouterr().err
+    assert "api_key_env" in err
+    assert str(bad) not in err

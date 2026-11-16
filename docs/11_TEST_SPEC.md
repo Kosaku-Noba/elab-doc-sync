@@ -49,6 +49,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q
 
 - 正常な設定ファイルの読み込み（url, api_key, targets）
 - 環境変数 `ELABFTW_API_KEY` の優先
+- `api_key_env`（優先の順、未設定・空のときは `ELABFTW_API_KEY` に戻らずエラー、名前付きプロファイル、不正な名前で値を出さない）。`esync profile add --api-key-env`・`profile list` は test_cli.py
 - バリデーションエラー（URL/API キー/targets 未設定、merge、entity、body_format）
 - mode/entity のデフォルト値、`resources` → `items`
 - tags/category/links フィールドの読み込みと `links` の検証

@@ -364,6 +364,7 @@ targets:
 
 ```bash
 esync profile add team-b --url https://elab.example.com --api-key "team-b-key"
+esync profile add team-c --url https://elab.example.com --api-key-env TEAM_C_ELABFTW_API_KEY   # キーを設定ファイルに書かない
 esync profile list
 esync whoami
 ```
@@ -606,7 +607,25 @@ profiles:
     team: "TeamB"
 ```
 
-環境変数 `ELABFTW_API_KEY` は default プロファイルの api_key を上書きします。記入例は [`.elab-sync.yaml.example`](.elab-sync.yaml.example) にあります。
+環境変数 `ELABFTW_API_KEY` は default プロファイルの api_key を上書きします（`api_key_env` を書いたプロファイルを除く）。
+
+送り先ごとに別のキーを使うフォルダでは、キーを設定ファイルに書かず、`api_key_env` に環境変数の**名前**を書けます（`elabftw:` の欄と各プロファイルで使えます）。
+
+```yaml
+profiles:
+  default:
+    url: "https://elab.example.com"
+    api_key_env: UPTEST_ELABFTW_API_KEY   # 環境変数 UPTEST_ELABFTW_API_KEY の値を API キーに使う
+    team: "TeamA"
+```
+
+優先の順は次のとおりです。
+
+1. `api_key_env` に書いた名前の環境変数（設定されていて空でないとき）
+2. `api_key_env` を書いていない default プロファイル（と `elabftw:` の欄）だけ、`ELABFTW_API_KEY`
+3. 設定ファイルの `api_key`
+
+`api_key_env` を書いたのに環境変数が未設定または空のときは、`ELABFTW_API_KEY` や `api_key` に切り替えず、環境変数の名前を示してエラーにします（別の送り先へ別のキーで接続する事故を防ぐため）。名前付きのプロファイルは、使うターゲットを実行するときにエラーになります（`default` も `elabftw:` もなく、最初のプロファイルが既定の接続先になる場合は、設定の読み込み時にエラーになります）。環境変数の名前は、半角英字またはアンダースコアで始まり、半角英数字とアンダースコアだけで書きます。`api_key_env` を書かない設定の動作は変わりません。キーの値はエラーにも表示しません。記入例は [`.elab-sync.yaml.example`](.elab-sync.yaml.example) にあります。
 
 ### ターゲット設定
 

@@ -41,6 +41,17 @@
 #     team: "高耐久膜チーム"       # ← 別チームへ送信
 #
 # ※ team はチーム名（文字列）または ID（数値）で指定可能
+#
+# API キーを設定ファイルに書きたくない場合は、api_key の代わりに api_key_env に
+# 環境変数の「名前」を書く（elabftw: の欄でも使える）。キーの値は書かないこと。
+#
+# profiles:
+#   default:
+#     url: "https://your-elabftw.example.com"
+#     api_key_env: MYPROJECT_ELABFTW_API_KEY   # export MYPROJECT_ELABFTW_API_KEY="..."
+#
+# 優先の順: (1) api_key_env の環境変数 → (2) api_key_env がない default だけ ELABFTW_API_KEY → (3) api_key
+# api_key_env を書いて環境変数が未設定・空なら、ELABFTW_API_KEY や api_key には切り替えずエラーになる
 # ※ esync whoami で各APIキーのアクティブチームを確認できます
 #
 # ─────────────────────────────────────────────

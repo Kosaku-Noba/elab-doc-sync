@@ -172,12 +172,13 @@ YAML 設定読み込み・バリデーション。
 | 関数/クラス | 説明 |
 |---|---|
 | `load_config(path)` | `.elab-sync.yaml` を読み込み `Config` を返す。不正な設定はメッセージを出して終了コード 2 |
-| `get_client_for_target(config, target)` | ターゲットの `profile` / `team` から接続情報 `(url, api_key, verify_ssl)` を返す |
+| `get_client_for_target(config, target)` | ターゲットの `profile` / `team` から接続情報 `(url, api_key, verify_ssl)` を返す。プロファイルが `api_key_env` を指定していて、その環境変数が未設定・空のときは、環境変数の名前を示す `ValueError`（キーの値は含めない） |
+| `profile_connection(profile)` | `ProfileConfig` から接続情報 `(url, api_key, verify_ssl)` を返す。`api_key_env` を指定していて、その環境変数が未設定・空のときは、環境変数の名前を示す `ValueError`（キーの値は含めない） |
 | `update_target_in_yaml(config_path, target_index, **fields)` | YAML のターゲット設定を更新 |
 | `append_target_to_yaml(config_path, target_data)` | YAML に新しいターゲットを追記 |
 | `Config` | 全体設定データクラス（`url`, `api_key`, `verify_ssl`, `targets`, `profiles`） |
 | `TargetConfig` | ターゲット設定データクラス（[キー一覧](04_CONFIGURATION.md#キー一覧)） |
-| `ProfileConfig` | プロファイル設定データクラス（`name`, `url`, `api_key`, `verify_ssl`, `team`） |
+| `ProfileConfig` | プロファイル設定データクラス（`name`, `url`, `api_key`, `verify_ssl`, `team`, `api_key_env`）。`api_key_env` を指定したときは `api_key` に環境変数の値が入る。環境変数は設定の読み込み時（`load_config`）に一度だけ `api_key` に取り込まれ、読み込みの後に環境変数を変えても反映されない |
 | `BODY_FORMAT_DEFAULT` / `BODY_FORMAT_INIT` | `html` / `md` |
 
 ---
