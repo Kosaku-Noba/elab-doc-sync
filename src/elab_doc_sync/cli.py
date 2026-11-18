@@ -19,7 +19,7 @@ from .config import load_config, BODY_FORMAT_INIT, _read_yaml_text, update_targe
 from .merge import merge_text
 from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
 from . import sync_log
-from .result import CommandResult
+from .result import CommandResult, redact
 from . import update_check
 
 DEFAULT_CONFIG = ".elab-sync.yaml"
@@ -1395,8 +1395,9 @@ def run_whoami(args, echo=None) -> CommandResult:
         try:
             user = client._req("GET", "/api/v2/users/me").json()
         except Exception as e:
-            info["error"] = f"API接続失敗 ({e})"
-            res.say(f"  エラー: API接続失敗 ({e})")
+            # 例外メッセージに API キーが含まれることがある（不正な文字を含むキーのヘッダーエラーなど）
+            info["error"] = f"API接続失敗 ({redact(str(e), api_key)})"
+            res.say(f"  エラー: {info['error']}")
             res.say()
             continue
 
@@ -1880,7 +1881,8 @@ def run_verify(args, echo=None) -> CommandResult:
         syncer = _make_syncer(client, target, project_root)
 
         if target.mode == "each":
-            mapping = syncer._load_mapping() or {}
+            # 参照系のため旧紐付けを移行しない（MCP からも呼ばれる）
+            mapping = syncer._load_mapping(migrate=False) or {}
             if not mapping:
                 res.data["unsynced_targets"].append(target.title or target.docs_dir)
                 res.say(f"  [{target.docs_dir}] マッピングなし（未同期）")

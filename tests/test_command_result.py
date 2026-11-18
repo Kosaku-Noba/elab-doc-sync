@@ -8,7 +8,7 @@ import pytest
 import yaml
 
 from elab_doc_sync import cli, sync_log
-from elab_doc_sync.result import CommandResult
+from elab_doc_sync.result import CommandResult, redact
 
 
 def _project(tmp_path, mapping=None, profiles=None):
@@ -162,3 +162,40 @@ def test_run_search_returns_json_data_regardless_of_flag(tmp_path):
         res = cli.run_search(args)
     assert res.data["count"] == 1 and res.data["results"][0]["id"] == 1
     assert not res.messages[0].lstrip().startswith("{")  # 人向け表示は --json なしの形式
+
+
+def test_redact_variants():
+    key = "abc123\nxyz789"
+    text = f"plain {key} repr {key!r} bytes {key.encode()!r} part xyz789"
+    out = redact(text, key, None, "")
+    assert "abc123" not in out and "xyz789" not in out
+    assert redact("short ab", "ab\ncd") == "short ab"  # 4 文字未満の断片は置き換えない
+
+
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_run_whoami_redacts_api_key_in_error(MockClient, tmp_path):
+    cfg = _project(tmp_path)
+    MockClient.return_value._req.side_effect = ValueError(
+        "Invalid leading whitespace in header value: b'secret-key'")
+    res = cli.run_whoami(Namespace(config=str(cfg), target=None))
+    dumped = json.dumps(res.to_dict(), ensure_ascii=False)
+    assert "secret-key" not in dumped and "***" in res.data["profiles"][0]["error"]
+
+
+def test_run_verify_does_not_migrate_legacy_mapping(tmp_path):
+    data = {
+        "elabftw": {"url": "https://elab.example.com", "api_key": "k", "verify_ssl": False},
+        "targets": [{"title": "T", "docs_dir": "docs/", "pattern": "*.md", "mode": "each", "entity": "items",
+                     "id_file": ".elab-sync-ids/t/default.id"}],
+    }
+    cfg = tmp_path / ".elab-sync.yaml"
+    cfg.write_text(yaml.dump(data), encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "a.md").write_text("# A\n", encoding="utf-8")
+    (tmp_path / ".elab-sync-ids").mkdir()
+    (tmp_path / ".elab-sync-ids" / "mapping.json").write_text(json.dumps({"a.md": 42}))
+    before = sorted(str(p) for p in tmp_path.rglob("*"))
+    with patch("elab_doc_sync.cli.ELabFTWClient"):
+        res = cli.run_verify(Namespace(config=str(cfg), target=None))
+    assert sorted(str(p) for p in tmp_path.rglob("*")) == before
+    assert res.data["documents"][0]["entity_id"] == 42

@@ -202,10 +202,18 @@ YAML 設定読み込み・バリデーション。
 | `CommandResult(exit_code=0, data={}, messages=[], echo=None)` | `run_*` が返す結果。`data` は機械可読な結果（JSON 化できる値のみ、API キーは含めない）、`messages` は人向けの表示行 |
 | `CommandResult.say(message="")` | 表示行を追加し、`echo` があればそれにも渡す（CLI は `print` を渡して 1 行ずつ表示する） |
 | `CommandResult.to_dict()` | `exit_code`・`data`・`messages` の辞書 |
+| `redact(text, *secrets)` | `text` 中の秘密値（そのまま・repr・バイト列表記・改行で区切った 4 文字以上の各部分）を `***` に置き換える |
 
 ### `elab_doc_sync.cli` の `run_*`
 
 `cmd_*(args)` は `run_*(args, echo=print).exit_code` を返す。`run_*` は `echo` を省略すると何も表示しない。
+
+成功・失敗の判定:
+
+- `exit_code` は CLI の終了コードと同じ。`run_status` は競合などの要対応状態で 1、それ以外の参照系は常に 0
+- `run_verify` は問題を見つけても `exit_code` は 0。`data["issues"]` と各文書の `ok` を確認する
+- `run_whoami` は接続に失敗したプロファイルも `exit_code` 0 で返し、そのプロファイルの `error` に理由を入れる（API キーは `redact` で除く）
+- 設定の誤り・通信の失敗など、上記以外のエラーは `CommandResult` にならず例外として呼び出し元に伝わる（CLI は終了コード 2 / 1 にする）。呼び出し側で例外を処理する
 
 | 関数 | `data` |
 |---|---|

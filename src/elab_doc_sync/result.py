@@ -24,3 +24,20 @@ class CommandResult:
 
     def to_dict(self) -> dict:
         return {"exit_code": self.exit_code, "data": self.data, "messages": self.messages}
+
+
+def redact(text: str, *secrets: str | None) -> str:
+    """text に含まれる秘密値（API キーなど）を *** に置き換える。
+
+    例外メッセージは値を repr やバイト列の表記で含むことがあるため、それらの表記と、
+    改行で区切られた各部分（4 文字以上）も置き換える。
+    """
+    for secret in secrets:
+        if not secret:
+            continue
+        variants = {secret, repr(secret)[1:-1], repr(secret.encode("utf-8"))[2:-1]}
+        variants.update(part for part in secret.splitlines() if len(part.strip()) >= 4)
+        for variant in sorted(variants, key=len, reverse=True):
+            if variant:
+                text = text.replace(variant, "***")
+    return text
