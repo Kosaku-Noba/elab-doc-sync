@@ -62,7 +62,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q
 ### 3.2 test_client.py
 
 - リソース・実験ノートの CRUD、削除済み（`state=3`）の 404 扱い
-- ファイルアップロード（正常・リトライ・Location による特定・同名添付の選択・URL 取得失敗）
+- ファイルアップロード（正常・POST 応答不明時の一覧照合と再送停止・Location による特定・同名添付の選択・URL 取得失敗）
 - タグ操作（add/remove/get/untag_by_name、null 応答）
 - メタデータ操作（正常/null/不正JSON/list型）
 - カテゴリ解決（数値/名前/不存在/一覧にないカテゴリ）

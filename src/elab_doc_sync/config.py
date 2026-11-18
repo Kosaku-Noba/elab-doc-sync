@@ -71,9 +71,12 @@ class Config:
             self.profiles = {}
 
 
+class ConfigError(ValueError):
+    """設定ファイルの読み込み・検証エラー。"""
+
+
 def _abort(msg: str) -> None:
-    print(f"エラー: {msg}", file=sys.stderr)
-    sys.exit(2)
+    raise ConfigError(msg)
 
 
 def _parse_links(raw) -> dict[str, list[int]]:
@@ -117,6 +120,15 @@ def _parse_profiles(raw: dict) -> dict[str, ProfileConfig]:
 
 
 def load_config(config_path: Path) -> Config:
+    """従来の CLI 互換 API。設定エラーは標準エラー出力と終了コード 2 で示す。"""
+    try:
+        return read_config(config_path)
+    except ConfigError as exc:
+        print(f"エラー: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+
+
+def read_config(config_path: Path) -> Config:
     if not config_path.exists():
         _abort(
             f"設定ファイルが見つかりません: {config_path}\n"
@@ -126,7 +138,9 @@ def load_config(config_path: Path) -> Config:
     try:
         raw = yaml.safe_load(_read_yaml_text(config_path))
     except yaml.YAMLError as exc:
-        _abort(f"YAMLの形式が不正です: {exc}")
+        mark = getattr(exc, "problem_mark", None)
+        location = f"（{mark.line + 1}行目、{mark.column + 1}列目）" if mark else ""
+        _abort(f"YAMLの形式が不正です{location}")
     if not isinstance(raw, dict):
         _abort("設定ファイルはYAMLのマッピング形式で記述してください")
 
