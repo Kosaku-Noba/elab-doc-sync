@@ -1084,12 +1084,12 @@ HELP_EPILOG = """\
 """
 
 
-def _get_entity_ids(client, syncer, target, args_id=None):
-    """ターゲットに紐づくエンティティ ID のリストを返す。"""
+def _get_entity_ids(client, syncer, target, args_id=None, migrate=True):
+    """ターゲットに紐づくエンティティ ID のリストを返す。migrate=False（dry-run）では旧紐付けを移行しない。"""
     if args_id:
         return [(args_id, target.entity)]
     if target.mode == "each":
-        mapping = syncer._load_mapping()
+        mapping = syncer._load_mapping(migrate=migrate)
         return [(eid, target.entity) for eid in mapping.values()] if mapping else []
     eid = syncer.read_item_id()
     return [(eid, target.entity)] if eid else []
@@ -1119,7 +1119,7 @@ def cmd_tag(args):
             continue
         client = _make_client_for_target(config, target)
         syncer = _make_syncer(client, target, project_root)
-        ids = _get_entity_ids(client, syncer, target, direct_id)
+        ids = _get_entity_ids(client, syncer, target, direct_id, migrate=not getattr(args, "dry_run", False))
         if not ids:
             print(f"  [{target.title or target.docs_dir}] 同期済みエンティティなし")
             continue
@@ -1128,16 +1128,30 @@ def cmd_tag(args):
             _tag_action(client, args, etype, eid)
 
 
+def _tag_names(client, entity_type, entity_id):
+    return [(t.get("tag", "?") if isinstance(t, dict) else str(t)) for t in client.get_tags(entity_type, entity_id)]
+
+
 def _tag_action(client, args, entity_type, entity_id):
     label = f"{_entity_label(entity_type)} #{entity_id}"
+    dry_run = getattr(args, "dry_run", False)
     if args.tag_action == "list":
-        tags = client.get_tags(entity_type, entity_id)
-        tag_names = [(t.get("tag", "?") if isinstance(t, dict) else str(t)) for t in tags]
+        tag_names = _tag_names(client, entity_type, entity_id)
         print(f"  {label}: {', '.join(tag_names) if tag_names else '(タグなし)'}")
     elif args.tag_action == "add":
+        if dry_run:
+            if args.tag_name in _tag_names(client, entity_type, entity_id):
+                print(f"  {label}: タグ「{args.tag_name}」は既にあります")
+            else:
+                print(f"  {label}: タグ「{args.tag_name}」を追加予定")
+            return
         client.add_tag(entity_type, entity_id, args.tag_name)
         print(f"  {label}: タグ「{args.tag_name}」を追加しました")
     elif args.tag_action == "remove":
+        if dry_run:
+            found = args.tag_name in _tag_names(client, entity_type, entity_id)
+            print(f"  {label}: タグ「{args.tag_name}」{'を外す予定' if found else 'が見つかりません'}")
+            return
         if client.untag_by_name(entity_type, entity_id, args.tag_name):
             print(f"  {label}: タグ「{args.tag_name}」を外しました")
         else:
@@ -1234,7 +1248,7 @@ def cmd_relate(args):
             if not _matches_target(target, args.target):
                 continue
             syncer = _make_syncer(None, target, project_root)
-            ids = _get_entity_ids(None, syncer, target)
+            ids = _get_entity_ids(None, syncer, target, migrate=not getattr(args, "dry_run", False))
             if not ids:
                 print(f"  [{target.title or target.docs_dir}] 同期済みエンティティなし")
                 continue
@@ -1253,10 +1267,11 @@ def cmd_relate(args):
     for connection, etype, eid in sources:
         if connection not in clients:
             clients[connection] = ELabFTWClient(*connection)
-        _relate_action(clients[connection], args.relate_action, etype, eid, [(t, i) for t, i, _ in dests])
+        _relate_action(clients[connection], args.relate_action, etype, eid, [(t, i) for t, i, _ in dests],
+                       dry_run=getattr(args, "dry_run", False))
 
 
-def _relate_action(client, action, entity_type, entity_id, dests):
+def _relate_action(client, action, entity_type, entity_id, dests, dry_run=False):
     label = f"{_entity_label(entity_type)} #{entity_id}"
     if action == "list":
         print(f"  {label}:")
@@ -1274,11 +1289,15 @@ def _relate_action(client, action, entity_type, entity_id, dests):
         if action == "add":
             if target_id in existing:
                 print(f"  {label}: {target_label} #{target_id} へのリンクは既にあります")
+            elif dry_run:
+                print(f"  {label}: {target_label} #{target_id} へのリンクを追加予定")
             else:
                 client.add_link(entity_type, entity_id, link_type, target_id)
                 print(f"  {label}: {target_label} #{target_id} へのリンクを追加しました")
         elif action == "remove":
-            if target_id in existing:
+            if target_id in existing and dry_run:
+                print(f"  {label}: {target_label} #{target_id} へのリンクを外す予定")
+            elif target_id in existing:
                 client.remove_link(entity_type, entity_id, link_type, target_id)
                 print(f"  {label}: {target_label} #{target_id} へのリンクを外しました")
             else:
@@ -1295,7 +1314,8 @@ def cmd_metadata(args):
             continue
         client = _make_client_for_target(config, target)
         syncer = _make_syncer(client, target, project_root)
-        ids = _get_entity_ids(client, syncer, target, getattr(args, "id", None))
+        ids = _get_entity_ids(client, syncer, target, getattr(args, "id", None),
+                              migrate=not getattr(args, "dry_run", False))
         if not ids:
             print(f"  [{target.title or target.docs_dir}] 同期済みエンティティなし")
             continue
@@ -1319,6 +1339,10 @@ def cmd_metadata(args):
                 if raw and not existing:
                     print(f"  {label}: ⚠ 既存メタデータの読み取りに失敗しました（上書きされます）", file=sys.stderr)
                 existing.update(pairs)
+                if getattr(args, "dry_run", False):
+                    print(f"  {label}: メタデータを更新予定")
+                    print(f"    {json.dumps(existing, ensure_ascii=False, indent=2)}")
+                    continue
                 client.update_metadata(etype, eid, existing)
                 print(f"  {label}: メタデータを更新しました")
 
@@ -1420,6 +1444,9 @@ def cmd_new(args):
         print(f"エラー: {outpath} は既に存在します（--force で上書き）", file=sys.stderr)
         sys.exit(1)
 
+    if getattr(args, "dry_run", False):
+        print(f"  {outpath} を作成予定（テンプレート #{args.template_id}: {template.get('title', '')}）")
+        return
     outpath.parent.mkdir(parents=True, exist_ok=True)
     atomic_write(outpath, f"# {title}\n\n{body_md}\n")
     print(f"  ✅ {outpath} を作成しました（テンプレート #{args.template_id}: {template.get('title', '')}）")
@@ -1912,7 +1939,7 @@ def cmd_entity_status(args):
         client = _make_client_for_target(config, target)
         syncer = _make_syncer(client, target, project_root)
         target_id = getattr(args, "id", None)
-        ids = _get_entity_ids(client, syncer, target, target_id)
+        ids = _get_entity_ids(client, syncer, target, target_id, migrate=not getattr(args, "dry_run", False))
         if not ids:
             print(f"  [{target.title or target.docs_dir}] 同期済みエンティティなし")
             continue
@@ -1928,6 +1955,22 @@ def cmd_entity_status(args):
             status_name = entity.get("status_title") or entity.get("status", {}).get("title", "不明")
             print(f"  [{label}] {_entity_label(etype)} #{eid}: {status_name}")
     elif args.status_action == "set":
+        try:
+            status_id = int(args.status_id)
+        except ValueError:
+            raise ValueError(f"ステータス ID は数値で指定してください: {args.status_id}") from None
+        if getattr(args, "dry_run", False):
+            for client, label, eid, etype in all_ids:
+                entity = client.get_entity(etype, eid)
+                current = entity.get("status")
+                current = current.get("id") if isinstance(current, dict) else current
+                name = entity.get("status_title") or "不明"
+                head = f"  [{label}] {_entity_label(etype)} #{eid}"
+                if current is not None and str(current) == str(status_id):
+                    print(f"{head}: すでにステータス #{status_id}（{name}）です")
+                else:
+                    print(f"{head}: ステータスを {name} から #{status_id} に変更予定（{client.base_url}）")
+            return
         if len(all_ids) > 1 and not getattr(args, "id", None):
             print(f"  対象: {len(all_ids)} 件のエンティティ")
             for client, label, eid, etype in all_ids:
@@ -1937,7 +1980,7 @@ def cmd_entity_status(args):
                 print("  中断しました")
                 return
         for client, label, eid, etype in all_ids:
-            client.patch_entity(etype, eid, status=int(args.status_id))
+            client.patch_entity(etype, eid, status=status_id)
             print(f"  [{label}] {_entity_label(etype)} #{eid}: ステータスを変更しました")
 
 
@@ -1964,7 +2007,7 @@ def cmd_category(args):
     if action == "show":
         _category_show(client, entity_type, direct_id)
     elif action == "set":
-        _category_set(client, entity_type, direct_id, args.category_value)
+        _category_set(client, entity_type, direct_id, args.category_value, getattr(args, "dry_run", False))
 
 
 def _category_show(client, entity_type, entity_id):
@@ -1980,12 +2023,15 @@ def _category_show(client, entity_type, entity_id):
         print(f"  {label}: (カテゴリ未設定)")
 
 
-def _category_set(client, entity_type, entity_id, category_value):
+def _category_set(client, entity_type, entity_id, category_value, dry_run=False):
     label = f"{_entity_label(entity_type)} #{entity_id}"
     entity = client.get_entity(entity_type, entity_id)
     cat_id = client.resolve_category_id(entity_type, category_value, current=entity)
     if entity.get("category") is not None and int(entity["category"]) == cat_id:
         print(f"  {label}: すでにカテゴリ #{cat_id} が設定されています")
+        return
+    if dry_run:
+        print(f"  {label}: カテゴリを設定予定 (#{cat_id})")
         return
     client.patch_entity(entity_type, entity_id, category=cat_id)
     print(f"  {label}: カテゴリを設定しました (#{cat_id})")
@@ -2187,15 +2233,16 @@ def main():
     }
     try:
         handler = commands[args.command]
-        other_write = args.command in ("init", "new") or (
-            args.command == "profile" and args.profile_action in ("add", "remove")) or (
+        no_dry_run = args.command == "init" or (
+            args.command == "profile" and args.profile_action in ("add", "remove"))
+        other_write = no_dry_run or args.command == "new" or (
             args.command == "tag" and args.tag_action in ("add", "remove")) or (
             args.command == "relate" and args.relate_action in ("add", "remove")) or (
             args.command == "metadata" and args.meta_action == "set") or (
             args.command == "entity-status" and args.status_action == "set") or (
             args.command == "category" and args.cat_action == "set")
         if other_write:
-            if getattr(args, "dry_run", False):
+            if no_dry_run and getattr(args, "dry_run", False):
                 raise ValueError("このコマンドは --dry-run に対応していません（変更は行いません）")
             handler = project_command(handler)
         result = handler(args)
