@@ -43,6 +43,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q
 | test_merge.py | 10 | 3-way マージ |
 | test_search.py | 23 | `esync search`（v1.3.0 で追加。表の合計には含まない） |
 | test_dry_run_writes.py | 19 | eLabFTW を書き換えるコマンドと `new` の `--dry-run`（v1.3.0 より後に追加。表の合計には含まない） |
+| test_command_result.py | 12 | 参照系コマンドの `run_*` が返す `CommandResult`（v1.3.0 より後に追加。表の合計には含まない） |
 | test_integration.py | 6 | 実機（既存） |
 | test_integration_v1.py | 5 | 実機（v1.0 以降） |
 
@@ -123,6 +124,12 @@ UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q
 - `entity-status set --dry-run` が現在のステータスを読み、複数件でも確認の入力を求めないこと、数値でないステータス ID の拒否、`new --dry-run` がファイルを作らないこと
 - dry-run で旧形式の共有 `mapping.json` を移行せず、プロジェクトのファイルを変更しないこと
 - argparse からの `--dry-run` の受け付けとロックを取らないこと、`init`・`profile add/remove` は従来どおり拒否すること
+
+### 3.8.3 test_command_result.py
+
+- `run_status`・`run_log`・`run_list`・`run_search`・`run_whoami`・`run_verify`・`run_backup`・`run_profile_list` が表示せずに `data` を返すこと
+- `whoami`・`profile list` の結果に API キーを含めないこと
+- CLI が 1 行ずつ表示し、途中で例外になってもそれまでの表示が残ること
 
 ### 3.9 実機テスト（test_integration.py / test_integration_v1.py）
 

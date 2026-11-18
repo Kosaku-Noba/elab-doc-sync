@@ -192,3 +192,28 @@ YAML 設定読み込み・バリデーション。
 | `read_log(log_path, limit=20)` | 最新 `limit` 件を古い順に返す。壊れた行は飛ばす |
 | `format_log(entries)` | 表示用にフォーマット |
 | `DEFAULT_LOG_PATH` | `.elab-sync-ids/sync-log.jsonl` |
+
+### `elab_doc_sync.result`
+
+コマンドの実行結果（MCP 対応の準備として v1.3.0 より後に追加）。
+
+| クラス・関数 | 説明 |
+|---|---|
+| `CommandResult(exit_code=0, data={}, messages=[], echo=None)` | `run_*` が返す結果。`data` は機械可読な結果（JSON 化できる値のみ、API キーは含めない）、`messages` は人向けの表示行 |
+| `CommandResult.say(message="")` | 表示行を追加し、`echo` があればそれにも渡す（CLI は `print` を渡して 1 行ずつ表示する） |
+| `CommandResult.to_dict()` | `exit_code`・`data`・`messages` の辞書 |
+
+### `elab_doc_sync.cli` の `run_*`
+
+`cmd_*(args)` は `run_*(args, echo=print).exit_code` を返す。`run_*` は `echo` を省略すると何も表示しない。
+
+| 関数 | `data` |
+|---|---|
+| `run_status` | `documents`（`target`・`file`・`entity`・`entity_id`・`state`・`remote_changes`・`error`・`next_actions`）、`recovery_pending` |
+| `run_log` | `entries`（同期ログのエントリ） |
+| `run_list` | `entity`、`results`（`id`・`title`・`status`） |
+| `run_search` | `results`・`count`・`has_more`・`next_offset`・`truncated`（`--json` の出力と同じ。`--json` の有無に関わらず） |
+| `run_whoami` | `profiles`（`profile`・`url`・`error`・`firstname`・`lastname`・`email`・`userid`・`team`・`teams`） |
+| `run_verify` | `documents`（`target`・`file`・`entity`・`entity_id`・`ok`・`problem`）、`unsynced_targets`、`issues` |
+| `run_backup` | `backups`（`id`・`reason`） |
+| `run_profile_list` | `profiles`（`name`・`url`・`has_api_key`・`verify_ssl`） |

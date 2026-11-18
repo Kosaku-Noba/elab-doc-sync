@@ -19,6 +19,7 @@ from .config import load_config, BODY_FORMAT_INIT, _read_yaml_text, update_targe
 from .merge import merge_text
 from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
 from . import sync_log
+from .result import CommandResult
 from . import update_check
 
 DEFAULT_CONFIG = ".elab-sync.yaml"
@@ -298,9 +299,10 @@ def cmd_sync(args):
     return 1 if failed else 0
 
 
-def cmd_status(args):
+def run_status(args, echo=None) -> CommandResult:
     config_path = Path(args.config).resolve()
     config = load_config(config_path)
+    res = CommandResult(data={"documents": [], "recovery_pending": False}, echo=echo)
     failed = False
     for target, syncer in zip(config.targets, _link_syncers(config, config_path.parent)):
         if not _matches_target(target, args.target):
@@ -311,19 +313,33 @@ def cmd_status(args):
             result = syncer.inspect(name, mapping.get(name))
             pending = syncer._pending().get(name)
             state = ("作成結果不明" if not pending.get("eid") else "同期未完了") if pending else result["state"]
-            print(f"  [{name}] {state}（#{mapping.get(name, '未作成')}）")
+            doc = {"target": target.title or target.docs_dir, "file": name, "entity": target.entity,
+                   "entity_id": mapping.get(name), "state": state, "remote_changes": [], "error": None,
+                   "next_actions": []}
+            res.say(f"  [{name}] {state}（#{mapping.get(name, '未作成')}）")
             if state in ("競合", "取得待ち") and result.get("data") is not None and hasattr(syncer, "remote_changes"):
                 changes = syncer.remote_changes(name, result["data"], result.get("uploads", []))
                 if changes:
-                    print(f"    eLabFTW 側の変更: {', '.join(REMOTE_FIELD_LABELS[k] for k in changes)}（詳細は esync diff）")
+                    doc["remote_changes"] = [REMOTE_FIELD_LABELS[k] for k in changes]
+                    res.say(f"    eLabFTW 側の変更: {', '.join(doc['remote_changes'])}（詳細は esync diff）")
             if result.get("error") and state != "リモート削除":
-                print(f"    {result['error']}")
-            syncer._print_next_actions(state, name, mapping.get(name))
+                doc["error"] = str(result["error"])
+                res.say(f"    {result['error']}")
+            doc["next_actions"] = list(syncer.next_actions(state, name, mapping.get(name)))
+            for action in doc["next_actions"]:
+                res.say(f"    → {action}")
+            res.data["documents"].append(doc)
             failed |= state in ("競合", "確認失敗", "リモート削除", "作成結果不明", "同期未完了", "競合マーカーあり")
     if (config_path.parent / RECOVERY).exists():
-        print("  未完了のローカル変更があります。backup list と restore で復旧してください")
+        res.say("  未完了のローカル変更があります。backup list と restore で復旧してください")
+        res.data["recovery_pending"] = True
         failed = True
-    return int(failed)
+    res.exit_code = int(failed)
+    return res
+
+
+def cmd_status(args):
+    return run_status(args, echo=print).exit_code
 
 
 def _ensure_target_in_config(config_path: Path, entity: str, config: "Config"):
@@ -989,13 +1005,19 @@ def cmd_clone(args):
 REPO_URL = update_check.REPO_URL
 
 
-def cmd_log(args):
-    """同期ログを表示する。"""
+def run_log(args, echo=None) -> CommandResult:
+    """同期ログを返す。"""
     config_path = Path(args.config)
     project_root = config_path.parent or Path(".")
-    log_path = project_root / sync_log.DEFAULT_LOG_PATH
-    entries = sync_log.read_log(log_path, limit=args.limit)
-    print(sync_log.format_log(entries))
+    entries = sync_log.read_log(project_root / sync_log.DEFAULT_LOG_PATH, limit=args.limit)
+    res = CommandResult(data={"entries": entries}, echo=echo)
+    res.say(sync_log.format_log(entries))
+    return res
+
+
+def cmd_log(args):
+    """同期ログを表示する。"""
+    return run_log(args, echo=print).exit_code
 
 
 def _check_path_priority():
@@ -1347,10 +1369,11 @@ def cmd_metadata(args):
                 print(f"  {label}: メタデータを更新しました")
 
 
-def cmd_whoami(args):
-    """現在の API キーに紐づくユーザー情報を表示する。"""
+def run_whoami(args, echo=None) -> CommandResult:
+    """現在の API キーに紐づくユーザー情報を返す（API キー自体は含めない）。"""
     config_path = Path(args.config)
     config = load_config(config_path)
+    res = CommandResult(data={"profiles": []}, echo=echo)
 
     # プロファイルごとに表示
     profiles_to_show = list(config.profiles.values()) if config.profiles else []
@@ -1361,22 +1384,21 @@ def cmd_whoami(args):
     for profile in profiles_to_show:
         if profile:
             url, api_key, verify_ssl = profile.url, profile.api_key, profile.verify_ssl
-            print(f"[profile: {profile.name}]")
+            res.say(f"[profile: {profile.name}]")
         else:
             url, api_key, verify_ssl = config.url, config.api_key, config.verify_ssl
-            print("[default]")
+            res.say("[default]")
+        info = {"profile": profile.name if profile else None, "url": url, "error": None}
+        res.data["profiles"].append(info)
 
         client = ELabFTWClient(url, api_key, verify_ssl)
         try:
             user = client._req("GET", "/api/v2/users/me").json()
         except Exception as e:
-            print(f"  エラー: API接続失敗 ({e})")
-            print()
+            info["error"] = f"API接続失敗 ({e})"
+            res.say(f"  エラー: API接続失敗 ({e})")
+            res.say()
             continue
-
-        print(f"  ユーザー: {user.get('firstname', '')} {user.get('lastname', '')}")
-        print(f"  メール: {user.get('email', '不明')}")
-        print(f"  ユーザーID: {user.get('userid', '不明')}")
 
         # 現在のAPIキーが紐づくチーム（アクティブチーム）
         active_team_id = user.get("team")
@@ -1387,17 +1409,31 @@ def cmd_whoami(args):
                 if t.get("id") == active_team_id:
                     active_team_name = t.get("name")
                     break
+        info.update(firstname=user.get("firstname", ""), lastname=user.get("lastname", ""),
+                    email=user.get("email"), userid=user.get("userid"),
+                    team={"id": active_team_id, "name": active_team_name} if active_team_id else None,
+                    teams=[{"id": t.get("id"), "name": t.get("name")} for t in teams])
+
+        res.say(f"  ユーザー: {user.get('firstname', '')} {user.get('lastname', '')}")
+        res.say(f"  メール: {user.get('email', '不明')}")
+        res.say(f"  ユーザーID: {user.get('userid', '不明')}")
         if active_team_name:
-            print(f"  現在のチーム: {active_team_name} (id={active_team_id})")
+            res.say(f"  現在のチーム: {active_team_name} (id={active_team_id})")
         elif active_team_id:
-            print(f"  現在のチーム: id={active_team_id}")
+            res.say(f"  現在のチーム: id={active_team_id}")
 
         # 所属チーム一覧
         if teams:
             other_teams = [t.get("name", "?") for t in teams if t.get("id") != active_team_id]
             if other_teams:
-                print(f"  その他の所属チーム: {', '.join(other_teams)}")
-        print()
+                res.say(f"  その他の所属チーム: {', '.join(other_teams)}")
+        res.say()
+    return res
+
+
+def cmd_whoami(args):
+    """現在の API キーに紐づくユーザー情報を表示する。"""
+    return run_whoami(args, echo=print).exit_code
 
 
 def cmd_new(args):
@@ -1452,8 +1488,8 @@ def cmd_new(args):
     print(f"  ✅ {outpath} を作成しました（テンプレート #{args.template_id}: {template.get('title', '')}）")
 
 
-def cmd_list(args):
-    """リモートのリソース/実験ノート一覧を表示する。"""
+def run_list(args, echo=None) -> CommandResult:
+    """リモートのリソース/実験ノート一覧を返す。"""
     config_path = Path(args.config)
     config = load_config(config_path)
     client = _direct_client(config, args.target)
@@ -1464,19 +1500,28 @@ def cmd_list(args):
     else:
         entities = client._req("GET", "/api/v2/experiments", params={"limit": limit}).json()
     label = "実験ノート" if entity_type == "experiments" else "リソース"
+    res = CommandResult(data={"entity": entity_type, "results": [
+        {"id": e.get("id"), "title": e.get("title"), "status": e.get("status_title") or None} for e in entities]},
+        echo=echo)
     if not entities:
-        print(f"  {label}がありません")
-        return
+        res.say(f"  {label}がありません")
+        return res
     for e in entities:
         title = e.get("title", "無題")
         eid = e.get("id", "?")
         status = e.get("status_title", "")
         suffix = f" [{status}]" if status else ""
-        print(f"  #{eid}: {title}{suffix}")
-    print(f"\n  {label} {len(entities)} 件表示（--limit で件数変更可）")
+        res.say(f"  #{eid}: {title}{suffix}")
+    res.say(f"\n  {label} {len(entities)} 件表示（--limit で件数変更可）")
+    return res
 
 
-def cmd_search(args):
+def cmd_list(args):
+    """リモートのリソース/実験ノート一覧を表示する。"""
+    return run_list(args, echo=print).exit_code
+
+
+def run_search(args, echo=None) -> CommandResult:
     """ブラウザの検索と同じ条件でリソース/実験ノートを検索する。"""
     from . import search as _search
     config_path = Path(args.config)
@@ -1511,13 +1556,21 @@ def cmd_search(args):
             # 一覧 API は本文を返さないことがあるため、記事ごとに取得する
             record["body"] = _search.body_markdown(client.get_entity(entity_type, data["id"]))
         records.append(record)
-    if args.json:
-        print(json.dumps({"results": records, "count": len(records), "has_more": found["has_more"],
-                          "next_offset": found["next_offset"], "truncated": found["truncated"]},
-                         ensure_ascii=False, indent=2))
+    data = {"results": records, "count": len(records), "has_more": found["has_more"],
+            "next_offset": found["next_offset"], "truncated": found["truncated"]}
+    if getattr(args, "json", False):
+        message = json.dumps(data, ensure_ascii=False, indent=2)
     else:
-        print(_search.format_text(records, found["has_more"], found["next_offset"], found["truncated"],
-                                  args.target))
+        message = _search.format_text(records, found["has_more"], found["next_offset"], found["truncated"],
+                                      args.target)
+    res = CommandResult(data=data, echo=echo)
+    res.say(message)
+    return res
+
+
+def cmd_search(args):
+    """ブラウザの検索と同じ条件でリソース/実験ノートを検索する。"""
+    return run_search(args, echo=print).exit_code
 
 
 def _select_target(config, name):
@@ -1627,12 +1680,18 @@ def cmd_mv(args):
     return 0
 
 
-def cmd_backup(args):
+def run_backup(args, echo=None) -> CommandResult:
     root = Path(args.config).resolve().parent
+    res = CommandResult(data={"backups": []}, echo=echo)
     for path in sorted((root / BACKUPS).glob("*/manifest.json")):
         manifest = json.loads(path.read_text(encoding="utf-8"))
-        print(f"  {manifest['id']}  {manifest['reason']}")
-    return 0
+        res.data["backups"].append({"id": manifest["id"], "reason": manifest["reason"]})
+        res.say(f"  {manifest['id']}  {manifest['reason']}")
+    return res
+
+
+def cmd_backup(args):
+    return run_backup(args, echo=print).exit_code
 
 
 @project_command
@@ -1801,12 +1860,18 @@ def cmd_rm(args):
                 print(f"  {action}: {path}")
 
 
-def cmd_verify(args):
+def run_verify(args, echo=None) -> CommandResult:
     """ローカルとリモートの整合性をチェックする。"""
     config_path = Path(args.config)
     project_root = config_path.parent or Path(".")
     config = load_config(config_path)
+    res = CommandResult(data={"documents": [], "unsynced_targets": [], "issues": 0}, echo=echo)
     issues = 0
+
+    def record(target, file, eid, problem=None):
+        res.data["documents"].append({"target": target.title or target.docs_dir, "file": file,
+                                      "entity": target.entity, "entity_id": eid, "ok": problem is None,
+                                      "problem": problem})
 
     for target in config.targets:
         if not _matches_target(target, args.target):
@@ -1817,37 +1882,78 @@ def cmd_verify(args):
         if target.mode == "each":
             mapping = syncer._load_mapping() or {}
             if not mapping:
-                print(f"  [{target.docs_dir}] マッピングなし（未同期）")
+                res.data["unsynced_targets"].append(target.title or target.docs_dir)
+                res.say(f"  [{target.docs_dir}] マッピングなし（未同期）")
                 continue
             for filename, eid in mapping.items():
                 filepath = project_root / target.docs_dir / filename
                 if not filepath.exists():
-                    print(f"  ⚠ {filename}: ローカルファイルが見つかりません（リモート #{eid}）")
+                    record(target, filename, eid, "ローカルファイルが見つかりません")
+                    res.say(f"  ⚠ {filename}: ローカルファイルが見つかりません（リモート #{eid}）")
                     issues += 1
                 else:
                     try:
                         client.get_entity(target.entity, eid)
                     except Exception:
-                        print(f"  ⚠ {filename}: リモート #{eid} にアクセスできません")
+                        record(target, filename, eid, "リモートにアクセスできません")
+                        res.say(f"  ⚠ {filename}: リモート #{eid} にアクセスできません")
                         issues += 1
                     else:
-                        print(f"  ✓ {filename} ↔ #{eid}")
+                        record(target, filename, eid)
+                        res.say(f"  ✓ {filename} ↔ #{eid}")
         else:
             eid = syncer.read_item_id()
             if not eid:
-                print(f"  [{target.title}] 未同期")
+                res.data["unsynced_targets"].append(target.title or target.docs_dir)
+                res.say(f"  [{target.title}] 未同期")
                 continue
             try:
                 client.get_entity(target.entity, eid)
-                print(f"  ✓ [{target.title}] ↔ #{eid}")
+                record(target, None, eid)
+                res.say(f"  ✓ [{target.title}] ↔ #{eid}")
             except Exception:
-                print(f"  ⚠ [{target.title}]: リモート #{eid} にアクセスできません")
+                record(target, None, eid, "リモートにアクセスできません")
+                res.say(f"  ⚠ [{target.title}]: リモート #{eid} にアクセスできません")
                 issues += 1
 
+    res.data["issues"] = issues
     if issues:
-        print(f"\n  {issues} 件の問題が見つかりました")
+        res.say(f"\n  {issues} 件の問題が見つかりました")
     else:
-        print(f"\n  ✅ 接続チェックに問題はありません（内容の一致は esync status で確認）")
+        res.say(f"\n  ✅ 接続チェックに問題はありません（内容の一致は esync status で確認）")
+    return res
+
+
+def cmd_verify(args):
+    """ローカルとリモートの整合性をチェックする。"""
+    return run_verify(args, echo=print).exit_code
+
+
+def run_profile_list(args, echo=None) -> CommandResult:
+    """プロファイル一覧を返す。API キーは有無だけを返す。"""
+    config_path = Path(args.config)
+    res = CommandResult(data={"profiles": []}, echo=echo)
+    if not config_path.exists():
+        res.say("  設定ファイルがありません")
+        return res
+    raw = yaml.safe_load(_read_yaml_text(config_path)) or {}
+    profiles = raw.get("profiles", {})
+    # elabftw セクションがあれば default として表示
+    elab = raw.get("elabftw", {})
+    if "default" not in profiles and elab.get("url"):
+        profiles["default"] = {"url": elab["url"], "api_key": elab.get("api_key", ""),
+                               "verify_ssl": elab.get("verify_ssl", True)}
+    if not profiles:
+        res.say("  プロファイルがありません")
+        return res
+    for name, pdata in profiles.items():
+        url = pdata.get("url", "?")
+        res.data["profiles"].append({"name": name, "url": pdata.get("url"), "has_api_key": bool(pdata.get("api_key")),
+                                     "verify_ssl": pdata.get("verify_ssl", True)})
+        has_key = "✓" if pdata.get("api_key") else "✗"
+        ssl = "SSL検証あり" if pdata.get("verify_ssl", True) else "SSL検証なし"
+        res.say(f"  {name}: {url} (API キー: {has_key}, {ssl})")
+    return res
 
 
 def cmd_profile(args):
@@ -1855,24 +1961,7 @@ def cmd_profile(args):
     config_path = Path(args.config)
 
     if args.profile_action == "list":
-        if not config_path.exists():
-            print("  設定ファイルがありません")
-            return
-        raw = yaml.safe_load(_read_yaml_text(config_path)) or {}
-        profiles = raw.get("profiles", {})
-        # elabftw セクションがあれば default として表示
-        elab = raw.get("elabftw", {})
-        if "default" not in profiles and elab.get("url"):
-            profiles["default"] = {"url": elab["url"], "api_key": elab.get("api_key", ""),
-                                   "verify_ssl": elab.get("verify_ssl", True)}
-        if not profiles:
-            print("  プロファイルがありません")
-            return
-        for name, pdata in profiles.items():
-            url = pdata.get("url", "?")
-            has_key = "✓" if pdata.get("api_key") else "✗"
-            ssl = "SSL検証あり" if pdata.get("verify_ssl", True) else "SSL検証なし"
-            print(f"  {name}: {url} (API キー: {has_key}, {ssl})")
+        return run_profile_list(args, echo=print).exit_code
 
     elif args.profile_action == "add":
         name = args.profile_name
