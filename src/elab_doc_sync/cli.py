@@ -686,6 +686,7 @@ class _PullOutputs:
         self.names = {}
         self.owners = {}
         self.unknown_directories = set()
+        self.missing_records = set()
         self.upload_ids = {}
         self.released = set()
 
@@ -704,7 +705,8 @@ class _PullOutputs:
                 server = get_client_for_target(config, target)[0].rstrip("/")
                 for name, eid in syncer._load_mapping(migrate=False).items():
                     state = syncer._state(name)
-                    if not state:
+                    if state is None:
+                        self.missing_records.add(self.key(directory))
                         continue
                     owner_server = str(state.get("server") or server).rstrip("/")
                     owner = (owner_server, state.get("entity") or target.entity, eid)
@@ -800,6 +802,8 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
     outputs = outputs or _PullOutputs()
     article = article or _PullOutputs()
 
+    exclusive_paths = set(outputs.released)
+
     def validate_output(path, *, asset=False, upload_id=None, upload=None):
         safe_path(project_root, path.relative_to(project_root).as_posix())
         if any(p.exists() and not p.is_dir() for p in path.parents):
@@ -811,8 +815,13 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
         source = (server, entity_type, eid, asset, upload_id)
         owner = (server, entity_type, eid)
         owners = outputs.owners.get(key, set())
-        if outputs.key(path.parent) in outputs.unknown_directories:
+        directory = outputs.key(path.parent)
+        if directory in outputs.unknown_directories or (directory in outputs.missing_records and path.exists()):
             raise ConflictError(f"添付の同期記録を読み取れず、保存先の所有者を確認できません: {path}")
+        if directory in outputs.missing_records:
+            exclusive_paths.add(path)
+        if not dry_run and path in outputs.released and path.exists():
+            raise ConflictError(f"解放した保存先に別のファイルが作成されています: {path}")
         if asset and article.upload_ids.setdefault(key, upload_id) != upload_id:
             raise ConflictError(f"異なる添付 ID の保存先が重複しています: {path}")
         if owners - {owner}:
@@ -843,8 +852,6 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
         if check_path:
             check_path(path, asset=asset)
 
-    if not dry_run and filepath in outputs.released and filepath.exists():
-        raise ConflictError(f"解放した保存先に別のファイルが作成されています: {filepath}")
     validate_output(filepath)
     if old_path and old_path != filepath:
         validate_output(old_path)
@@ -895,7 +902,7 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
     with local_transaction(project_root, paths, f"pull:{entity_type}/{eid}"):
         docs_dir.mkdir(parents=True, exist_ok=True)
         body_md = _download_images(body_md, entity_type, eid, client, parent, strict=True, keep_existing=merge,
-                                   uploads=uploads, check_path=validate_output)
+                                   uploads=uploads, check_path=validate_output, exclusive_paths=exclusive_paths)
         new_mapping = dict(mapping)
         if old_name:
             new_mapping.pop(old_name, None)
@@ -906,12 +913,12 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
                                                target_docs_dir=target.docs_dir, source=filepath, links=links)
         if target.attachments_dir:
             _download_attachments(entity_type, eid, client, project_root / target.attachments_dir, strict=True,
-                                  keep_existing=merge, uploads=uploads)
+                                  keep_existing=merge, uploads=uploads, exclusive_paths=exclusive_paths)
         local_md, conflicts = body_md, 0
         if merge:
             local_md, conflicts = merge_text(syncer.load_base(old_name), old_path.read_text(encoding="utf-8").strip(),
                                              body_md, remote_label=f"#{eid}")
-        atomic_write(filepath, local_md + "\n")
+        atomic_write(filepath, local_md + "\n", exclusive=filepath in exclusive_paths)
         if old_path and old_path != filepath:
             old_path.unlink(missing_ok=True)
         if not is_temp_export:

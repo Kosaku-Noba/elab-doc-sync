@@ -543,3 +543,65 @@ def test_rename_protects_new_file_at_released_path(project, tmp_path):
         res = cli.run_pull(project)
     assert res.data["pulled"] == res.data["failed"] == 1
     assert released.read_text() == "editor save"
+
+
+@pytest.mark.parametrize("asset", [True, False])
+def test_pull_preserves_recreated_file_during_download(project, tmp_path, asset):
+    cfg = Path(project.config)
+    settings = yaml.safe_load(cfg.read_text())
+    settings["targets"][0]["attachments_dir"] = "docs" if asset else "attachments"
+    cfg.write_text(yaml.safe_dump(settings))
+    project.target, project.entity, project.id, project.dir = "docs", "items", [42, 8], None
+    project.force, project.dry_run = True, False
+    released = tmp_path / "docs/note.md"
+
+    def download(**kwargs):
+        released.write_text("editor save")
+        return b"remote attachment"
+
+    with patch.object(cli, "ELabFTWClient") as factory:
+        client = factory.return_value
+        client.base_url = "https://example.invalid"
+        client.get_item.side_effect = lambda eid: {
+            "title": "renamed" if eid == 42 else ("second" if asset else "note"), "body": "body"}
+        client.list_uploads.side_effect = lambda entity, eid: (
+            [] if eid == 42 else [{"id": 7, "real_name": "note.md" if asset else "data.csv"}])
+        client.download_upload.side_effect = download
+        target = cli.load_config(cfg).targets[0]
+        cli.EachDocsSyncer(client, target, tmp_path)._save_baseline(
+            "note.md", "# note", {"title": "note", "body": "# note"}, [], base="# note")
+        res = cli.run_pull(project)
+    assert res.data["pulled"] == res.data["failed"] == 1
+    assert released.read_text() == "editor save"
+
+
+def test_missing_state_keeps_existing_attachment(project, tmp_path):
+    cfg = Path(project.config)
+    settings = yaml.safe_load(cfg.read_text())
+    settings["targets"][0]["attachments_dir"] = "assets"
+    cfg.write_text(yaml.safe_dump(settings))
+    existing = tmp_path / "assets/table.csv"
+    existing.parent.mkdir()
+    existing.write_bytes(b"local edit")
+    project.target, project.entity, project.id, project.dir = "docs", "items", [8], None
+    project.force, project.dry_run = True, False
+    with patch.object(cli, "ELabFTWClient") as factory:
+        client = factory.return_value
+        client.get_item.return_value = {"title": "second", "body": "body"}
+        client.list_uploads.return_value = [{"id": 9, "real_name": "table.csv"}]
+        res = cli.run_pull(project)
+    assert res.exit_code == 1
+    assert existing.read_bytes() == b"local edit"
+    client.download_upload.assert_not_called()
+
+
+def test_unreadable_target_never_redirects_explicit_link(tmp_path):
+    from elab_doc_sync.sync import LinkTargets, _rewrite_local_links
+
+    intended = tmp_path / "a/ref.md"
+    intended.parent.mkdir()
+    intended.write_text("unreadable tracking record")
+    links = LinkTargets("https://example.invalid")
+    links.add("items", 9, tmp_path / "b/ref.md")
+    body = "[reference](../a/ref.md)"
+    assert _rewrite_local_links(body, "items", links.base_url, {}, source=tmp_path / "c/doc.md", links=links) == body

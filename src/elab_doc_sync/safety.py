@@ -17,7 +17,7 @@ BACKUPS = ".elab-sync-backups"
 RECOVERY = ".elab-sync-recovery.json"
 
 
-def atomic_write(path: Path, data: str | bytes, mode: int | None = None) -> None:
+def atomic_write(path: Path, data: str | bytes, mode: int | None = None, *, exclusive=False) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_symlink():
@@ -31,7 +31,10 @@ def atomic_write(path: Path, data: str | bytes, mode: int | None = None) -> None
             stream.flush()
             os.fsync(stream.fileno())
         os.chmod(name, mode)
-        os.replace(name, path)
+        if exclusive:
+            os.link(name, path)
+        else:
+            os.replace(name, path)
     finally:
         Path(name).unlink(missing_ok=True)
 

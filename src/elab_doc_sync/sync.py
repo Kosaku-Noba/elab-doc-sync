@@ -148,7 +148,7 @@ def _parse_image_local_name(filename: str) -> str | None:
 
 
 def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, strict: bool = False,
-                     keep_existing: bool = False, uploads=None, check_path=None, preview=False) -> str:
+                     keep_existing: bool = False, uploads=None, check_path=None, preview=False, exclusive_paths=()) -> str:
     """Markdown 内の eLabFTW 画像 URL をローカルにダウンロードし相対パスに書き換える。
 
     preview=True は保存予定パスの検査のみ行い、画像の取得・ディレクトリの作成をしない。
@@ -210,7 +210,7 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
                 entity_id=entity_id,
                 upload_id=matched_upload["id"],
             )
-            atomic_write(dest, data)
+            atomic_write(dest, data, exclusive=dest in exclusive_paths)
             progress(f"    画像をダウンロード: {real_name}")
         return f"![{alt}](images/{local_name})"
 
@@ -549,7 +549,10 @@ def _rewrite_local_links(body: str, entity: str, base_url: str,
 
         # 0. 全ターゲットの対応があれば、それだけで解決する（接続先の異なる紐付けは除外済み）
         if links is not None and source is not None:
-            url = links.url_for(Path(source).parent / link_path) or links.url_for_name(Path(link_path).name, entity)
+            named_path = Path(source).parent / link_path
+            url = links.url_for(named_path)
+            if url is None and not named_path.exists() and Path(link_path).name == link_path:
+                url = links.url_for_name(link_path, entity)
             return f"[{text}]({url}{fragment_suffix})" if url is not None else m.group(0)
 
         # パスからファイル名を抽出
@@ -1005,7 +1008,7 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
 
 
 def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, attachments_dir: Path, strict: bool = False,
-                          keep_existing: bool = False, uploads=None) -> None:
+                          keep_existing: bool = False, uploads=None, exclusive_paths=()) -> None:
     """リモートの非画像添付ファイルをローカルにダウンロードする。
 
     keep_existing=True では既存のファイルを上書きしない（マージ時にローカルの編集を守る）。
@@ -1033,6 +1036,8 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
             continue
         dest = safe_path(attachments_dir, safe_name)
         attachments_dir.mkdir(parents=True, exist_ok=True)
+        if dest in exclusive_paths and dest.exists():
+            raise FileExistsError(f"解放した保存先に別のファイルが作成されています: {dest}")
         if keep_existing and dest.exists():
             continue
         remote_size = int(u.get("filesize", 0) or 0)
@@ -1063,7 +1068,11 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
                     tp.chmod(orig_mode)
                 else:
                     tp.chmod(0o666 & ~_UMASK)
-                tp.replace(dest)
+                if dest in exclusive_paths:
+                    _os.link(tp, dest)
+                    tp.unlink()
+                else:
+                    tp.replace(dest)
             except Exception:
                 if tmp_file is not None:
                     try:
@@ -1275,7 +1284,10 @@ class EachDocsSyncer:
             legacy = self.project_root / ".elab-sync-ids/mapping.json"
             mapping = {}
             if legacy.exists() and legacy != self.mapping_file:
-                mapping = {name: eid for name, eid in json.loads(legacy.read_text(encoding="utf-8")).items()
+                contents = json.loads(legacy.read_text(encoding="utf-8"))
+                if not isinstance(contents, dict):
+                    raise ValueError(f"紐付け情報の形式が不正です: {legacy}")
+                mapping = {name: eid for name, eid in contents.items()
                            if (self.docs_dir / name).is_file()}
                 if mapping and migrate:
                     snapshot(self.project_root, [self.hash_dir], "旧紐付けの移行")
