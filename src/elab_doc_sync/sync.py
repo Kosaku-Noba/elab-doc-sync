@@ -1287,23 +1287,28 @@ class EachDocsSyncer:
         return paths
 
     def _load_mapping(self, *, migrate=True):
-        load_legacy = not self.mapping_file.exists()
-        if not load_legacy:
-            mapping = json.loads(self.mapping_file.read_text(encoding="utf-8"))
-        else:
-            legacy = self.project_root / ".elab-sync-ids/mapping.json"
-            mapping = {}
-            if legacy.exists() and legacy != self.mapping_file:
-                contents = json.loads(legacy.read_text(encoding="utf-8"))
-                if not isinstance(contents, dict):
-                    raise ValueError(f"紐付け情報の形式が不正です: {legacy}")
-                mapping = {name: eid for name, eid in contents.items()
-                           if (self.docs_dir / name).is_file()}
-        if not isinstance(mapping, dict) or not all(isinstance(n, str) and Path(n).name == n and n not in ("", ".", "..")
-                                                    and type(e) is int and e > 0 for n, e in mapping.items()):
-            raise ValueError(f"紐付け情報の形式が不正です: {self.mapping_file}")
-        if len(set(mapping.values())) != len(mapping):
-            raise ValueError("同じリモートIDに複数文書が紐付いています。紐付けを修正してください")
+        source = self.mapping_file
+        load_legacy = not source.exists()
+        if load_legacy:
+            source = self.project_root / ".elab-sync-ids/mapping.json"
+            if not source.exists() or source == self.mapping_file:
+                return {}
+        records = json.loads(source.read_text(encoding="utf-8"))
+        if not isinstance(records, dict):
+            raise ValueError(f"紐付け情報の形式が不正です: {source}")
+        mapping = {}
+        seen_ids = set()
+        for name, eid in records.items():
+            if not name or name in (".", "..") or Path(name).name != name:
+                raise ValueError(f"紐付け情報の形式が不正です: {source} のファイル名 {name!r}")
+            if load_legacy and not (self.docs_dir / name).is_file():
+                continue
+            if type(eid) is not int or eid <= 0:
+                raise ValueError(f"紐付け情報の形式が不正です: {source} の {name!r} の記事 ID")
+            if eid in seen_ids:
+                raise ValueError(f"同じリモートIDに複数文書が紐付いています。{source} の {name!r} と ID {eid} を確認してください")
+            seen_ids.add(eid)
+            mapping[name] = eid
         if load_legacy and mapping and migrate:
             snapshot(self.project_root, [self.hash_dir], "旧紐付けの移行")
             self._save_mapping(mapping)

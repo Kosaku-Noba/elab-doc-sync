@@ -868,7 +868,7 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
     def check_local_body():
         digest = _compute_file_hash(tracked_path) if tracked_path.is_file() else None
         if digest != initial_digest:
-            raise ConflictError(f"取得中に本文が変更されました: {tracked_path}")
+            raise ConflictError(f"取得中に本文が変更されました: {tracked_path}。restore の前に編集内容を復元対象の外へコピーしてください")
 
     uploads = client.list_uploads(entity_type, eid)
     body_md = _remote_markdown(data, target)
