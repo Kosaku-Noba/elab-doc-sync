@@ -684,6 +684,11 @@ def _pull_entity_to_target(client, config, config_path, target, project_root,
         for owner in syncer.link_syncers:
             if not path.is_relative_to(owner.docs_dir.resolve()):
                 continue
+            relative = path.relative_to(owner.docs_dir.resolve())
+            if not path.exists() and _matches_relative_glob(relative, owner.target.pattern):
+                for local in owner.docs_dir.glob(owner.target.pattern):
+                    if local.is_file() and local.name == path.name and local != path:
+                        raise ConflictError(f"{path} は既存ファイル {local} と同名です")
             for name, tracked_id in owner._load_mapping(migrate=False).items():
                 if normalize("NFC", name).casefold() != normalize("NFC", path.name).casefold():
                     continue
@@ -715,20 +720,28 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
     # Keep a tracked document's subdirectory when the remote title changes.
     parent = old_path.parent if old_path else docs_dir
     filepath = safe_path(parent, filename)
-    if check_path:
-        check_path(filepath)
-        if old_path and old_path != filepath:
-            check_path(old_path)
+    def validate_output(path, *, asset=False):
+        safe_path(project_root, path.relative_to(project_root).as_posix())
+        if any(p.exists() and not p.is_dir() for p in path.parents):
+            raise ConflictError(f"保存先の親がディレクトリではありません: {path}")
+        if path.exists() and not path.is_file():
+            raise ConflictError(f"保存先が通常ファイルではありません: {path}")
+        if asset:
+            for document in (filepath, old_path):
+                if document and (path == document or
+                                 (path.exists() and document.exists() and path.samefile(document))):
+                    raise ConflictError(f"画像・添付の保存先が本文と重複しています: {path}")
+        if check_path:
+            check_path(path, asset=asset)
+
+    validate_output(filepath)
+    if old_path and old_path != filepath:
+        validate_output(old_path)
     if filename in mapping and mapping[filename] != eid and not is_temp_export:
         raise ConflictError(f"{filename} は別のIDに紐付いています")
     if old_path and old_path != filepath and filepath.exists():
         raise ConflictError(f"リネーム先 {filename} が既に存在するため変更をスキップします")
     uploads = client.list_uploads(entity_type, eid)
-    if check_path and target.attachments_dir:
-        for upload in uploads:
-            name = upload.get("real_name")
-            if name and not _is_image(name) and Path(name).name not in ("", ".", ".."):
-                check_path(safe_path(project_root / target.attachments_dir, Path(name).name), asset=True)
     body_md = _remote_markdown(data, target)
     merge = False
     if old_name and old_path.is_file():
@@ -752,9 +765,14 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
                 return 0
     elif filepath.exists() and not force:
         raise ConflictError(f"{filename}: 既にローカルに存在、基準情報なし。--force の前に差分を確認してください")
+    if check_path and target.attachments_dir:
+        for upload in uploads:
+            name = upload.get("real_name")
+            if name and not _is_image(name) and Path(name).name not in ("", ".", ".."):
+                validate_output(safe_path(project_root / target.attachments_dir, Path(name).name), asset=True)
     if check_path:
         _download_images(body_md, entity_type, eid, client, parent, uploads=uploads,
-                         check_path=check_path, preview=True)
+                         check_path=validate_output, preview=True)
     if dry_run:
         action = "ローカル編集とマージ予定" if merge else "取得予定"
         progress(f"  [{title}] #{eid} → {filepath}（{action}）")
@@ -765,7 +783,7 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
     with local_transaction(project_root, paths, f"pull:{entity_type}/{eid}"):
         docs_dir.mkdir(parents=True, exist_ok=True)
         body_md = _download_images(body_md, entity_type, eid, client, parent, strict=True, keep_existing=merge,
-                                   uploads=uploads if check_path else None, check_path=check_path)
+                                   uploads=uploads if check_path else None, check_path=validate_output)
         new_mapping = dict(mapping)
         if old_name:
             new_mapping.pop(old_name, None)

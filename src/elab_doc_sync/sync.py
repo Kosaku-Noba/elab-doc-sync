@@ -151,6 +151,7 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
                      keep_existing: bool = False, uploads=None, check_path=None, preview=False) -> str:
     """Markdown 内の eLabFTW 画像 URL をローカルにダウンロードし相対パスに書き換える。
 
+    preview=True は保存予定パスの検査のみ行い、画像の取得・ディレクトリの作成をしない。
     keep_existing=True では既存の画像ファイルを上書きしない（マージ時にローカルの編集を守る）。
     """
     try:

@@ -311,10 +311,14 @@ def test_child_target_can_update_its_own_document(project, tmp_path):
 
 
 @pytest.mark.parametrize("dry_run", [True, False])
-def test_image_directory_conflict_before_transaction(project, tmp_path, dry_run):
+@pytest.mark.parametrize("blocked_by_file", [False, True])
+def test_image_directory_conflict_before_transaction(project, tmp_path, dry_run, blocked_by_file):
     cfg_path = tmp_path / ".elab-sync.yaml"
     cfg = yaml.safe_load(cfg_path.read_text())
-    cfg["targets"].append({"docs_dir": "docs/images", "entity": "experiments"})
+    if blocked_by_file:
+        (tmp_path / "docs/images").write_text("keep")
+    else:
+        cfg["targets"].append({"docs_dir": "docs/images", "entity": "experiments"})
     cfg_path.write_text(yaml.safe_dump(cfg))
     project.target, project.entity, project.id, project.dir = "docs", "items", [3, 4], None
     project.force, project.dry_run = True, dry_run
@@ -326,11 +330,15 @@ def test_image_directory_conflict_before_transaction(project, tmp_path, dry_run)
         client.list_uploads.return_value = [{"id": 99, "real_name": "abc.png"}]
         res = cli.run_pull(project)
     assert res.data["failed"] == res.data["pulled"] == 1
-    assert not (tmp_path / "docs/images").exists() and not (tmp_path / ".elab-sync-recovery.json").exists()
+    assert (tmp_path / "docs/images").is_file() == blocked_by_file
+    assert not (tmp_path / ".elab-sync-recovery.json").exists()
     assert (tmp_path / "docs/good.md").exists() != dry_run
 
 
-def test_pull_rejects_new_duplicate_for_recursive_parent(project, tmp_path):
+@pytest.mark.parametrize("tracked", [True, False])
+def test_pull_rejects_new_duplicate_for_recursive_parent(project, tmp_path, tracked):
+    if not tracked:
+        (tmp_path / ".ids/mapping.json").write_text("{}")
     path = tmp_path / ".elab-sync.yaml"
     cfg = yaml.safe_load(path.read_text())
     cfg["targets"][0]["pattern"] = "**/*.md"
@@ -356,3 +364,21 @@ def test_pull_compares_existing_case_alias_by_identity(project, tmp_path):
         factory.return_value.get_item.return_value = {"title": "NOTE", "body": "wrong"}
         res = cli.run_pull(project)
     assert res.exit_code == 1 and alias.read_text() == tracked.read_text() == "# note"
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_pull_rejects_attachment_named_after_new_document(project, tmp_path, dry_run):
+    cfg_path = tmp_path / ".elab-sync.yaml"
+    cfg = yaml.safe_load(cfg_path.read_text())
+    cfg["targets"][0]["attachments_dir"] = "docs"
+    cfg_path.write_text(yaml.safe_dump(cfg))
+    project.target, project.entity, project.id, project.dir = "docs", "items", [7], None
+    project.dry_run = dry_run
+    with patch.object(cli, "ELabFTWClient") as factory:
+        client = factory.return_value
+        client.get_item.return_value = {"title": "new", "body": "body"}
+        client.list_uploads.return_value = [{"id": 3, "real_name": "new.md"}]
+        res = cli.run_pull(project)
+    assert res.exit_code == 1 and not (tmp_path / "docs/new.md").exists()
+    assert not (tmp_path / ".elab-sync-recovery.json").exists()
+    client.download_upload.assert_not_called()
