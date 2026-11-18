@@ -109,6 +109,33 @@ export ELABFTW_API_KEY="your_key"
 
 ---
 
+## MCP クライアントから使う
+
+アプリ用の stdio サーバーは `elab-doc-sync-mcp` です。チェックアウトしたリポジトリで `uv sync --extra mcp` を実行し、MCP クライアントに次のサーバーを登録します。2 つの絶対パスはそれぞれアプリのチェックアウトと、操作する同期プロジェクトに合わせてください。
+
+```json
+{
+  "mcpServers": {
+    "elab-doc-sync": {
+      "command": "uv",
+      "args": ["run", "--project", "/path/to/elab-doc-sync", "--extra", "mcp", "elab-doc-sync-mcp", "--config", "/path/to/project/.elab-sync.yaml"]
+    }
+  }
+}
+```
+
+| 操作 | ツール |
+|---|---|
+| 同期・検索 | `status`, `diff`, `log`, `list`, `search`, `whoami`, `verify`, `profile_list`, `backup_list` |
+| 記事・テンプレート | `tag_list/add/remove`, `relate_list/add/remove`, `metadata_get/set`, `category_list/show/set`, `entity_status_show`, `new_list`, `new` |
+| 同期・ローカル変更 | `push`, `pull`, `clone`, `link`, `rm`, `mv`, `restore` |
+
+表のスラッシュはツール名の末尾の選択肢を表します（例 `tag_add`）。変更操作の既定値は `dry_run: true` です。例えば `tag_add` に `{"id":42,"entity":"items","tag_name":"確認済み"}` を渡すと予定を確認でき、同じ引数に `"dry_run":false` を加えるとタグを追加します。直接指定するパスは設定ファイルのあるディレクトリが基準です。`link.file` は CLI と同じくターゲットの文書ディレクトリが基準です。
+
+`pull` は `auto: true` または `dir` を指定します。`clone` の API キーはサーバープロセスの環境変数 `ELABFTW_API_KEY` で渡します。接続先は既定のプロファイルから取得し、設定のない場所から開始する場合はサーバー起動時に `--clone-url https://elab.example.org` を指定します。`init`、`update`、`entity-status set`、`profile add/remove` は CLI から使います。
+
+ツール応答の `structuredContent` は `exit_code`、`data`、`messages`、`warnings` を含みます。終了コードが非ゼロなら `isError` が立ちます。複数件の操作が途中で止まった場合は `data` で完了した変更を確認できます。既存のルート直下の `mcp_server.py` は開発ワークフロー用です。
+
 ## 日常の使い方
 
 ### 書いたものを eLabFTW に送る（push）

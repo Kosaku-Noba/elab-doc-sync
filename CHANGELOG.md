@@ -4,6 +4,8 @@
 
 ### 追加
 
+- オプション依存 `mcp` と stdio サーバー `elab-doc-sync-mcp` を追加。30 個のツールから検索・同期・追跡管理を実行できる。変更操作は既定でプレビューを返す。
+
 - `tag add/remove`・`relate add/remove`・`metadata set`・`category set`・`entity-status set`・`new` が `--dry-run` に対応した。eLabFTW の現在の値を読んで予定（「追加予定」「既にあります」など）を表示し、送信・ファイル作成はしない。`entity-status set --dry-run` は対象ごとに現在のステータスと変更先を表示し、複数件でも確認の入力を求めない。dry-run では旧形式の紐付け情報を移行しない。`entity-status set` は数値でないステータス ID を、確認の入力より前に「数値で指定してください」とエラー（終了コード 2）にするようにした。これまでは付けるとエラー（終了コード 2）だった。`init`・`profile add/remove` は従来どおりエラーになる。
 
 ### 修正

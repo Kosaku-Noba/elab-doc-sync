@@ -12,10 +12,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+mcp = ["mcp>=1.30,<2"]
 test = ["pytest>=7.0"]
 
 [project.scripts]
 elab-doc-sync = "elab_doc_sync.cli:main"
+elab-doc-sync-mcp = "elab_doc_sync.mcp_server:main"
 esync = "elab_doc_sync.cli:main"
 
 [build-system]

@@ -219,7 +219,7 @@ YAML 設定読み込み・バリデーション。
 - `run_verify` は問題を見つけても `exit_code` は 0。`data["issues"]` と各文書の `ok` を確認する
 - `run_whoami` は接続に失敗したプロファイルも `exit_code` 0 で返し、そのプロファイルの `error` に理由を入れる（API キーは `redact` で除く）
 - 設定の誤り・通信の失敗など、上記以外のエラーは `CommandResult` にならず例外として呼び出し元に伝わる（CLI は終了コード 2 / 1 にする）。呼び出し側で例外を処理する。結果を作った後の例外には `partial_result` が付く。リモート書き換え系の各件は送信前に記録され、`result` のない件は完了未確認（応答を受け取れなかった場合を含む）なので、再試行の前に実際の状態を確認する（[設計判断 13.4](12_DESIGN_DECISIONS.md)）
-- 設定ファイルがない・読めないときは、`load_config` が `SystemExit(2)` を送出する（標準エラー出力に理由を表示）
+- `run_*` が使う `read_config` は設定の検証失敗を `ConfigError`（`ValueError` の派生型）で通知する。互換 API の `config.load_config` は従来どおり理由を表示して `SystemExit(2)` を送出する
 - 書き換え系（`tag`・`relate`・`metadata`・`category`・`entity-status`）の各件と `run_category` の `data` には、接続先のベース URL `server` が入る
 
 | 関数 | `data` |

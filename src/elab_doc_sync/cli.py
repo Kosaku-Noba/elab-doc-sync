@@ -16,7 +16,7 @@ from markdownify import markdownify as html_to_md
 from .safety import atomic_write, write_json, safe_path, snapshot, local_transaction, project_command, restore, BACKUPS, RECOVERY
 from .config import TargetConfig
 from .client import ELabFTWClient
-from .config import load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, append_target_to_yaml
+from .config import read_config as load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, append_target_to_yaml
 from .merge import merge_text
 from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
 from . import sync_log
@@ -2390,7 +2390,15 @@ def _category_set(res, client, entity_type, entity_id, category_value, dry_run=F
     res.say(f"  {label}: カテゴリを設定しました (#{cat_id})")
 
 
-def main():
+def _installed_version():
+    from importlib.metadata import version as _pkg_version
+    try:
+        return _pkg_version("elab-doc-sync")
+    except Exception:
+        return "unknown"
+
+
+def build_parser():
     # 共通オプション（全サブコマンドで使える）
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--config", "-c", default=DEFAULT_CONFIG, help="設定ファイルのパス（デフォルト: .elab-sync.yaml）")
@@ -2406,12 +2414,6 @@ def main():
     sub_common.add_argument("--dry-run", "-n", action="store_true", help="実行せずに同期内容を確認")
     sub_common.add_argument("--prune-attachments", action="store_true", help="ローカルに存在しないリモート添付を削除")
 
-    from importlib.metadata import version as _pkg_version
-    try:
-        _version = _pkg_version("elab-doc-sync")
-    except Exception:
-        _version = "unknown"
-
     parser = argparse.ArgumentParser(
         prog=Path(sys.argv[0]).stem if Path(sys.argv[0]).stem in ("esync", "elab-doc-sync") else "elab-doc-sync",
         description="Markdown ドキュメントを eLabFTW に同期する CLI ツール",
@@ -2419,7 +2421,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         parents=[common],
     )
-    parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {_version}")
+    parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {_installed_version()}")
 
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("status", help="同期状態を確認", parents=[sub_common])
@@ -2574,7 +2576,11 @@ def main():
     mv_parser.add_argument("old")
     mv_parser.add_argument("new")
 
-    args = parser.parse_args()
+    return parser
+
+
+def main():
+    args = build_parser().parse_args()
     commands = {
         None: cmd_sync, "push": cmd_sync, "status": cmd_status, "init": cmd_init,
         "pull": cmd_pull, "diff": cmd_diff, "update": cmd_update, "log": cmd_log,
@@ -2607,6 +2613,6 @@ def main():
         raise SystemExit(1)
     finally:
         # eLabFTW 側の成否に関わらず通知する（通知しない条件は update_check.py 参照）
-        update_check.notify_if_update_available(_version, args.command)
+        update_check.notify_if_update_available(_installed_version(), args.command)
     if isinstance(result, int) and result:
         raise SystemExit(result)
