@@ -19,7 +19,7 @@ from .config import load_config, BODY_FORMAT_INIT, _read_yaml_text, update_targe
 from .merge import merge_text
 from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
 from . import sync_log
-from .result import CommandResult, cli_echo, redact
+from .result import CommandResult, cli_echo, redact, returns_partial_result
 from . import update_check
 
 DEFAULT_CONFIG = ".elab-sync.yaml"
@@ -299,6 +299,7 @@ def cmd_sync(args):
     return 1 if failed else 0
 
 
+@returns_partial_result
 def run_status(args, echo=None) -> CommandResult:
     config_path = Path(args.config).resolve()
     config = load_config(config_path)
@@ -1005,6 +1006,7 @@ def cmd_clone(args):
 REPO_URL = update_check.REPO_URL
 
 
+@returns_partial_result
 def run_log(args, echo=None) -> CommandResult:
     """同期ログを返す。"""
     config_path = Path(args.config)
@@ -1117,6 +1119,7 @@ def _get_entity_ids(client, syncer, target, args_id=None, migrate=True):
     return [(eid, target.entity)] if eid else []
 
 
+@returns_partial_result
 def run_tag(args, echo=None) -> CommandResult:
     config_path = Path(args.config)
     project_root = config_path.parent or Path(".")
@@ -1165,7 +1168,8 @@ def _tag_action(res, client, args, entity_type, entity_id, target=None):
     """1 件のタグ操作。result は added / exists / would_add / removed / not_found / would_remove。"""
     label = f"{_entity_label(entity_type)} #{entity_id}"
     dry_run = getattr(args, "dry_run", False)
-    entry = {"target": target, "entity": entity_type, "entity_id": entity_id}
+    # 別サーバーに同じ種別・ID があり得るため、接続先（ベース URL。API キーは含めない）も返す
+    entry = {"target": target, "server": client.base_url, "entity": entity_type, "entity_id": entity_id}
     res.data["entities"].append(entry)
     if args.tag_action == "list":
         tag_names = _tag_names(client, entity_type, entity_id)
@@ -1254,6 +1258,7 @@ def _resolve_link_destinations(config, project_root, specs, to):
     return list(dict.fromkeys(dests))
 
 
+@returns_partial_result
 def run_relate(args, echo=None) -> CommandResult:
     config_path = Path(args.config).resolve()
     project_root = config_path.parent
@@ -1313,7 +1318,7 @@ def run_relate(args, echo=None) -> CommandResult:
         if connection not in clients:
             clients[connection] = ELabFTWClient(*connection)
         _relate_action(res, clients[connection], args.relate_action, etype, eid, [(t, i) for t, i, _ in dests],
-                       dry_run=dry_run)
+                       dry_run=dry_run, server=connection[0])
     return res
 
 
@@ -1321,12 +1326,12 @@ def cmd_relate(args):
     return run_relate(args, echo=cli_echo).exit_code
 
 
-def _relate_action(res, client, action, entity_type, entity_id, dests, dry_run=False):
+def _relate_action(res, client, action, entity_type, entity_id, dests, dry_run=False, server=None):
     """1 件のリンク元の操作。changes の result は added / exists / would_add / removed / not_found /
     would_remove / self。"""
     label = f"{_entity_label(entity_type)} #{entity_id}"
     if action == "list":
-        source = {"entity": entity_type, "entity_id": entity_id, "links": {}}
+        source = {"server": server, "entity": entity_type, "entity_id": entity_id, "links": {}}
         res.data["sources"].append(source)
         res.say(f"  {label}:")
         for link_type in ("experiments", "items"):
@@ -1335,10 +1340,11 @@ def _relate_action(res, client, action, entity_type, entity_id, dests, dry_run=F
             shown = ", ".join(f"#{l.get('entityid')} {l.get('title') or ''}".rstrip() for l in links)
             res.say(f"    {_entity_label(link_type)}: {shown or '(リンクなし)'}")
         return
-    res.data["sources"].append({"entity": entity_type, "entity_id": entity_id})
+    res.data["sources"].append({"server": server, "entity": entity_type, "entity_id": entity_id})
     for link_type, target_id in dests:
         target_label = _entity_label(link_type)
-        change = {"entity": entity_type, "entity_id": entity_id, "to_entity": link_type, "to_id": target_id}
+        change = {"server": server, "entity": entity_type, "entity_id": entity_id, "to_entity": link_type,
+                  "to_id": target_id}
         res.data["changes"].append(change)
         if link_type == entity_type and target_id == entity_id:
             change["result"] = "self"
@@ -1369,6 +1375,7 @@ def _relate_action(res, client, action, entity_type, entity_id, dests, dry_run=F
                 res.say(f"  {label}: {target_label} #{target_id} へのリンクが見つかりません")
 
 
+@returns_partial_result
 def run_metadata(args, echo=None) -> CommandResult:
     config_path = Path(args.config)
     project_root = config_path.parent or Path(".")
@@ -1399,7 +1406,8 @@ def run_metadata(args, echo=None) -> CommandResult:
 
         for eid, etype in ids:
             label = f"{_entity_label(etype)} #{eid}"
-            entry = {"target": target.title or target.docs_dir, "entity": etype, "entity_id": eid}
+            entry = {"target": target.title or target.docs_dir, "server": client.base_url, "entity": etype,
+                     "entity_id": eid}
             res.data["entities"].append(entry)
             if args.meta_action == "get":
                 meta = client.get_metadata(etype, eid)
@@ -1429,6 +1437,7 @@ def cmd_metadata(args):
     return run_metadata(args, echo=cli_echo).exit_code
 
 
+@returns_partial_result
 def run_whoami(args, echo=None) -> CommandResult:
     """現在の API キーに紐づくユーザー情報を返す（API キー自体は含めない）。"""
     config_path = Path(args.config)
@@ -1497,6 +1506,7 @@ def cmd_whoami(args):
     return run_whoami(args, echo=cli_echo).exit_code
 
 
+@returns_partial_result
 def run_new(args, echo=None) -> CommandResult:
     """テンプレートから新規 Markdown ファイルを生成する（--list はテンプレート一覧）。"""
     config_path = Path(args.config)
@@ -1559,6 +1569,7 @@ def cmd_new(args):
     return run_new(args, echo=cli_echo).exit_code
 
 
+@returns_partial_result
 def run_list(args, echo=None) -> CommandResult:
     """リモートのリソース/実験ノート一覧を返す。"""
     config_path = Path(args.config)
@@ -1592,6 +1603,7 @@ def cmd_list(args):
     return run_list(args, echo=cli_echo).exit_code
 
 
+@returns_partial_result
 def run_search(args, echo=None) -> CommandResult:
     """ブラウザの検索と同じ条件でリソース/実験ノートを検索する。"""
     from . import search as _search
@@ -1751,6 +1763,7 @@ def cmd_mv(args):
     return 0
 
 
+@returns_partial_result
 def run_backup(args, echo=None) -> CommandResult:
     root = Path(args.config).resolve().parent
     res = CommandResult(data={"backups": []}, echo=echo)
@@ -1931,6 +1944,7 @@ def cmd_rm(args):
                 print(f"  {action}: {path}")
 
 
+@returns_partial_result
 def run_verify(args, echo=None) -> CommandResult:
     """ローカルとリモートの整合性をチェックする。"""
     config_path = Path(args.config)
@@ -2001,6 +2015,7 @@ def cmd_verify(args):
     return run_verify(args, echo=cli_echo).exit_code
 
 
+@returns_partial_result
 def run_profile_list(args, echo=None) -> CommandResult:
     """プロファイル一覧を返す。API キーは有無だけを返す。"""
     config_path = Path(args.config)
@@ -2086,6 +2101,7 @@ def cmd_profile(args):
         print(f"  ✅ プロファイル '{name}' を削除しました")
 
 
+@returns_partial_result
 def run_entity_status(args, echo=None, confirm=None) -> CommandResult:
     """エンティティのステータスを表示または変更する。
 
@@ -2115,8 +2131,8 @@ def run_entity_status(args, echo=None, confirm=None) -> CommandResult:
         label = target.title or target.docs_dir
         all_ids.extend((client, label, eid, etype) for eid, etype in ids)
 
-    def entry(label, eid, etype, **kw):
-        item = {"target": label, "entity": etype, "entity_id": eid, **kw}
+    def entry(client, label, eid, etype, **kw):
+        item = {"target": label, "server": client.base_url, "entity": etype, "entity_id": eid, **kw}
         res.data["entities"].append(item)
         return item
 
@@ -2127,7 +2143,7 @@ def run_entity_status(args, echo=None, confirm=None) -> CommandResult:
         for client, label, eid, etype in all_ids:
             entity = client.get_entity(etype, eid)
             status_name = entity.get("status_title") or entity.get("status", {}).get("title", "不明")
-            entry(label, eid, etype, status=status_name)
+            entry(client, label, eid, etype, status=status_name)
             res.say(f"  [{label}] {_entity_label(etype)} #{eid}: {status_name}")
     elif args.status_action == "set":
         try:
@@ -2143,10 +2159,10 @@ def run_entity_status(args, echo=None, confirm=None) -> CommandResult:
                 name = entity.get("status_title") or "不明"
                 head = f"  [{label}] {_entity_label(etype)} #{eid}"
                 if current is not None and str(current) == str(status_id):
-                    entry(label, eid, etype, current=name, result="already")
+                    entry(client, label, eid, etype, current=name, result="already")
                     res.say(f"{head}: すでにステータス #{status_id}（{name}）です")
                 else:
-                    entry(label, eid, etype, current=name, result="would_change")
+                    entry(client, label, eid, etype, current=name, result="would_change")
                     res.say(f"{head}: ステータスを {name} から #{status_id} に変更予定（{client.base_url}）")
             return res
         if len(all_ids) > 1 and not getattr(args, "id", None):
@@ -2161,7 +2177,7 @@ def run_entity_status(args, echo=None, confirm=None) -> CommandResult:
                 return res
         for client, label, eid, etype in all_ids:
             client.patch_entity(etype, eid, status=status_id)
-            entry(label, eid, etype, result="changed")
+            entry(client, label, eid, etype, result="changed")
             res.say(f"  [{label}] {_entity_label(etype)} #{eid}: ステータスを変更しました")
     return res
 
@@ -2172,6 +2188,7 @@ def cmd_entity_status(args):
                              confirm=lambda prompt: input(prompt).strip().lower() == "y").exit_code
 
 
+@returns_partial_result
 def run_category(args, echo=None) -> CommandResult:
     config_path = Path(args.config)
     config = load_config(config_path)
@@ -2182,7 +2199,7 @@ def run_category(args, echo=None) -> CommandResult:
     direct_entity = getattr(args, "entity", None)
 
     action = args.cat_action
-    res = CommandResult(data={"action": action}, echo=echo)
+    res = CommandResult(data={"action": action, "server": client.base_url}, echo=echo)
 
     if action == "list":
         entity_type = _normalize_entity(direct_entity) if direct_entity else "items"

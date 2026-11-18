@@ -228,7 +228,7 @@ eLabFTW は Markdown 本文の保存時に `>` を `&gt;`、`&` を `&amp;` に�
 
 ### 13.2 逐次表示
 
-`CommandResult.say` は `echo` に渡した関数（CLI では `print`）でその場で表示する。結果をまとめて最後に表示すると、`status`・`verify` など件数の多いコマンドで表示が遅れ、途中で例外になったときにそれまでの表示が失われるため。
+`CommandResult.say` / `warn` は `echo` に渡した関数（CLI では `cli_echo`。`warn` は `stderr=True` で呼ばれ、標準エラー出力に出す）でその場で表示する。結果をまとめて最後に表示すると、`status`・`verify` など件数の多いコマンドで表示が遅れ、途中で例外になったときにそれまでの表示が失われるため。
 
 ### 13.3 警告・エラーと対話
 
@@ -236,6 +236,12 @@ eLabFTW は Markdown 本文の保存時に `>` を `&gt;`、`&` を `&amp;` に�
 
 `entity-status set` の複数件確認は `input()` を直接呼ばず、呼び出し元が `confirm` を渡す。`confirm` がない（MCP など対話できない）ときは推測で変更せずエラーにする。
 
-### 13.4 段階的な移行
+### 13.4 接続先の識別と途中失敗
+
+書き換え系の各件には接続先のベース URL（`server`。API キーは含めない）を入れる。ターゲットごとに接続プロファイルが違うと、別サーバーに同じ種別・ID の記事があり得るため。
+
+`run_*` は `returns_partial_result` で包み、途中で例外になったら、それまでの `CommandResult` を例外の `partial_result` に付ける。複数の記事・サーバーへの変更の一部が済んだ後に失敗しても、呼び出し元（MCP など）が済んだ変更（`result` のある件）と失敗した件（`result` のない件）を確認できる。
+
+### 13.5 段階的な移行
 
 参照系（`status`・`log`・`list`・`search`・`whoami`・`verify`・`backup list`・`profile list`）から移行し、eLabFTW を書き換えるコマンド、ローカルを変更するコマンドの順に移す。読み書き両方を持つ `tag`・`relate`・`metadata`・`category`・`entity-status`・`new` は書き換え系と一緒に移す。

@@ -31,13 +31,15 @@ def _project(tmp_path, mapping=None):
 def test_run_tag_list_and_add(MockClient, tmp_path, capsys):
     cfg = _project(tmp_path, {"a.md": 42})
     client = MockClient.return_value
+    client.base_url = "https://elab.example.com"
     client.get_tags.return_value = [{"tag": "x"}]
     res = cli.run_tag(Namespace(config=str(cfg), target=None, tag_action="list", id=None, entity=None))
-    assert res.data["entities"] == [{"target": "T", "entity": "items", "entity_id": 42, "tags": ["x"]}]
+    assert res.data["entities"] == [{"target": "T", "server": "https://elab.example.com", "entity": "items", "entity_id": 42,
+                                     "tags": ["x"]}]
     res = cli.run_tag(Namespace(config=str(cfg), target=None, tag_action="add", tag_name="y", id=7,
                                 entity="experiments"))
-    assert res.data["entities"] == [{"target": None, "entity": "experiments", "entity_id": 7, "tag": "y",
-                                     "result": "added"}]
+    assert res.data["entities"] == [{"target": None, "server": "https://elab.example.com", "entity": "experiments",
+                                     "entity_id": 7, "tag": "y", "result": "added"}]
     assert res.data["dry_run"] is False
     assert capsys.readouterr().out == ""
 
@@ -62,7 +64,7 @@ def test_run_relate_list_and_add(MockClient, tmp_path):
     client = MockClient.return_value
     client.list_links.side_effect = lambda e, i, t: [{"entityid": 3, "title": "試薬A"}] if t == "items" else []
     res = cli.run_relate(Namespace(config=str(cfg), target=None, relate_action="list", id=7, entity="experiments"))
-    assert res.data["sources"] == [{"entity": "experiments", "entity_id": 7,
+    assert res.data["sources"] == [{"server": "https://elab.example.com", "entity": "experiments", "entity_id": 7,
                                     "links": {"experiments": [], "items": [{"id": 3, "title": "試薬A"}]}}]
     res = cli.run_relate(Namespace(config=str(cfg), target=None, relate_action="add", target_ids=[3, 4, 7],
                                    to="experiments", id=7, entity="experiments", dry_run=True))
@@ -99,9 +101,11 @@ def test_run_metadata_set_warns_on_unreadable_existing(MockClient, tmp_path, cap
 def test_run_category_actions(MockClient, tmp_path):
     cfg = _project(tmp_path)
     client = MockClient.return_value
+    client.base_url = "https://elab.example.com"
     client.list_categories.return_value = [{"id": 1, "title": "試薬"}]
     res = cli.run_category(Namespace(config=str(cfg), target=None, cat_action="list", entity="resources"))
-    assert res.data == {"action": "list", "entity": "items", "categories": [{"id": 1, "title": "試薬"}]}
+    assert res.data == {"action": "list", "server": "https://elab.example.com", "entity": "items",
+                        "categories": [{"id": 1, "title": "試薬"}]}
     client.get_entity.return_value = {"category": 1, "category_title": "試薬"}
     res = cli.run_category(Namespace(config=str(cfg), target=None, cat_action="show", id=5, entity="items"))
     assert res.data["category"] == {"id": 1, "title": "試薬"}
@@ -134,9 +138,11 @@ def test_run_entity_status_confirm(MockClient, tmp_path):
 @patch("elab_doc_sync.cli.ELabFTWClient")
 def test_run_entity_status_show(MockClient, tmp_path):
     cfg = _project(tmp_path, {"a.md": 42})
+    MockClient.return_value.base_url = "https://elab.example.com"
     MockClient.return_value.get_entity.return_value = {"status_title": "Running"}
     res = cli.run_entity_status(Namespace(config=str(cfg), target=None, status_action="show", id=None))
-    assert res.data["entities"] == [{"target": "T", "entity": "items", "entity_id": 42, "status": "Running"}]
+    assert res.data["entities"] == [{"target": "T", "server": "https://elab.example.com", "entity": "items", "entity_id": 42,
+                                     "status": "Running"}]
 
 
 @patch("elab_doc_sync.cli.ELabFTWClient")
@@ -155,3 +161,70 @@ def test_run_new_list_and_create(MockClient, tmp_path):
     res = cli.run_new(Namespace(config=str(cfg), target=None, force=False, list_templates=False, template_id=1,
                                 title="Note", output=None))
     assert res.exit_code == 1 and res.data["created"] is False and "既に存在" in res.warnings[0]
+
+
+def _two_server_project(tmp_path):
+    data = {
+        "elabftw": {"url": "https://a.example.com", "api_key": "ka", "verify_ssl": False},
+        "profiles": {"B": {"url": "https://b.example.com", "api_key": "kb", "verify_ssl": False}},
+        "targets": [
+            {"title": "A", "docs_dir": "a/", "pattern": "*.md", "mode": "each", "entity": "items",
+             "id_file": ".elab-sync-ids/a/default.id"},
+            {"title": "B", "docs_dir": "b/", "pattern": "*.md", "mode": "each", "entity": "items",
+             "id_file": ".elab-sync-ids/b/default.id", "profile": "B"},
+        ],
+    }
+    cfg = tmp_path / ".elab-sync.yaml"
+    cfg.write_text(yaml.dump(data), encoding="utf-8")
+    for name in ("a", "b"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "x.md").write_text("# x\n", encoding="utf-8")
+        ids = tmp_path / ".elab-sync-ids" / name
+        ids.mkdir(parents=True)
+        (ids / "mapping.json").write_text(json.dumps({"x.md": 42}))
+    return cfg
+
+
+def _clients_by_url():
+    clients = {}
+
+    def make(url, *rest):
+        if url not in clients:
+            clients[url] = MagicMock(base_url=url)
+            clients[url].list_links.return_value = []
+        return clients[url]
+    return clients, make
+
+
+def test_run_relate_identifies_server_of_same_id(tmp_path):
+    """別サーバーの同じ種別・ID を、接続先で区別できる。"""
+    cfg = _two_server_project(tmp_path)
+    clients, make = _clients_by_url()
+    with patch("elab_doc_sync.cli.ELabFTWClient", side_effect=make):
+        res = cli.run_relate(Namespace(config=str(cfg), target=None, relate_action="add", target_ids=[5],
+                                       to="experiments", id=None, entity=None))
+    assert sorted((c["server"], c["entity_id"], c["result"]) for c in res.data["changes"]) == [
+        ("https://a.example.com", 42, "added"), ("https://b.example.com", 42, "added")]
+
+
+def test_partial_result_is_attached_when_a_later_write_fails(tmp_path):
+    """1 台目のサーバーへの変更後に 2 台目で失敗しても、済んだ変更を例外から確認できる。"""
+    cfg = _two_server_project(tmp_path)
+    clients, make = _clients_by_url()
+    with patch("elab_doc_sync.cli.ELabFTWClient", side_effect=make):
+        make("https://b.example.com").add_link.side_effect = RuntimeError("down")
+        with pytest.raises(RuntimeError) as exc:
+            cli.run_relate(Namespace(config=str(cfg), target=None, relate_action="add", target_ids=[5],
+                                     to="experiments", id=None, entity=None))
+    partial = exc.value.partial_result
+    done = [c for c in partial.data["changes"] if c.get("result") == "added"]
+    assert [(c["server"], c["entity_id"]) for c in done] == [("https://a.example.com", 42)]
+    failed = [c for c in partial.data["changes"] if "result" not in c]
+    assert [c["server"] for c in failed] == ["https://b.example.com"]
+
+
+def test_partial_result_absent_for_errors_before_any_result(tmp_path):
+    cfg = _project(tmp_path)
+    with pytest.raises(ValueError) as exc:
+        cli.run_category(Namespace(config=str(cfg), target="nope", cat_action="list", entity=None))
+    assert getattr(exc.value, "partial_result", None) is None

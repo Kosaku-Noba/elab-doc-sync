@@ -204,6 +204,7 @@ YAML 設定読み込み・バリデーション。
 | `CommandResult.warn(message)` | 警告・エラーの行を追加し、`echo` があれば `echo(message, stderr=True)` を呼ぶ |
 | `CommandResult.fail(message, exit_code=1)` | `warn` して終了コードを設定し、自身を返す |
 | `CommandResult.to_dict()` | `exit_code`・`data`・`messages`・`warnings` の辞書 |
+| `returns_partial_result(fn)` | `run_*` 用のデコレーター。途中で例外になったら、実行中に作った最初の `CommandResult` を例外の `partial_result` 属性に付ける（結果を作る前の例外には付けない） |
 | `cli_echo(message, stderr=False)` | CLI 用の表示先（`stderr=True` は標準エラー出力）。`cmd_*` はこれを `echo` に渡して 1 行ずつ表示する |
 | `redact(text, *secrets)` | `text` 中の秘密値（そのまま・repr・バイト列表記・改行で区切った 4 文字以上の各部分）を `***` に置き換える |
 
@@ -217,7 +218,9 @@ YAML 設定読み込み・バリデーション。
 - 書き換え系の各件の `result`（下表）で、実際に変更したか（`added` など）、dry-run の予定か（`would_*`）、変更不要だったか（`exists`・`already`・`not_found`・`self`）を区別する
 - `run_verify` は問題を見つけても `exit_code` は 0。`data["issues"]` と各文書の `ok` を確認する
 - `run_whoami` は接続に失敗したプロファイルも `exit_code` 0 で返し、そのプロファイルの `error` に理由を入れる（API キーは `redact` で除く）
-- 設定の誤り・通信の失敗など、上記以外のエラーは `CommandResult` にならず例外として呼び出し元に伝わる（CLI は終了コード 2 / 1 にする）。呼び出し側で例外を処理する
+- 設定の誤り・通信の失敗など、上記以外のエラーは `CommandResult` にならず例外として呼び出し元に伝わる（CLI は終了コード 2 / 1 にする）。呼び出し側で例外を処理する。結果を作った後の例外には `partial_result` が付き、済んだ変更を確認できる
+- 設定ファイルがない・読めないときは、`load_config` が `SystemExit(2)` を送出する（標準エラー出力に理由を表示）
+- 書き換え系（`tag`・`relate`・`metadata`・`category`・`entity-status`）の各件と `run_category` の `data` には、接続先のベース URL `server` が入る
 
 | 関数 | `data` |
 |---|---|

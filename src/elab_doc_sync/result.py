@@ -5,8 +5,13 @@
 """
 
 import sys
+from contextvars import ContextVar
 from dataclasses import dataclass, field
+from functools import wraps
 from typing import Callable
+
+# returns_partial_result の実行中に作られた CommandResult
+_created: ContextVar[list | None] = ContextVar("elab_doc_sync_created_results", default=None)
 
 
 def cli_echo(message: str, stderr: bool = False) -> None:
@@ -23,6 +28,11 @@ class CommandResult:
     warnings: list[str] = field(default_factory=list)
     # 表示先 echo(message, stderr=False)。CLI は cli_echo を渡し、途中で例外になってもそこまでの表示を残す
     echo: Callable[..., None] | None = field(default=None, repr=False, compare=False)
+
+    def __post_init__(self):
+        created = _created.get()
+        if created is not None:
+            created.append(self)
 
     def say(self, message: str = "") -> None:
         """人向けの表示を 1 行（改行を含んでもよい）追加する。"""
@@ -45,6 +55,27 @@ class CommandResult:
     def to_dict(self) -> dict:
         return {"exit_code": self.exit_code, "data": self.data, "messages": self.messages,
                 "warnings": self.warnings}
+
+
+def returns_partial_result(fn):
+    """run_* 用。途中で例外になったら、それまでの CommandResult を例外の partial_result に付ける。
+
+    書き換え系では一部の変更が済んだ後に失敗することがあるため、呼び出し元（MCP など）が
+    済んだ変更を確認できるようにする。
+    """
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        token = _created.set([])
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            created = _created.get()
+            if created and getattr(exc, "partial_result", None) is None:
+                exc.partial_result = created[0]
+            raise
+        finally:
+            _created.reset(token)
+    return wrapper
 
 
 def redact(text: str, *secrets: str | None) -> str:
