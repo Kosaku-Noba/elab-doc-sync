@@ -2441,14 +2441,14 @@ def build_parser():
     common.add_argument("--target", "-t", default=None, help="対象ターゲット（title または docs_dir。省略時は全ターゲット。category・list・search・new と tag・relate の --id 指定時は接続先の選択に使い、省略時は既定の接続先）")
     common.add_argument("--force", "-f", action="store_true", help="変更がなくても強制同期 / pull 時は既存ファイルを上書き")
     common.add_argument("--dry-run", "-n", action="store_true", help="実行せずに同期内容を確認")
-    common.add_argument("--prune-attachments", action="store_true", help="ローカルに存在しないリモート添付を削除")
+    common.add_argument("--prune-attachments", action="store_true", help="attachments_dir が存在する場合、attachments_pattern に一致し、同名のローカル添付も本文からの参照もない非画像添付を削除")
     # サブコマンド側の既定値が `esync -t X push` の -t を上書きしないよう、既定値を持たない複製を使う
     sub_common = argparse.ArgumentParser(add_help=False, argument_default=argparse.SUPPRESS)
     sub_common.add_argument("--config", "-c", help="設定ファイルのパス（デフォルト: .elab-sync.yaml）")
     sub_common.add_argument("--target", "-t", help="対象ターゲット（title または docs_dir。省略時は全ターゲット。category・list・search・new と tag・relate の --id 指定時は接続先の選択に使い、省略時は既定の接続先）")
     sub_common.add_argument("--force", "-f", action="store_true", help="変更がなくても強制同期 / pull 時は既存ファイルを上書き")
     sub_common.add_argument("--dry-run", "-n", action="store_true", help="実行せずに同期内容を確認")
-    sub_common.add_argument("--prune-attachments", action="store_true", help="ローカルに存在しないリモート添付を削除")
+    sub_common.add_argument("--prune-attachments", action="store_true", help="attachments_dir が存在する場合、attachments_pattern に一致し、同名のローカル添付も本文からの参照もない非画像添付を削除")
 
     parser = argparse.ArgumentParser(
         prog=Path(sys.argv[0]).stem if Path(sys.argv[0]).stem in ("esync", "elab-doc-sync") else "elab-doc-sync",

@@ -910,20 +910,35 @@ def _count_local_attachments(attachments_dir: Path | None) -> int:
     return sum(1 for f in attachments_dir.iterdir() if f.is_file() and not _is_image(f.name))
 
 
+def _referenced_upload_ids(uploads, body):
+    decoded = unquote(_html.unescape(body))
+    ids = set(re.findall(r"/uploads/(\d+)(?!\d)", decoded))
+    return {u["id"] for u in uploads if u.get("id") is not None
+            and (str(u["id"]) in ids or (u.get("long_name") and u["long_name"] in decoded))}
+
+
 def _prune_candidates(uploads, local_names, pattern, body=""):
     from fnmatch import fnmatch
-    # ファイル・動画などは本文の変換時にもアップロードされる。
-    referenced_names = {Path(m.group(2)).name for regex in (IMAGE_RE, _LINK_RE) for m in regex.finditer(body)}
-    decoded = unquote(_html.unescape(body))
-    referenced_ids = set(re.findall(r"/uploads/(\d+)(?!\d)", decoded))
+    referenced_names = set(local_names)
+    for regex in (IMAGE_RE, _LINK_RE):
+        for match in regex.finditer(body):
+            src = match.group(2)
+            if src.startswith(("http://", "https://", "//", "#", "mailto:", "data:")):
+                continue
+            name = Path(src).name
+            if regex is IMAGE_RE and not _is_video(src):
+                name = _parse_image_local_name(name) or name
+            elif regex is _LINK_RE and (_is_image(src) or src.split("#", 1)[0].endswith(".md")):
+                continue
+            referenced_names.add(name)
+    referenced_ids = _referenced_upload_ids(uploads, body)
     return [u for u in uploads if u.get("id") is not None and u.get("real_name")
-            and u["real_name"] not in local_names and u["real_name"] not in referenced_names
-            and not _is_image(u["real_name"]) and fnmatch(u["real_name"], pattern)
-            and str(u["id"]) not in referenced_ids and not (u.get("long_name") and u["long_name"] in decoded)]
+            and u["real_name"] not in referenced_names and not _is_image(u["real_name"])
+            and fnmatch(u["real_name"], pattern) and u["id"] not in referenced_ids]
 
 
 def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int, client: ELabFTWClient, *, force: bool = False, pattern: str = "*", prune: bool = False, strict: bool = False,
-                      prune_ids=None, body="") -> bool:
+                      prune_ids=None, body="", pruned=None, added=None) -> bool:
     """attachments_dir 内の非画像ファイルをリモートにアップロードする。
 
     差分検知: サイズ一致 → リモートに hash/sha256 フィールドがあれば
@@ -933,6 +948,9 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
     force=True の場合は一致でも再アップロードする。
     pattern: glob パターンでアップロード対象をフィルタ。
     prune: True の場合、ローカルに存在しないリモート添付を削除する。
+
+    prune_ids は本文更新前に確認した ID に削除対象を限定する。body から参照する添付は保護する。
+    pruned・added には同期中に削除・追加を確認した ID を記録する。
 
     Returns:
         True: 全ファイル同期成功（またはスキップ）
@@ -983,6 +1001,8 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
             if result.get("url"):
                 progress(f"    ✓ {f.name}")
                 stale = [e for e in entries if e.get("id") is not None]
+                if added is not None and result.get("id") is not None:
+                    added.add(result["id"])
             else:
                 progress(f"    ✗ アップロード失敗: {f.name}", warning=True)
                 stale = []
@@ -1003,6 +1023,8 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
             name = entry["real_name"]
             try:
                 client.delete_upload(entity, entity_id, entry["id"])
+                if pruned is not None:
+                    pruned.add(entry["id"])
                 progress(f"    🗑 {name}（リモートから削除）")
             except Exception as exc:
                 progress(f"    ⚠ {name} の削除に失敗: {_error_text(client, exc)}", warning=True)
@@ -1429,9 +1451,8 @@ class EachDocsSyncer:
         """
         body = self._get_entity(eid).get("body") or ""
         by_id = {u.get("id"): u for u in self.client.list_uploads(self.entity, eid)}
-        candidates = [uid for uid in dict.fromkeys(stale_ids) if uid in by_id
-                      and not (by_id[uid].get("long_name") and by_id[uid]["long_name"] in body)
-                      and not re.search(rf"/uploads/{uid}(?!\d)", body)]
+        protected = _referenced_upload_ids(by_id.values(), body)
+        candidates = [uid for uid in dict.fromkeys(stale_ids) if uid in by_id and uid not in protected]
         if not candidates:
             return set()
         pending[filename]["deleting"] = candidates
@@ -1972,13 +1993,23 @@ class EachDocsSyncer:
                 if not links_ok:
                     raise RuntimeError("本文更新後にリンク同期が失敗しました。リモートを確認して再実行してください")
                 att_ok = True
+                pruned, added = set(), set()
                 if self.target.attachments_dir:
                     att_ok = _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, eid, self.client,
                                                force=force, pattern=self.target.attachments_pattern, prune=prune_attachments, strict=True,
                                                prune_ids={u["id"] for u in result.get("uploads", []) if u.get("id") is not None},
-                                               body=raw_body + "\n" + body)
+                                               body=raw_body + "\n" + body, pruned=pruned, added=added)
                 if tags_ok is False or category_ok is False or not att_ok:
                     raise RuntimeError("本文更新後、メタデータまたは添付の同期が失敗しました。再実行してください")
+                if pruned or added:
+                    expected_uploads = [u for u in pending[f.name]["guard"]["uploads"] if u["id"] not in pruned]
+                    if added:
+                        current = self.client.list_uploads(self.entity, eid)
+                        new_uploads = self._remote_signature({}, [u for u in current if u.get("id") in added])["uploads"]
+                        if {u["id"] for u in new_uploads} != added:
+                            raise ConflictError("送信した添付を確認できません")
+                        expected_uploads.extend(new_uploads)
+                    checkpoint({"uploads": sorted(expected_uploads, key=lambda u: str(u["id"]))})
                 deleted = self._delete_stale_uploads(eid, stale_uploads, pending, f.name) if stale_uploads else set()
                 if "deleting" in pending[f.name]:
                     checkpoint({"uploads": [u for u in pending[f.name]["guard"]["uploads"] if u.get("id") not in deleted]})

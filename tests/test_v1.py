@@ -1754,7 +1754,8 @@ def test_run_push_hides_key_in_document_warning(project):
     assert "private-test-key" not in json.dumps(result.to_dict())
 
 
-def test_prune_preserves_body_uploads_on_create_and_update(project):
+@pytest.mark.parametrize("keep_previous", [True, False])
+def test_prune_preserves_body_uploads_on_create_and_update(project, keep_previous):
     root, client, remote, syncer, args = project
     uploads = _stateful_uploads(client)
     client.download_upload.return_value = b"pdf"
@@ -1770,12 +1771,18 @@ def test_prune_preserves_body_uploads_on_create_and_update(project):
         [pdf] = uploads[1]
         assert pdf["long_name"] in remote[1]["body"]
         uploads[1].append({"id": 200, "real_name": "remove.csv", "long_name": "old-data"})
+        (root / "docs/items_1_protocol.pdf").write_bytes(b"new PDF")
+        body = "![file](items_1_protocol.pdf) [external](https://other.test/remove.csv)"
+        if keep_previous:
+            body += " [previous](https://example.test/uploads/%31%30%30)"
+        (root / "docs/a.md").write_text(body)
         preview = run_push(args(prune_attachments=True, dry_run=True, force=True))
         doc = preview.data["targets"][0]["documents"][0]
         assert doc["prune_candidates"] == [{"id": 200, "name": "remove.csv"}]
         assert run_push(args(prune_attachments=True, force=True)).exit_code == 0
-    assert [u["real_name"] for u in uploads[1]] == ["protocol.pdf"]
-    assert uploads[1][0]["long_name"] in remote[1]["body"]
+    assert {u["real_name"] for u in uploads[1]} == {"protocol.pdf"}
+    assert (pdf in uploads[1]) == keep_previous
+    assert uploads[1][-1]["long_name"] in remote[1]["body"]
 
 
 def test_prune_preview_keeps_results_across_errors(project):

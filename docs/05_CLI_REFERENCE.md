@@ -49,7 +49,7 @@ esync push [ファイル・ディレクトリ・glob ...] [--regex 式] [--dry-r
 | `--dry-run` | 実際に送信せず変更予定を表示 |
 | `--force` | リモート本文を退避して強制送信。接続・取得エラーは無視しない |
 | `-t`, `--target` | 特定ターゲットのみ実行 |
-| `--prune-attachments` | リモートの不要添付を削除 |
+| `--prune-attachments` | attachments_dir が存在する場合、attachments_pattern に一致し、同名のローカル添付も本文からの参照もない非画像添付を削除 |
 
 **一部の文書だけ push する:**
 
@@ -204,7 +204,7 @@ esync clone --url URL --entity TYPE --id ID [--dir DIR] [--no-verify]
 | `--target`, `-t NAME` | 対象ターゲット（`title` または `docs_dir`）。省略時は全ターゲット。`category`・`list`・`new` と、`tag`・`relate` の `--id` 指定時は接続先の選択に使い、省略時は既定の接続先 |
 | `--force`, `-f` | push: 変更がなくても強制送信 / pull: 既存ファイルを上書き |
 | `--dry-run`, `-n` | 実行せずに内容を確認 |
-| `--prune-attachments` | ローカルに存在しないリモート添付を削除（push のみ） |
+| `--prune-attachments` | attachments_dir が存在する場合、attachments_pattern に一致し、同名のローカル添付も本文からの参照もない非画像添付を削除（push のみ） |
 | `--version`, `-V` | バージョン表示（`esync -V` のみ） |
 
 `esync -h`、`esync <コマンド> -h` で各コマンドのヘルプを表示します。
