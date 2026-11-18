@@ -74,7 +74,7 @@ def _field_schema(action):
         if action.required or action.nargs == "+" or action.dest in {"id", "regex", "from_docs"}:
             field["minItems"] = 1
     if action.help:
-        field["description"] = action.help
+        field["description"] = action.help.replace("カレントディレクトリ基準", "設定ファイルのディレクトリ基準")
     return field
 
 
@@ -127,6 +127,8 @@ def _bindings():
 
 
 def _project_path(root, value):
+    if not value.strip():
+        raise ValueError("空のパスは指定できません")
     path = Path(value)
     if path.is_absolute():
         path = path.relative_to(root)
@@ -136,8 +138,12 @@ def _project_path(root, value):
 
 
 def _arguments(name, defaults, values, config, clone_url):
+    if any(isinstance(value, str) and not value.strip() for value in values.values()):
+        raise ValueError("空の引数は指定できません")
     args = argparse.Namespace(**(defaults | values | {"config": str(config)}))
     root = config.parent
+    if name == "clone" and args.dir is None:
+        args.dir = f"elab-clone-{args.id[0]}"
     for field in ("old", "new", "output", "dir"):
         value = getattr(args, field, None)
         if isinstance(value, str):
@@ -160,8 +166,10 @@ def _arguments(name, defaults, values, config, clone_url):
             args.url, args.no_verify = clone_url, False
         else:
             configured = cli.load_config(config)
-            args.url, args.no_verify = configured.url, not configured.verify_ssl
-        args.dir = args.dir or str(root / f"elab-clone-{args.id[0]}")
+            default = configured.profiles.get("default")
+            if not default or not default.url:
+                raise ValueError("clone の接続先に既定プロファイルまたは --clone-url を指定してください")
+            args.url, args.no_verify = default.url, not default.verify_ssl
     return args
 
 

@@ -48,7 +48,9 @@ def test_stdio_tools(tmp_path):
                     assert props["dry_run"]["default"] is True
             assert (await client.call_tool("pull", {})).isError
             assert (await client.call_tool("rm", {"id": [], "entity": "items"})).isError
-            assert (await client.call_tool("rm", {"files": ["docs/a.md"], "dry_run": "false"})).isError
+            invalid = await client.call_tool("rm", {"files": ["docs/a.md"], "dry_run": "false"})
+            assert invalid.isError and invalid.structuredContent is None and invalid.content
+            assert (await client.call_tool("rm", {"files": [""], "local": True, "dry_run": False})).isError
             assert (await client.call_tool("clone", {"id": [1], "url": "https://example.invalid"})).isError
             preview = await client.call_tool("rm", {"files": ["docs/a.md"], "local": True})
             assert not preview.isError and preview.structuredContent["data"]["dry_run"]
@@ -103,4 +105,59 @@ def test_remote_preview_apply_and_partial_failure(tmp_path, monkeypatch):
             assert failed.isError and key not in failed.model_dump_json()
             first, second = failed.structuredContent["data"]["entities"]
             assert first["result"] == "added" and "result" not in second
+    asyncio.run(run())
+
+
+def test_clone_binds_credentials_and_validates_default_path(tmp_path):
+    from elab_doc_sync.mcp_server import _arguments, _bindings
+    config = tmp_path / ".elab-sync.yaml"
+    config.write_text(yaml.safe_dump({"profiles": {"lab": {"url": "https://other.invalid", "api_key": "lab-key"}},
+                                      "targets": [{"docs_dir": "docs"}]}))
+    defaults = _bindings()["clone"][1]
+    with pytest.raises(ValueError, match="既定プロファイル"):
+        _arguments("clone", defaults, {"id": [42]}, config, None)
+    assert _arguments("clone", defaults, {"id": [42]}, config, "https://bound.invalid").url == "https://bound.invalid"
+    link = tmp_path / "elab-clone-42"
+    try:
+        link.symlink_to(tmp_path.parent, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink unavailable")
+    with pytest.raises(ValueError, match="シンボリックリンク"):
+        _arguments("clone", defaults, {"id": [42]}, config, "https://bound.invalid")
+
+
+def test_pull_collision_and_attachment_prune_preview(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock
+    from mcp.shared.memory import create_connected_server_and_client_session
+    from elab_doc_sync import cli, mcp_server
+
+    cfg = tmp_path / ".elab-sync.yaml"
+    cfg.write_text(yaml.safe_dump({
+        "elabftw": {"url": "https://example.invalid", "api_key": "test-key"},
+        "targets": [{"docs_dir": "src", "id_file": ".src/id", "attachments_dir": "assets", "attachments_pattern": "*.pdf"},
+                    {"docs_dir": "dest", "id_file": ".dest/id"}],
+    }))
+    for folder, eid in [("src", 1), ("dest", 2)]:
+        (tmp_path / folder).mkdir()
+        (tmp_path / folder / "note.md").write_text(folder)
+        state = tmp_path / ("." + folder)
+        state.mkdir()
+        (state / "mapping.json").write_text(json.dumps({"note.md": eid}))
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets/keep.pdf").touch()
+    remote = MagicMock(base_url="https://example.invalid")
+    remote.get_item.return_value = {"title": "note", "body": "source"}
+    remote.list_uploads.return_value = [{"id": n, "real_name": p} for n, p in
+                                        enumerate(["keep.pdf", "delete.pdf", "ignore.txt", "ignore.png"], 1)]
+    monkeypatch.setattr(cli, "ELabFTWClient", lambda *_: remote)
+
+    async def run():
+        async with create_connected_server_and_client_session(mcp_server.create_server(cfg)) as client:
+            result = await client.call_tool("push", {"target": "src", "prune_attachments": True})
+            assert not result.isError
+            [doc] = result.structuredContent["data"]["targets"][0]["documents"]
+            assert doc["prune_candidates"] == [{"name": "delete.pdf", "id": 2}]
+            remote.delete_upload.assert_not_called()
+            result = await client.call_tool("pull", {"target": "src", "dir": "dest", "force": True, "dry_run": False})
+            assert result.isError and (tmp_path / "dest/note.md").read_text() == "dest"
     asyncio.run(run())

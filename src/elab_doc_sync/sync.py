@@ -910,6 +910,13 @@ def _count_local_attachments(attachments_dir: Path | None) -> int:
     return sum(1 for f in attachments_dir.iterdir() if f.is_file() and not _is_image(f.name))
 
 
+def _prune_candidates(uploads, local_names, pattern):
+    from fnmatch import fnmatch
+    return [u for u in uploads if u.get("id") is not None and u.get("real_name")
+            and u["real_name"] not in local_names and not _is_image(u["real_name"])
+            and fnmatch(u["real_name"], pattern)]
+
+
 def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int, client: ELabFTWClient, *, force: bool = False, pattern: str = "*", prune: bool = False, strict: bool = False) -> bool:
     """attachments_dir 内の非画像ファイルをリモートにアップロードする。
 
@@ -983,16 +990,15 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
     # prune: ローカルに存在しないリモート添付を削除（pattern に一致するもののみ）
     if prune:
         local_names = {f.name for f in local_files}
-        for rn, entries in existing.items():
-            if rn not in local_names and fnmatch(rn, pattern):
-                for e in entries:
-                    if e.get("id") is not None:
-                        try:
-                            client.delete_upload(entity, entity_id, e["id"])
-                            progress(f"    🗑 {rn}（リモートから削除）")
-                        except Exception as exc:
-                            progress(f"    ⚠ {rn} の削除に失敗: {_error_text(client, exc)}", warning=True)
-                            all_success = False
+        uploads = [entry for group in existing.values() for entry in group]
+        for entry in _prune_candidates(uploads, local_names, pattern):
+            name = entry["real_name"]
+            try:
+                client.delete_upload(entity, entity_id, entry["id"])
+                progress(f"    🗑 {name}（リモートから削除）")
+            except Exception as exc:
+                progress(f"    ⚠ {name} の削除に失敗: {_error_text(client, exc)}", warning=True)
+                all_success = False
 
     return all_success
 
@@ -1699,7 +1705,7 @@ class EachDocsSyncer:
                 src.replace(dest)
         self._save_mapping(mapping)
 
-    def _detect_renames(self, mapping, md_files, entity_label):
+    def _detect_renames(self, mapping, md_files, entity_label, *, dry_run=False):
         files = {f.name: f for f in md_files}
         missing = set(mapping) - set(files) - self._load_excluded()
         new = set(files) - set(mapping)
@@ -1712,6 +1718,10 @@ class EachDocsSyncer:
             if len(matches) != 1 or any(n == matches[0] for _, n in pairs):
                 raise ConflictError("リネームの対応が不明です。esync mv 旧パス 新パス で指定するか、不要な追跡をrmしてください")
             pairs.append((old, matches[0]))
+        if dry_run:
+            for old, new_name in pairs:
+                mapping[new_name] = mapping.pop(old)
+            return mapping
         # No remote changes here; title updates use the normal conflict checks.
         with local_transaction(self.project_root, [self.hash_dir], "自動リネームの紐付け変更"):
             for old, new_name in pairs:
@@ -1724,13 +1734,27 @@ class EachDocsSyncer:
         if result["state"] in ("競合", "取得待ち", "基準情報なし", "リモート削除", "確認失敗"):
             raise ConflictError(f"{filename}: {result['state']}。esync diff で確認し、pull または --force を選択してください")
 
-    def dry_run(self, only=None):
+    def dry_run(self, only=None, prune_attachments=False):
         mapping = self._load_mapping(migrate=False)
-        return [{"filename": f.name, "title": f.stem, "images": _count_local_images(body),
+        files = self.collect_files()
+        if prune_attachments:
+            for name, item in self._pending().items():
+                if item.get("eid") and name not in mapping:
+                    mapping[name] = item["eid"]
+            mapping = self._detect_renames(mapping, files, self.entity, dry_run=True)
+        results = [{"filename": f.name, "title": f.stem, "images": _count_local_images(body),
                  "videos": _count_local_videos(body), "file_links": _count_local_file_links(body),
                  "changed": self._has_changed(f.name, body), "entity_id": mapping.get(f.name)}
-                for f in self.collect_files() if only is None or f.name in only
+                for f in files if only is None or f.name in only
                 for body in [f.read_text(encoding="utf-8").strip()]]
+        if prune_attachments and self.target.attachments_dir:
+            directory = self.project_root / self.target.attachments_dir
+            local_names = {p.name for p in directory.iterdir() if p.is_file()} if directory.is_dir() else set()
+            for doc in results:
+                uploads = self.client.list_uploads(self.entity, doc["entity_id"]) if directory.is_dir() and doc["entity_id"] else []
+                candidates = _prune_candidates(uploads, local_names, self.target.attachments_pattern)
+                doc["prune_candidates"] = [{"id": u["id"], "name": u["real_name"]} for u in candidates]
+        return results
 
     def _resolve_target_category(self, entities):
         """Resolve the target's category to an ID.

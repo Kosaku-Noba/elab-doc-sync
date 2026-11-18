@@ -130,11 +130,11 @@ export ELABFTW_API_KEY="your_key"
 | 記事・テンプレート | `tag_list/add/remove`, `relate_list/add/remove`, `metadata_get/set`, `category_list/show/set`, `entity_status_show`, `new_list`, `new` |
 | 同期・ローカル変更 | `push`, `pull`, `clone`, `link`, `rm`, `mv`, `restore` |
 
-表のスラッシュはツール名の末尾の選択肢を表します（例 `tag_add`）。変更操作の既定値は `dry_run: true` です。例えば `tag_add` に `{"id":42,"entity":"items","tag_name":"確認済み"}` を渡すと予定を確認でき、同じ引数に `"dry_run":false` を加えるとタグを追加します。直接指定するパスは設定ファイルのあるディレクトリが基準です。`link.file` は CLI と同じくターゲットの文書ディレクトリが基準です。
+表のスラッシュはツール名の末尾の選択肢を表します（例 `tag_add`）。変更操作の既定値は `dry_run: true` です。例えば `tag_add` に `{"id":42,"entity":"items","tag_name":"確認済み"}` を渡すと予定を確認でき、同じ引数に `"dry_run":false` を加えるとタグを追加します。`tag_add`・`tag_remove` で `id` と `entity` を省くとターゲットの同期済み記事すべてが対象になり、`target` も省くと全ターゲットに適用します。直接指定するパスは設定ファイルのあるディレクトリが基準です。`link.file` は CLI と同じくターゲットの文書ディレクトリが基準です。
 
-`pull` は `auto: true` または `dir` を指定します。`clone` の API キーはサーバープロセスの環境変数 `ELABFTW_API_KEY` で渡します。接続先は既定のプロファイルから取得し、設定のない場所から開始する場合はサーバー起動時に `--clone-url https://elab.example.org` を指定します。`init`、`update`、`entity-status set`、`profile add/remove` は CLI から使います。
+`pull` は `auto: true` または `dir` を指定します。`clone` の API キーはサーバープロセスの環境変数 `ELABFTW_API_KEY` で渡します。接続先は明示した既定プロファイル（`elabftw` または `profiles.default`）の URL を使い、名前付きプロファイルしかない場合や設定のない場所から開始する場合はサーバー起動時に `--clone-url https://elab.example.org` を指定します。`init`、`update`、`entity-status set`、`profile add/remove` は CLI から使います。
 
-ツール応答の `structuredContent` は `exit_code`、`data`、`messages`、`warnings` を含みます。終了コードが非ゼロなら `isError` が立ちます。複数件の操作が途中で止まった場合は `data` で完了した変更を確認できます。既存のルート直下の `mcp_server.py` は開発ワークフロー用です。
+ツール応答の `structuredContent` は `exit_code`、`data`、`messages`、`warnings` を含みます。SDK が引数の型などを実行前に拒否した場合は `structuredContent` がなく、`isError` と `content` に理由が返ります。終了コードが非ゼロなら `isError` が立ちます。複数件の操作が途中で止まった場合は `data` で完了した変更を確認できます。タグの部分結果で `result` がない記事は反映状況が未確認です。再試行前に `tag_list` で確認してください。`push` で `prune_attachments: true` を指定すると、プレビューはリモートを読み、文書ごとに削除候補の添付名と ID を返します。既存のルート直下の `mcp_server.py` は開発ワークフロー用です。
 
 ## 日常の使い方
 
@@ -719,8 +719,8 @@ uv sync
 ```bash
 git clone https://github.com/Kosaku-Noba/elab-doc-sync.git
 cd elab-doc-sync
-uv sync --extra test
-uv run pytest -q -m "not integration"
+uv sync --extra test --extra mcp
+uv run --extra test --extra mcp pytest -q -m "not integration"
 ```
 
 ## ライセンス

@@ -271,7 +271,7 @@ def run_push(args, echo=None) -> CommandResult:
             att_dir = (project_root / target.attachments_dir) if target.attachments_dir else None
             att_count = _count_local_attachments(att_dir)
             att_str = f"  添付: {att_count}件" if att_count else ""
-            results = syncer.dry_run(only=only)
+            results = syncer.dry_run(only=only, prune_attachments=getattr(args, "prune_attachments", False))
             summary["documents"] = results
             if not results:
                 res.say(f"  [each: {target.docs_dir}] ドキュメントなし")
@@ -281,7 +281,11 @@ def run_push(args, echo=None) -> CommandResult:
                 dest = f"{entity_label} #{r['entity_id']}" if r["entity_id"] else f"新しい{entity_label}"
                 video_str = f"  動画: {r['videos']}件" if r.get("videos") else ""
                 flink_str = f"  リンクファイル: {r['file_links']}件" if r.get("file_links") else ""
+                if getattr(args, "prune_attachments", False):
+                    status = "添付の整理を含む送信予定"
                 res.say(f"  [{r['title']}] {status}")
+                for attachment in r.get("prune_candidates", []):
+                    res.say(f"    添付削除候補: #{attachment['id']} {attachment['name']}")
                 res.say(f"    画像: {r['images']}件{video_str}{flink_str}{att_str}  → {dest}")
             continue
 
