@@ -1931,6 +1931,7 @@ def test_body_edit_during_upload_hash_check_survives(project):
 
 @pytest.mark.parametrize("url,protected", [
     ("https://example.test。/uploads/201", True),
+    (r"https://example.test\api/v2/items/1/uploads/201", True),
     ("https://my_server.example/uploads/201", False),
 ])
 def test_prune_understands_equivalent_and_external_origins(url, protected):
@@ -1938,3 +1939,47 @@ def test_prune_understands_equivalent_and_external_origins(url, protected):
     entries = [{"id": 201, "real_name": "old.csv"}]
     candidates = _prune_candidates(entries, set(), "*", f"[note]({url})", "https://example.test")
     assert candidates == ([] if protected else entries)
+
+def test_new_article_edit_during_upload_survives(project):
+    root, client, remote, syncer, args = project
+    _stateful_uploads(client)
+    (root / "docs/note.md").write_text("![img](photo.png)")
+    (root / "docs/photo.png").write_bytes(b"photo")
+    upload = client.upload_file.side_effect
+    def edited_upload(entity, eid, path):
+        remote[eid]["body"] = "new remote edit"
+        return upload(entity, eid, path)
+    client.upload_file.side_effect = edited_upload
+    assert syncer.sync() == 0 and syncer.failures == 1
+    assert remote[1]["body"] == "new remote edit"
+
+
+def test_prune_without_candidates_allows_invalid_url_example(project):
+    root, client, remote, syncer, args = project
+    (root / "docs/note.md").write_text("example: https://[hostname]/")
+    assert syncer.sync(prune_attachments=True) == 1
+    assert "[hostname]" in remote[1]["body"]
+
+
+def test_directory_upload_verification_resumes_after_read_error(project):
+    from hashlib import sha256
+    root, client, remote, syncer, args = project
+    syncer.target.attachments_dir = "assets"
+    folder = root / "assets"
+    folder.mkdir()
+    (folder / "notes.txt").write_bytes(b"notes")
+    (root / "docs/a.md").write_text("document")
+    uploads = _stateful_uploads(client)
+    upload = client.upload_file.side_effect
+    def without_hash(entity, eid, path):
+        result = upload(entity, eid, path)
+        uploads[eid][-1].pop("hash")
+        return result
+    client.upload_file.side_effect = without_hash
+    client.upload_digest.side_effect = RuntimeError("connection lost")
+    assert syncer.sync() == 0 and syncer.failures == 1
+    assert syncer._pending()["a.md"]["verifying_upload"]["id"] == 100
+    client.upload_digest.side_effect = None
+    client.upload_digest.return_value = sha256(b"notes").hexdigest()
+    assert syncer.sync() == 1 and syncer._pending() == {}
+    assert client.upload_file.call_count == 1

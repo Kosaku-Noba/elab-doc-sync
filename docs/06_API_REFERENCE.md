@@ -68,7 +68,7 @@
 | `_sync_tags(client, entity_type, entity_id, desired_tags)` | 設定タグを追記し既存タグを保持。成功・追加不要なら `True`、取得・更新失敗なら `False`。タグなしのnull応答は空タグとして扱う |
 | `_sync_category(client, entity_type, entity_id, category, current=None)` | カテゴリ設定。現在値と同じなら PATCH を省略。成功・不要なら `True`、失敗なら警告を出して `False` |
 | `_sync_links(client, entity_type, entity_id, desired_links)` | `links` の記事へのリンクのうち未作成のものを追加。既存は削除しない。1件でも失敗すれば `False`（残りは続行） |
-| `_sync_attachments(attachments_dir, entity, entity_id, client, *, force=False, pattern="*", prune=False, strict=False, prune_ids=None, body="", deferred_prune=None, on_upload=None)` | 添付ファイルの差分同期。本文と事前に確認した ID を使って削除候補を絞る。`deferred_prune` を渡すと候補 ID をそこに集め、呼び出し側が削除する。`on_upload(id, path)` は各アップロード後の確認用 |
+| `_sync_attachments(attachments_dir, entity, entity_id, client, *, force=False, pattern="*", prune=False, strict=False, prune_ids=None, body="", deferred_prune=None, on_upload=None)` | 添付ファイルの差分同期。本文と事前に確認した ID を使って削除候補を絞る。`deferred_prune` を渡すと候補 ID をそこに集め、呼び出し側が削除する。`on_upload(receipt)` にはアップロード後の ID・名前・サイズ・SHA-256 を渡す |
 | `_shell_quote(value, windows=None)` | 案内に表示するコマンドの引用（PowerShell 対応） |
 
 #### 正規表現定数
@@ -148,7 +148,7 @@ eLabFTW API v2 クライアント（`ELabFTWClient(base_url, api_key, verify_ssl
 | `list_uploads(entity_type, entity_id)` | アップロード一覧 |
 | `delete_upload(entity_type, entity_id, upload_id)` | アップロード削除 |
 | `download_upload(*, entity_type, entity_id, upload_id)` | アップロードダウンロード |
-| `upload_digest(*, entity_type, entity_id, upload_id)` | 本文用・ディレクトリ添付の照合用 SHA-256。テキストも含めて応答を分割して読み、ローカルのハッシュと比較する |
+| `upload_digest(*, entity_type, entity_id, upload_id)` | 本文用・ディレクトリ添付の照合用 SHA-256。テキストも含めて応答を分割して読み、16 進文字列を返す。呼び出し側がローカルの値と比較する |
 | `list_items_types()` / `list_experiments_categories()` | カテゴリ一覧（リソース / 実験ノート） |
 | `list_categories(entity_type)` | 種別に応じたカテゴリ一覧 |
 | `resolve_category_id(entity_type, category, current=None)` | カテゴリ名→ID 解決（一覧にない場合は `current` の `category_title` も使う） |
