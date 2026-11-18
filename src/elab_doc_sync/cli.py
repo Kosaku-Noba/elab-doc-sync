@@ -678,6 +678,8 @@ def _pull_entity_to_target(client, config, config_path, target, project_root,
     syncer = EachDocsSyncer(client, target, project_root)
     syncer.link_syncers = _link_syncers(config, project_root)
     mapping = syncer._load_mapping(migrate=False)
+    planned_names = {}
+
     def check_path(path, *, asset=False):
         connection = get_client_for_target(config, target)
         _pull_destination(config, project_root, path.parent, entity_type, connection)
@@ -685,7 +687,11 @@ def _pull_entity_to_target(client, config, config_path, target, project_root,
             if not path.is_relative_to(owner.docs_dir.resolve()):
                 continue
             relative = path.relative_to(owner.docs_dir.resolve())
-            if not path.exists() and _matches_relative_glob(relative, owner.target.pattern):
+            if _matches_relative_glob(relative, owner.target.pattern):
+                key = (owner.docs_dir.resolve(), owner.target.pattern, path.name)
+                previous = planned_names.setdefault(key, path)
+                if previous != path:
+                    raise ConflictError(f"{path} と {previous} の追跡名が重複しています")
                 for local in owner.docs_dir.glob(owner.target.pattern):
                     if local.is_file() and local.name == path.name and local != path:
                         raise ConflictError(f"{path} は既存ファイル {local} と同名です")
@@ -720,13 +726,18 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
     # Keep a tracked document's subdirectory when the remote title changes.
     parent = old_path.parent if old_path else docs_dir
     filepath = safe_path(parent, filename)
-    def validate_output(path, *, asset=False):
+    planned_assets = {}
+
+    def validate_output(path, *, asset=False, upload_id=None):
         safe_path(project_root, path.relative_to(project_root).as_posix())
         if any(p.exists() and not p.is_dir() for p in path.parents):
             raise ConflictError(f"保存先の親がディレクトリではありません: {path}")
         if path.exists() and not path.is_file():
             raise ConflictError(f"保存先が通常ファイルではありません: {path}")
         if asset:
+            if path in planned_assets and planned_assets[path] != upload_id:
+                raise ConflictError(f"異なる添付の保存先が重複しています: {path}")
+            planned_assets[path] = upload_id
             for document in (filepath, old_path):
                 if document and (path == document or
                                  (path.exists() and document.exists() and path.samefile(document))):
@@ -765,14 +776,13 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
                 return 0
     elif filepath.exists() and not force:
         raise ConflictError(f"{filename}: 既にローカルに存在、基準情報なし。--force の前に差分を確認してください")
-    if check_path and target.attachments_dir:
+    if target.attachments_dir:
         for upload in uploads:
             name = upload.get("real_name")
             if name and not _is_image(name) and Path(name).name not in ("", ".", ".."):
-                validate_output(safe_path(project_root / target.attachments_dir, Path(name).name), asset=True)
-    if check_path:
-        _download_images(body_md, entity_type, eid, client, parent, uploads=uploads,
-                         check_path=validate_output, preview=True)
+                validate_output(safe_path(project_root / target.attachments_dir, Path(name).name), asset=True, upload_id=upload.get("id"))
+    _download_images(body_md, entity_type, eid, client, parent, uploads=uploads,
+                     check_path=validate_output, preview=True)
     if dry_run:
         action = "ローカル編集とマージ予定" if merge else "取得予定"
         progress(f"  [{title}] #{eid} → {filepath}（{action}）")
@@ -783,7 +793,7 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
     with local_transaction(project_root, paths, f"pull:{entity_type}/{eid}"):
         docs_dir.mkdir(parents=True, exist_ok=True)
         body_md = _download_images(body_md, entity_type, eid, client, parent, strict=True, keep_existing=merge,
-                                   uploads=uploads if check_path else None, check_path=validate_output)
+                                   uploads=uploads, check_path=validate_output)
         new_mapping = dict(mapping)
         if old_name:
             new_mapping.pop(old_name, None)
@@ -794,7 +804,7 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
                                                target_docs_dir=target.docs_dir, source=filepath, links=links)
         if target.attachments_dir:
             _download_attachments(entity_type, eid, client, project_root / target.attachments_dir, strict=True,
-                                  keep_existing=merge, uploads=uploads if check_path else None)
+                                  keep_existing=merge, uploads=uploads)
         local_md, conflicts = body_md, 0
         if merge:
             local_md, conflicts = merge_text(syncer.load_base(old_name), old_path.read_text(encoding="utf-8").strip(),

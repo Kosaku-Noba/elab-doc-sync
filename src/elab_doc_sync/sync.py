@@ -200,7 +200,7 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
         img_dir = docs_dir / "images"
         dest = safe_path(docs_dir, f"images/{local_name}")
         if check_path:
-            check_path(dest, asset=True)
+            check_path(dest, asset=True, upload_id=matched_upload["id"])
         if preview:
             return m.group(0)
         img_dir.mkdir(parents=True, exist_ok=True)
@@ -1022,7 +1022,6 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
             raise
         progress(f"    ⚠ 添付ファイル一覧の取得に失敗: {_error_text(client, e)}", warning=True)
         return
-    attachments_dir.mkdir(parents=True, exist_ok=True)
     for u in uploads:
         rn = u.get("real_name")
         if not rn or _is_image(rn):
@@ -1033,6 +1032,7 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
             progress(f"    ⚠ 不正なファイル名をスキップ: {rn!r}", warning=True)
             continue
         dest = safe_path(attachments_dir, safe_name)
+        attachments_dir.mkdir(parents=True, exist_ok=True)
         if keep_existing and dest.exists():
             continue
         remote_size = int(u.get("filesize", 0) or 0)

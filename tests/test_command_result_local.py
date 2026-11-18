@@ -237,7 +237,8 @@ def test_clone_recovery_hides_http_url(project, tmp_path, monkeypatch, capsys):
     error = requests.HTTPError("https://example.invalid/?sig=private-signature", response=response)
     with patch.object(cli, "ELabFTWClient") as factory:
         factory.return_value.get_item.return_value = {"title": "note", "body": "body"}
-        factory.return_value.list_uploads.side_effect = [[], error]
+        factory.return_value.list_uploads.return_value = [{"id": 1, "real_name": "asset.csv"}]
+        factory.return_value.download_upload.side_effect = error
         with pytest.raises(RuntimeError) as caught:
             cli.run_clone(project, echo=cli.cli_echo)
     res = caught.value.partial_result
@@ -367,10 +368,11 @@ def test_pull_compares_existing_case_alias_by_identity(project, tmp_path):
 
 
 @pytest.mark.parametrize("dry_run", [True, False])
-def test_pull_rejects_attachment_named_after_new_document(project, tmp_path, dry_run):
+@pytest.mark.parametrize("destination", ["docs", "docs/sub"])
+def test_pull_rejects_attachment_named_after_new_document(project, tmp_path, dry_run, destination):
     cfg_path = tmp_path / ".elab-sync.yaml"
     cfg = yaml.safe_load(cfg_path.read_text())
-    cfg["targets"][0]["attachments_dir"] = "docs"
+    cfg["targets"][0].update(attachments_dir=destination, pattern="**/*.md")
     cfg_path.write_text(yaml.safe_dump(cfg))
     project.target, project.entity, project.id, project.dir = "docs", "items", [7], None
     project.dry_run = dry_run
@@ -381,4 +383,18 @@ def test_pull_rejects_attachment_named_after_new_document(project, tmp_path, dry
         res = cli.run_pull(project)
     assert res.exit_code == 1 and not (tmp_path / "docs/new.md").exists()
     assert not (tmp_path / ".elab-sync-recovery.json").exists()
+    client.download_upload.assert_not_called()
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_pull_rejects_two_uploads_for_single_image(project, tmp_path, dry_run):
+    project.target, project.entity, project.id, project.dir = "docs", "items", [7], None
+    project.dry_run = dry_run
+    with patch.object(cli, "ELabFTWClient") as factory:
+        client = factory.return_value
+        client.get_item.return_value = {"title": "picture", "body": '<img src="/uploads/1"><img src="/uploads/2">'}
+        client.list_uploads.return_value = [{"id": i, "real_name": "sample.png"} for i in (1, 2)]
+        res = cli.run_pull(project)
+    assert res.exit_code == 1 and not (tmp_path / "docs/picture.md").exists()
+    assert not (tmp_path / "docs/images").exists()
     client.download_upload.assert_not_called()
