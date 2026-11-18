@@ -23,11 +23,14 @@ class ELabFTWClient:
     # ── helpers ──────────────────────────────────────────────
 
     def _req(self, method: str, path: str, **kwargs) -> requests.Response:
-        resp = requests.request(
-            method, f"{self.base_url}{path}",
-            headers=kwargs.pop("headers", self._json_headers),
-            verify=self.verify_ssl, timeout=kwargs.pop("timeout", 30), **kwargs,
-        )
+        try:
+            resp = requests.request(
+                method, f"{self.base_url}{path}",
+                headers=kwargs.pop("headers", self._json_headers),
+                verify=self.verify_ssl, timeout=kwargs.pop("timeout", 30), **kwargs,
+            )
+        except requests.exceptions.InvalidHeader:
+            raise ValueError("HTTP ヘッダーの形式が不正です。API キーの改行などを確認してください") from None
         resp.raise_for_status()
         return resp
 

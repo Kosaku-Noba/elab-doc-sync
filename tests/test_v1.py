@@ -12,7 +12,7 @@ import pytest
 import requests
 import yaml
 
-from elab_doc_sync.cli import cmd_pull, cmd_link, cmd_mv, cmd_status, main
+from elab_doc_sync.cli import cmd_pull, cmd_link, cmd_mv, cmd_status, main, run_push
 from elab_doc_sync.config import TargetConfig, load_config
 from elab_doc_sync.safety import snapshot, restore, atomic_write, project_lock, local_transaction, RECOVERY, BACKUPS
 from elab_doc_sync.sync import EachDocsSyncer, ConflictError
@@ -897,8 +897,10 @@ def test_push_reports_angle_brackets_dropped_by_elabftw(project, capsys):
     client.update_item.side_effect = update
     (root / 'docs/a.md').write_text('| ids | array<string> |\n\nA --> B\n\npip install /wheels/<pkg>.whl',
                                     encoding='utf-8')
-    assert syncer.sync() == 1
-    assert syncer.failures == 1
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
+        result = run_push(args(prune_attachments=False), echo=print)
+    assert result.data["updated"] == result.data["failed"] == 1
+    assert any("本文の <…> を削除" in line for line in result.warnings)
     out = capsys.readouterr().out
     assert 'eLabFTW が本文の <…> を削除しました: <string>, <pkg>' in out
     assert '-->' not in out.split('削除しました')[1]
@@ -1739,3 +1741,14 @@ def test_links_only_change_does_not_reapply_tags_or_category(project, fail_first
     client.add_tag.assert_not_called()
     client.patch_entity.assert_not_called()
     assert remote[1]['category'] == 9 and remote[1]['tags'] == []
+
+
+def test_run_push_hides_key_in_document_warning(project):
+    root, client, remote, syncer, args = project
+    client.api_key = "private-test-key"
+    client.update_item.side_effect = ValueError("header contains private-test-key")
+    (root / "docs/a.md").write_text("body", encoding="utf-8")
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
+        result = run_push(args(prune_attachments=False))
+    assert result.exit_code == 1 and any("***" in line for line in result.warnings)
+    assert "private-test-key" not in json.dumps(result.to_dict())
