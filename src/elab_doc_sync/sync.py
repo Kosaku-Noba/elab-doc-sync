@@ -910,14 +910,20 @@ def _count_local_attachments(attachments_dir: Path | None) -> int:
     return sum(1 for f in attachments_dir.iterdir() if f.is_file() and not _is_image(f.name))
 
 
-def _prune_candidates(uploads, local_names, pattern):
+def _prune_candidates(uploads, local_names, pattern, body=""):
     from fnmatch import fnmatch
+    # ファイル・動画などは本文の変換時にもアップロードされる。
+    referenced_names = {Path(m.group(2)).name for regex in (IMAGE_RE, _LINK_RE) for m in regex.finditer(body)}
+    decoded = unquote(_html.unescape(body))
+    referenced_ids = set(re.findall(r"/uploads/(\d+)(?!\d)", decoded))
     return [u for u in uploads if u.get("id") is not None and u.get("real_name")
-            and u["real_name"] not in local_names and not _is_image(u["real_name"])
-            and fnmatch(u["real_name"], pattern)]
+            and u["real_name"] not in local_names and u["real_name"] not in referenced_names
+            and not _is_image(u["real_name"]) and fnmatch(u["real_name"], pattern)
+            and str(u["id"]) not in referenced_ids and not (u.get("long_name") and u["long_name"] in decoded)]
 
 
-def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int, client: ELabFTWClient, *, force: bool = False, pattern: str = "*", prune: bool = False, strict: bool = False) -> bool:
+def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int, client: ELabFTWClient, *, force: bool = False, pattern: str = "*", prune: bool = False, strict: bool = False,
+                      prune_ids=None, body="") -> bool:
     """attachments_dir 内の非画像ファイルをリモートにアップロードする。
 
     差分検知: サイズ一致 → リモートに hash/sha256 フィールドがあれば
@@ -991,7 +997,9 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
     if prune:
         local_names = {f.name for f in local_files}
         uploads = [entry for group in existing.values() for entry in group]
-        for entry in _prune_candidates(uploads, local_names, pattern):
+        for entry in _prune_candidates(uploads, local_names, pattern, body):
+            if prune_ids is not None and entry["id"] not in prune_ids:
+                continue
             name = entry["real_name"]
             try:
                 client.delete_upload(entity, entity_id, entry["id"])
@@ -1735,6 +1743,9 @@ class EachDocsSyncer:
             raise ConflictError(f"{filename}: {result['state']}。esync diff で確認し、pull または --force を選択してください")
 
     def dry_run(self, only=None, prune_attachments=False):
+        """添付整理指定時はリネーム・未完了 ID をメモリ内で補い、追跡記事の添付を読む。
+        attachments_dir 未設定なら prune_candidates は返さない。取得失敗は各文書の error に残す。
+        """
         mapping = self._load_mapping(migrate=False)
         files = self.collect_files()
         if prune_attachments:
@@ -1751,8 +1762,13 @@ class EachDocsSyncer:
             directory = self.project_root / self.target.attachments_dir
             local_names = {p.name for p in directory.iterdir() if p.is_file()} if directory.is_dir() else set()
             for doc in results:
-                uploads = self.client.list_uploads(self.entity, doc["entity_id"]) if directory.is_dir() and doc["entity_id"] else []
-                candidates = _prune_candidates(uploads, local_names, self.target.attachments_pattern)
+                try:
+                    uploads = self.client.list_uploads(self.entity, doc["entity_id"]) if directory.is_dir() and doc["entity_id"] else []
+                except Exception as exc:
+                    doc["error"] = _error_text(self.client, exc)
+                    continue
+                body = self.file_path(doc["filename"]).read_text(encoding="utf-8")
+                candidates = _prune_candidates(uploads, local_names, self.target.attachments_pattern, body)
                 doc["prune_candidates"] = [{"id": u["id"], "name": u["real_name"]} for u in candidates]
         return results
 
@@ -1958,7 +1974,9 @@ class EachDocsSyncer:
                 att_ok = True
                 if self.target.attachments_dir:
                     att_ok = _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, eid, self.client,
-                                               force=force, pattern=self.target.attachments_pattern, prune=prune_attachments, strict=True)
+                                               force=force, pattern=self.target.attachments_pattern, prune=prune_attachments, strict=True,
+                                               prune_ids={u["id"] for u in result.get("uploads", []) if u.get("id") is not None},
+                                               body=raw_body + "\n" + body)
                 if tags_ok is False or category_ok is False or not att_ok:
                     raise RuntimeError("本文更新後、メタデータまたは添付の同期が失敗しました。再実行してください")
                 deleted = self._delete_stale_uploads(eid, stale_uploads, pending, f.name) if stale_uploads else set()

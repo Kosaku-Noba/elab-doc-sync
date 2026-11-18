@@ -52,6 +52,7 @@ def test_stdio_tools(tmp_path):
             assert invalid.isError and invalid.structuredContent is None and invalid.content
             assert (await client.call_tool("rm", {"files": [""], "local": True, "dry_run": False})).isError
             assert (await client.call_tool("clone", {"id": [1], "url": "https://example.invalid"})).isError
+            assert (await client.call_tool("rm", {"regex": [""], "local": True, "dry_run": False})).isError
             preview = await client.call_tool("rm", {"files": ["docs/a.md"], "local": True})
             assert not preview.isError and preview.structuredContent["data"]["dry_run"]
             assert (docs / "a.md").is_file() and json.loads(mapping.read_text()) == {"a.md": 42}

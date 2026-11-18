@@ -138,7 +138,8 @@ def _project_path(root, value):
 
 
 def _arguments(name, defaults, values, config, clone_url):
-    if any(isinstance(value, str) and not value.strip() for value in values.values()):
+    if any(isinstance(item, str) and not item.strip() for value in values.values()
+           for item in (value if isinstance(value, list) else [value])):
         raise ValueError("空の引数は指定できません")
     args = argparse.Namespace(**(defaults | values | {"config": str(config)}))
     root = config.parent

@@ -1752,3 +1752,49 @@ def test_run_push_hides_key_in_document_warning(project):
         result = run_push(args(prune_attachments=False))
     assert result.exit_code == 1 and any("***" in line for line in result.warnings)
     assert "private-test-key" not in json.dumps(result.to_dict())
+
+
+def test_prune_preserves_body_uploads_on_create_and_update(project):
+    root, client, remote, syncer, args = project
+    uploads = _stateful_uploads(client)
+    client.download_upload.return_value = b"pdf"
+    (root / "assets").mkdir()
+    cfg = root / ".elab-sync.yaml"
+    data = yaml.safe_load(cfg.read_text())
+    data["targets"][0]["attachments_dir"] = "assets"
+    cfg.write_text(yaml.safe_dump(data))
+    (root / "docs/a.md").write_text("[file](protocol.pdf)")
+    (root / "docs/protocol.pdf").write_bytes(b"pdf")
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
+        assert run_push(args(prune_attachments=True)).exit_code == 0
+        [pdf] = uploads[1]
+        assert pdf["long_name"] in remote[1]["body"]
+        uploads[1].append({"id": 200, "real_name": "remove.csv", "long_name": "old-data"})
+        preview = run_push(args(prune_attachments=True, dry_run=True, force=True))
+        doc = preview.data["targets"][0]["documents"][0]
+        assert doc["prune_candidates"] == [{"id": 200, "name": "remove.csv"}]
+        assert run_push(args(prune_attachments=True, force=True)).exit_code == 0
+    assert [u["real_name"] for u in uploads[1]] == ["protocol.pdf"]
+    assert uploads[1][0]["long_name"] in remote[1]["body"]
+
+
+def test_prune_preview_keeps_results_across_errors(project):
+    root, client, remote, syncer, args = project
+    cfg = root / ".elab-sync.yaml"
+    data = yaml.safe_load(cfg.read_text())
+    data["targets"][0]["attachments_dir"] = "assets"
+    cfg.write_text(yaml.safe_dump(data))
+    (root / "assets").mkdir()
+    (root / ".ids").mkdir()
+    names = {"a.md": 1, "b.md": 2, "c.md": 3}
+    (root / ".ids/mapping.json").write_text(json.dumps(names))
+    for name in names:
+        (root / "docs" / name).write_text("body")
+    client.list_uploads.side_effect = [[{"id": 11, "real_name": "x.csv"}], ValueError("unavailable"), []]
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
+        result = run_push(args(prune_attachments=True, dry_run=True))
+    assert result.exit_code == 1
+    a, b, c = result.data["targets"][0]["documents"]
+    assert a["prune_candidates"][0]["id"] == 11
+    assert "error" in b and "prune_candidates" not in b and c["prune_candidates"] == []
+    client.delete_upload.assert_not_called()
