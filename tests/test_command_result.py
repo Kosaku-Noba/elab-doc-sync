@@ -36,7 +36,7 @@ def test_say_records_and_echoes():
     res.say("a")
     res.say()
     assert res.messages == ["a", ""] and seen == ["a", ""]
-    assert res.to_dict() == {"exit_code": 0, "data": {}, "messages": ["a", ""]}
+    assert res.to_dict() == {"exit_code": 0, "data": {}, "messages": ["a", ""], "warnings": []}
 
 
 @patch("elab_doc_sync.cli.ELabFTWClient")

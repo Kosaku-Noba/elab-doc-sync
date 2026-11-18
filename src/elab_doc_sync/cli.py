@@ -19,7 +19,7 @@ from .config import load_config, BODY_FORMAT_INIT, _read_yaml_text, update_targe
 from .merge import merge_text
 from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
 from . import sync_log
-from .result import CommandResult, redact
+from .result import CommandResult, cli_echo, redact, returns_partial_result
 from . import update_check
 
 DEFAULT_CONFIG = ".elab-sync.yaml"
@@ -299,6 +299,7 @@ def cmd_sync(args):
     return 1 if failed else 0
 
 
+@returns_partial_result
 def run_status(args, echo=None) -> CommandResult:
     config_path = Path(args.config).resolve()
     config = load_config(config_path)
@@ -339,7 +340,7 @@ def run_status(args, echo=None) -> CommandResult:
 
 
 def cmd_status(args):
-    return run_status(args, echo=print).exit_code
+    return run_status(args, echo=cli_echo).exit_code
 
 
 def _ensure_target_in_config(config_path: Path, entity: str, config: "Config"):
@@ -1005,6 +1006,7 @@ def cmd_clone(args):
 REPO_URL = update_check.REPO_URL
 
 
+@returns_partial_result
 def run_log(args, echo=None) -> CommandResult:
     """同期ログを返す。"""
     config_path = Path(args.config)
@@ -1017,7 +1019,7 @@ def run_log(args, echo=None) -> CommandResult:
 
 def cmd_log(args):
     """同期ログを表示する。"""
-    return run_log(args, echo=print).exit_code
+    return run_log(args, echo=cli_echo).exit_code
 
 
 def _check_path_priority():
@@ -1117,67 +1119,88 @@ def _get_entity_ids(client, syncer, target, args_id=None, migrate=True):
     return [(eid, target.entity)] if eid else []
 
 
-def cmd_tag(args):
+@returns_partial_result
+def run_tag(args, echo=None) -> CommandResult:
     config_path = Path(args.config)
     project_root = config_path.parent or Path(".")
     config = load_config(config_path)
+    dry_run = getattr(args, "dry_run", False)
+    res = CommandResult(data={"action": args.tag_action, "dry_run": dry_run, "entities": [],
+                              "unsynced_targets": []}, echo=echo)
 
     # --id と --entity が指定されたら直接操作
     direct_id = getattr(args, "id", None)
     direct_entity = getattr(args, "entity", None)
     if direct_entity and not direct_id:
-        print("エラー: --entity 指定時は --id も指定してください", file=sys.stderr)
-        sys.exit(1)
+        return res.fail("エラー: --entity 指定時は --id も指定してください")
     if direct_id and not direct_entity:
-        print("エラー: --id 指定時は --entity も指定してください（items / experiments / resources）", file=sys.stderr)
-        sys.exit(1)
+        return res.fail("エラー: --id 指定時は --entity も指定してください（items / experiments / resources）")
     if direct_id and direct_entity:
         entity_type = _normalize_entity(direct_entity)
-        _tag_action(_direct_client(config, args.target), args, entity_type, direct_id)
-        return
+        _tag_action(res, _direct_client(config, args.target), args, entity_type, direct_id)
+        return res
 
     for target in config.targets:
         if not _matches_target(target, args.target):
             continue
         client = _make_client_for_target(config, target)
         syncer = _make_syncer(client, target, project_root)
-        ids = _get_entity_ids(client, syncer, target, direct_id, migrate=not getattr(args, "dry_run", False))
+        ids = _get_entity_ids(client, syncer, target, direct_id, migrate=not dry_run)
         if not ids:
-            print(f"  [{target.title or target.docs_dir}] 同期済みエンティティなし")
+            res.data["unsynced_targets"].append(target.title or target.docs_dir)
+            res.say(f"  [{target.title or target.docs_dir}] 同期済みエンティティなし")
             continue
 
         for eid, etype in ids:
-            _tag_action(client, args, etype, eid)
+            _tag_action(res, client, args, etype, eid, target.title or target.docs_dir)
+    return res
+
+
+def cmd_tag(args):
+    return run_tag(args, echo=cli_echo).exit_code
 
 
 def _tag_names(client, entity_type, entity_id):
     return [(t.get("tag", "?") if isinstance(t, dict) else str(t)) for t in client.get_tags(entity_type, entity_id)]
 
 
-def _tag_action(client, args, entity_type, entity_id):
+def _tag_action(res, client, args, entity_type, entity_id, target=None):
+    """1 件のタグ操作。result は added / exists / would_add / removed / not_found / would_remove。"""
     label = f"{_entity_label(entity_type)} #{entity_id}"
     dry_run = getattr(args, "dry_run", False)
+    # 別サーバーに同じ種別・ID があり得るため、接続先（ベース URL。API キーは含めない）も返す
+    entry = {"target": target, "server": client.base_url, "entity": entity_type, "entity_id": entity_id}
+    res.data["entities"].append(entry)
     if args.tag_action == "list":
         tag_names = _tag_names(client, entity_type, entity_id)
-        print(f"  {label}: {', '.join(tag_names) if tag_names else '(タグなし)'}")
-    elif args.tag_action == "add":
+        entry["tags"] = tag_names
+        res.say(f"  {label}: {', '.join(tag_names) if tag_names else '(タグなし)'}")
+        return
+    entry["tag"] = args.tag_name
+    if args.tag_action == "add":
         if dry_run:
             if args.tag_name in _tag_names(client, entity_type, entity_id):
-                print(f"  {label}: タグ「{args.tag_name}」は既にあります")
+                entry["result"] = "exists"
+                res.say(f"  {label}: タグ「{args.tag_name}」は既にあります")
             else:
-                print(f"  {label}: タグ「{args.tag_name}」を追加予定")
+                entry["result"] = "would_add"
+                res.say(f"  {label}: タグ「{args.tag_name}」を追加予定")
             return
         client.add_tag(entity_type, entity_id, args.tag_name)
-        print(f"  {label}: タグ「{args.tag_name}」を追加しました")
+        entry["result"] = "added"
+        res.say(f"  {label}: タグ「{args.tag_name}」を追加しました")
     elif args.tag_action == "remove":
         if dry_run:
             found = args.tag_name in _tag_names(client, entity_type, entity_id)
-            print(f"  {label}: タグ「{args.tag_name}」{'を外す予定' if found else 'が見つかりません'}")
+            entry["result"] = "would_remove" if found else "not_found"
+            res.say(f"  {label}: タグ「{args.tag_name}」{'を外す予定' if found else 'が見つかりません'}")
             return
         if client.untag_by_name(entity_type, entity_id, args.tag_name):
-            print(f"  {label}: タグ「{args.tag_name}」を外しました")
+            entry["result"] = "removed"
+            res.say(f"  {label}: タグ「{args.tag_name}」を外しました")
         else:
-            print(f"  {label}: タグ「{args.tag_name}」が見つかりません")
+            entry["result"] = "not_found"
+            res.say(f"  {label}: タグ「{args.tag_name}」が見つかりません")
 
 
 def _tracked_documents(config, project_root, targets):
@@ -1235,10 +1258,14 @@ def _resolve_link_destinations(config, project_root, specs, to):
     return list(dict.fromkeys(dests))
 
 
-def cmd_relate(args):
+@returns_partial_result
+def run_relate(args, echo=None) -> CommandResult:
     config_path = Path(args.config).resolve()
     project_root = config_path.parent
     config = load_config(config_path)
+    dry_run = getattr(args, "dry_run", False)
+    res = CommandResult(data={"action": args.relate_action, "dry_run": dry_run, "sources": [], "changes": [],
+                              "unsynced_targets": []}, echo=echo)
 
     # --id と --entity が指定されたら直接操作
     direct_id = getattr(args, "id", None)
@@ -1270,9 +1297,10 @@ def cmd_relate(args):
             if not _matches_target(target, args.target):
                 continue
             syncer = _make_syncer(None, target, project_root)
-            ids = _get_entity_ids(None, syncer, target, migrate=not getattr(args, "dry_run", False))
+            ids = _get_entity_ids(None, syncer, target, migrate=not dry_run)
             if not ids:
-                print(f"  [{target.title or target.docs_dir}] 同期済みエンティティなし")
+                res.data["unsynced_targets"].append(target.title or target.docs_dir)
+                res.say(f"  [{target.title or target.docs_dir}] 同期済みエンティティなし")
                 continue
             connection = get_client_for_target(config, target)
             sources.extend((connection, etype, eid) for eid, etype in ids)
@@ -1289,86 +1317,127 @@ def cmd_relate(args):
     for connection, etype, eid in sources:
         if connection not in clients:
             clients[connection] = ELabFTWClient(*connection)
-        _relate_action(clients[connection], args.relate_action, etype, eid, [(t, i) for t, i, _ in dests],
-                       dry_run=getattr(args, "dry_run", False))
+        _relate_action(res, clients[connection], args.relate_action, etype, eid, [(t, i) for t, i, _ in dests],
+                       dry_run=dry_run, server=connection[0])
+    return res
 
 
-def _relate_action(client, action, entity_type, entity_id, dests, dry_run=False):
+def cmd_relate(args):
+    return run_relate(args, echo=cli_echo).exit_code
+
+
+def _relate_action(res, client, action, entity_type, entity_id, dests, dry_run=False, server=None):
+    """1 件のリンク元の操作。changes の result は added / exists / would_add / removed / not_found /
+    would_remove / self。"""
     label = f"{_entity_label(entity_type)} #{entity_id}"
     if action == "list":
-        print(f"  {label}:")
+        source = {"server": server, "entity": entity_type, "entity_id": entity_id, "links": {}}
+        res.data["sources"].append(source)
+        res.say(f"  {label}:")
         for link_type in ("experiments", "items"):
             links = client.list_links(entity_type, entity_id, link_type)
+            source["links"][link_type] = [{"id": l.get("entityid"), "title": l.get("title") or ""} for l in links]
             shown = ", ".join(f"#{l.get('entityid')} {l.get('title') or ''}".rstrip() for l in links)
-            print(f"    {_entity_label(link_type)}: {shown or '(リンクなし)'}")
+            res.say(f"    {_entity_label(link_type)}: {shown or '(リンクなし)'}")
         return
+    res.data["sources"].append({"server": server, "entity": entity_type, "entity_id": entity_id})
     for link_type, target_id in dests:
         target_label = _entity_label(link_type)
+        change = {"server": server, "entity": entity_type, "entity_id": entity_id, "to_entity": link_type,
+                  "to_id": target_id}
+        res.data["changes"].append(change)
         if link_type == entity_type and target_id == entity_id:
-            print(f"  {label}: 自分自身へのリンクはスキップしました")
+            change["result"] = "self"
+            res.say(f"  {label}: 自分自身へのリンクはスキップしました")
             continue
         existing = {l.get("entityid") for l in client.list_links(entity_type, entity_id, link_type)}
         if action == "add":
             if target_id in existing:
-                print(f"  {label}: {target_label} #{target_id} へのリンクは既にあります")
+                change["result"] = "exists"
+                res.say(f"  {label}: {target_label} #{target_id} へのリンクは既にあります")
             elif dry_run:
-                print(f"  {label}: {target_label} #{target_id} へのリンクを追加予定")
+                change["result"] = "would_add"
+                res.say(f"  {label}: {target_label} #{target_id} へのリンクを追加予定")
             else:
                 client.add_link(entity_type, entity_id, link_type, target_id)
-                print(f"  {label}: {target_label} #{target_id} へのリンクを追加しました")
+                change["result"] = "added"
+                res.say(f"  {label}: {target_label} #{target_id} へのリンクを追加しました")
         elif action == "remove":
             if target_id in existing and dry_run:
-                print(f"  {label}: {target_label} #{target_id} へのリンクを外す予定")
+                change["result"] = "would_remove"
+                res.say(f"  {label}: {target_label} #{target_id} へのリンクを外す予定")
             elif target_id in existing:
                 client.remove_link(entity_type, entity_id, link_type, target_id)
-                print(f"  {label}: {target_label} #{target_id} へのリンクを外しました")
+                change["result"] = "removed"
+                res.say(f"  {label}: {target_label} #{target_id} へのリンクを外しました")
             else:
-                print(f"  {label}: {target_label} #{target_id} へのリンクが見つかりません")
+                change["result"] = "not_found"
+                res.say(f"  {label}: {target_label} #{target_id} へのリンクが見つかりません")
 
 
-def cmd_metadata(args):
+@returns_partial_result
+def run_metadata(args, echo=None) -> CommandResult:
     config_path = Path(args.config)
     project_root = config_path.parent or Path(".")
     config = load_config(config_path)
+    dry_run = getattr(args, "dry_run", False)
+    res = CommandResult(data={"action": args.meta_action, "dry_run": dry_run, "entities": [],
+                              "unsynced_targets": []}, echo=echo)
+
+    pairs = {}
+    if args.meta_action == "set":
+        # 送信前にすべての指定を確認する
+        for kv in args.keyvalues:
+            if "=" not in kv:
+                return res.fail(f"エラー: '{kv}' は key=value 形式ではありません")
+            k, v = kv.split("=", 1)
+            pairs[k] = v
 
     for target in config.targets:
         if not _matches_target(target, args.target):
             continue
         client = _make_client_for_target(config, target)
         syncer = _make_syncer(client, target, project_root)
-        ids = _get_entity_ids(client, syncer, target, getattr(args, "id", None),
-                              migrate=not getattr(args, "dry_run", False))
+        ids = _get_entity_ids(client, syncer, target, getattr(args, "id", None), migrate=not dry_run)
         if not ids:
-            print(f"  [{target.title or target.docs_dir}] 同期済みエンティティなし")
+            res.data["unsynced_targets"].append(target.title or target.docs_dir)
+            res.say(f"  [{target.title or target.docs_dir}] 同期済みエンティティなし")
             continue
 
         for eid, etype in ids:
             label = f"{_entity_label(etype)} #{eid}"
+            entry = {"target": target.title or target.docs_dir, "server": client.base_url, "entity": etype,
+                     "entity_id": eid}
+            res.data["entities"].append(entry)
             if args.meta_action == "get":
                 meta = client.get_metadata(etype, eid)
-                print(f"  {label}:")
-                print(f"    {json.dumps(meta, ensure_ascii=False, indent=2)}")
+                entry["metadata"] = meta
+                res.say(f"  {label}:")
+                res.say(f"    {json.dumps(meta, ensure_ascii=False, indent=2)}")
             elif args.meta_action == "set":
-                pairs = {}
-                for kv in args.keyvalues:
-                    if "=" not in kv:
-                        print(f"エラー: '{kv}' は key=value 形式ではありません", file=sys.stderr)
-                        sys.exit(1)
-                    k, v = kv.split("=", 1)
-                    pairs[k] = v
                 raw = client.get_metadata_raw(etype, eid)
                 existing = client.get_metadata(etype, eid)
                 if raw and not existing:
-                    print(f"  {label}: ⚠ 既存メタデータの読み取りに失敗しました（上書きされます）", file=sys.stderr)
+                    entry["unreadable_existing"] = True
+                    res.warn(f"  {label}: ⚠ 既存メタデータの読み取りに失敗しました（上書きされます）")
                 existing.update(pairs)
-                if getattr(args, "dry_run", False):
-                    print(f"  {label}: メタデータを更新予定")
-                    print(f"    {json.dumps(existing, ensure_ascii=False, indent=2)}")
+                entry["metadata"] = existing
+                if dry_run:
+                    entry["result"] = "would_update"
+                    res.say(f"  {label}: メタデータを更新予定")
+                    res.say(f"    {json.dumps(existing, ensure_ascii=False, indent=2)}")
                     continue
                 client.update_metadata(etype, eid, existing)
-                print(f"  {label}: メタデータを更新しました")
+                entry["result"] = "updated"
+                res.say(f"  {label}: メタデータを更新しました")
+    return res
 
 
+def cmd_metadata(args):
+    return run_metadata(args, echo=cli_echo).exit_code
+
+
+@returns_partial_result
 def run_whoami(args, echo=None) -> CommandResult:
     """現在の API キーに紐づくユーザー情報を返す（API キー自体は含めない）。"""
     config_path = Path(args.config)
@@ -1434,28 +1503,31 @@ def run_whoami(args, echo=None) -> CommandResult:
 
 def cmd_whoami(args):
     """現在の API キーに紐づくユーザー情報を表示する。"""
-    return run_whoami(args, echo=print).exit_code
+    return run_whoami(args, echo=cli_echo).exit_code
 
 
-def cmd_new(args):
-    """テンプレートから新規 Markdown ファイルを生成する。"""
+@returns_partial_result
+def run_new(args, echo=None) -> CommandResult:
+    """テンプレートから新規 Markdown ファイルを生成する（--list はテンプレート一覧）。"""
     config_path = Path(args.config)
     project_root = config_path.parent or Path(".")
     config = load_config(config_path)
     client = _direct_client(config, args.target)
+    dry_run = getattr(args, "dry_run", False)
+    res = CommandResult(echo=echo)
 
     if args.list_templates:
         templates = client._req("GET", "/api/v2/experiments_templates").json()
+        res.data["templates"] = [{"id": t.get("id"), "title": t.get("title")} for t in templates]
         if not templates:
-            print("  テンプレートがありません")
-            return
+            res.say("  テンプレートがありません")
+            return res
         for t in templates:
-            print(f"  #{t.get('id', '?')}: {t.get('title', '無題')}")
-        return
+            res.say(f"  #{t.get('id', '?')}: {t.get('title', '無題')}")
+        return res
 
     if not args.template_id:
-        print("エラー: --template-id を指定してください（一覧は esync new --list で確認）", file=sys.stderr)
-        sys.exit(1)
+        return res.fail("エラー: --template-id を指定してください（一覧は esync new --list で確認）")
 
     template = client._req("GET", f"/api/v2/experiments_templates/{args.template_id}").json()
     title = args.title or template.get("title", "untitled")
@@ -1476,19 +1548,28 @@ def cmd_new(args):
             outpath = project_root / target.docs_dir / filename
         else:
             outpath = project_root / filename
+    res.data.update(path=str(outpath), title=title, template_id=args.template_id,
+                    template_title=template.get("title", ""), dry_run=dry_run, created=False)
 
     if outpath.exists() and not args.force:
-        print(f"エラー: {outpath} は既に存在します（--force で上書き）", file=sys.stderr)
-        sys.exit(1)
+        return res.fail(f"エラー: {outpath} は既に存在します（--force で上書き）")
 
-    if getattr(args, "dry_run", False):
-        print(f"  {outpath} を作成予定（テンプレート #{args.template_id}: {template.get('title', '')}）")
-        return
+    if dry_run:
+        res.say(f"  {outpath} を作成予定（テンプレート #{args.template_id}: {template.get('title', '')}）")
+        return res
     outpath.parent.mkdir(parents=True, exist_ok=True)
     atomic_write(outpath, f"# {title}\n\n{body_md}\n")
-    print(f"  ✅ {outpath} を作成しました（テンプレート #{args.template_id}: {template.get('title', '')}）")
+    res.data["created"] = True
+    res.say(f"  ✅ {outpath} を作成しました（テンプレート #{args.template_id}: {template.get('title', '')}）")
+    return res
 
 
+def cmd_new(args):
+    """テンプレートから新規 Markdown ファイルを生成する。"""
+    return run_new(args, echo=cli_echo).exit_code
+
+
+@returns_partial_result
 def run_list(args, echo=None) -> CommandResult:
     """リモートのリソース/実験ノート一覧を返す。"""
     config_path = Path(args.config)
@@ -1519,9 +1600,10 @@ def run_list(args, echo=None) -> CommandResult:
 
 def cmd_list(args):
     """リモートのリソース/実験ノート一覧を表示する。"""
-    return run_list(args, echo=print).exit_code
+    return run_list(args, echo=cli_echo).exit_code
 
 
+@returns_partial_result
 def run_search(args, echo=None) -> CommandResult:
     """ブラウザの検索と同じ条件でリソース/実験ノートを検索する。"""
     from . import search as _search
@@ -1571,7 +1653,7 @@ def run_search(args, echo=None) -> CommandResult:
 
 def cmd_search(args):
     """ブラウザの検索と同じ条件でリソース/実験ノートを検索する。"""
-    return run_search(args, echo=print).exit_code
+    return run_search(args, echo=cli_echo).exit_code
 
 
 def _select_target(config, name):
@@ -1681,6 +1763,7 @@ def cmd_mv(args):
     return 0
 
 
+@returns_partial_result
 def run_backup(args, echo=None) -> CommandResult:
     root = Path(args.config).resolve().parent
     res = CommandResult(data={"backups": []}, echo=echo)
@@ -1692,7 +1775,7 @@ def run_backup(args, echo=None) -> CommandResult:
 
 
 def cmd_backup(args):
-    return run_backup(args, echo=print).exit_code
+    return run_backup(args, echo=cli_echo).exit_code
 
 
 @project_command
@@ -1861,6 +1944,7 @@ def cmd_rm(args):
                 print(f"  {action}: {path}")
 
 
+@returns_partial_result
 def run_verify(args, echo=None) -> CommandResult:
     """ローカルとリモートの整合性をチェックする。"""
     config_path = Path(args.config)
@@ -1928,9 +2012,10 @@ def run_verify(args, echo=None) -> CommandResult:
 
 def cmd_verify(args):
     """ローカルとリモートの整合性をチェックする。"""
-    return run_verify(args, echo=print).exit_code
+    return run_verify(args, echo=cli_echo).exit_code
 
 
+@returns_partial_result
 def run_profile_list(args, echo=None) -> CommandResult:
     """プロファイル一覧を返す。API キーは有無だけを返す。"""
     config_path = Path(args.config)
@@ -1963,7 +2048,7 @@ def cmd_profile(args):
     config_path = Path(args.config)
 
     if args.profile_action == "list":
-        return run_profile_list(args, echo=print).exit_code
+        return run_profile_list(args, echo=cli_echo).exit_code
 
     elif args.profile_action == "add":
         name = args.profile_name
@@ -2016,11 +2101,19 @@ def cmd_profile(args):
         print(f"  ✅ プロファイル '{name}' を削除しました")
 
 
-def cmd_entity_status(args):
-    """エンティティのステータスを表示または変更する。"""
+@returns_partial_result
+def run_entity_status(args, echo=None, confirm=None) -> CommandResult:
+    """エンティティのステータスを表示または変更する。
+
+    confirm(prompt) -> bool は、--id なしで複数件を変更するときの確認。None なら確認できないため
+    何も変更せずエラーにする（MCP など対話できない呼び出し元向け）。dry-run では確認しない。
+    """
     config_path = Path(args.config)
     project_root = config_path.parent or Path(".")
     config = load_config(config_path)
+    dry_run = getattr(args, "dry_run", False)
+    res = CommandResult(data={"action": args.status_action, "dry_run": dry_run, "entities": [],
+                              "unsynced_targets": []}, echo=echo)
 
     # (client, ターゲット名, eid, etype): 各ターゲットの接続プロファイルで送信し、表示で接続先を区別する
     all_ids = []
@@ -2030,27 +2123,35 @@ def cmd_entity_status(args):
         client = _make_client_for_target(config, target)
         syncer = _make_syncer(client, target, project_root)
         target_id = getattr(args, "id", None)
-        ids = _get_entity_ids(client, syncer, target, target_id, migrate=not getattr(args, "dry_run", False))
+        ids = _get_entity_ids(client, syncer, target, target_id, migrate=not dry_run)
         if not ids:
-            print(f"  [{target.title or target.docs_dir}] 同期済みエンティティなし")
+            res.data["unsynced_targets"].append(target.title or target.docs_dir)
+            res.say(f"  [{target.title or target.docs_dir}] 同期済みエンティティなし")
             continue
         label = target.title or target.docs_dir
         all_ids.extend((client, label, eid, etype) for eid, etype in ids)
 
+    def entry(client, label, eid, etype, **kw):
+        item = {"target": label, "server": client.base_url, "entity": etype, "entity_id": eid, **kw}
+        res.data["entities"].append(item)
+        return item
+
     if not all_ids:
-        return
+        return res
 
     if args.status_action == "show":
         for client, label, eid, etype in all_ids:
             entity = client.get_entity(etype, eid)
             status_name = entity.get("status_title") or entity.get("status", {}).get("title", "不明")
-            print(f"  [{label}] {_entity_label(etype)} #{eid}: {status_name}")
+            entry(client, label, eid, etype, status=status_name)
+            res.say(f"  [{label}] {_entity_label(etype)} #{eid}: {status_name}")
     elif args.status_action == "set":
         try:
             status_id = int(args.status_id)
         except ValueError:
             raise ValueError(f"ステータス ID は数値で指定してください: {args.status_id}") from None
-        if getattr(args, "dry_run", False):
+        res.data["status_id"] = status_id
+        if dry_run:
             for client, label, eid, etype in all_ids:
                 entity = client.get_entity(etype, eid)
                 current = entity.get("status")
@@ -2058,74 +2159,104 @@ def cmd_entity_status(args):
                 name = entity.get("status_title") or "不明"
                 head = f"  [{label}] {_entity_label(etype)} #{eid}"
                 if current is not None and str(current) == str(status_id):
-                    print(f"{head}: すでにステータス #{status_id}（{name}）です")
+                    entry(client, label, eid, etype, current=name, result="already")
+                    res.say(f"{head}: すでにステータス #{status_id}（{name}）です")
                 else:
-                    print(f"{head}: ステータスを {name} から #{status_id} に変更予定（{client.base_url}）")
-            return
+                    entry(client, label, eid, etype, current=name, result="would_change")
+                    res.say(f"{head}: ステータスを {name} から #{status_id} に変更予定（{client.base_url}）")
+            return res
         if len(all_ids) > 1 and not getattr(args, "id", None):
-            print(f"  対象: {len(all_ids)} 件のエンティティ")
+            res.say(f"  対象: {len(all_ids)} 件のエンティティ")
             for client, label, eid, etype in all_ids:
-                print(f"    - [{label}] {_entity_label(etype)} #{eid}（{client.base_url}）")
-            answer = input("  全て変更しますか？ [y/N]: ").strip().lower()
-            if answer != "y":
-                print("  中断しました")
-                return
+                res.say(f"    - [{label}] {_entity_label(etype)} #{eid}（{client.base_url}）")
+            if confirm is None:
+                raise ValueError("複数件のステータス変更には確認が必要です。--id で 1 件に絞ってください")
+            if not confirm("  全て変更しますか？ [y/N]: "):
+                res.data["cancelled"] = True
+                res.say("  中断しました")
+                return res
         for client, label, eid, etype in all_ids:
+            # 送信前に記録し、途中で失敗したとき partial_result に result のない件（完了未確認）として残す
+            item = entry(client, label, eid, etype)
             client.patch_entity(etype, eid, status=status_id)
-            print(f"  [{label}] {_entity_label(etype)} #{eid}: ステータスを変更しました")
+            item["result"] = "changed"
+            res.say(f"  [{label}] {_entity_label(etype)} #{eid}: ステータスを変更しました")
+    return res
 
 
-def cmd_category(args):
+def cmd_entity_status(args):
+    """エンティティのステータスを表示または変更する。"""
+    return run_entity_status(args, echo=cli_echo,
+                             confirm=lambda prompt: input(prompt).strip().lower() == "y").exit_code
+
+
+@returns_partial_result
+def run_category(args, echo=None) -> CommandResult:
     config_path = Path(args.config)
     config = load_config(config_path)
     client = _direct_client(config, args.target)
-    project_root = config_path.parent or Path(".")
+    dry_run = getattr(args, "dry_run", False)
 
     direct_id = getattr(args, "id", None)
     direct_entity = getattr(args, "entity", None)
 
     action = args.cat_action
+    res = CommandResult(data={"action": action, "server": client.base_url}, echo=echo)
 
     if action == "list":
         entity_type = _normalize_entity(direct_entity) if direct_entity else "items"
         cats = client.list_categories(entity_type)
+        res.data.update(entity=entity_type, categories=[{"id": c["id"], "title": c.get("title")} for c in cats])
         for c in cats:
-            print(f"  #{c['id']}  {c.get('title', '?')}")
-        print("  ※ 読み取り権限のないカテゴリは一覧に表示されません。文書のカテゴリは「category show」で確認できます")
-        return
+            res.say(f"  #{c['id']}  {c.get('title', '?')}")
+        res.say("  ※ 読み取り権限のないカテゴリは一覧に表示されません。文書のカテゴリは「category show」で確認できます")
+        return res
 
     entity_type = _normalize_entity(direct_entity)
+    res.data.update(entity=entity_type, entity_id=direct_id)
     if action == "show":
-        _category_show(client, entity_type, direct_id)
+        _category_show(res, client, entity_type, direct_id)
     elif action == "set":
-        _category_set(client, entity_type, direct_id, args.category_value, getattr(args, "dry_run", False))
+        res.data["dry_run"] = dry_run
+        _category_set(res, client, entity_type, direct_id, args.category_value, dry_run)
+    return res
 
 
-def _category_show(client, entity_type, entity_id):
+def cmd_category(args):
+    return run_category(args, echo=cli_echo).exit_code
+
+
+def _category_show(res, client, entity_type, entity_id):
     entity = client.get_entity(entity_type, entity_id)
     cat_id = entity.get("category")
     cat_title = entity.get("category_title")
+    res.data["category"] = {"id": cat_id, "title": cat_title} if cat_id else None
     label = f"{_entity_label(entity_type)} #{entity_id}"
     if cat_title:
-        print(f"  {label}: {cat_title} (#{cat_id})")
+        res.say(f"  {label}: {cat_title} (#{cat_id})")
     elif cat_id:
-        print(f"  {label}: #{cat_id}")
+        res.say(f"  {label}: #{cat_id}")
     else:
-        print(f"  {label}: (カテゴリ未設定)")
+        res.say(f"  {label}: (カテゴリ未設定)")
 
 
-def _category_set(client, entity_type, entity_id, category_value, dry_run=False):
+def _category_set(res, client, entity_type, entity_id, category_value, dry_run=False):
+    """result は set / already / would_set。"""
     label = f"{_entity_label(entity_type)} #{entity_id}"
     entity = client.get_entity(entity_type, entity_id)
     cat_id = client.resolve_category_id(entity_type, category_value, current=entity)
+    res.data["category_id"] = cat_id
     if entity.get("category") is not None and int(entity["category"]) == cat_id:
-        print(f"  {label}: すでにカテゴリ #{cat_id} が設定されています")
+        res.data["result"] = "already"
+        res.say(f"  {label}: すでにカテゴリ #{cat_id} が設定されています")
         return
     if dry_run:
-        print(f"  {label}: カテゴリを設定予定 (#{cat_id})")
+        res.data["result"] = "would_set"
+        res.say(f"  {label}: カテゴリを設定予定 (#{cat_id})")
         return
     client.patch_entity(entity_type, entity_id, category=cat_id)
-    print(f"  {label}: カテゴリを設定しました (#{cat_id})")
+    res.data["result"] = "set"
+    res.say(f"  {label}: カテゴリを設定しました (#{cat_id})")
 
 
 def main():

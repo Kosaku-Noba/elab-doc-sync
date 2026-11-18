@@ -14,6 +14,7 @@
 ### 内部
 
 - MCP 対応の準備として、参照系コマンド（`status`・`log`・`list`・`search`・`whoami`・`verify`・`backup list`・`profile list`）の処理を、機械可読な結果（`CommandResult`）を返す `run_*` と表示に分けた。表示と終了コードは変わらない。
+- 同様に `tag`・`relate`・`metadata`・`category`・`entity-status`・`new` を `run_*` に分けた。警告・エラーは標準エラー出力のまま。`metadata set` は `key=value` 以外の指定を、文書を読む前にエラーにするようにした（同期済みの文書がなくてもエラーになる）。
 
 ## v1.3.0 (2026-11-09)
 

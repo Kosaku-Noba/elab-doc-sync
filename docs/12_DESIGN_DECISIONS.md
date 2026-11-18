@@ -228,8 +228,25 @@ eLabFTW は Markdown 本文の保存時に `>` を `&gt;`、`&` を `&amp;` に�
 
 ### 13.2 逐次表示
 
-`CommandResult.say` は `echo` に渡した関数（CLI では `print`）でその場で表示する。結果をまとめて最後に表示すると、`status`・`verify` など件数の多いコマンドで表示が遅れ、途中で例外になったときにそれまでの表示が失われるため。
+`CommandResult.say` / `warn` は `echo` に渡した関数（CLI では `cli_echo`。`warn` は `stderr=True` で呼ばれ、標準エラー出力に出す）でその場で表示する。結果をまとめて最後に表示すると、`status`・`verify` など件数の多いコマンドで表示が遅れ、途中で例外になったときにそれまでの表示が失われるため。
 
-### 13.3 段階的な移行
+### 13.3 警告・エラーと対話
+
+`CommandResult.warn` の行は `messages` と分けて `warnings` に入れ、CLI では標準エラー出力に出す。引数の誤りで `sys.exit(1)` していた箇所は、`fail` で `warnings` に理由を入れて終了コード 1 を返す（CLI の終了コードは変わらない）。
+
+`entity-status set` の複数件確認は `input()` を直接呼ばず、呼び出し元が `confirm` を渡す。`confirm` がない（MCP など対話できない）ときは推測で変更せずエラーにする。
+
+### 13.4 接続先の識別と途中失敗
+
+書き換え系の各件には接続先のベース URL（`server`。API キーは含めない）を入れる。ターゲットごとに接続プロファイルが違うと、別サーバーに同じ種別・ID の記事があり得るため。
+
+`run_*` は `returns_partial_result` で包み、途中で例外になったら、それまでの `CommandResult` を例外の `partial_result` に付ける。書き換え系は各件を送信前に記録し、完了したら `result` を入れる。
+
+- `result` のある件: 変更済み（`added`・`removed`・`changed`・`set`・`updated`）、dry-run の予定（`would_*`）、変更不要（`exists`・`already`・`not_found`・`self`）のいずれか
+- `result` のない件: 完了未確認。送信前に失敗したか、eLabFTW 側で変更された後に応答を受け取れなかったかを区別できないため、再試行の前に `tag list`・`relate list`・`entity-status show` などで実際の状態を確認する
+- まだ処理していない件は含まれない（失敗した時点までに記録した件だけが残る）
+- `category set` と `new` は 1 件だけを扱う。例外の `partial_result` で `category set` の `result` がなければ eLabFTW の `category show` で、`new` の `created` が false ならローカルの `path` のファイルで実際の状態を確認する（正常に返った結果の `created: false` は dry-run か作成の拒否で、完了未確認ではない）
+
+### 13.5 段階的な移行
 
 参照系（`status`・`log`・`list`・`search`・`whoami`・`verify`・`backup list`・`profile list`）から移行し、eLabFTW を書き換えるコマンド、ローカルを変更するコマンドの順に移す。読み書き両方を持つ `tag`・`relate`・`metadata`・`category`・`entity-status`・`new` は書き換え系と一緒に移す。
