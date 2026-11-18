@@ -457,12 +457,13 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
         if args.target and not candidates:
             raise ValueError("指定したターゲットの種別が --entity と一致しません")
         routing = replace(config, targets=candidates)
+        initially_configured = bool(candidates)
         for eid in args.id:
             tracked = [t for t in candidates if eid in EachDocsSyncer(None, t, root)._load_mapping(migrate=False).values()]
             if len(tracked) > 1:
                 raise ValueError(f"#{eid} が複数接続先で追跡されています。--target を指定してください")
             target = tracked[0] if tracked else None
-            source = target or (candidates[0] if len(candidates) == 1 else None)
+            source = target or (candidates[0] if initially_configured and len(candidates) == 1 else None)
             if source is None and len({get_client_for_target(config, t) for t in candidates}) > 1:
                 raise ValueError("複数の接続先があります。--target を指定してください")
             connection = (get_client_for_target(config, source or candidates[0]) if candidates else
@@ -474,9 +475,9 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
                 if export:
                     target = directory_target or target or source
                 if target is None:
-                    if len(candidates) == 1:
+                    if initially_configured and len(candidates) == 1:
                         target = candidates[0]
-                    elif candidates:
+                    elif initially_configured and candidates:
                         raw_tags = data.get("tags") or []
                         tags = raw_tags.split("|") if isinstance(raw_tags, str) else [t.get("tag", "") if isinstance(t, dict) else t for t in raw_tags]
                         target, score = _find_best_target(routing, entity, tags, data.get("category_title") or data.get("category"), data.get("title", ""))
@@ -659,14 +660,24 @@ def _pull_entity_to_target(client, config, config_path, target, project_root,
     syncer = EachDocsSyncer(client, target, project_root)
     syncer.link_syncers = _link_syncers(config, project_root)
     mapping = syncer._load_mapping(migrate=False)
+    def check_path(path):
+        connection = get_client_for_target(config, target)
+        _pull_destination(config, project_root, path.parent, entity_type, connection)
+        for owner in syncer.link_syncers:
+            if owner.target == target or not path.is_relative_to(owner.docs_dir.resolve()):
+                continue
+            owner_mapping = owner._load_mapping(migrate=False)
+            if path.name in owner_mapping and owner_mapping[path.name] != eid:
+                raise ConflictError(f"{path} は別のIDに紐付いています")
+
     return _pull_each_entity(client, syncer, target, project_root, docs_dir, mapping,
                              {v: k for k, v in mapping.items()}, eid, data, entity_type,
-                             force, is_temp_export, dry_run=dry_run, conflict_files=conflict_files)
+                             force, is_temp_export, dry_run=dry_run, conflict_files=conflict_files, check_path=check_path)
 
 
 def _pull_each_entity(client, syncer, target, project_root, docs_dir,
                       mapping, reverse_mapping, eid, data, entity_type,
-                      force, is_temp_export, dry_run=False, conflict_files=None):
+                      force, is_temp_export, dry_run=False, conflict_files=None, check_path=None):
     title = data.get("title") or f"untitled_{eid}"
     if any(c in title for c in '/\\\x00<>:"|?*') or title in (".", ".."):
         raise ValueError(f"ファイル名にできないタイトルです: {title!r}")
@@ -676,6 +687,10 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
     # Keep a tracked document's subdirectory when the remote title changes.
     parent = old_path.parent if old_path else docs_dir
     filepath = safe_path(parent, filename)
+    if check_path:
+        check_path(filepath)
+        if old_path and old_path != filepath:
+            check_path(old_path)
     if filename in mapping and mapping[filename] != eid and not is_temp_export:
         raise ConflictError(f"{filename} は別のIDに紐付いています")
     if old_path and old_path != filepath and filepath.exists():

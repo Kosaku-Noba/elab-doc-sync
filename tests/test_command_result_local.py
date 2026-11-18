@@ -186,15 +186,61 @@ def test_generated_pull_directory_cannot_mix_entity_types(project, tmp_path):
     assert not (tmp_path / "docs/entry.md").exists()
 
 
-def test_multiple_ids_reuse_created_target(project, tmp_path):
+@pytest.mark.parametrize("last_folder", ["same", "other"])
+def test_multiple_ids_reuse_created_target(project, tmp_path, last_folder):
     project.id, project.entity, project.dir = [1, 2], "experiments", None
     project.dry_run = False
     with patch.object(cli, "ELabFTWClient") as factory:
         client = factory.return_value
         client.base_url = "https://example.invalid"
-        client.get_experiment.side_effect = lambda eid: {"title": f"entry{eid}", "category_title": "same"}
+        client.get_experiment.side_effect = lambda eid: {"title": f"entry{eid}", "category_title": "same" if eid == 1 else last_folder}
         client.list_uploads.return_value = []
         res = cli.run_pull(project)
     assert res.exit_code == 0 and res.data["pulled"] == 2
     targets = yaml.safe_load((tmp_path / ".elab-sync.yaml").read_text())["targets"]
     assert sum(t["docs_dir"] == "same/" for t in targets) == 1
+    assert (tmp_path / last_folder / "entry2.md").is_file()
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_force_pull_protects_other_target_document(project, tmp_path, nested):
+    path = tmp_path / ".elab-sync.yaml"
+    cfg = yaml.safe_load(path.read_text())
+    folder = "docs/private" if nested else "other"
+    cfg["targets"][0]["pattern"] = "**/*.md"
+    cfg["targets"].append({"docs_dir": folder, "id_file": ".other/state.id", "profile": "lab" if nested else "default"})
+    cfg["profiles"] = {"lab": {"url": "https://other.invalid", "api_key": "another"}}
+    path.write_text(yaml.safe_dump(cfg))
+    dest = tmp_path / folder / "note.md"
+    dest.parent.mkdir()
+    if nested:
+        (tmp_path / "docs/note.md").rename(dest)
+    dest.write_text("keep")
+    (tmp_path / ".other").mkdir()
+    (tmp_path / ".other/mapping.json").write_text('{"note.md": 43}')
+    project.target, project.dir, project.id = "docs", "docs" if nested else "other", None
+    project.force, project.dry_run = True, False
+    with patch.object(cli, "ELabFTWClient") as factory:
+        factory.return_value.base_url = "https://example.invalid"
+        factory.return_value.get_item.return_value = {"title": "note", "body": "foreign"}
+        res = cli.run_pull(project)
+    assert res.exit_code == 1 and dest.read_text() == "keep"
+
+
+def test_clone_recovery_hides_http_url(project, tmp_path, monkeypatch, capsys):
+    import requests
+    monkeypatch.setenv("ELABFTW_API_KEY", "private-test-key")
+    project.id, project.entity, project.dir = [1], "items", str(tmp_path / "clone")
+    project.url, project.no_verify, project.dry_run = "https://example.invalid", False, False
+    response = requests.Response()
+    response.status_code = 403
+    error = requests.HTTPError("https://example.invalid/?sig=private-signature", response=response)
+    with patch.object(cli, "ELabFTWClient") as factory:
+        factory.return_value.get_item.return_value = {"title": "note", "body": "body"}
+        factory.return_value.list_uploads.side_effect = [[], error]
+        with pytest.raises(RuntimeError) as caught:
+            cli.run_clone(project, echo=cli.cli_echo)
+    res = caught.value.partial_result
+    assert "HTTP 403" in str(caught.value)
+    assert any("restore" in line for line in res.messages)
+    assert "private-signature" not in str(caught.value) + capsys.readouterr().err + json.dumps(res.to_dict())
