@@ -1774,7 +1774,7 @@ def test_prune_preserves_body_uploads_on_create_and_update(project, keep_previou
         (root / "docs/items_1_protocol.pdf").write_bytes(b"new PDF")
         body = "![file](items_1_protocol.pdf) [external](https://other.test/remove.csv) [csv](https://other.test/some%20path/uploads/200)"
         if keep_previous:
-            body += " [previous](https://EXAMPLE.test:443/uploads/%31%30%30)"
+            body += " [previous](https://%45XAMPLE.test:443/uploads/%31%30%30)"
         (root / "docs/a.md").write_text(body)
         preview = run_push(args(prune_attachments=True, dry_run=True, force=True))
         doc = preview.data["targets"][0]["documents"][0]
@@ -1855,3 +1855,20 @@ def test_prune_records_progress_and_protects_concurrent_edits(project, failure):
         else:
             client.delete_upload.assert_not_called()
             assert {201, 202} <= {u["id"] for u in uploads[1]}
+
+def test_preserve_stale_upload_renamed_while_replacement_is_uploaded(project):
+    root, client, remote, syncer, args = project
+    uploads = _stateful_uploads(client)
+    (root / "docs/a.md").write_text("![file](picture.png)")
+    image = root / "docs/picture.png"
+    image.write_bytes(b"old")
+    assert syncer.sync() == 1
+    image.write_bytes(b"replacement")
+    upload = client.upload_file.side_effect
+    def concurrent_rename(entity, eid, path):
+        uploads[eid][0]["real_name"] = "retained.png"
+        return upload(entity, eid, path)
+    client.upload_file.side_effect = concurrent_rename
+    assert syncer.sync() == 0 and syncer.failures == 1
+    assert uploads[1][0]["real_name"] == "retained.png"
+    client.delete_upload.assert_not_called()

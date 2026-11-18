@@ -914,7 +914,7 @@ def _referenced_upload_ids(uploads, body, base_url):
     def origin(url, default_scheme):
         parsed = urlsplit(url)
         scheme = parsed.scheme.lower() or default_scheme
-        host = (parsed.hostname or "").rstrip(".").encode("idna").decode("ascii").lower()
+        host = unquote(parsed.hostname or "").rstrip(".").encode("idna").decode("ascii").lower()
         port = parsed.port if parsed.port is not None else {"http": 80, "https": 443}.get(scheme)
         return scheme, host, port
 
@@ -1463,7 +1463,7 @@ class EachDocsSyncer:
     def _delete_stale_uploads(self, eid, stale_ids, pending, filename, prune_ids=()):
         """旧版・明示的な整理候補を削除し、削除できた ID の集合を返す。
 
-        旧版の削除に失敗したら警告を返して続ける。prune_ids の削除失敗は例外を伝播し、
+        旧版の削除に失敗したら警告を出力して次の候補に進む。prune_ids の削除失敗は例外を伝播し、
         未完了記録を残して同じオプションでの再開を可能にする。
 
         文書の本文・タグ・カテゴリ・添付の同期がすべて済んだ後にだけ呼ぶ。
@@ -1987,6 +1987,12 @@ class EachDocsSyncer:
                 previous = result.get("data") or self._get_entity(eid)
                 before = {key: previous.get(key) for key in expected}
                 guard = {k: v for k, v in self._remote_signature(previous, self.client.list_uploads(self.entity, eid)).items() if k not in ("body", "title", "content_type")}
+                # 本文のリンクを書き換える間に既存の添付が変わった場合は削除・本文更新を止める。
+                initial_uploads = self._remote_signature({}, result.get("uploads", []))["uploads"]
+                initial_ids = {u["id"] for u in initial_uploads}
+                current_originals = [u for u in guard["uploads"] if u["id"] in initial_ids]
+                if current_originals != initial_uploads or not set(stale_uploads) <= initial_ids:
+                    raise ConflictError("本文の添付を準備している間にリモート添付が変更されました。diffで確認してください")
                 meta_changed = needs_meta(f, result, resuming)
                 links_changed = needs_links(f, result, resuming)
                 pending[f.name] = {"eid": eid, "expected": expected, "before": before, "guard": guard,
