@@ -1211,6 +1211,13 @@ class EachDocsSyncer:
         # 文書間リンクの解決に使う全ターゲットの syncer（CLI が設定する）
         self.link_syncers = []
 
+    def readable_link_mapping(self):
+        """参照先候補を返す。読めない紐付けはリンクの自動変換には使わない。"""
+        try:
+            return self._load_mapping(migrate=False)
+        except (OSError, ValueError, TypeError, KeyError):
+            return {}
+
     def link_targets(self, mapping=None):
         """全ターゲットの追跡中の文書から、文書間リンクの対応を作る。
 
@@ -1221,24 +1228,30 @@ class EachDocsSyncer:
 
         def recorded_here(syncer, name):
             # 接続先を変える前の紐付けは、別サーバーの ID を指すため使わない
-            state = syncer._state(name)
-            return state is None or (state["server"] == str(syncer.client.base_url) and state["entity"] == syncer.entity)
+            try:
+                state = syncer._state(name)
+                return state is None or (state["server"] == str(syncer.client.base_url) and state["entity"] == syncer.entity)
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                return False
 
         for other in self.link_syncers:
             same_host = (other.client.base_url == self.client.base_url
                          or _hosts_match(self.client.base_url, other.client.base_url))
             if other.mapping_file == self.mapping_file or not same_host:
                 continue
-            for name, eid in other._load_mapping(migrate=False).items():
+            for name, eid in other.readable_link_mapping().items():
                 if not recorded_here(other, name):
                     continue
                 try:
                     links.add(other.entity, eid, other.file_path(name))
                 except ValueError:
                     continue  # 同名ファイルが複数ある文書は特定できない
-        for name, eid in (self._load_mapping(migrate=False) if mapping is None else mapping).items():
+        for name, eid in (self.readable_link_mapping() if mapping is None else mapping).items():
             if recorded_here(self, name):
-                links.add(self.entity, eid, self.file_path(name))
+                try:
+                    links.add(self.entity, eid, self.file_path(name))
+                except (OSError, ValueError):
+                    continue
         return links
 
     def _refresh_local_hash(self, filename, raw_body):

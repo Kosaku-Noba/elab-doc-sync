@@ -93,12 +93,15 @@ def _relink_local_documents(syncers):
     changes = []
     for syncer in syncers:
         links = syncer.link_targets()
-        for name in syncer._load_mapping(migrate=False):
-            path = syncer.file_path(name)
-            if not path.is_file() or syncer._state(name) is None:
-                continue
-            body = path.read_text(encoding="utf-8").strip()
-            if syncer._has_changed(name, body):
+        for name in syncer.readable_link_mapping():
+            try:
+                path = syncer.file_path(name)
+                if not path.is_file() or syncer._state(name) is None:
+                    continue
+                body = path.read_text(encoding="utf-8").strip()
+                if syncer._has_changed(name, body):
+                    continue
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
                 continue
             relinked = _rewrite_elab_links_to_local(body, syncer.client.base_url, {}, syncer.entity,
                                                     source=path, links=links)
@@ -705,8 +708,13 @@ class _PullOutputs:
                         continue
                     owner_server = str(state.get("server") or server).rstrip("/")
                     owner = (owner_server, state.get("entity") or target.entity, eid)
-                    for upload in state["remote"].get("uploads", []):
-                        real_name = upload.get("real_name")
+                    uploads = state["remote"]["uploads"]
+                    if not isinstance(uploads, list):
+                        raise ValueError("添付一覧を確認できません")
+                    for upload in uploads:
+                        real_name = upload["real_name"]
+                        if not isinstance(real_name, str) or not real_name:
+                            raise ValueError("添付名を確認できません")
                         if real_name and not _is_image(real_name):
                             key = self.key(directory / Path(real_name).name)
                             self.owners.setdefault(key, set()).add(owner)
@@ -719,6 +727,7 @@ class _PullOutputs:
         self.directories.update(other.directories)
         self.spellings.update(other.spellings)
         self.names.update(other.names)
+        self.released.difference_update(other.files)
         self.released.update(other.released)
         if other.released:
             for path in other.released:
@@ -834,6 +843,8 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
         if check_path:
             check_path(path, asset=asset)
 
+    if not dry_run and filepath in outputs.released and filepath.exists():
+        raise ConflictError(f"解放した保存先に別のファイルが作成されています: {filepath}")
     validate_output(filepath)
     if old_path and old_path != filepath:
         validate_output(old_path)

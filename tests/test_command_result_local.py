@@ -473,7 +473,9 @@ def test_pull_batch_can_reuse_renamed_document_path(project, tmp_path, dry_run, 
 
 
 @pytest.mark.parametrize("same_directory", [True, False])
-def test_unreadable_attachment_records_only_block_affected_destinations(project, tmp_path, same_directory):
+@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.parametrize("record", ["broken", '{"remote":{}}'])
+def test_unreadable_attachment_records_only_block_affected_destinations(project, tmp_path, same_directory, dry_run, record):
     config_path = tmp_path / ".elab-sync.yaml"
     cfg = yaml.safe_load(config_path.read_text())
     cfg["targets"][0]["attachments_dir"] = "assets"
@@ -482,14 +484,20 @@ def test_unreadable_attachment_records_only_block_affected_destinations(project,
     config_path.write_text(yaml.safe_dump(cfg))
     (tmp_path / ".other").mkdir()
     (tmp_path / ".other/mapping.json").write_text('{"old.md":55}')
-    (tmp_path / ".other/old.md.state.json").write_text("broken")
+    (tmp_path / ".other/old.md.state.json").write_text(record)
+    (tmp_path / "other").mkdir()
+    (tmp_path / "other/old.md").write_text("keep")
     project.target, project.entity, project.id, project.dir = "docs", "items", [7], None
-    project.dry_run = True
+    project.dry_run = dry_run
     with patch.object(cli, "ELabFTWClient") as factory:
         factory.return_value.get_item.return_value = {"title": "new", "body": "body"}
         factory.return_value.list_uploads.return_value = [{"id": 4, "real_name": "report.csv"}]
+        factory.return_value.base_url = "https://example.invalid"
+        factory.return_value.download_upload.return_value = b"csv"
         res = cli.run_pull(project)
     assert res.exit_code == int(same_directory)
+    assert not (tmp_path / ".elab-sync-recovery.json").exists()
+    assert (tmp_path / "docs/new.md").exists() == (not dry_run and not same_directory)
 
 
 def test_shared_attachment_still_checks_each_upload_id(project, tmp_path):
@@ -515,3 +523,23 @@ def test_shared_attachment_still_checks_each_upload_id(project, tmp_path):
         client.list_uploads.return_value = entries
         res = cli.run_pull(project)
     assert res.exit_code == 1 and "異なる添付 ID" in res.data["documents"][0]["error"]
+
+
+def test_rename_protects_new_file_at_released_path(project, tmp_path):
+    project.target, project.entity, project.id, project.dir = "docs", "items", [42, 8], None
+    project.force, project.dry_run = True, False
+    original = cli._pull_entity_to_target
+    released = tmp_path / "docs/note.md"
+    def pull(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if args[5] == 42:
+            released.write_text("editor save")
+        return result
+    with patch.object(cli, "ELabFTWClient") as factory, patch.object(cli, "_pull_entity_to_target", side_effect=pull):
+        client = factory.return_value
+        client.base_url = "https://example.invalid"
+        client.get_item.side_effect = lambda eid: {"title": "renamed" if eid == 42 else "note", "body": "body"}
+        client.list_uploads.return_value = []
+        res = cli.run_pull(project)
+    assert res.data["pulled"] == res.data["failed"] == 1
+    assert released.read_text() == "editor save"
