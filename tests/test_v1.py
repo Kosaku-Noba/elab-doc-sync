@@ -2056,3 +2056,27 @@ def test_delayed_body_upload_listing_resumes_without_repost(project):
     assert syncer.sync() == 1
     assert "blob100" in remote[1]["body"]
     assert client.upload_file.call_count == 1
+
+
+@pytest.mark.parametrize("replacement", [b"new", b""])
+def test_resume_prefers_confirmed_linked_csv(project, replacement):
+    from hashlib import sha256
+    root, client, remote, syncer, args = project
+    path = root / "docs/data.csv"
+    path.write_bytes(b"old")
+    (root / "docs/a.md").write_text("[data](data.csv)")
+    _stateful_uploads(client)
+    assert syncer.sync() == 1
+    path.write_bytes(replacement)
+    upload = client.upload_file.side_effect
+
+    def delayed(entity, eid, filename):
+        result = upload(entity, eid, filename)
+        return {"url": None, "receipt": {"id": result["id"], "name": path.name,
+                                         "size": len(replacement), "sha256": sha256(replacement).hexdigest()}}
+
+    client.upload_file.side_effect = delayed
+    assert syncer.sync() == 0
+    assert syncer.sync() == 1
+    assert "blob101" in remote[1]["body"]
+    assert client.upload_file.call_count == 2

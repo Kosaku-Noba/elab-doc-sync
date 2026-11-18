@@ -373,21 +373,35 @@ def _upload_body_file(client, entity, eid, path, uploaded, root, name=None, reco
     return result
 
 
+def _matching_upload(entries, size, digest, client, entity, eid, strict, preferred):
+    # 受領済みの版を優先し、同サイズの旧版が先頭でも残りの候補を調べる。
+    for entry in sorted(entries, key=lambda e: e["id"] not in preferred):
+        if entry["size"] != size or (not strict and not size):
+            continue
+        remote_hash = entry.get("hash")
+        if strict and not remote_hash:
+            if entry["id"] is None:
+                continue
+            remote_hash = client.upload_digest(entity_type=entity, entity_id=eid, upload_id=entry["id"])
+        if not remote_hash or remote_hash == digest:
+            return entry
+    return None
+
+
 def _cache_uploaded(existing: dict[str, list[dict]], real_name: str, url: str,
                     size: int, upload_id, file_hash: str | None = None) -> None:
     """アップロード成功結果を Upload_Cache に登録し、以降の同一 real_name 参照で再利用させる。
 
     同一実行内で同じ real_name を複数回参照しても再アップロードせず、ここで登録した
     URL を再利用できるようにする。``fresh=True`` は本実行で新規アップロードした分を示し、
-    stale 削除対象から除外するためのマーカーとなる。``file_hash`` は画像のみ利用し、
-    動画・ファイルリンクでは ``None`` を渡す。
+    stale 削除対象から除外するためのマーカーとなる。``file_hash`` は照合済みの送信内容を表す。
     """
     existing.setdefault(real_name, []).append(
         {"url": url, "size": size, "id": upload_id, "hash": file_hash, "fresh": True}
     )
 
 
-def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None, uploaded=None, verified=None, record=None) -> str:
+def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None, uploaded=None, verified=None, record=None, preferred=()) -> str:
     """Markdown 内のローカル画像を eLabFTW にアップロードし URL に書き換える。
 
     upload_file はファイルパスの basename を real_name としてリモートに保存する。
@@ -433,18 +447,7 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
         entries = existing.get(real_name, [])
         local_size = img_path.stat().st_size
         local_hash = _compute_file_hash(img_path)
-        # サイズ一致 → ハッシュでも確認（同名・同サイズ・別内容を検出）
-        reuse = None
-        for e in entries:
-            if e["size"] and e["size"] == local_size:
-                # strict の push ではハッシュがなければリモート実体の SHA-256 で照合する
-                remote_hash = e.get("hash")
-                if strict and not remote_hash and e.get("id") is not None:
-                    remote_hash = client.upload_digest(entity_type=entity, entity_id=entity_id, upload_id=e["id"])
-                if remote_hash and remote_hash != local_hash:
-                    continue
-                reuse = e
-                break
+        reuse = _matching_upload(entries, local_size, local_hash, client, entity, entity_id, strict, preferred)
         if reuse:
             _remember_asset(verified, src, local_hash)
             # サイズ（+ハッシュ）一致の1件を再利用し、残りの重複は削除予約
@@ -713,7 +716,7 @@ def _is_video(filename: str) -> bool:
     return Path(filename).suffix.lower() in VIDEO_EXTENSIONS
 
 
-def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None, uploaded=None, verified=None, record=None) -> str:
+def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None, uploaded=None, verified=None, record=None, preferred=()) -> str:
     """Markdown 内の動画リンクを eLabFTW にアップロードし <video> タグに書き換える。
 
     対象:
@@ -733,6 +736,7 @@ def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClien
                     "url": f"{client.base_url}/app/download.php?f={ln}&name={rn}&storage={st}",
                     "size": int(u.get("filesize", 0) or 0),
                     "id": u.get("id"),
+                    "hash": (u.get("sha256") or u.get("hash")) if strict else None,
                 })
         for entries in existing.values():
             entries.sort(key=lambda e: e.get("id") or 0)
@@ -759,14 +763,10 @@ def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClien
         entries = existing.get(real_name, [])
         local_size = video_path.stat().st_size
 
-        reuse = next((e for e in entries if e["size"] and e["size"] == local_size), None)
-        if reuse and strict:
-            actual = client.upload_digest(entity_type=entity, entity_id=entity_id, upload_id=reuse["id"])
-            if actual != _compute_file_hash(video_path):
-                reuse = None
+        local_hash = _compute_file_hash(video_path) if strict else None
+        reuse = _matching_upload(entries, local_size, local_hash, client, entity, entity_id, strict, preferred)
         if reuse:
-            if verified is not None:
-                _remember_asset(verified, src, actual)
+            _remember_asset(verified, src, local_hash)
             for e in entries:
                 if e is not reuse and e.get("id") is not None:
                     stale_ids.append(e["id"])
@@ -781,7 +781,8 @@ def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClien
             for e in entries:
                 if e is not reuse and e.get("id") is not None and not e.get("fresh"):
                     stale_ids.append(e["id"])
-            _cache_uploaded(existing, real_name, result["url"], local_size, result.get("id"))
+            sent = uploaded[result["id"]] if uploaded is not None else (real_name, local_size, None)
+            _cache_uploaded(existing, real_name, result["url"], sent[1], result.get("id"), sent[2])
             progress(f"    ✓ {real_name}")
             return f'<video src="{result["url"]}" controls>{alt}</video>'
         if strict:
@@ -835,7 +836,7 @@ def _count_local_videos(body: str) -> int:
     return count
 
 
-def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None, uploaded=None, verified=None, record=None) -> str:
+def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None, uploaded=None, verified=None, record=None, preferred=()) -> str:
     """Markdown 内の非画像・非動画ファイルリンクを eLabFTW にアップロードし URL に書き換える。
 
     対象:
@@ -857,6 +858,7 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
                     "url": f"{client.base_url}/app/download.php?f={ln}&name={rn}&storage={st}",
                     "size": int(u.get("filesize", 0) or 0),
                     "id": u.get("id"),
+                    "hash": (u.get("sha256") or u.get("hash")) if strict else None,
                 })
         for entries in existing.values():
             entries.sort(key=lambda e: e.get("id") or 0)
@@ -886,14 +888,10 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
         entries = existing.get(real_name, [])
         local_size = file_path.stat().st_size
 
-        reuse = next((e for e in entries if e["size"] and e["size"] == local_size), None)
-        if reuse and strict:
-            actual = client.upload_digest(entity_type=entity, entity_id=entity_id, upload_id=reuse["id"])
-            if actual != _compute_file_hash(file_path):
-                reuse = None
+        local_hash = _compute_file_hash(file_path) if strict else None
+        reuse = _matching_upload(entries, local_size, local_hash, client, entity, entity_id, strict, preferred)
         if reuse:
-            if verified is not None:
-                _remember_asset(verified, src, actual)
+            _remember_asset(verified, src, local_hash)
             for e in entries:
                 if e is not reuse and e.get("id") is not None:
                     stale_ids.append(e["id"])
@@ -908,7 +906,8 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
             for e in entries:
                 if e is not reuse and e.get("id") is not None and not e.get("fresh"):
                     stale_ids.append(e["id"])
-            _cache_uploaded(existing, real_name, result["url"], local_size, result.get("id"))
+            sent = uploaded[result["id"]] if uploaded is not None else (real_name, local_size, None)
+            _cache_uploaded(existing, real_name, result["url"], sent[1], result.get("id"), sent[2])
             progress(f"    ✓ {real_name}")
             return f'[{alt}]({result["url"]})'
         if strict:
@@ -1609,7 +1608,9 @@ class EachDocsSyncer:
         """保存した送信記録をサーバーの一覧・実体と照合し、確認できた署名を返す。"""
         uid = receipt["id"]
         entry = next((u for u in uploads if uid is not None and u.get("id") == uid), None)
-        if not entry or entry.get("real_name") != receipt["name"] or int(entry.get("filesize") or 0) != receipt["size"]:
+        if not entry:
+            raise ConflictError(f"受領した添付 ID #{uid} が一覧に現れていません。一覧への反映後に同じ文書を通常の push で再実行してください")
+        if entry.get("real_name") != receipt["name"] or int(entry.get("filesize") or 0) != receipt["size"]:
             raise ConflictError("送信した添付の名前・サイズを確認できません")
         digest = entry.get("sha256") or entry.get("hash")
         if not digest:
@@ -2003,6 +2004,7 @@ class EachDocsSyncer:
                     expected_guard = {**owned["guard"], "uploads": expected_uploads}
                     if expected_guard != current_guard:
                         raise ConflictError("添付の照合待ちの間にリモート情報が変更されました")
+                    result["confirmed_upload_ids"] = {r["id"] for r in receipts}
                     owned["guard"] = expected_guard
                     owned.pop("verifying_upload", None)
                     owned.pop("body_receipts", None)
@@ -2122,9 +2124,10 @@ class EachDocsSyncer:
                     if receipt not in body_receipts:
                         body_receipts.append(receipt)
                     self._save_pending(pending)
-                body = _rewrite_images(raw_body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded, verified=verified_body, record=record_body_upload)
-                body = _rewrite_videos(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded, verified=verified_body, record=record_body_upload)
-                body = _rewrite_file_links(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded, verified=verified_body, record=record_body_upload)
+                preferred = result.get("confirmed_upload_ids", set())
+                body = _rewrite_images(raw_body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded, verified=verified_body, record=record_body_upload, preferred=preferred)
+                body = _rewrite_videos(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded, verified=verified_body, record=record_body_upload, preferred=preferred)
+                body = _rewrite_file_links(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded, verified=verified_body, record=record_body_upload, preferred=preferred)
                 body = _rewrite_local_links(body, self.entity, self.client.base_url, mapping, source=f, links=links)
                 body = body if self.target.body_format == "md" else _md_to_html(body)
                 expected = {"body": body, "title": f.stem, "content_type": 2 if self.target.body_format == "md" else 1}
