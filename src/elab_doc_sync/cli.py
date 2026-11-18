@@ -803,7 +803,8 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
     article = article or _PullOutputs()
 
     exclusive_paths = set(outputs.released)
-    if not filepath.exists():
+    initially_absent = not filepath.exists()
+    if initially_absent:
         exclusive_paths.add(filepath)
 
     def validate_output(path, *, asset=False, upload_id=None, upload=None):
@@ -863,7 +864,10 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
         raise ConflictError(f"リネーム先 {filename} が既に存在するため変更をスキップします")
     # 同期前からある本文が、添付取得中に編集されても旧内容で処理しない。
     tracked_path = old_path or filepath
-    initial_digest = _compute_file_hash(tracked_path) if tracked_path.is_file() else None
+    initial_digest = None
+    if tracked_path != filepath or not initially_absent:
+        if tracked_path.is_file():
+            initial_digest = _compute_file_hash(tracked_path)
 
     uploads = client.list_uploads(entity_type, eid)
     body_md = _remote_markdown(data, target)
@@ -930,6 +934,8 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
             # 元のディレクトリ項目は退避済み。その後のエディタ保存には上書きしない。
             mode = held.stat().st_mode & 0o777 if held is not None else None
             atomic_write(filepath, local_md + "\n", mode=mode, exclusive=True)
+            if tracked_path != filepath and tracked_path.exists():
+                raise ConflictError(f"本文の保存中に改名元が再作成されました: {tracked_path}")
         if not is_temp_export:
             applied_links = syncer.applied_links(old_name or filename)
             if old_name and old_name != filename:
@@ -1152,7 +1158,7 @@ def cmd_init(args):
 
     atomic_write(config_path, yaml.dump(data, default_flow_style=False, allow_unicode=True))
 
-    print("  Git管理対象外: .elab-sync.yaml, .elab-sync-ids/, .elab-sync-backups/, .elab-sync-operations/, .elab-sync-recovery.json")
+    print("  Git管理対象外: .elab-sync.yaml, .elab-sync-ids/, .elab-sync-backups/, .elab-displaced-*/, .elab-sync-operations/, .elab-sync-recovery.json")
 
     # テンプレートファイルのコピー
     print("\nテンプレートファイルを展開中...")
@@ -1292,7 +1298,7 @@ def run_clone(args, echo=None) -> CommandResult:
     # .gitignore（API キーを含む設定ファイルも除外）
     gitignore = project_dir / ".gitignore"
     if not gitignore.exists():
-        gitignore.write_text(".elab-sync-ids/\n.elab-sync.yaml\n.elab-sync-backups/\n.elab-sync-operations/\n.elab-sync-recovery.json\n")
+        gitignore.write_text(".elab-sync-ids/\n.elab-sync.yaml\n.elab-sync-backups/\n.elab-displaced-*/\n.elab-sync-operations/\n.elab-sync-recovery.json\n")
 
     res.say(f"\n✅ プロジェクトを作成しました: {project_dir}/ ({cloned} 件)")
     res.say(f"   API キーを設定してください:")

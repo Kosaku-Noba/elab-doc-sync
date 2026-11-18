@@ -17,7 +17,7 @@ from pathlib import Path
 from urllib.parse import unquote
 
 from .result import progress, error_text
-from .safety import atomic_write, write_json, safe_path, snapshot, local_transaction
+from .safety import DISPLACED_PREFIX, atomic_write, write_json, safe_path, snapshot, local_transaction
 from .client import ELabFTWClient
 from .config import TargetConfig
 from . import sync_log
@@ -1693,16 +1693,21 @@ class EachDocsSyncer:
                           error=_error_text(self.client, exc))
         return result
 
+    def _document_files(self):
+        for path in self.docs_dir.glob(self.target.pattern):
+            if not any(part.startswith(DISPLACED_PREFIX) for part in path.relative_to(self.docs_dir).parts[:-1]) and path.is_file():
+                yield path
+
     def file_path(self, filename):
         safe_path(self.docs_dir, filename)
-        matches = [p for p in self.docs_dir.glob(self.target.pattern) if p.name == filename and p.is_file()]
+        matches = [p for p in self._document_files() if p.name == filename]
         if len(matches) > 1:
             raise ValueError(f"同名ファイルが複数あります: {filename}")
         return matches[0] if matches else self.docs_dir / filename
 
     def collect_files(self):
         excluded = self._load_excluded()
-        files = sorted(f for f in self.docs_dir.glob(self.target.pattern) if f.is_file() and f.name not in excluded)
+        files = sorted(f for f in self._document_files() if f.name not in excluded)
         if len({f.name for f in files}) != len(files):
             raise ValueError("同名ファイルが複数あります。異なるファイル名にしてください")
         for f in files:

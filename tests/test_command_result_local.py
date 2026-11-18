@@ -685,6 +685,36 @@ def test_pull_captures_edit_at_replacement(project, tmp_path, monkeypatch, renam
     assert json.loads((tmp_path / ".ids/mapping.json").read_text()) == {"note.md": 42}
     project.backup_id = json.loads((tmp_path / RECOVERY).read_text())["backup"]
     saved = tmp_path / BACKUPS / project.backup_id / "displaced/note.md"
+    original.write_text("editor continued")
     assert saved.read_text() == "edited at replacement"
     assert cli.run_restore(project).exit_code == 0
     assert saved.read_text() == "edited at replacement"
+
+def test_displaced_file_on_another_mount_remains_recoverable(tmp_path, monkeypatch):
+    import errno
+    import hashlib
+    from elab_doc_sync.safety import BACKUPS, hold_document, restore
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    doc = docs / "note.md"
+    doc.write_bytes(b"original")
+    backup_id = snapshot(tmp_path, [docs], "before pull")
+    backup = tmp_path / BACKUPS / backup_id
+    rename = Path.rename
+
+    def cross_device(src, dest):
+        if dest.parent.name == "displaced":
+            raise OSError(errno.EXDEV, "different mount")
+        return rename(src, dest)
+
+    monkeypatch.setattr(Path, "rename", cross_device)
+    with doc.open("ab") as editor:
+        with hold_document(doc, backup, hashlib.sha256(b"original").hexdigest()):
+            doc.write_bytes(b"published")
+        restore(tmp_path, backup_id)
+        assert doc.read_bytes() == b"original"
+        editor.write(b" last edit")
+    retained = json.loads((backup / "displaced-location.json").read_text())["path"]
+    assert (tmp_path / retained).read_bytes() == b"original last edit"
+    assert (backup / "displaced/note.md").read_bytes() == b"original"

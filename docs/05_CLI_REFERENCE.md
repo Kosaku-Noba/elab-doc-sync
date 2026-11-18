@@ -195,7 +195,7 @@ esync clone --url URL --entity TYPE --id ID [--dir DIR] [--no-verify]
 リモートの eLabFTW エンティティからローカルプロジェクトを構築する。
 `.elab-sync.yaml` とディレクトリ構造を自動生成。
 
-`ELABFTW_API_KEY` 環境変数が必須です。`--entity` の既定は `items`、`--id` は複数指定できます。`--dir` を省略すると `elab-clone-<最初のID>` を作成します。生成する `.gitignore` には `.elab-sync.yaml`・`.elab-sync-ids/`・`.elab-sync-backups/`・`.elab-sync-operations/`・`.elab-sync-recovery.json` を含みます。
+`ELABFTW_API_KEY` 環境変数が必須です。`--entity` の既定は `items`、`--id` は複数指定できます。`--dir` を省略すると `elab-clone-<最初のID>` を作成します。生成する `.gitignore` には `.elab-sync.yaml`・`.elab-sync-ids/`・`.elab-sync-backups/`・`.elab-displaced-*/`・`.elab-sync-operations/`・`.elab-sync-recovery.json` を含みます。
 
 同名の画像・添付や文書が同じ保存先を必要とする場合は、該当記事を取得できません。`clone --dry-run` で事前に確認できます。一括取得の衝突では先の記事と添付を保持し、後から衝突した記事だけが失敗します。残りの ID の取得を続け、部分成功の終了コードは 1 です。
 
@@ -447,7 +447,7 @@ esync link --new --file note.md --target docs
 
 `restore` はバックアップに記録されたディレクトリ全体を復元し、復元直前もバックアップします。強制push前のリモート退避データはJSONで取り出します。リモート自体への復元は行いません。
 
-既存本文の置換・改名時の実ファイルは `.elab-sync-backups/<取得時のバックアップID>/displaced/<旧ファイル名>` にあります。競合時は表示されたパスを確認してください。通常の restore は取得開始前のスナップショットを使います。
+既存本文の置換・改名時に退避した版は `.elab-sync-backups/<取得時のバックアップID>/displaced/<旧ファイル名>` にあります。競合時は表示されたパスを確認してください。通常の restore は、その記事のローカル更新直前のスナップショットを使います。別マウントでは `displaced/<旧ファイル名>` は退避時点のコピーです。エディタが開いていた実ファイルは文書側の `.elab-displaced-*/body` に残り、バックアップ内の `displaced-location.json` の `path` がその場所をプロジェクトルートから示します。コピー失敗時は警告に表示された実ファイルを確認してください。全体復元でも退避した実ファイルは保管します。
 
 取得中にエディタで作成したファイルや既存の本文に加えた編集も、ディレクトリ全体を復元すると元の場所から消えたり、取得前の内容に戻ったりすることがあります。復元前に `esync restore <ID> --dry-run` で対象を確認し、ファイルを復元対象の外へコピーできます。復元後に 1 ファイルだけ取り出す場合は、次の手順を使います。
 
