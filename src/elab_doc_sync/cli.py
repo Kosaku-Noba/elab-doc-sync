@@ -803,6 +803,8 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
     article = article or _PullOutputs()
 
     exclusive_paths = set(outputs.released)
+    if not filepath.exists():
+        exclusive_paths.add(filepath)
 
     def validate_output(path, *, asset=False, upload_id=None, upload=None):
         safe_path(project_root, path.relative_to(project_root).as_posix())

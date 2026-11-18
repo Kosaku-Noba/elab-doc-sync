@@ -203,7 +203,10 @@ def restore(root: Path, backup_id: str, dry_run: bool = False) -> list[dict]:
     if dry_run:
         return manifest["roots"]
     # Preserve everything currently present before restoring an earlier state.
-    with local_transaction(root, paths, f"restore:{backup_id}", recovering=True):
+    with local_transaction(root, paths, f"restore:{backup_id}", recovering=True) as saved:
+        progress(f"  復元直前のファイル一覧: {root / BACKUPS / saved / 'manifest.json'}")
+        progress("  個別に取り出すには、files にある元のパスの sha256 と同名のファイルを、"
+                 "この一覧と同じディレクトリから別の場所にコピーしてください。")
         for path in paths:
             if path.is_dir():
                 shutil.rmtree(path)

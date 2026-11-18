@@ -573,6 +573,17 @@ def test_pull_preserves_recreated_file_during_download(project, tmp_path, asset)
         res = cli.run_pull(project)
     assert res.data["pulled"] == res.data["failed"] == 1
     assert released.read_text() == "editor save"
+    from elab_doc_sync.safety import BACKUPS, RECOVERY
+    recovery_id = json.loads((tmp_path / RECOVERY).read_text())["backup"]
+    project.backup_id = recovery_id
+    restored = cli.run_restore(project)
+    assert restored.exit_code == 0
+    directory = tmp_path / BACKUPS
+    saved = next(p for p in directory.glob("*/manifest.json")
+                 if json.loads(p.read_text())["reason"] == f"restore:{recovery_id}")
+    digest = json.loads(saved.read_text())["files"]["docs/note.md"]["sha256"]
+    assert (saved.parent / digest).read_text() == "editor save"
+    assert str(saved) in "\n".join(restored.messages)
 
 
 def test_missing_state_keeps_existing_attachment(project, tmp_path):

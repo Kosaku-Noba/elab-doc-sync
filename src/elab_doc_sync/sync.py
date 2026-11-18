@@ -162,6 +162,7 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
             raise
         progress(f"    ⚠ 添付ファイル一覧の取得に失敗（{entity} #{entity_id}、画像のローカル化をスキップ）: {_error_text(client, e)}", warning=True)
         return body
+    saved = set()
     upload_map = {}
     id_map = {}
     for u in uploads:
@@ -199,6 +200,10 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
         local_name = _image_local_name(entity, entity_id, real_name)
         img_dir = docs_dir / "images"
         dest = safe_path(docs_dir, f"images/{local_name}")
+        reference = f"![{alt}](images/{local_name})"
+        image = (dest, matched_upload["id"])
+        if image in saved:
+            return reference
         if check_path:
             check_path(dest, asset=True, upload_id=matched_upload["id"])
         if preview:
@@ -212,7 +217,8 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
             )
             atomic_write(dest, data, exclusive=dest in exclusive_paths)
             progress(f"    画像をダウンロード: {real_name}")
-        return f"![{alt}](images/{local_name})"
+        saved.add(image)
+        return reference
 
     return IMAGE_RE.sub(replace_match, body)
 
@@ -531,7 +537,7 @@ def _rewrite_local_links(body: str, entity: str, base_url: str,
                       他ターゲットのファイルへのリンクも解決するために使用
         source: この本文のローカルファイル。links と併せて相対パスを解決する
         links: 全ターゲットの文書とローカルパスの対応。source と併せて渡すと、これだけで解決する
-               （パス、次に一意なファイル名で照合し、mapping・all_mappings は使わない）。
+               （明示パスはそのまま照合する。ファイル名だけで指定され、その場所にファイルがない場合には、同種記事を優先して一意な同名文書を探す）。
                解決できないリンクはそのまま残す
     """
     def replace_link(m):
@@ -1278,7 +1284,8 @@ class EachDocsSyncer:
         return paths
 
     def _load_mapping(self, *, migrate=True):
-        if self.mapping_file.exists():
+        load_legacy = not self.mapping_file.exists()
+        if not load_legacy:
             mapping = json.loads(self.mapping_file.read_text(encoding="utf-8"))
         else:
             legacy = self.project_root / ".elab-sync-ids/mapping.json"
@@ -1289,14 +1296,14 @@ class EachDocsSyncer:
                     raise ValueError(f"紐付け情報の形式が不正です: {legacy}")
                 mapping = {name: eid for name, eid in contents.items()
                            if (self.docs_dir / name).is_file()}
-                if mapping and migrate:
-                    snapshot(self.project_root, [self.hash_dir], "旧紐付けの移行")
-                    self._save_mapping(mapping)
         if not isinstance(mapping, dict) or not all(isinstance(n, str) and Path(n).name == n and n not in ("", ".", "..")
                                                     and isinstance(e, int) and e > 0 for n, e in mapping.items()):
             raise ValueError(f"紐付け情報の形式が不正です: {self.mapping_file}")
         if len(set(mapping.values())) != len(mapping):
             raise ValueError("同じリモートIDに複数文書が紐付いています。紐付けを修正してください")
+        if load_legacy and mapping and migrate:
+            snapshot(self.project_root, [self.hash_dir], "旧紐付けの移行")
+            self._save_mapping(mapping)
         return mapping
 
     def _save_mapping(self, mapping):
