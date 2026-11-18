@@ -18,7 +18,7 @@ from .config import TargetConfig
 from .client import ELabFTWClient
 from .config import load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, append_target_to_yaml
 from .merge import merge_text
-from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
+from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _is_image, _normalize_remote_image_urls, _download_attachments, _count_local_attachments, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
 from . import sync_log
 from .result import CommandResult, cli_echo, progress, error_text, returns_partial_result
 from . import update_check
@@ -660,15 +660,16 @@ def _pull_entity_to_target(client, config, config_path, target, project_root,
     syncer = EachDocsSyncer(client, target, project_root)
     syncer.link_syncers = _link_syncers(config, project_root)
     mapping = syncer._load_mapping(migrate=False)
-    def check_path(path):
+    def check_path(path, *, asset=False):
         connection = get_client_for_target(config, target)
         _pull_destination(config, project_root, path.parent, entity_type, connection)
         for owner in syncer.link_syncers:
-            if owner.target == target or not path.is_relative_to(owner.docs_dir.resolve()):
+            if not path.is_relative_to(owner.docs_dir.resolve()):
                 continue
             owner_mapping = owner._load_mapping(migrate=False)
-            if path.name in owner_mapping and owner_mapping[path.name] != eid:
-                raise ConflictError(f"{path} は別のIDに紐付いています")
+            if path.name in owner_mapping and (asset or owner_mapping[path.name] != eid):
+                if owner.file_path(path.name).resolve() == path.resolve():
+                    raise ConflictError(f"{path} は追跡済みの別文書です")
 
     return _pull_each_entity(client, syncer, target, project_root, docs_dir, mapping,
                              {v: k for k, v in mapping.items()}, eid, data, entity_type,
@@ -696,6 +697,11 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
     if old_path and old_path != filepath and filepath.exists():
         raise ConflictError(f"リネーム先 {filename} が既に存在するため変更をスキップします")
     uploads = client.list_uploads(entity_type, eid)
+    if check_path and target.attachments_dir:
+        for upload in uploads:
+            name = upload.get("real_name")
+            if name and not _is_image(name) and Path(name).name not in ("", ".", ".."):
+                check_path(safe_path(project_root / target.attachments_dir, Path(name).name), asset=True)
     merge = False
     if old_name and old_path.is_file():
         status = syncer.inspect(old_name, eid, data, uploads)
@@ -730,7 +736,8 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
     with local_transaction(project_root, paths, f"pull:{entity_type}/{eid}"):
         docs_dir.mkdir(parents=True, exist_ok=True)
         body_md = _remote_markdown(data, target)
-        body_md = _download_images(body_md, entity_type, eid, client, parent, strict=True, keep_existing=merge)
+        body_md = _download_images(body_md, entity_type, eid, client, parent, strict=True, keep_existing=merge,
+                                   uploads=uploads if check_path else None, check_path=check_path)
         new_mapping = dict(mapping)
         if old_name:
             new_mapping.pop(old_name, None)
@@ -741,7 +748,7 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
                                                target_docs_dir=target.docs_dir, source=filepath, links=links)
         if target.attachments_dir:
             _download_attachments(entity_type, eid, client, project_root / target.attachments_dir, strict=True,
-                                  keep_existing=merge)
+                                  keep_existing=merge, uploads=uploads if check_path else None)
         local_md, conflicts = body_md, 0
         if merge:
             local_md, conflicts = merge_text(syncer.load_base(old_name), old_path.read_text(encoding="utf-8").strip(),

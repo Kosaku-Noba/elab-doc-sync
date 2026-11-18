@@ -148,13 +148,14 @@ def _parse_image_local_name(filename: str) -> str | None:
 
 
 def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, strict: bool = False,
-                     keep_existing: bool = False) -> str:
+                     keep_existing: bool = False, uploads=None, check_path=None) -> str:
     """Markdown 内の eLabFTW 画像 URL をローカルにダウンロードし相対パスに書き換える。
 
     keep_existing=True では既存の画像ファイルを上書きしない（マージ時にローカルの編集を守る）。
     """
     try:
-        uploads = client.list_uploads(entity, entity_id)
+        if uploads is None:
+            uploads = client.list_uploads(entity, entity_id)
     except Exception as e:
         if strict:
             raise
@@ -197,6 +198,8 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
         img_dir = docs_dir / "images"
         img_dir.mkdir(parents=True, exist_ok=True)
         dest = safe_path(img_dir, local_name)
+        if check_path:
+            check_path(dest, asset=True)
         if not dest.exists() or (strict and not keep_existing):
             data = client.download_upload(
                 entity_type=entity,
@@ -998,7 +1001,7 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
 
 
 def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, attachments_dir: Path, strict: bool = False,
-                          keep_existing: bool = False) -> None:
+                          keep_existing: bool = False, uploads=None) -> None:
     """リモートの非画像添付ファイルをローカルにダウンロードする。
 
     keep_existing=True では既存のファイルを上書きしない（マージ時にローカルの編集を守る）。
@@ -1008,7 +1011,8 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
     本ツールは単一プロセスでの実行を前提としている。
     """
     try:
-        uploads = client.list_uploads(entity, entity_id)
+        if uploads is None:
+            uploads = client.list_uploads(entity, entity_id)
     except Exception as e:
         if strict:
             raise

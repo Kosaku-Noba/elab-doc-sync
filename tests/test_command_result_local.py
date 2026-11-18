@@ -244,3 +244,67 @@ def test_clone_recovery_hides_http_url(project, tmp_path, monkeypatch, capsys):
     assert "HTTP 403" in str(caught.value)
     assert any("restore" in line for line in res.messages)
     assert "private-signature" not in str(caught.value) + capsys.readouterr().err + json.dumps(res.to_dict())
+
+
+def test_asset_cannot_replace_other_document(project, tmp_path):
+    path = tmp_path / ".elab-sync.yaml"
+    cfg = yaml.safe_load(path.read_text())
+    cfg["targets"][0]["attachments_dir"] = "other"
+    cfg["targets"].append({"docs_dir": "other", "id_file": ".other/id"})
+    path.write_text(yaml.safe_dump(cfg))
+    (tmp_path / ".other").mkdir()
+    (tmp_path / ".other/mapping.json").write_text('{"attachment.md":43}')
+    (tmp_path / "other").mkdir()
+    dest = tmp_path / "other/attachment.md"
+    dest.write_text("keep me")
+    project.target, project.dir, project.id = "docs", None, None
+    project.force, project.dry_run = True, False
+    with patch.object(cli, "ELabFTWClient") as factory:
+        client = factory.return_value
+        client.base_url = "https://example.invalid"
+        client.get_item.return_value = {"title": "note", "body": "body"}
+        client.list_uploads.return_value = [{"id": 9, "real_name": "attachment.md"}]
+        res = cli.run_pull(project)
+    assert res.exit_code == 1 and dest.read_text() == "keep me"
+    assert json.loads((tmp_path / ".other/mapping.json").read_text()) == {"attachment.md": 43}
+    client.download_upload.assert_not_called()
+
+
+def test_same_target_export_does_not_overwrite_other_id(project, tmp_path):
+    cfg_path = tmp_path / ".elab-sync.yaml"
+    cfg = yaml.safe_load(cfg_path.read_text())
+    cfg["targets"][0]["pattern"] = "**/*.md"
+    cfg_path.write_text(yaml.safe_dump(cfg))
+    sub = tmp_path / "docs/sub"
+    sub.mkdir()
+    dest = sub / "note.md"
+    (tmp_path / "docs/note.md").rename(dest)
+    project.target, project.dir, project.id, project.entity = "docs", "docs/sub", [1], "items"
+    project.force, project.dry_run = True, False
+    with patch.object(cli, "ELabFTWClient") as factory:
+        factory.return_value.get_item.return_value = {"title": "note", "body": "foreign"}
+        res = cli.run_pull(project)
+    assert res.exit_code == 1 and dest.read_text() == "# note"
+    assert json.loads((tmp_path / ".ids/mapping.json").read_text()) == {"note.md": 42}
+
+
+def test_child_target_can_update_its_own_document(project, tmp_path):
+    cfg_path = tmp_path / ".elab-sync.yaml"
+    cfg = yaml.safe_load(cfg_path.read_text())
+    cfg["targets"].append({"docs_dir": "docs/sub", "id_file": ".child/id"})
+    cfg_path.write_text(yaml.safe_dump(cfg))
+    dest = tmp_path / "docs/sub/note.md"
+    dest.parent.mkdir()
+    dest.write_text("child")
+    (tmp_path / ".child").mkdir()
+    (tmp_path / ".child/mapping.json").write_text('{"note.md": 7}')
+    project.target, project.dir, project.id = "docs/sub", None, None
+    project.force, project.dry_run = True, False
+    with patch.object(cli, "ELabFTWClient") as factory:
+        client = factory.return_value
+        client.base_url = "https://example.invalid"
+        client.get_item.return_value = {"title": "note", "body": "updated child"}
+        client.list_uploads.return_value = []
+        res = cli.run_pull(project)
+    assert res.exit_code == 0 and "updated child" in dest.read_text()
+    assert (tmp_path / "docs/note.md").read_text() == "# note"
