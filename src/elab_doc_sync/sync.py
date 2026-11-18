@@ -1299,7 +1299,9 @@ class EachDocsSyncer:
         mapping = {}
         seen_ids = set()
         for name, eid in records.items():
-            if not name or name in (".", "..") or Path(name).name != name:
+            if not name or name in (".", "..") or Path(name).name != name or "\\" in name:
+                if load_legacy:
+                    continue
                 raise ValueError(f"紐付け情報の形式が不正です: {source} のファイル名 {name!r}")
             if load_legacy and not (self.docs_dir / name).is_file():
                 continue

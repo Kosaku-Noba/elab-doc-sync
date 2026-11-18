@@ -645,3 +645,16 @@ def test_rename_source_edited_while_fetching_is_preserved(project, tmp_path):
     assert original.read_text() == "editor save"
     assert not (tmp_path / "docs/renamed.md").exists()
     assert json.loads((tmp_path / ".ids/mapping.json").read_text()) == {"note.md": 42}
+
+
+def test_legacy_mapping_skips_retired_paths(project, tmp_path):
+    target = cli.load_config(Path(project.config)).targets[0]
+    (tmp_path / ".ids/mapping.json").unlink()
+    legacy = tmp_path / ".elab-sync-ids/mapping.json"
+    legacy.parent.mkdir()
+    legacy.write_text(json.dumps({"retired/missing.md": 2, "note.md": 42}))
+    syncer = cli.EachDocsSyncer(None, target, tmp_path)
+    assert syncer._load_mapping(migrate=False) == {"note.md": 42}
+    assert not syncer.mapping_file.exists()
+    assert syncer._load_mapping() == {"note.md": 42}
+    assert json.loads(syncer.mapping_file.read_text()) == {"note.md": 42}
