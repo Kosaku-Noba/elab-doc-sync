@@ -22,7 +22,7 @@
 
 | 関数 | 説明 |
 |---|---|
-| `_rewrite_images(body, entity, entity_id, client, docs_dir, project_root, strict=False, stale_out=None)` | ローカル画像をアップロードし URL に書き換え。`stale_out` に差し替えた古い版の添付 ID を集める |
+| `_rewrite_images(body, entity, entity_id, client, docs_dir, project_root, strict=False, stale_out=None, uploaded=None)` | ローカル画像をアップロードし URL に書き換え。`stale_out` に旧版候補の ID、`uploaded` に今回送信した添付の ID と名前・サイズ・SHA-256 を集める。push は本文の更新前にリモートの一覧・内容と照合する |
 | `_rewrite_videos(...)` | 動画をアップロードし `<video>` タグに変換（引数は同上） |
 | `_rewrite_file_links(...)` | 非画像・非動画ファイルをアップロードし URL 書き換え（引数は同上） |
 | `_download_images(body, entity, entity_id, client, docs_dir, strict=False, ...)` | リモート画像をダウンロードしローカルリンクに書き換え |

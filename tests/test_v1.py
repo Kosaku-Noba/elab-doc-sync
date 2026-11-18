@@ -354,15 +354,21 @@ def test_image_attachment_and_document_link_roundtrip(project):
 
 def test_local_asset_edit_is_not_overwritten_by_remote_change(project):
     root, client, remote, syncer, args = project
-    (root / 'docs/picture.png').write_bytes(b'original image')
-    (root / 'docs/a.md').write_text('![image](picture.png)')
-    client.upload_file.return_value = {'url': 'https://example.test/app/download.php?f=blob'}
+    images = root / "docs/images"
+    images.mkdir()
+    image = images / "items_1_picture.png"
+    image.write_bytes(b"original image")
+    doc = root / "docs/a.md"
+    doc.write_text("base\n\n![image](images/items_1_picture.png)")
+    _stateful_uploads(client)
     assert syncer.sync() == 1
-    (root / 'docs/picture.png').write_bytes(b'local image')
-    remote[1]['body'] += '\nremote edit'
-    assert syncer.inspect('a.md', 1)['state'] == '競合'
-    with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
+    image.write_bytes(b"local image")
+    doc.write_text(doc.read_text().replace("base", "local"))
+    remote[1]["body"] = remote[1]["body"].replace("base", "remote")
+    assert syncer.inspect("a.md", 1)["state"] == "競合"
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
         assert cmd_pull(args()) == 1
+    assert image.read_bytes() == b"local image"
     client.download_upload.assert_not_called()
 
 
@@ -500,7 +506,7 @@ def test_nested_document_asset_change_is_detected(project):
     (root / 'docs/sub').mkdir()
     (root / 'docs/sub/a.md').write_text('![picture](photo.png)')
     (root / 'docs/sub/photo.png').write_bytes(b'original')
-    client.upload_file.return_value = {'url': 'https://example.test/app/download.php?f=image'}
+    _stateful_uploads(client)
     assert syncer.sync() == 1
     (root / 'docs/sub/photo.png').write_bytes(b'edited')
     assert syncer.inspect('a.md', 1)['state'] == '送信待ち'
@@ -1856,7 +1862,8 @@ def test_prune_records_progress_and_protects_concurrent_edits(project, failure):
             client.delete_upload.assert_not_called()
             assert {201, 202} <= {u["id"] for u in uploads[1]}
 
-def test_preserve_stale_upload_renamed_while_replacement_is_uploaded(project):
+@pytest.mark.parametrize("concurrent_edit", ["rename_old", "delete_new"])
+def test_preserve_stale_upload_while_replacement_is_uploaded(project, concurrent_edit):
     root, client, remote, syncer, args = project
     uploads = _stateful_uploads(client)
     (root / "docs/a.md").write_text("![file](picture.png)")
@@ -1866,9 +1873,32 @@ def test_preserve_stale_upload_renamed_while_replacement_is_uploaded(project):
     image.write_bytes(b"replacement")
     upload = client.upload_file.side_effect
     def concurrent_rename(entity, eid, path):
-        uploads[eid][0]["real_name"] = "retained.png"
-        return upload(entity, eid, path)
+        result = upload(entity, eid, path)
+        if concurrent_edit == "rename_old":
+            uploads[eid][0]["real_name"] = "retained.png"
+        else:
+            uploads[eid].pop()
+        return result
     client.upload_file.side_effect = concurrent_rename
     assert syncer.sync() == 0 and syncer.failures == 1
-    assert uploads[1][0]["real_name"] == "retained.png"
+    assert uploads[1][0]["id"] == 100 and "blob100" in remote[1]["body"]
     client.delete_upload.assert_not_called()
+
+def test_prune_protects_idna2008_origin():
+    from elab_doc_sync.sync import _prune_candidates
+    records = [{"id": 201, "real_name": "old.csv"}]
+    assert not _prune_candidates(records, set(), "*", "[old](https://fa%C3%9F.test/uploads/201)",
+                                 "https://xn--fa-hia.test")
+
+
+def test_repeated_basename_keeps_both_new_uploads(project):
+    root, client, remote, syncer, args = project
+    uploads = _stateful_uploads(client)
+    for folder, body in [("before", b"first"), ("after", b"second")]:
+        path = root / "docs" / folder
+        path.mkdir()
+        (path / "plot.png").write_bytes(body)
+    (root / "docs/a.md").write_text("![a](before/plot.png) ![b](after/plot.png) ![a](before/plot.png)")
+    assert syncer.sync() == 1
+    assert [u["id"] for u in uploads[1]] == [100, 101]
+    assert remote[1]["body"].count("blob100") == 2 and "blob101" in remote[1]["body"]

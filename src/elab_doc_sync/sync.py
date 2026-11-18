@@ -4,6 +4,8 @@ CLI tool — not intended for use as a library.
 """
 
 import hashlib
+import ipaddress
+import idna
 import json
 import os as _os
 import re
@@ -313,6 +315,22 @@ def _resolve_asset_path(docs_dir: Path, project_root: Path, source: str, strict=
     raise FileNotFoundError(source)
 
 
+def _upload_body_file(client, entity, eid, path, uploaded):
+    """本文に埋め込むアップロードの ID・名前・サイズ・内容を本文更新前の確認用に残す。"""
+    path = Path(path)
+    if uploaded is not None:
+        expected = (path.name, path.stat().st_size, _compute_file_hash(path))
+    result = client.upload_file(entity, eid, str(path))
+    if uploaded is not None and result.get("url"):
+        uid = result.get("id")
+        if uid is None:
+            raise ConflictError("送信した本文用添付の ID を特定できません")
+        if uid in uploaded and uploaded[uid] != expected:
+            raise ConflictError("同じ添付 ID に異なる内容が返されました")
+        uploaded[uid] = expected
+    return result
+
+
 def _cache_uploaded(existing: dict[str, list[dict]], real_name: str, url: str,
                     size: int, upload_id, file_hash: str | None = None) -> None:
     """アップロード成功結果を Upload_Cache に登録し、以降の同一 real_name 参照で再利用させる。
@@ -327,7 +345,7 @@ def _cache_uploaded(existing: dict[str, list[dict]], real_name: str, url: str,
     )
 
 
-def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None) -> str:
+def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None, uploaded=None) -> str:
     """Markdown 内のローカル画像を eLabFTW にアップロードし URL に書き換える。
 
     upload_file はファイルパスの basename を real_name としてリモートに保存する。
@@ -403,7 +421,7 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
         else:
             upload_path = str(img_path)
         progress(f"    画像をアップロード中: {real_name}")
-        result = client.upload_file(entity, entity_id, upload_path)
+        result = _upload_body_file(client, entity, entity_id, upload_path, uploaded)
         if result.get("url"):
             for e in entries:
                 if e is not reuse and e.get("id") is not None and not e.get("fresh"):
@@ -661,7 +679,7 @@ def _is_video(filename: str) -> bool:
     return Path(filename).suffix.lower() in VIDEO_EXTENSIONS
 
 
-def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None) -> str:
+def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None, uploaded=None) -> str:
     """Markdown 内の動画リンクを eLabFTW にアップロードし <video> タグに書き換える。
 
     対象:
@@ -720,7 +738,7 @@ def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClien
             return f'<video src="{reuse["url"]}" controls>{alt}</video>'
 
         progress(f"    動画をアップロード中: {real_name}")
-        result = client.upload_file(entity, entity_id, str(video_path))
+        result = _upload_body_file(client, entity, entity_id, video_path, uploaded)
         if result.get("url"):
             for e in entries:
                 if e is not reuse and e.get("id") is not None and not e.get("fresh"):
@@ -779,7 +797,7 @@ def _count_local_videos(body: str) -> int:
     return count
 
 
-def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None) -> str:
+def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None, uploaded=None) -> str:
     """Markdown 内の非画像・非動画ファイルリンクを eLabFTW にアップロードし URL に書き換える。
 
     対象:
@@ -843,7 +861,7 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
             return f'[{alt}]({reuse["url"]})'
 
         progress(f"    ファイルをアップロード中: {real_name}")
-        result = client.upload_file(entity, entity_id, str(file_path))
+        result = _upload_body_file(client, entity, entity_id, file_path, uploaded)
         if result.get("url"):
             for e in entries:
                 if e is not reuse and e.get("id") is not None and not e.get("fresh"):
@@ -914,7 +932,11 @@ def _referenced_upload_ids(uploads, body, base_url):
     def origin(url, default_scheme):
         parsed = urlsplit(url)
         scheme = parsed.scheme.lower() or default_scheme
-        host = unquote(parsed.hostname or "").rstrip(".").encode("idna").decode("ascii").lower()
+        host = unquote(parsed.hostname or "").rstrip(".")
+        if ":" in host:
+            host = str(ipaddress.IPv6Address(host))
+        elif host:
+            host = idna.encode(host, uts46=True).decode("ascii").lower()
         port = parsed.port if parsed.port is not None else {"http": 80, "https": 443}.get(scheme)
         return scheme, host, port
 
@@ -1978,9 +2000,10 @@ class EachDocsSyncer:
                         "content_type": result["data"].get("content_type"),
                     })
                 stale_uploads: list[int] = []
-                body = _rewrite_images(raw_body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads)
-                body = _rewrite_videos(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads)
-                body = _rewrite_file_links(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads)
+                uploaded = {}
+                body = _rewrite_images(raw_body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded)
+                body = _rewrite_videos(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded)
+                body = _rewrite_file_links(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded)
                 body = _rewrite_local_links(body, self.entity, self.client.base_url, mapping, source=f, links=links)
                 body = body if self.target.body_format == "md" else _md_to_html(body)
                 expected = {"body": body, "title": f.stem, "content_type": 2 if self.target.body_format == "md" else 1}
@@ -1991,7 +2014,19 @@ class EachDocsSyncer:
                 initial_uploads = self._remote_signature({}, result.get("uploads", []))["uploads"]
                 initial_ids = {u["id"] for u in initial_uploads}
                 current_originals = [u for u in guard["uploads"] if u["id"] in initial_ids]
-                if current_originals != initial_uploads or not set(stale_uploads) <= initial_ids:
+                current = {u["id"]: u for u in guard["uploads"]}
+                for uid, (name, size, digest) in uploaded.items():
+                    entry = current.get(uid)
+                    if not entry or entry["real_name"] != name or int(entry["filesize"] or 0) != size:
+                        raise ConflictError("送信した本文用添付の名前・サイズを確認できません")
+                    stored_hash = entry["sha256"] or entry["hash"]
+                    if not stored_hash:
+                        payload = self.client.download_upload(entity_type=self.entity, entity_id=eid, upload_id=uid)
+                        stored_hash = hashlib.sha256(payload).hexdigest()
+                    if stored_hash != digest:
+                        raise ConflictError("送信した本文用添付の内容が一致しません")
+                stale_uploads = [uid for uid in stale_uploads if uid not in uploaded]
+                if current_originals != initial_uploads or set(current) != initial_ids | set(uploaded) or not set(stale_uploads) <= initial_ids:
                     raise ConflictError("本文の添付を準備している間にリモート添付が変更されました。diffで確認してください")
                 meta_changed = needs_meta(f, result, resuming)
                 links_changed = needs_links(f, result, resuming)

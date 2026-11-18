@@ -373,6 +373,7 @@ name = "elab-doc-sync"
 version = "1.3.0"
 source = { editable = "." }
 dependencies = [
+    { name = "idna" },
     { name = "markdown" },
     { name = "markdownify" },
     { name = "pyyaml" },
@@ -390,6 +391,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
+    { name = "idna", specifier = ">=3" },
     { name = "markdown", specifier = ">=3.4" },
     { name = "markdownify", specifier = ">=0.11" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.30,<2" },
