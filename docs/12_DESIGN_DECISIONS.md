@@ -240,7 +240,11 @@ eLabFTW は Markdown 本文の保存時に `>` を `&gt;`、`&` を `&amp;` に�
 
 書き換え系の各件には接続先のベース URL（`server`。API キーは含めない）を入れる。ターゲットごとに接続プロファイルが違うと、別サーバーに同じ種別・ID の記事があり得るため。
 
-`run_*` は `returns_partial_result` で包み、途中で例外になったら、それまでの `CommandResult` を例外の `partial_result` に付ける。複数の記事・サーバーへの変更の一部が済んだ後に失敗しても、呼び出し元（MCP など）が済んだ変更（`result` のある件）と失敗した件（`result` のない件）を確認できる。
+`run_*` は `returns_partial_result` で包み、途中で例外になったら、それまでの `CommandResult` を例外の `partial_result` に付ける。書き換え系は各件を送信前に記録し、完了したら `result` を入れる。
+
+- `result` のある件: 変更済み（`added`・`removed`・`changed`・`set`・`updated`）、dry-run の予定（`would_*`）、変更不要（`exists`・`already`・`not_found`・`self`）のいずれか
+- `result` のない件: 完了未確認。送信前に失敗したか、eLabFTW 側で変更された後に応答を受け取れなかったかを区別できないため、再試行の前に `tag list`・`relate list`・`entity-status show` などで実際の状態を確認する
+- まだ処理していない件は含まれない（失敗した時点までに記録した件だけが残る）。`category set` と `new` は 1 件だけのため、`data` の `result` がない／`created` が false なら完了未確認
 
 ### 13.5 段階的な移行
 

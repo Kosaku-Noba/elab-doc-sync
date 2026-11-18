@@ -218,7 +218,7 @@ YAML 設定読み込み・バリデーション。
 - 書き換え系の各件の `result`（下表）で、実際に変更したか（`added` など）、dry-run の予定か（`would_*`）、変更不要だったか（`exists`・`already`・`not_found`・`self`）を区別する
 - `run_verify` は問題を見つけても `exit_code` は 0。`data["issues"]` と各文書の `ok` を確認する
 - `run_whoami` は接続に失敗したプロファイルも `exit_code` 0 で返し、そのプロファイルの `error` に理由を入れる（API キーは `redact` で除く）
-- 設定の誤り・通信の失敗など、上記以外のエラーは `CommandResult` にならず例外として呼び出し元に伝わる（CLI は終了コード 2 / 1 にする）。呼び出し側で例外を処理する。結果を作った後の例外には `partial_result` が付き、済んだ変更を確認できる
+- 設定の誤り・通信の失敗など、上記以外のエラーは `CommandResult` にならず例外として呼び出し元に伝わる（CLI は終了コード 2 / 1 にする）。呼び出し側で例外を処理する。結果を作った後の例外には `partial_result` が付く。書き換え系の各件は送信前に記録され、`result` のない件は完了未確認（応答を受け取れなかった場合を含む）なので、再試行の前に実際の状態を確認する（[設計判断 13.4](12_DESIGN_DECISIONS.md)）
 - 設定ファイルがない・読めないときは、`load_config` が `SystemExit(2)` を送出する（標準エラー出力に理由を表示）
 - 書き換え系（`tag`・`relate`・`metadata`・`category`・`entity-status`）の各件と `run_category` の `data` には、接続先のベース URL `server` が入る
 

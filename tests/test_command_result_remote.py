@@ -228,3 +228,16 @@ def test_partial_result_absent_for_errors_before_any_result(tmp_path):
     with pytest.raises(ValueError) as exc:
         cli.run_category(Namespace(config=str(cfg), target="nope", cat_action="list", entity=None))
     assert getattr(exc.value, "partial_result", None) is None
+
+
+def test_entity_status_partial_result_keeps_unconfirmed_entry(tmp_path):
+    cfg = _two_server_project(tmp_path)
+    clients, make = _clients_by_url()
+    with patch("elab_doc_sync.cli.ELabFTWClient", side_effect=make):
+        make("https://b.example.com").patch_entity.side_effect = RuntimeError("timeout")
+        with pytest.raises(RuntimeError) as exc:
+            cli.run_entity_status(Namespace(config=str(cfg), target=None, status_action="set", status_id="3",
+                                            id=None), confirm=lambda prompt: True)
+    entities = exc.value.partial_result.data["entities"]
+    assert [(e["server"], e.get("result")) for e in entities] == [
+        ("https://a.example.com", "changed"), ("https://b.example.com", None)]

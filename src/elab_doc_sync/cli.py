@@ -2176,8 +2176,10 @@ def run_entity_status(args, echo=None, confirm=None) -> CommandResult:
                 res.say("  中断しました")
                 return res
         for client, label, eid, etype in all_ids:
+            # 送信前に記録し、途中で失敗したとき partial_result に result のない件（完了未確認）として残す
+            item = entry(client, label, eid, etype)
             client.patch_entity(etype, eid, status=status_id)
-            entry(client, label, eid, etype, result="changed")
+            item["result"] = "changed"
             res.say(f"  [{label}] {_entity_label(etype)} #{eid}: ステータスを変更しました")
     return res
 
