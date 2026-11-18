@@ -6,6 +6,15 @@
 
 - `tag add/remove`・`relate add/remove`・`metadata set`・`category set`・`entity-status set`・`new` が `--dry-run` に対応した。eLabFTW の現在の値を読んで予定（「追加予定」「既にあります」など）を表示し、送信・ファイル作成はしない。`entity-status set --dry-run` は対象ごとに現在のステータスと変更先を表示し、複数件でも確認の入力を求めない。dry-run では旧形式の紐付け情報を移行しない。`entity-status set` は数値でないステータス ID を、確認の入力より前に「数値で指定してください」とエラー（終了コード 2）にするようにした。これまでは付けるとエラー（終了コード 2）だった。`init`・`profile add/remove` は従来どおりエラーになる。
 
+### 修正
+
+- `esync verify` が旧形式の共有 `mapping.json` をターゲット別に移行し、バックアップを作っていた。参照系のコマンドなので移行しないようにした（移行は push・pull などで従来どおり行う）。
+- `esync whoami` の接続エラーの表示に、例外メッセージ経由で API キーが含まれることがあった。表示前に `***` に置き換えるようにした。
+
+### 内部
+
+- MCP 対応の準備として、参照系コマンド（`status`・`log`・`list`・`search`・`whoami`・`verify`・`backup list`・`profile list`）の処理を、機械可読な結果（`CommandResult`）を返す `run_*` と表示に分けた。表示と終了コードは変わらない。
+
 ## v1.3.0 (2026-11-09)
 
 ### 追加
