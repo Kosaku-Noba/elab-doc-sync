@@ -238,25 +238,28 @@ def local_transaction(root: Path, paths: list[Path], reason: str, *, recovering=
         (root / RECOVERY).unlink()
 
 
-def _held_directories(root):
-    directories = set()
-    for record in (root / BACKUPS).glob("*/displaced-location.json"):
-        relative = json.loads(record.read_text(encoding="utf-8"))["path"]
-        held = safe_path(root, relative)
-        if held.name != "body" or not held.parent.name.startswith(DISPLACED_PREFIX):
-            raise ValueError(f"本文の退避先記録が不正です: {record}")
-        if held.parent.exists():
-            directories.add(held.parent)
-    return directories
+def _held_documents(paths):
+    """復元対象に実在する管理用の退避ファイルだけを保護する。"""
+    held = set()
+    for path in paths:
+        if path.is_symlink():
+            continue
+        if path.name == "body" and path.parent.name.startswith(DISPLACED_PREFIX) and path.is_file():
+            held.add(path)
+        elif path.is_dir():
+            if path.name.startswith(DISPLACED_PREFIX) and (path / "body").is_file() and not (path / "body").is_symlink():
+                held.add(path / "body")
+            held.update(p for p in path.rglob(f"{DISPLACED_PREFIX}*/body") if p.is_file() and not p.is_symlink())
+    return held
 
 
-def _clear_for_restore(path, held_dirs):
+def _clear_for_restore(path, held):
     """文書・追跡情報を消去する。別マウント上のバックアップは残す。"""
-    if path in held_dirs:
+    if path in held:
         return
-    if any(d.is_relative_to(path) for d in held_dirs):
+    if any(p.is_relative_to(path) for p in held):
         for child in path.iterdir():
-            _clear_for_restore(child, held_dirs)
+            _clear_for_restore(child, held)
     elif path.is_dir() and not path.is_symlink():
         shutil.rmtree(path)
     else:
@@ -275,26 +278,26 @@ def restore(root: Path, backup_id: str, dry_run: bool = False) -> list[dict]:
         progress(f"  復元対象: {entry['path']} ({entry['kind']})")
     if manifest.get("remote") is not None:
         progress(f"  リモート退避データの取り出し: {export_path}")
-    if dry_run:
-        return manifest["roots"]
-    held_dirs = _held_directories(root)
+    held = _held_documents(paths)
     for name in manifest["files"]:
         destination = root / name
-        if any(d.is_relative_to(destination) for d in held_dirs):
+        if any(p != destination and p.is_relative_to(destination) for p in held):
             raise ValueError(f"別マウントの退避場所と復元するファイルが重なっています: {name}")
+    if dry_run:
+        return manifest["roots"]
     # Preserve everything currently present before restoring an earlier state.
     with local_transaction(root, paths, f"restore:{backup_id}", recovering=True) as saved:
         progress(f"  復元直前のファイル一覧: {root / BACKUPS / saved / 'manifest.json'}")
         progress("  個別に取り出すには、files にある元のパスの sha256 と同名のファイルを、"
                  "この一覧と同じディレクトリから別の場所にコピーしてください。")
         for path in paths:
-            _clear_for_restore(path, held_dirs)
+            _clear_for_restore(path, held)
         for name in manifest["directories"]:
             safe_path(root, name).mkdir(parents=True, exist_ok=True)
         base = root / BACKUPS / backup_id
         for name, item in manifest["files"].items():
             destination = safe_path(root, name)
-            if not any(destination.is_relative_to(d) for d in held_dirs):
+            if destination not in held:
                 atomic_write(destination, (base / item["sha256"]).read_bytes(), item["mode"])
         if manifest.get("remote") is not None:
             write_json(export_path, manifest["remote"])

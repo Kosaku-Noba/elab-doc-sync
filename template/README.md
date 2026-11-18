@@ -106,6 +106,6 @@ uv run esync
 
 上書き前のバックアップは `.elab-sync-backups/` に保存します。復元単位はバックアップに記録されたディレクトリ全体で、復元直前の状態も保存します。`push --force` 前のリモート本文はJSONで退避し、restoreで取り出します。リモートへの反映は手動です。
 
-`.elab-sync.yaml`、`.elab-sync-ids/`、`.elab-sync-backups/`、`.elab-sync-operations/`、`.elab-sync-recovery.json` はGit管理対象外にしてください。作成結果不明と表示された場合は、サーバーを確認して `link` で紐付けます。対応記事が存在しないと確認できた場合だけ `link --new --file note.md` で新規作成を再開します。
+`.elab-sync.yaml`、`.elab-sync-ids/`、`.elab-sync-backups/`、`.elab-displaced-*/`、`.elab-sync-operations/`、`.elab-sync-recovery.json` はGit管理対象外にしてください。作成結果不明と表示された場合は、サーバーを確認して `link` で紐付けます。対応記事が存在しないと確認できた場合だけ `link --new --file note.md` で新規作成を再開します。
 
 [旧版からの移行と復旧の詳細](https://github.com/Kosaku-Noba/elab-doc-sync/blob/main/docs/13_MIGRATION_V1.md)

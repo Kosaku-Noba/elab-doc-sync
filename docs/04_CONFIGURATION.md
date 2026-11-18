@@ -67,7 +67,7 @@ targets:
 |---|---|---|---|
 | `docs_dir` | ✅ | — | Markdown ファイルディレクトリ |
 | `title` | — | 空文字 | `--target` / `-t` で指定するターゲット名。記事タイトルはファイル名から決まる |
-| `pattern` | — | `*.md` | Glob パターン |
+| `pattern` | — | `*.md` | Glob パターン。本文を退避するための予約ディレクトリ `.elab-displaced-*/` 以下は同期対象から除外する |
 | `mode` | — | `each` | `each` のみ有効（`merge` はエラー） |
 | `entity` | — | `items` | `items` / `experiments`（`resources` は `items` と同じ） |
 | `profile` | — | `default` | 使用する接続プロファイル |

@@ -760,7 +760,7 @@ def _pull_entity_to_target(client, config, config_path, target, project_root,
                 previous = outputs.names.get(key, article.names.setdefault(key, path))
                 if previous != path:
                     raise ConflictError(f"{path} と {previous} の追跡名が重複しています")
-                for local in owner.docs_dir.glob(owner.target.pattern):
+                for local in owner._document_files():
                     if local.is_file() and local.name == path.name and local != path and local not in outputs.released:
                         raise ConflictError(f"{path} は既存ファイル {local} と同名です")
             for name, tracked_id in owner._load_mapping(migrate=False).items():
@@ -2163,7 +2163,7 @@ def _select_documents(targets_and_syncers, files, regexes):
     candidates = []
     for index, (target, syncer) in enumerate(targets_and_syncers):
         excluded = syncer._load_excluded()
-        for path in sorted(syncer.docs_dir.glob(target.pattern)):
+        for path in sorted(syncer._document_files()):
             if path.is_file():
                 candidates.append((index, path, path.name in excluded))
     for kind, value in selectors:
@@ -2229,7 +2229,7 @@ def run_rm(args, echo=None) -> CommandResult:
                 # 同期エンジンのキーはファイル名。状態ファイル由来の外部パスは扱わない。
                 if Path(name).name != name or name in ("", ".", ".."):
                     continue
-                paths = [p for p in syncer.docs_dir.glob(syncer.target.pattern) if p.name == name]
+                paths = [p for p in syncer._document_files() if p.name == name]
                 if not paths:
                     paths = [syncer.docs_dir / name]
                 if path_matches:
