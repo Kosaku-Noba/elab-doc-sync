@@ -7,6 +7,7 @@ import re
 import json
 import shutil
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import yaml
@@ -19,7 +20,7 @@ from .config import load_config, BODY_FORMAT_INIT, _read_yaml_text, update_targe
 from .merge import merge_text
 from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
 from . import sync_log
-from .result import CommandResult, cli_echo, progress, redact, returns_partial_result
+from .result import CommandResult, cli_echo, progress, error_text, returns_partial_result
 from . import update_check
 
 DEFAULT_CONFIG = ".elab-sync.yaml"
@@ -288,7 +289,7 @@ def run_push(args, echo=None) -> CommandResult:
             count = syncer.sync(force=args.force, prune_attachments=args.prune_attachments, only=only)
         except Exception as exc:
             count = syncer.updated
-            reason = redact(str(exc), get_client_for_target(config, target)[1])
+            reason = error_text(exc, get_client_for_target(config, target)[1])
             summary["error"] = reason
             failed += 1
             if isinstance(exc, ConflictError):
@@ -453,6 +454,13 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
     if args.id:
         entity = _normalize_entity(args.entity)
         candidates = [t for t in targets if t.entity == entity]
+        if args.target and not candidates:
+            raise ValueError("指定したターゲットの種別が --entity と一致しません")
+        routing = replace(config, targets=candidates)
+        directory_target = _find_target_by_dir(config, entity, root, export) if export else None
+        if export and any((root / t.docs_dir).resolve() == (root / export).resolve() and
+                          t.entity != entity for t in config.targets):
+            raise ValueError("--dir のターゲットの種別が --entity と一致しません")
         for eid in args.id:
             tracked = [t for t in candidates if eid in EachDocsSyncer(None, t, root)._load_mapping(migrate=False).values()]
             if len(tracked) > 1:
@@ -463,18 +471,20 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
                 raise ValueError("複数の接続先があります。--target を指定してください")
             connection = (get_client_for_target(config, source or candidates[0]) if candidates else
                           (config.url, config.api_key, config.verify_ssl))
+            if directory_target and get_client_for_target(config, directory_target) != connection:
+                raise ValueError("--dir のターゲットの接続先が取得元と異なります")
             client = ELabFTWClient(*connection)
             try:
                 data = client.get_experiment(eid) if entity == "experiments" else client.get_item(eid)
                 if export:
-                    target = _find_target_by_dir(config, entity, root, export) or target or source
+                    target = directory_target or target or source
                 if target is None:
                     if len(candidates) == 1:
                         target = candidates[0]
                     elif candidates:
                         raw_tags = data.get("tags") or []
                         tags = raw_tags.split("|") if isinstance(raw_tags, str) else [t.get("tag", "") if isinstance(t, dict) else t for t in raw_tags]
-                        target, score = _find_best_target(config, entity, tags, data.get("category_title") or data.get("category"), data.get("title", ""))
+                        target, score = _find_best_target(routing, entity, tags, data.get("category_title") or data.get("category"), data.get("title", ""))
                         if target is None:
                             if getattr(args, "auto", False):
                                 target = max(candidates, key=lambda t: _score_target_match(t, tags, data.get("category_title") or data.get("category"), data.get("title", "")))
@@ -484,7 +494,7 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
                                 skipped += 1
                                 continue
                             else:
-                                target = choose_target(config, entity, data.get("title", ""))
+                                target = choose_target(routing, entity, data.get("title", ""))
                                 if target == "SKIP":
                                     res.data["documents"].append({"entity_id": eid, "entity": entity, "result": "skipped"})
                                     skipped += 1
@@ -507,12 +517,10 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
                 # Never reuse data fetched with another target's credentials.
                 destination = get_client_for_target(config, target)
                 if connection != destination:
-                    connection = destination
-                    client = ELabFTWClient(*connection)
-                    data = client.get_experiment(eid) if entity == "experiments" else client.get_item(eid)
+                    raise ValueError("保存先の接続先が取得元と異なります")
                 jobs.append((client, target, eid, data))
             except Exception as exc:
-                reason = redact(str(exc), connection[1])
+                reason = error_text(exc, connection[1])
                 res.data["documents"].append({"entity": entity, "server": connection[0], "entity_id": eid, "error": reason})
                 res.warn(f"  #{eid} の取得に失敗: {reason}")
                 failed += 1
@@ -527,7 +535,7 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
                 try:
                     jobs.append((client, target, eid, syncer._get_entity(eid)))
                 except Exception as exc:
-                    reason = redact(str(exc), get_client_for_target(config, target)[1])
+                    reason = error_text(exc, get_client_for_target(config, target)[1])
                     res.data["documents"].append({"entity": target.entity, "server": client.base_url,
                                                   "target": target.docs_dir, "entity_id": eid, "error": reason})
                     res.warn(f"  #{eid} の取得に失敗: {reason}")
@@ -542,7 +550,7 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
             pulled += result
             skipped += int(result == 0)
         except Exception as exc:
-            reason = redact(str(exc), get_client_for_target(config, target)[1])
+            reason = error_text(exc, get_client_for_target(config, target)[1])
             doc["error"] = reason
             res.warn(f"  #{eid} の取得に失敗: {reason}")
             failed += 1
@@ -838,7 +846,7 @@ def run_diff(args, echo=None) -> CommandResult:
                 data = syncer._get_entity(eid)
                 uploads = syncer.client.list_uploads(target.entity, eid)
             except Exception as e:
-                reason = redact(str(e), get_client_for_target(config, target)[1])
+                reason = error_text(e, get_client_for_target(config, target)[1])
                 doc["error"] = reason
                 failed = True
                 res.warn(f"  eLabFTW #{eid} の取得に失敗: {reason}\n")
@@ -998,7 +1006,7 @@ def run_clone(args, echo=None) -> CommandResult:
                                   False, False, dry_run=True)
                 doc["result"] = "would_clone"
             except Exception as exc:
-                reason = redact(str(exc), api_key)
+                reason = error_text(exc, api_key)
                 doc["error"] = reason
                 failed = True
                 res.warn(f"  #{eid} の確認に失敗: {reason}")
@@ -1035,7 +1043,7 @@ def run_clone(args, echo=None) -> CommandResult:
         try:
             data = get_fn(eid)
         except Exception as e:
-            reason = redact(str(e), api_key)
+            reason = error_text(e, api_key)
             doc["error"] = reason
             res.warn(f"  {entity_label} #{eid} の取得に失敗: {reason}")
             continue
@@ -1047,7 +1055,7 @@ def run_clone(args, echo=None) -> CommandResult:
             cloned += count
             doc["result"] = "cloned" if count else "skipped"
         except Exception as exc:
-            reason = redact(str(exc), api_key)
+            reason = error_text(exc, api_key)
             doc["error"] = reason
             res.warn(f"  #{eid} の取得に失敗: {reason}")
             if (project_dir / RECOVERY).exists():
@@ -1550,7 +1558,7 @@ def run_whoami(args, echo=None) -> CommandResult:
             user = client._req("GET", "/api/v2/users/me").json()
         except Exception as e:
             # 例外メッセージに API キーが含まれることがある（不正な文字を含むキーのヘッダーエラーなど）
-            info["error"] = f"API接続失敗 ({redact(str(e), api_key)})"
+            info["error"] = f"API接続失敗 ({error_text(e, api_key)})"
             res.say(f"  エラー: {info['error']}")
             res.say()
             continue

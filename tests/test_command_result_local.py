@@ -124,3 +124,39 @@ def test_pull_new_target_keeps_source_profile(project, tmp_path):
     assert res.exit_code == 0 and "from lab" in (tmp_path / "incoming/doc.md").read_text()
     assert yaml.safe_load(path.read_text())["targets"][-1]["profile"] == "lab"
     assert {call.args[0] for call in factory.call_args_list} == {"https://lab.invalid"}
+
+
+@pytest.mark.parametrize("entity, directory", [("experiments", None), ("items", "other")])
+def test_pull_rejects_contradictory_source_before_fetch(project, tmp_path, entity, directory):
+    cfg_path = tmp_path / ".elab-sync.yaml"
+    cfg = yaml.safe_load(cfg_path.read_text())
+    cfg["profiles"] = {"second": {"url": "https://other.invalid", "api_key": "foreign"}}
+    cfg["targets"].append({"docs_dir": "other", "profile": "second"})
+    cfg_path.write_text(yaml.safe_dump(cfg))
+    project.id, project.entity, project.target, project.dir = [123], entity, "docs", directory
+    before = cfg_path.read_bytes()
+    with patch.object(cli, "ELabFTWClient") as factory, pytest.raises(ValueError):
+        cli.run_pull(project)
+    factory.assert_not_called()
+    assert before == cfg_path.read_bytes()
+
+
+def test_rm_dangling_symlink_remains_unconfirmed(project, tmp_path):
+    project.id, project.entity, project.files = None, None, ["docs/missing.md"]
+    project.local, project.dry_run = True, False
+    (tmp_path / ".ids/excluded.json").write_text('["missing.md"]')
+    link = tmp_path / "docs/missing.md"
+    try:
+        link.symlink_to("absent")
+    except OSError:
+        pytest.skip("symlink unavailable")
+    result = cli.run_rm(project)
+    assert result.exit_code and result.data["documents"] == [] and link.is_symlink()
+
+
+def test_http_error_omits_signed_url():
+    import requests
+    from elab_doc_sync.result import error_text
+    reply = requests.Response()
+    reply.status_code = 403
+    assert error_text(requests.HTTPError("https://server/?sig=secret", response=reply)) == "HTTP 403（権限がありません）"

@@ -16,7 +16,7 @@ import html as _html
 from pathlib import Path
 from urllib.parse import unquote
 
-from .result import progress, redact
+from .result import progress, error_text
 from .safety import atomic_write, write_json, safe_path, snapshot, local_transaction
 from .client import ELabFTWClient
 from .config import TargetConfig
@@ -1124,16 +1124,12 @@ def _sync_links(client: ELabFTWClient, entity_type: str, entity_id: int, desired
 
 
 def _error_text(client, exc):
-    """通信例外に含まれる認証情報を表示前に除く。"""
-    return redact(str(exc), getattr(client, "api_key", None))
+    return error_text(exc, getattr(client, "api_key", None))
 
 
 def _describe_error(exc):
-    """利用者向けの失敗理由。HTTP エラーはステータスのみ（URL やヘッダーは出さない）。"""
-    status = getattr(getattr(exc, "response", None), "status_code", None)
-    if status is not None:
-        reason = {401: "認証エラー", 403: "権限がありません", 404: "見つかりません"}.get(status, "")
-        return f"HTTP {status}" + (f"（{reason}）" if reason else "")
+    if getattr(getattr(exc, "response", None), "status_code", None) is not None:
+        return error_text(exc)
     return type(exc).__name__
 
 
@@ -1644,7 +1640,7 @@ class EachDocsSyncer:
         except Exception as exc:
             status = getattr(getattr(exc, "response", None), "status_code", None)
             result.update(state="リモート削除" if status == 404 else "確認失敗",
-                          error=redact(str(exc), getattr(self.client, "api_key", None)))
+                          error=_error_text(self.client, exc))
         return result
 
     def file_path(self, filename):

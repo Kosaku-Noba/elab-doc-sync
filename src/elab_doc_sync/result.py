@@ -108,3 +108,12 @@ def redact(text: str, *secrets: str | None) -> str:
             if variant:
                 text = text.replace(variant, "***")
     return text
+
+
+def error_text(exc: Exception, api_key: str | None = None) -> str:
+    """HTTP エラーは URL を省き、それ以外の例外文では接続先の API キーを伏せる。"""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status is not None:
+        reason = {401: "認証エラー", 403: "権限がありません", 404: "見つかりません"}.get(status)
+        return f"HTTP {status}" + (f"（{reason}）" if reason else "")
+    return redact(str(exc), api_key)
