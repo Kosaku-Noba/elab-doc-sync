@@ -556,9 +556,12 @@ def _rewrite_local_links(body: str, entity: str, base_url: str,
         # 0. 全ターゲットの対応があれば、それだけで解決する（接続先の異なる紐付けは除外済み）
         if links is not None and source is not None:
             named_path = Path(source).parent / link_path
-            url = links.url_for(named_path)
-            if url is None and not named_path.exists() and Path(link_path).name == link_path:
-                url = links.url_for_name(link_path, entity)
+            try:
+                url = links.url_for(named_path)
+                if url is None and Path(link_path).name == link_path and not named_path.exists():
+                    url = links.url_for_name(link_path, entity)
+            except (OSError, ValueError, RuntimeError):
+                return m.group(0)
             return f"[{text}]({url}{fragment_suffix})" if url is not None else m.group(0)
 
         # パスからファイル名を抽出
@@ -1297,7 +1300,7 @@ class EachDocsSyncer:
                 mapping = {name: eid for name, eid in contents.items()
                            if (self.docs_dir / name).is_file()}
         if not isinstance(mapping, dict) or not all(isinstance(n, str) and Path(n).name == n and n not in ("", ".", "..")
-                                                    and isinstance(e, int) and e > 0 for n, e in mapping.items()):
+                                                    and type(e) is int and e > 0 for n, e in mapping.items()):
             raise ValueError(f"紐付け情報の形式が不正です: {self.mapping_file}")
         if len(set(mapping.values())) != len(mapping):
             raise ValueError("同じリモートIDに複数文書が紐付いています。紐付けを修正してください")

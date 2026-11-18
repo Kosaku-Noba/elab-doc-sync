@@ -17,6 +17,8 @@
 
 旧 `mapping.json` とハッシュ情報は読み込めます。旧共有mappingからターゲット別mappingへ移行するときはバックアップを作成します。`status`・`diff`・`--dry-run` は移行による書き込みを行いません。
 
+移行対象に重複 ID や不正な ID がある場合は、新しい紐付けの保存前に止まります。旧 `.elab-sync-ids/mapping.json` の各ファイル名と正の整数 ID を確認し、同じ記事に複数文書が紐付いていないか確認してください。
+
 ```bash
 esync status
 esync diff

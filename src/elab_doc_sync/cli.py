@@ -861,6 +861,15 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
         raise ConflictError(f"{filename} は別のIDに紐付いています")
     if old_path and old_path != filepath and filepath.exists() and filepath not in outputs.released:
         raise ConflictError(f"リネーム先 {filename} が既に存在するため変更をスキップします")
+    # 同期前からある本文が、添付取得中に編集されても旧内容で処理しない。
+    tracked_path = old_path or filepath
+    initial_digest = _compute_file_hash(tracked_path) if tracked_path.is_file() else None
+
+    def check_local_body():
+        digest = _compute_file_hash(tracked_path) if tracked_path.is_file() else None
+        if digest != initial_digest:
+            raise ConflictError(f"取得中に本文が変更されました: {tracked_path}")
+
     uploads = client.list_uploads(entity_type, eid)
     body_md = _remote_markdown(data, target)
     if target.attachments_dir:
@@ -916,12 +925,14 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
         if target.attachments_dir:
             _download_attachments(entity_type, eid, client, project_root / target.attachments_dir, strict=True,
                                   keep_existing=merge, uploads=uploads, exclusive_paths=exclusive_paths)
+        check_local_body()
         local_md, conflicts = body_md, 0
         if merge:
             local_md, conflicts = merge_text(syncer.load_base(old_name), old_path.read_text(encoding="utf-8").strip(),
                                              body_md, remote_label=f"#{eid}")
         atomic_write(filepath, local_md + "\n", exclusive=filepath in exclusive_paths)
         if old_path and old_path != filepath:
+            check_local_body()
             old_path.unlink(missing_ok=True)
         if not is_temp_export:
             applied_links = syncer.applied_links(old_name or filename)

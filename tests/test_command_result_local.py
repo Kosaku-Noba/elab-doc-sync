@@ -616,3 +616,32 @@ def test_unreadable_target_never_redirects_explicit_link(tmp_path):
     links.add("items", 9, tmp_path / "b/ref.md")
     body = "[reference](../a/ref.md)"
     assert _rewrite_local_links(body, "items", links.base_url, {}, source=tmp_path / "c/doc.md", links=links) == body
+
+
+def test_rename_source_edited_while_fetching_is_preserved(project, tmp_path):
+    config = Path(project.config)
+    settings = yaml.safe_load(config.read_text())
+    settings["targets"][0]["attachments_dir"] = "assets"
+    config.write_text(yaml.safe_dump(settings))
+    project.target, project.entity, project.id, project.dir = "docs", "items", [42], None
+    project.force, project.dry_run = False, False
+    original = tmp_path / "docs/note.md"
+    with patch.object(cli, "ELabFTWClient") as factory:
+        client = factory.return_value
+        client.base_url = "https://example.invalid"
+        target = cli.load_config(config).targets[0]
+        cli.EachDocsSyncer(client, target, tmp_path)._save_baseline(
+            "note.md", "# note", {"title": "note", "body": "# note"}, [], base="# note")
+        client.get_item.return_value = {"title": "renamed", "body": "new body"}
+        client.list_uploads.return_value = [{"id": 7, "real_name": "data.csv"}]
+
+        def download(**kwargs):
+            original.write_text("editor save")
+            return b"csv"
+
+        client.download_upload.side_effect = download
+        res = cli.run_pull(project)
+    assert res.exit_code == 1
+    assert original.read_text() == "editor save"
+    assert not (tmp_path / "docs/renamed.md").exists()
+    assert json.loads((tmp_path / ".ids/mapping.json").read_text()) == {"note.md": 42}
