@@ -238,3 +238,15 @@ YAML 設定読み込み・バリデーション。
 | `run_category` | `action`。list は `entity`・`categories`（`id`・`title`）、show は `entity`・`entity_id`・`category`（`id`・`title` または null）、set は `entity`・`entity_id`・`dry_run`・`category_id`・`result`（`set`/`already`/`would_set`） |
 | `run_entity_status(args, echo=None, confirm=None)` | `action`・`dry_run`・`unsynced_targets`、`entities`（`target`・`entity`・`entity_id`。show は `status`、set は `result`: `changed`/`would_change`/`already` と dry-run 時の `current`）、set は `status_id`、確認で中止したとき `cancelled`。`--id` なしで複数件を変更するときは `confirm(prompt) -> bool` で確認し、`confirm` が None なら変更せず `ValueError` |
 | `run_new` | list は `templates`（`id`・`title`）。作成は `path`・`title`・`template_id`・`template_title`・`dry_run`・`created` |
+
+| ローカル操作 | 主な `data` |
+|---|---|
+| `run_push` | ターゲット別の更新・スキップ・失敗件数。dry-run では `targets[].documents` にファイル名、変更の有無、ID、添付種別ごとの件数 |
+| `run_pull` | `documents` に取得、取得予定、スキップ、エラーの明細。`conflict_files` は競合を残したパス |
+| `run_diff` | `documents` にパス、ID、状態と該当する差分行（`local_diff`、`remote_diff`、旧形式の `direct_diff`）。`has_diff` は全体の差分の有無 |
+| `run_clone` | 作成先 `path`、サーバー、種別、ID ごとの結果。実際に作成した場合の件数は `cloned` |
+| `run_link` / `run_mv` | 紐付け先パスと ID、または移動元・移動先と ID |
+| `run_rm` | `documents` に追跡解除の対象、`local` にファイル削除の指定 |
+| `run_restore` | バックアップ ID と復元対象の `paths` |
+
+各変更操作は `dry_run` を結果に含める。CLI と直接呼び出しの両方で、本実行時には同じプロジェクトロックと復旧チェックが働く。途中まで成功した `pull` や `clone` は終了コードと文書ごとの結果を併せて確認する。

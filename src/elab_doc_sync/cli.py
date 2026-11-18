@@ -19,7 +19,7 @@ from .config import load_config, BODY_FORMAT_INIT, _read_yaml_text, update_targe
 from .merge import merge_text
 from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
 from . import sync_log
-from .result import CommandResult, cli_echo, redact, returns_partial_result
+from .result import CommandResult, cli_echo, progress, redact, returns_partial_result
 from . import update_check
 
 DEFAULT_CONFIG = ".elab-sync.yaml"
@@ -109,7 +109,7 @@ def _relink_local_documents(syncers):
         for syncer, name, path, relinked in changes:
             atomic_write(path, relinked + "\n")
             syncer._refresh_local_hash(name, relinked)
-            print(f"  [{path.stem}] 文書間リンクをローカルのパスに更新")
+            progress(f"  [{path.stem}] 文書間リンクをローカルのパスに更新")
 
 
 def _score_target_match(target, remote_tags: list[str], remote_category: str | None, remote_title: str) -> float:
@@ -242,7 +242,9 @@ def _find_target_by_mapping(config, project_root: Path, entity_type: str, entity
 
 
 @project_command
-def cmd_sync(args):
+@returns_partial_result
+def run_push(args, echo=None) -> CommandResult:
+    res = CommandResult(data={"dry_run": args.dry_run, "targets": []}, echo=echo)
     config_path = Path(args.config)
     project_root = config_path.parent or Path(".")
     config = load_config(config_path)
@@ -255,48 +257,60 @@ def cmd_sync(args):
         try:
             selected = _select_documents(pairs, files, _compile_regexes(regex_expressions))
         except ValueError as e:
-            print(f"エラー: {e}", file=sys.stderr)
-            return 2
+            return res.fail(f"エラー: {e}", 2)
     for index, (target, syncer) in enumerate(pairs):
         only = None if selected is None else selected.get(index)
         if selected is not None and not only:
             continue
 
+        summary = {"target": target.title or target.docs_dir, "entity": target.entity}
+        res.data["targets"].append(summary)
         if args.dry_run:
             entity_label = "実験ノート" if target.entity == "experiments" else "リソース"
             att_dir = (project_root / target.attachments_dir) if target.attachments_dir else None
             att_count = _count_local_attachments(att_dir)
             att_str = f"  添付: {att_count}件" if att_count else ""
             results = syncer.dry_run(only=only)
+            summary["documents"] = results
             if not results:
-                print(f"  [each: {target.docs_dir}] ドキュメントなし")
+                res.say(f"  [each: {target.docs_dir}] ドキュメントなし")
                 continue
             for r in results:
                 status = "変更あり" if r["changed"] else "変更なし（スキップ）"
                 dest = f"{entity_label} #{r['entity_id']}" if r["entity_id"] else f"新しい{entity_label}"
                 video_str = f"  動画: {r['videos']}件" if r.get("videos") else ""
                 flink_str = f"  リンクファイル: {r['file_links']}件" if r.get("file_links") else ""
-                print(f"  [{r['title']}] {status}")
-                print(f"    画像: {r['images']}件{video_str}{flink_str}{att_str}  → {dest}")
+                res.say(f"  [{r['title']}] {status}")
+                res.say(f"    画像: {r['images']}件{video_str}{flink_str}{att_str}  → {dest}")
             continue
 
         try:
-            updated += syncer.sync(force=args.force, prune_attachments=args.prune_attachments, only=only)
+            count = syncer.sync(force=args.force, prune_attachments=args.prune_attachments, only=only)
+            summary.update(updated=count, failed=syncer.failures, skipped=syncer.skipped)
+            updated += count
             failed += syncer.failures
             skipped += syncer.skipped
         except ConflictError as e:
+            summary["error"] = str(e)
             failed += 1
-            print(f"  ⚠ 競合検出: {e}", file=sys.stderr)
+            res.warn(f"  ⚠ 競合検出: {e}")
         except Exception as e:
+            summary["error"] = str(e)
             failed += 1
             label = target.title or f"each: {target.docs_dir}"
-            print(f"  [{label}] エラー: {e}", file=sys.stderr)
+            res.warn(f"  [{label}] エラー: {e}")
         if (project_root / RECOVERY).exists():
             break
 
     if not args.dry_run:
-        print(f"\n完了: {updated} 件更新、{skipped} 件スキップ、{failed} 件失敗")
-    return 1 if failed else 0
+        res.say(f"\n完了: {updated} 件更新、{skipped} 件スキップ、{failed} 件失敗")
+    res.data.update(updated=updated, skipped=skipped, failed=failed)
+    res.exit_code = int(bool(failed))
+    return res
+
+
+def cmd_sync(args):
+    return run_push(args, echo=cli_echo).exit_code
 
 
 @returns_partial_result
@@ -418,11 +432,12 @@ def _sync_remote_metadata_to_yaml(client, config, config_path, target, entity_ty
 
 
 @project_command
-def cmd_pull(args):
+@returns_partial_result
+def run_pull(args, echo=None, choose_target=None) -> CommandResult:
     """Fetch remote changes without replacing unsynchronized local edits."""
+    res = CommandResult(data={"dry_run": getattr(args, "dry_run", False), "documents": []}, echo=echo)
     if args.id and not getattr(args, "entity", None):
-        print("エラー: --id 指定時は --entity も指定してください", file=sys.stderr)
-        raise SystemExit(2)
+        return res.fail("エラー: --id 指定時は --entity も指定してください", 2)
     config_path = Path(args.config).resolve()
     root = config_path.parent
     config = load_config(config_path)
@@ -460,12 +475,13 @@ def cmd_pull(args):
                         if target is None:
                             if getattr(args, "auto", False):
                                 target = max(candidates, key=lambda t: _score_target_match(t, tags, data.get("category_title") or data.get("category"), data.get("title", "")))
-                            elif dry_run:
-                                print(f"  #{eid}: 保存先の選択が必要です（--target または --auto）")
+                            elif dry_run or choose_target is None:
+                                res.say(f"  #{eid}: 保存先の選択が必要です（--target または --auto）")
+                                res.data["documents"].append({"entity_id": eid, "entity": entity, "result": "needs_target"})
                                 skipped += 1
                                 continue
                             else:
-                                target = _resolve_pull_target_interactive(config, entity, data.get("title", ""))
+                                target = choose_target(config, entity, data.get("title", ""))
                                 if target == "SKIP":
                                     skipped += 1
                                     continue
@@ -480,14 +496,15 @@ def cmd_pull(args):
                         from dataclasses import asdict
                         append_target_to_yaml(config_path, asdict(target))
                         config.targets.append(target)
-                    print(f"  新規ターゲット{'予定' if dry_run else '追加'}: {folder}")
+                    res.say(f"  新規ターゲット{'予定' if dry_run else '追加'}: {folder}")
                 # Never reuse data fetched with another target's credentials.
                 if source is not None and get_client_for_target(config, source) != get_client_for_target(config, target):
                     client = _make_client_for_target(config, target)
                     data = client.get_experiment(eid) if entity == "experiments" else client.get_item(eid)
                 jobs.append((client, target, eid, data))
             except Exception as exc:
-                print(f"  #{eid} の取得に失敗: {exc}", file=sys.stderr)
+                res.data["documents"].append({"entity": entity, "entity_id": eid, "error": str(exc)})
+                res.warn(f"  #{eid} の取得に失敗: {exc}")
                 failed += 1
     else:
         for target in targets:
@@ -500,27 +517,41 @@ def cmd_pull(args):
                 try:
                     jobs.append((client, target, eid, syncer._get_entity(eid)))
                 except Exception as exc:
-                    print(f"  #{eid} の取得に失敗: {exc}", file=sys.stderr)
+                    res.data["documents"].append({"entity": target.entity, "target": target.docs_dir, "entity_id": eid, "error": str(exc)})
+                    res.warn(f"  #{eid} の取得に失敗: {exc}")
                     failed += 1
     for client, target, eid, data in jobs:
+        doc = {"target": target.docs_dir, "entity": target.entity, "entity_id": eid, "server": client.base_url}
+        res.data["documents"].append(doc)
         try:
             result = _pull_entity_to_target(client, config, config_path, target, root, eid, data, target.entity,
                                             args.force, export, dry_run=dry_run, conflict_files=conflict_files)
+            doc["result"] = ("would_pull" if dry_run else "pulled") if result else "skipped"
             pulled += result
             skipped += int(result == 0)
         except Exception as exc:
-            print(f"  #{eid} の取得に失敗: {exc}", file=sys.stderr)
+            doc["error"] = str(exc)
+            res.warn(f"  #{eid} の取得に失敗: {exc}")
             failed += 1
             if (root / RECOVERY).exists():
                 break
     if pulled and not dry_run and not export:
         _relink_local_documents(_link_syncers(config, root))
-    print(f"\n{'確認' if dry_run else '完了'}: {pulled} 件取得{'予定' if dry_run else ''}、{skipped} 件スキップ、{failed} 件失敗")
+    res.say(f"\n{'確認' if dry_run else '完了'}: {pulled} 件取得{'予定' if dry_run else ''}、{skipped} 件スキップ、{failed} 件失敗")
     if conflict_files:
-        print(f"競合マーカーが残っている文書: {len(conflict_files)} 件")
+        res.say(f"競合マーカーが残っている文書: {len(conflict_files)} 件")
         for path in conflict_files:
-            print(f"  {path}")
-    return 1 if failed or conflict_files else 0
+            res.say(f"  {path}")
+    res.data.update(pulled=pulled, skipped=skipped, failed=failed, conflict_files=[str(p) for p in conflict_files])
+    res.exit_code = int(bool(failed or conflict_files))
+    return res
+
+
+def cmd_pull(args):
+    result = run_pull(args, echo=cli_echo, choose_target=_resolve_pull_target_interactive)
+    if result.exit_code == 2:
+        raise SystemExit(result.exit_code)
+    return result.exit_code
 
 
 def _find_target_by_dir(config, entity_type: str, project_root: Path, pull_dir: Path):
@@ -631,18 +662,18 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
             merge = state == "競合" and not is_temp_export
             metadata_pending = merge and syncer._has_meta_changed(old_name, Path(old_name).stem, target.category, target.tags)
             if merge and dry_run:
-                print(f"  [{title}] #{eid} → {filepath}（ローカル編集とマージ予定）")
+                progress(f"  [{title}] #{eid} → {filepath}（ローカル編集とマージ予定）")
                 return 1
             if state == "送信待ち":
-                print(f"  [{title}] ローカル編集を保持（送信待ち）")
+                progress(f"  [{title}] ローカル編集を保持（送信待ち）")
                 return 0
             if state == "最新" and old_path == filepath:
-                print(f"  [{title}] 最新（スキップ）")
+                progress(f"  [{title}] 最新（スキップ）")
                 return 0
     elif filepath.exists() and not force:
         raise ConflictError(f"{filename}: 既にローカルに存在、基準情報なし。--force の前に差分を確認してください")
     if dry_run:
-        print(f"  [{title}] #{eid} → {filepath}（取得予定）")
+        progress(f"  [{title}] #{eid} → {filepath}（取得予定）")
         return 1
     paths = [docs_dir] if is_temp_export else syncer.backup_paths()
     if target.attachments_dir:
@@ -691,26 +722,26 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
         sync_log.record(project_root / sync_log.DEFAULT_LOG_PATH, action="pull", target=title,
                         entity=entity_type, entity_id=eid, files=[filename])
     if conflicts:
-        print(f"  [{title}] #{eid} → {filepath}（競合 {conflicts} 箇所。マーカーを解消してから push してください）")
+        progress(f"  [{title}] #{eid} → {filepath}（競合 {conflicts} 箇所。マーカーを解消してから push してください）")
         if conflict_files is not None:
             conflict_files.append(filepath)
     elif merge:
-        print(f"  [{title}] #{eid} → {filepath}（ローカル編集とマージしました。push で送信してください）")
+        progress(f"  [{title}] #{eid} → {filepath}（ローカル編集とマージしました。push で送信してください）")
     else:
-        print(f"  [{title}] #{eid} → {filepath}")
+        progress(f"  [{title}] #{eid} → {filepath}")
     return 1
 
 
-def _show_diff(old_text, new_text, old_label, new_label, indent="    "):
-    """unified diff を字下げして表示。差分がなければ False を返す。"""
+def _show_diff(old_text, new_text, old_label, new_label):
+    """unified diff の各行を表示して返す。"""
     diff = list(difflib.unified_diff(old_text.splitlines(), new_text.splitlines(),
                                      fromfile=old_label, tofile=new_label, lineterm=""))
     for line in diff:
-        print(f"{indent}{line}")
-    return bool(diff)
+        progress(f"    {line}")
+    return diff
 
 
-def _show_document_diff(syncer, target, filename, eid, data, uploads, local_path, mapping, links):
+def _show_document_diff(syncer, target, filename, eid, data, uploads, local_path, mapping, links, doc):
     """1文書の差分を「ローカルの変更」と「eLabFTW 側の変更」に分けて表示する。差分があれば True。
 
     どちらも前回の同期時点と比べるため、eLabFTW が保存時に本文を書き換えた分
@@ -722,30 +753,35 @@ def _show_document_diff(syncer, target, filename, eid, data, uploads, local_path
     if synced_local is None:
         remote_md = syncer.remote_base(data, uploads, eid, mapping, links, local_path)
         if remote_md != local_md:
-            print("  ローカルと eLabFTW の本文の差（前回同期時の本文が未記録のため直接比較。"
+            progress("  ローカルと eLabFTW の本文の差（前回同期時の本文が未記録のため直接比較。"
                   "eLabFTW による書き換えも差分に出ます）:")
-            shown = _show_diff(remote_md, local_md, "eLabFTW", "ローカル")
+            doc["direct_diff"] = _show_diff(remote_md, local_md, "eLabFTW", "ローカル")
+            shown = bool(doc["direct_diff"])
     elif synced_local.strip() != local_md:
-        print("  ローカルの変更（前回の同期 → 現在のファイル）:")
-        shown = _show_diff(synced_local.strip(), local_md, "前回の同期", "ローカル")
+        progress("  ローカルの変更（前回の同期 → 現在のファイル）:")
+        doc["local_diff"] = _show_diff(synced_local.strip(), local_md, "前回の同期", "ローカル")
+        shown = bool(doc["local_diff"])
     lines, old_body, new_body = syncer.describe_remote_changes(filename, data, uploads)
     if old_body is not None and old_body != new_body:
         old_md = _remote_markdown({"body": old_body, "content_type": data.get("content_type")}, target)
         new_md = _remote_markdown(data, target)
     else:
         old_md = new_md = None
+    doc["remote_changes"] = lines
     if lines or old_md != new_md:
-        print("  eLabFTW 側の変更（前回の同期 → 現在の eLabFTW）:")
+        progress("  eLabFTW 側の変更（前回の同期 → 現在の eLabFTW）:")
         for line in lines:
-            print(f"    {line}")
+            progress(f"    {line}")
         if old_md != new_md:
-            _show_diff(old_md, new_md, "前回の同期", "eLabFTW")
+            doc["remote_diff"] = _show_diff(old_md, new_md, "前回の同期", "eLabFTW")
         shown = True
     return shown
 
 
-def cmd_diff(args):
+@returns_partial_result
+def run_diff(args, echo=None) -> CommandResult:
     """ローカルと eLabFTW の差分を、前回の同期からの変更として文書ごとに表示する。"""
+    res = CommandResult(data={"documents": []}, echo=echo)
     config_path = Path(args.config)
     project_root = (config_path.parent or Path(".")).resolve()
     config = load_config(config_path)
@@ -756,8 +792,7 @@ def cmd_diff(args):
         try:
             selected = _select_documents(pairs, files, _compile_regexes(regex_expressions))
         except ValueError as e:
-            print(f"エラー: {e}", file=sys.stderr)
-            return 2
+            return res.fail(f"エラー: {e}", 2)
 
     has_diff = failed = False
     for index, (target, syncer) in enumerate(pairs):
@@ -773,41 +808,53 @@ def cmd_diff(args):
                 label = local_path.resolve().relative_to(project_root).as_posix()
             except ValueError:
                 label = str(local_path)
+            doc = {"path": label, "entity": target.entity, "entity_id": eid}
+            res.data["documents"].append(doc)
             if eid is None:
-                print(f"━━ {label}（未追跡）━━\n  push で eLabFTW に新規作成されます\n")
+                doc["state"] = "未追跡"
+                res.say(f"━━ {label}（未追跡）━━\n  push で eLabFTW に新規作成されます\n")
                 has_diff = True
                 continue
-            print(f"━━ {label}（{target.entity} #{eid}）━━")
+            res.say(f"━━ {label}（{target.entity} #{eid}）━━")
             if not local_path.is_file():
-                print("  ローカルにファイルなし（eLabFTW にのみ存在）\n")
+                doc["state"] = "ローカルにファイルなし"
+                res.say("  ローカルにファイルなし（eLabFTW にのみ存在）\n")
                 has_diff = True
                 continue
             try:
                 data = syncer._get_entity(eid)
                 uploads = syncer.client.list_uploads(target.entity, eid)
             except Exception as e:
+                doc["error"] = str(e)
                 failed = True
-                print(f"  eLabFTW #{eid} の取得に失敗: {e}\n", file=sys.stderr)
+                res.warn(f"  eLabFTW #{eid} の取得に失敗: {e}\n")
                 continue
             result = syncer.inspect(filename, eid, data, uploads)
-            print(f"  状態: {result['state']}")
+            doc["state"] = result["state"]
+            res.say(f"  状態: {result['state']}")
             syncer._print_next_actions(result["state"], filename, eid)
-            if _show_document_diff(syncer, target, filename, eid, data, uploads, local_path, mapping, links):
+            if _show_document_diff(syncer, target, filename, eid, data, uploads, local_path, mapping, links, doc):
                 has_diff = True
             elif result.get("local_changed"):
                 # Body unchanged, but images, attachments or settings (tags, category, format) changed.
-                print("  本文の差分なし（画像・添付ファイル、または設定のタグ・カテゴリ・本文形式が変わっています。push で送信されます）")
+                res.say("  本文の差分なし（画像・添付ファイル、または設定のタグ・カテゴリ・本文形式が変わっています。push で送信されます）")
                 has_diff = True
             elif result["state"] != "最新":
-                print("  本文の差分なし")
+                res.say("  本文の差分なし")
                 has_diff = True
             else:
-                print("  差分なし")
-            print()
+                res.say("  差分なし")
+            res.say()
 
     if not has_diff and not failed:
-        print("すべて最新です")
-    return int(failed)
+        res.say("すべて最新です")
+    res.data["has_diff"] = has_diff
+    res.exit_code = int(failed)
+    return res
+
+
+def cmd_diff(args):
+    return run_diff(args, echo=cli_echo).exit_code
 
 
 def _template_dir():
@@ -892,30 +939,32 @@ def cmd_init(args):
 
 
 @project_command
-def cmd_clone(args):
+@returns_partial_result
+def run_clone(args, echo=None) -> CommandResult:
     """リモートの eLabFTW エンティティからローカルプロジェクトを構築する。"""
     import os as _os
+
+    res = CommandResult(data={"dry_run": getattr(args, "dry_run", False), "documents": []}, echo=echo)
 
     url = args.url.rstrip("/")
     api_key = _os.environ.get("ELABFTW_API_KEY", "").strip()
     if not api_key:
-        print("エラー: 環境変数 ELABFTW_API_KEY を設定してください", file=sys.stderr)
-        sys.exit(1)
+        return res.fail("エラー: 環境変数 ELABFTW_API_KEY を設定してください")
 
     entity = _normalize_entity(args.entity)
     ids = args.id
     project_dir = Path(args.dir or f"elab-clone-{ids[0]}")
+    res.data.update(path=str(project_dir), entity=entity, server=url)
     docs_dir = "docs/"
 
     # 既存ディレクトリへの上書き防止
     dir_created = False
     if project_dir.exists() and any(project_dir.iterdir()):
-        print(f"エラー: {project_dir} は既に存在し、空ではありません", file=sys.stderr)
-        sys.exit(1)
+        return res.fail(f"エラー: {project_dir} は既に存在し、空ではありません")
     if not project_dir.exists():
         dir_created = True
 
-    print(f"=== esync clone: {url} ===\n")
+    res.say(f"=== esync clone: {url} ===\n")
 
     client = ELabFTWClient(url, api_key, verify_ssl=not args.no_verify)
     get_fn = client.get_experiment if entity == "experiments" else client.get_item
@@ -926,15 +975,20 @@ def cmd_clone(args):
         preview_syncer = EachDocsSyncer(client, preview_target, project_dir)
         failed = False
         for eid in ids:
+            doc = {"entity_id": eid}
+            res.data["documents"].append(doc)
             try:
                 data = get_fn(eid)
                 _pull_each_entity(client, preview_syncer, preview_target, project_dir.resolve(),
                                   (project_dir / docs_dir).resolve(), {}, {}, eid, data, entity,
                                   False, False, dry_run=True)
+                doc["result"] = "would_clone"
             except Exception as exc:
+                doc["error"] = str(exc)
                 failed = True
-                print(f"  #{eid} の確認に失敗: {exc}", file=sys.stderr)
-        return int(failed)
+                res.warn(f"  #{eid} の確認に失敗: {exc}")
+        res.exit_code = int(failed)
+        return res
 
     # プロジェクトディレクトリ作成
     project_dir.mkdir(parents=True, exist_ok=True)
@@ -948,7 +1002,7 @@ def cmd_clone(args):
     }
     config_path = project_dir / ".elab-sync.yaml"
     atomic_write(config_path, yaml.dump(config_data, default_flow_style=False, allow_unicode=True))
-    print(f"  {config_path} を作成しました")
+    res.say(f"  {config_path} を作成しました")
 
     # エンティティ取得・保存
     target = __import__("elab_doc_sync.config", fromlist=["TargetConfig"]).TargetConfig(
@@ -961,18 +1015,24 @@ def cmd_clone(args):
     cloned = 0
 
     for eid in ids:
+        doc = {"entity_id": eid}
+        res.data["documents"].append(doc)
         try:
             data = get_fn(eid)
         except Exception as e:
-            print(f"  {entity_label} #{eid} の取得に失敗: {e}", file=sys.stderr)
+            doc["error"] = str(e)
+            res.warn(f"  {entity_label} #{eid} の取得に失敗: {e}")
             continue
 
         try:
-            cloned += _pull_each_entity(client, syncer, target, project_dir.resolve(), docs_path.resolve(),
+            count = _pull_each_entity(client, syncer, target, project_dir.resolve(), docs_path.resolve(),
                                         mapping, {v: k for k, v in mapping.items()}, eid, data, entity,
                                         False, False)
+            cloned += count
+            doc["result"] = "cloned" if count else "skipped"
         except Exception as exc:
-            print(f"  #{eid} の取得に失敗: {exc}", file=sys.stderr)
+            doc["error"] = str(exc)
+            res.warn(f"  #{eid} の取得に失敗: {exc}")
             if (project_dir / RECOVERY).exists():
                 raise
 
@@ -986,8 +1046,7 @@ def cmd_clone(args):
                 p.unlink(missing_ok=True)
             shutil.rmtree(docs_path, ignore_errors=True)
             shutil.rmtree(project_dir / ".elab-sync-ids", ignore_errors=True)
-        print("\nエラー: エンティティを1件も取得できませんでした", file=sys.stderr)
-        sys.exit(1)
+        return res.fail("\nエラー: エンティティを1件も取得できませんでした")
 
     syncer._save_mapping(mapping)
 
@@ -996,11 +1055,20 @@ def cmd_clone(args):
     if not gitignore.exists():
         gitignore.write_text(".elab-sync-ids/\n.elab-sync.yaml\n.elab-sync-backups/\n.elab-sync-operations/\n.elab-sync-recovery.json\n")
 
-    print(f"\n✅ プロジェクトを作成しました: {project_dir}/ ({cloned} 件)")
-    print(f"   API キーを設定してください:")
-    print(f"     環境変数: export ELABFTW_API_KEY=\"your_key\"")
-    print(f"     または {config_path} の elabftw.api_key に記入")
-    return 0 if cloned == len(ids) else 1
+    res.say(f"\n✅ プロジェクトを作成しました: {project_dir}/ ({cloned} 件)")
+    res.say(f"   API キーを設定してください:")
+    res.say(f"     環境変数: export ELABFTW_API_KEY=\"your_key\"")
+    res.say(f"     または {config_path} の elabftw.api_key に記入")
+    res.data["cloned"] = cloned
+    res.exit_code = int(cloned != len(ids))
+    return res
+
+
+def cmd_clone(args):
+    result = run_clone(args, echo=cli_echo)
+    if result.exit_code and not result.data.get("cloned") and not result.data["dry_run"]:
+        raise SystemExit(result.exit_code)
+    return result.exit_code
 
 
 REPO_URL = update_check.REPO_URL
@@ -1664,7 +1732,9 @@ def _select_target(config, name):
 
 
 @project_command
-def cmd_link(args):
+@returns_partial_result
+def run_link(args, echo=None) -> CommandResult:
+    res = CommandResult(data={"dry_run": getattr(args, "dry_run", False)}, echo=echo)
     dry_run = getattr(args, "dry_run", False)
     config_path = Path(args.config).resolve()
     config = load_config(config_path)
@@ -1674,6 +1744,7 @@ def cmd_link(args):
     syncer = _make_syncer(_make_client_for_target(config, target), target, config_path.parent)
     syncer.link_syncers = _link_syncers(config, config_path.parent)
     path = safe_path(syncer.docs_dir, args.file)
+    res.data.update(path=str(path), entity=target.entity, entity_id=args.entity_id, new=getattr(args, "new", False))
     filename = path.name
     if not path.is_file():
         raise ValueError(f"ローカル文書が見つかりません: {path}")
@@ -1683,7 +1754,7 @@ def cmd_link(args):
     if getattr(args, "new", False):
         if args.entity_id is not None or filename in mapping:
             raise ValueError("--new はID未指定かつ未追跡の文書にのみ使用できます")
-        print(f"  {filename}: リモートに対応記事がないことを確認済みとして、新規作成を再開します")
+        res.say(f"  {filename}: リモートに対応記事がないことを確認済みとして、新規作成を再開します")
         if not dry_run:
             with local_transaction(config_path.parent, [syncer.hash_dir], "link --new:新規追跡"):
                 write_json(syncer.hash_dir / "excluded.json", sorted(syncer._load_excluded() - {filename}))
@@ -1691,12 +1762,12 @@ def cmd_link(args):
                 pending.pop(filename, None)
                 syncer._save_pending(pending)
                 syncer._receipt_path(filename).unlink(missing_ok=True)
-        return 0
+        return res
     data = syncer._get_entity(args.entity_id)
     uploads = syncer.client.list_uploads(target.entity, args.entity_id)
-    print(f"  {path} → #{args.entity_id} {'紐付け予定' if dry_run else '追跡再開'}")
+    res.say(f"  {path} → #{args.entity_id} {'紐付け予定' if dry_run else '追跡再開'}")
     if dry_run:
-        return 0
+        return res
     mapping[filename] = args.entity_id
     normalized = _normalize_remote_image_urls(_remote_markdown(data, target), target.entity, args.entity_id,
                                               syncer.client, uploads=uploads)
@@ -1715,11 +1786,17 @@ def cmd_link(args):
         pending = syncer._pending()
         pending.pop(filename, None)
         syncer._save_pending(pending)
-    return 0
+    return res
+
+
+def cmd_link(args):
+    return run_link(args, echo=cli_echo).exit_code
 
 
 @project_command
-def cmd_mv(args):
+@returns_partial_result
+def run_mv(args, echo=None) -> CommandResult:
+    res = CommandResult(data={"dry_run": args.dry_run}, echo=echo)
     config_path = Path(args.config).resolve()
     config = load_config(config_path)
     old_path, new_path = Path(args.old).absolute(), Path(args.new).absolute()
@@ -1751,16 +1828,21 @@ def cmd_mv(args):
         raise ValueError("移動先に追跡・除外情報があります")
     if syncer._pending():
         raise ValueError("未完了の同期を解決してからmvしてください")
-    print(f"  {old_path} → {new_path}（リモートタイトルは次回pushで更新）")
+    res.say(f"  {old_path} → {new_path}（リモートタイトルは次回pushで更新）")
+    res.data.update(old=str(old_path), new=str(new_path), entity_id=mapping[old_path.name])
     if args.dry_run:
-        return 0
+        return res
     with local_transaction(config_path.parent, syncer.backup_paths(), "mv:文書の移動"):
         if old_path.exists():
             new_path.parent.mkdir(parents=True, exist_ok=True)
             old_path.rename(new_path)
         if old_path.name != new_path.name:
             syncer.move_tracking(old_path.name, new_path.name, mapping)
-    return 0
+    return res
+
+
+def cmd_mv(args):
+    return run_mv(args, echo=cli_echo).exit_code
 
 
 @returns_partial_result
@@ -1779,9 +1861,15 @@ def cmd_backup(args):
 
 
 @project_command
+@returns_partial_result
+def run_restore(args, echo=None) -> CommandResult:
+    res = CommandResult(data={"backup_id": args.backup_id, "dry_run": args.dry_run}, echo=echo)
+    res.data["paths"] = restore(Path(args.config).resolve().parent, args.backup_id, args.dry_run)
+    return res
+
+
 def cmd_restore(args):
-    restore(Path(args.config).resolve().parent, args.backup_id, args.dry_run)
-    return 0
+    return run_restore(args, echo=cli_echo).exit_code
 
 
 def _compile_regexes(expressions):
@@ -1853,28 +1941,29 @@ def _select_documents(targets_and_syncers, files, regexes):
 
 
 @project_command
-def cmd_rm(args):
+@returns_partial_result
+def run_rm(args, echo=None) -> CommandResult:
     """継続的に追跡解除する。文書は既定で保持し、--local 指定時に削除する。"""
+    res = CommandResult(data={"dry_run": args.dry_run, "local": args.local, "documents": []}, echo=echo)
     def fail(message):
-        print(f"エラー: {message}", file=sys.stderr)
-        sys.exit(1)
+        return res.fail(f"エラー: {message}")
 
     if args.id and not args.entity:
-        fail("--id 指定時は --entity も指定してください")
+        return fail("--id 指定時は --entity も指定してください")
     if args.entity and not args.id:
-        fail("--entity は --id と一緒に指定してください")
+        return fail("--entity は --id と一緒に指定してください")
     try:
         regexes = _compile_regexes(getattr(args, "regex", None))
     except ValueError as exc:
-        fail(str(exc))
+        return fail(str(exc))
     if not args.files and not args.id and not regexes:
-        fail("ファイル・ディレクトリ・パターン、--regex、または --id と --entity を指定してください")
+        return fail("ファイル・ディレクトリ・パターン、--regex、または --id と --entity を指定してください")
 
     config_path = Path(args.config).resolve()
     config = load_config(config_path)
     targets = [t for t in config.targets if _matches_target(t, args.target)]
     if not targets:
-        fail(f"ターゲット '{args.target}' が見つかりません")
+        return fail(f"ターゲット '{args.target}' が見つかりません")
     states = []
     for target in targets:
         syncer = _make_syncer(None, target, config_path.parent)
@@ -1904,12 +1993,12 @@ def cmd_rm(args):
                     matching_paths = paths if mapping.get(name) == value else []
                 if matching_paths:
                     if len(paths) > 1:
-                        fail(f"同名ファイルが複数あり追跡情報を特定できません: {name}")
+                        return fail(f"同名ファイルが複数あり追跡情報を特定できません: {name}")
                     matches.append((index, name, matching_paths[0]))
         if not matches:
-            fail(f"追跡対象が見つかりません: {value}")
+            return fail(f"追跡対象が見つかりません: {value}")
         if len({index for index, name, path in matches}) > 1:
-            fail(f"対象が複数のターゲットに存在します: {value}（--target で絞り込んでください）")
+            return fail(f"対象が複数のターゲットに存在します: {value}（--target で絞り込んでください）")
         for index, name, path in matches:
             states[index][3][name] = path
 
@@ -1920,28 +2009,36 @@ def cmd_rm(args):
             for name in selected:
                 path = selected[name]
                 if path.exists() and not path.is_file():
-                    fail(f"通常ファイルではありません: {path}")
+                    return fail(f"通常ファイルではありません: {path}")
 
     for syncer, mapping, excluded, selected in states:
         if not selected:
             continue
         if any(name in mapping for name in selected):
-            print("  注意: 解除する文書への相対リンクは、今後の push でリモート URL に変換されなくなります。"
+            res.say("  注意: 解除する文書への相対リンクは、今後の push でリモート URL に変換されなくなります。"
                   "参照元のリンクを eLabFTW の文書 URL に変更してください。")
         needs_change = any(name in mapping or name not in excluded or (args.local and path.exists()) for name, path in selected.items())
+        documents = [{"path": str(path), "entity_id": mapping.get(name), "entity": syncer.entity}
+                     for name, path in sorted(selected.items())]
         if not args.dry_run and needs_change:
             with local_transaction(config_path.parent, syncer.backup_paths(), "rm:追跡解除"):
                 syncer.untrack(set(selected), mapping)
                 if args.local:
                     for path in selected.values():
                         path.unlink(missing_ok=True)
+        res.data["documents"].extend(documents)
         for name in sorted(selected):
             action = "追跡解除予定" if args.dry_run else "追跡解除しました"
-            print(f"  {action}: {selected[name]}")
+            res.say(f"  {action}: {selected[name]}")
             if args.local:
                 path = selected[name]
                 action = "ファイル削除予定" if args.dry_run else "ファイル削除済み"
-                print(f"  {action}: {path}")
+                res.say(f"  {action}: {path}")
+    return res
+
+
+def cmd_rm(args):
+    return run_rm(args, echo=cli_echo).exit_code
 
 
 @returns_partial_result

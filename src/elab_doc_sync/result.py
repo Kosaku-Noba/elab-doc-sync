@@ -57,6 +57,15 @@ class CommandResult:
                 "warnings": self.warnings}
 
 
+def progress(message: str = "") -> None:
+    """深い同期処理の進捗を現在の結果へ渡す。単独で使う場合は CLI に表示する。"""
+    created = _created.get()
+    if created:
+        created[0].say(message)
+    else:
+        cli_echo(message)
+
+
 def returns_partial_result(fn):
     """run_* 用。途中で例外になったら、それまでの CommandResult を例外の partial_result に付ける。
 
