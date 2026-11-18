@@ -18,7 +18,9 @@ import markdown
 from markdownify import markdownify as html_to_md
 import html as _html
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
+from html.parser import HTMLParser
+from collections import Counter
 
 from .result import progress, error_text
 from .safety import atomic_write, write_json, safe_path, snapshot, local_transaction
@@ -151,6 +153,32 @@ def _parse_image_local_name(filename: str) -> str | None:
     return None
 
 
+class _AttachmentLinks(HTMLParser):
+    """実際にリンクとして保存された添付 URL の出現数。"""
+
+    def __init__(self):
+        super().__init__()
+        self.urls = Counter()
+
+    def handle_starttag(self, tag, attrs):
+        key = {"a": "href", "img": "src", "video": "src", "source": "src"}.get(tag)
+        if key:
+            self.urls[dict(attrs).get(key)] += 1
+
+
+def _attachment_links(body, content_type):
+    parser = _AttachmentLinks()
+    parser.feed(_md_to_html(body) if str(content_type) == "2" else body)
+    parser.close()
+    return parser.urls
+
+
+def _download_long_name(src):
+    if "app/download.php" in src:
+        return parse_qs(urlsplit(_html.unescape(src)).query).get("f", [None])[0]
+    return None
+
+
 def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, strict: bool = False,
                      keep_existing: bool = False) -> str:
     """Markdown 内の eLabFTW 画像 URL をローカルにダウンロードし相対パスに書き換える。
@@ -179,11 +207,7 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
         if "app/download.php" not in src and "/uploads/" not in src:
             return m.group(0)
         # long_name でマッチ（download.php 形式）
-        matched_upload = None
-        for ln, u in upload_map.items():
-            if ln in src:
-                matched_upload = u
-                break
+        matched_upload = upload_map.get(_download_long_name(src))
         # upload_id でマッチ（/api/v2/.../uploads/{id} 形式）
         if not matched_upload:
             uid_match = UPLOAD_ID_RE.search(src)
@@ -271,11 +295,7 @@ def _normalize_remote_image_urls(body: str, entity: str, entity_id: int, client:
         alt, src = m.group(1), m.group(2)
         if "app/download.php" not in src and "/uploads/" not in src:
             return m.group(0)
-        matched = None
-        for ln, u in upload_map.items():
-            if ln in src:
-                matched = u
-                break
+        matched = upload_map.get(_download_long_name(src))
         if not matched:
             uid_match = UPLOAD_ID_RE.search(src)
             if uid_match:
@@ -455,6 +475,8 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
         if reuse:
             if used_urls is not None:
                 used_urls[reuse["id"]] = reuse["url"]
+                if record:
+                    record(dict(id=reuse["id"], name=real_name, size=local_size, sha256=local_hash))
             _remember_asset(verified, src, local_hash)
             # サイズ（+ハッシュ）一致の1件を再利用し、残りの重複は削除予約
             for e in entries:
@@ -775,6 +797,8 @@ def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClien
         if reuse:
             if used_urls is not None:
                 used_urls[reuse["id"]] = reuse["url"]
+                if record:
+                    record(dict(id=reuse["id"], name=real_name, size=local_size, sha256=local_hash))
             _remember_asset(verified, src, local_hash)
             for e in entries:
                 if e is not reuse and e.get("id") is not None:
@@ -903,6 +927,8 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
         if reuse:
             if used_urls is not None:
                 used_urls[reuse["id"]] = reuse["url"]
+                if record:
+                    record(dict(id=reuse["id"], name=real_name, size=local_size, sha256=local_hash))
             _remember_asset(verified, src, local_hash)
             for e in entries:
                 if e is not reuse and e.get("id") is not None:
@@ -1555,7 +1581,7 @@ class EachDocsSyncer:
                 lines.append(f"添付変更: {new_uploads[uid].get('real_name')} (#{uid})")
         return lines, old["body"], new["body"]
 
-    def _delete_stale_uploads(self, eid, stale_ids, pending, filename, prune_ids=()):
+    def _delete_stale_uploads(self, eid, stale_ids, pending, filename, prune_ids=(), check_urls=None):
         """旧版・明示的な整理候補を削除し、削除できた ID の集合を返す。
 
         旧版の削除に失敗したら警告を出力して次の候補に進む。prune_ids の削除失敗は例外を伝播し、
@@ -1584,6 +1610,8 @@ class EachDocsSyncer:
         expected_uploads = pending[filename]["guard"]["uploads"]
         for uid in candidates:
             current = self.client.list_uploads(self.entity, eid)
+            if check_urls:
+                check_urls(current)
             expected = [u for u in expected_uploads if u["id"] not in deleted]
             if self._remote_signature({}, current)["uploads"] != expected:
                 raise ConflictError("削除前にリモート添付が変更されました。diffで確認してください")
@@ -2010,7 +2038,7 @@ class EachDocsSyncer:
             # stored is the body as eLabFTW saved it after our PATCH; eLabFTW may
             # rewrite what we sent (e.g. "> " to "&gt; "), so expected alone never matches.
             receipt = owned.get("verifying_upload")
-            receipts = owned.get("body_receipts", []) or ([receipt] if receipt else [])
+            receipts = owned.get("body_receipts", []) + ([receipt] if receipt else [])
             if receipts and not force and owned.get("eid") == eid:
                 try:
                     uploads_by_id = {u["id"]: u for u in result.get("uploads", [])}
@@ -2019,10 +2047,13 @@ class EachDocsSyncer:
                         if not entry.get("long_name") or entry.get("storage") in (None, ""):
                             raise ConflictError(f"受領した添付 ID #{r['id']} の URL が未反映です。一覧への反映後に通常の push を再実行してください")
                     additions = [self._verify_uploaded_attachment(eid, result.get("uploads", []), r) for r in receipts]
-                    expected_uploads = sorted(owned["guard"]["uploads"] + additions, key=lambda u: str(u["id"]))
+                    recorded = {u["id"]: u for u in owned["guard"]["uploads"]}
+                    for added in additions:
+                        recorded.setdefault(added["id"], added)
+                    expected_uploads = sorted(recorded.values(), key=lambda u: str(u["id"]))
                     expected_guard = {**owned["guard"], "uploads": expected_uploads}
-                    if expected_guard != current_guard:
-                        raise ConflictError("添付の照合待ちの間にリモート情報が変更されました")
+                    if not self._guard_matches({**owned, "guard": expected_guard}, current_guard):
+                        raise ConflictError("添付の照合待ちの間にリモート情報が変更されたため、自動では再開しません")
                     result["confirmed_upload_ids"] = {r["id"]: r for r in receipts}
                     # 再実行でも URL が確定するまで受領記録を使えるよう、ここではディスクから消さない。
                     owned = {**owned, "guard": expected_guard}
@@ -2030,6 +2061,7 @@ class EachDocsSyncer:
                     self.failures += 1
                     progress(f"  [{f.stem}] 添付検証を再開できません: {_error_text(self.client, exc)}。diffで確認してください",
                              warning=True)
+                    self._print_next_actions("再開不可", f.name, eid)
                     continue
             resuming = bool(owned.get("eid") == eid and self._guard_matches(owned, current_guard) and any(
                 version is not None and all(result["data"].get(k) == v for k, v in version.items())
@@ -2129,7 +2161,7 @@ class EachDocsSyncer:
                 stale_uploads: list[int] = []
                 uploaded = {}
                 verified_body, verified_directory = {}, {}
-                body_receipts = []
+                body_receipts = list(owned.get("body_receipts", [])) if resuming else []
                 def record_body_upload(receipt):
                     if not body_receipts:
                         baseline = self._remote_signature(previous, result.get("uploads", []))
@@ -2138,6 +2170,7 @@ class EachDocsSyncer:
                                            "body_receipts": body_receipts,
                                            "needs": {"meta": needs_meta(f, result, resuming),
                                                      "links": needs_links(f, result, resuming)}}
+                    pending[f.name]["body_receipts"] = body_receipts
                     if receipt not in body_receipts:
                         body_receipts.append(receipt)
                     self._save_pending(pending)
@@ -2154,6 +2187,7 @@ class EachDocsSyncer:
                 body = _rewrite_local_links(body, self.entity, self.client.base_url, mapping, source=f, links=links)
                 body = body if self.target.body_format == "md" else _md_to_html(body)
                 expected = {"body": body, "title": f.stem, "content_type": 2 if self.target.body_format == "md" else 1}
+                expected_links = _attachment_links(body, expected["content_type"]) if used_urls else {}
                 before = {key: previous.get(key) for key in expected}
                 guard = {k: v for k, v in self._remote_signature(previous, self.client.list_uploads(self.entity, eid)).items() if k not in ("body", "title", "content_type")}
                 # 本文のリンクを書き換える間に既存の添付が変わった場合は削除・本文更新を止める。
@@ -2177,6 +2211,8 @@ class EachDocsSyncer:
                 links_changed = needs_links(f, result, resuming)
                 pending[f.name] = {"eid": eid, "expected": expected, "before": before, "guard": guard,
                                    "needs": {"meta": meta_changed, "links": links_changed}}
+                if body_receipts:
+                    pending[f.name]["body_receipts"] = body_receipts
                 self._save_pending(pending)
                 # 添付ハッシュを確認する間に本文・メタデータ・添付が変わっていないか再読する。
                 planned_prune = set()
@@ -2204,7 +2240,13 @@ class EachDocsSyncer:
                     All other guard fields must remain exactly unchanged.
                     """
                     observed = self._get_entity(eid)
-                    signature = self._remote_signature(observed, self.client.list_uploads(self.entity, eid))
+                    listed = self.client.list_uploads(self.entity, eid)
+                    check_download_urls(listed)
+                    if used_urls:
+                        saved_links = _attachment_links(observed.get("body") or "", observed.get("content_type"))
+                        if any(saved_links[url] < count for url, count in expected_links.items() if url in used_urls.values()):
+                            raise ConflictError("保存された本文の添付リンクを確認できません。本文と添付一覧を確認してください")
+                    signature = self._remote_signature(observed, listed)
                     observed_guard = {k: v for k, v in signature.items() if k not in ("body", "title", "content_type")}
                     expected_guard = {**pending[f.name]["guard"], **(expected_changes or {})}
                     if observed_guard != expected_guard:
@@ -2255,7 +2297,7 @@ class EachDocsSyncer:
                 if not att_ok:
                     raise RuntimeError("本文更新後、添付の同期が失敗しました。再実行してください")
                 stale_uploads.extend(sorted(prune_ids))
-                deleted = self._delete_stale_uploads(eid, stale_uploads, pending, f.name, prune_ids) if stale_uploads else set()
+                deleted = self._delete_stale_uploads(eid, stale_uploads, pending, f.name, prune_ids, check_download_urls) if stale_uploads else set()
                 if "deleting" in pending[f.name]:
                     checkpoint({"uploads": [u for u in pending[f.name]["guard"]["uploads"] if u.get("id") not in deleted]})
                     pending[f.name].pop("deleting")

@@ -8,6 +8,7 @@ import requests
 import urllib3
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlencode
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logger = logging.getLogger(__name__)
@@ -26,7 +27,8 @@ def upload_url(base_url, upload):
     """eLabFTW の一覧から、取得可能な添付の URL を組み立てる。"""
     if not upload.get("long_name") or not upload.get("real_name") or upload.get("storage") in (None, ""):
         return None
-    return f"{base_url}/app/download.php?f={upload['long_name']}&name={upload['real_name']}&storage={upload['storage']}"
+    query = urlencode({"f": upload["long_name"], "name": upload["real_name"], "storage": upload["storage"]}, quote_via=quote)
+    return f"{base_url}/app/download.php?{query}"
 
 
 class UploadConfirmationError(RuntimeError):

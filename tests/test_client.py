@@ -655,3 +655,13 @@ def test_successful_upload_without_location_verifies_legacy_digest(mock_req, cli
     binary.iter_content.return_value = [b"val", b"ues"]
     mock_req.side_effect = [_mock_response([]), _mock_response(), _mock_response([entry]), binary]
     assert client.upload_file("items", 1, str(path))["id"] == 4
+
+
+def test_upload_url_encodes_query_values():
+    from urllib.parse import parse_qs, urlsplit
+    from elab_doc_sync.client import upload_url
+    from elab_doc_sync.sync import _download_long_name
+
+    url = upload_url("https://elab.example", {"long_name": "a/b#1", "real_name": "測定&A+(1).pdf", "storage": 0})
+    assert parse_qs(urlsplit(url).query) == {"f": ["a/b#1"], "name": ["測定&A+(1).pdf"], "storage": ["0"]}
+    assert not urlsplit(url).fragment and _download_long_name(url) == "a/b#1"
