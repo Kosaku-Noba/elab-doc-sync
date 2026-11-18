@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+import re
 import requests
 import urllib3
 from pathlib import Path
@@ -10,6 +11,15 @@ from typing import Any
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logger = logging.getLogger(__name__)
+
+
+def upload_sha256(entry):
+    """一覧の SHA-256 だけを採用する。旧添付の MD5 などは実体の照合が必要。"""
+    for field in ("sha256", "hash"):
+        value = entry.get(field)
+        if isinstance(value, str) and re.fullmatch(r"[A-Fa-f0-9]{64}", value):
+            return value.lower()
+    return None
 
 
 class UploadConfirmationError(RuntimeError):
@@ -189,7 +199,7 @@ class ELabFTWClient:
             if response is None:
                 matches = []
                 for candidate in candidates:
-                    remote_digest = candidate.get("sha256") or candidate.get("hash")
+                    remote_digest = upload_sha256(candidate)
                     if not remote_digest:
                         remote_digest = self.upload_digest(entity_type=entity_type, entity_id=entity_id,
                                                            upload_id=candidate["id"])
@@ -202,7 +212,7 @@ class ELabFTWClient:
                 location = response.headers.get("location", "").rstrip("/").split("/")[-1]
                 upload = next((u for u in candidates if str(u["id"]) == location), None)
                 if upload is None and receipt is None and candidates:
-                    same = [u for u in candidates if (u.get("sha256") or u.get("hash")) == digest]
+                    same = [u for u in candidates if upload_sha256(u) == digest]
                     unverified = [u for u in candidates if not (u.get("sha256") or u.get("hash"))]
                     upload = max(same or unverified, key=lambda u: u["id"], default=None)
         except (requests.RequestException, ValueError, KeyError, TypeError) as exc:

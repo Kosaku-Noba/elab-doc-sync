@@ -2065,7 +2065,7 @@ def test_resume_prefers_confirmed_linked_csv(project, replacement):
     path = root / "docs/data.csv"
     path.write_bytes(b"old")
     (root / "docs/a.md").write_text("[data](data.csv)")
-    _stateful_uploads(client)
+    uploads = _stateful_uploads(client)
     assert syncer.sync() == 1
     path.write_bytes(replacement)
     upload = client.upload_file.side_effect
@@ -2077,6 +2077,15 @@ def test_resume_prefers_confirmed_linked_csv(project, replacement):
 
     client.upload_file.side_effect = delayed
     assert syncer.sync() == 0
+    received = uploads[1][-1]
+    blob = received.pop("long_name")
+    assert syncer.sync() == 0 and client.upload_file.call_count == 2
+    assert syncer._pending()["a.md"]["body_receipts"][0]["id"] == 101
+    received["long_name"] = blob
+    received["storage"] = 0
+    from hashlib import md5
+    received["hash"] = md5(replacement).hexdigest()
+    client.upload_digest.return_value = sha256(replacement).hexdigest()
     assert syncer.sync() == 1
     assert "blob101" in remote[1]["body"]
     assert client.upload_file.call_count == 2

@@ -22,7 +22,7 @@ from urllib.parse import unquote, urlsplit
 
 from .result import progress, error_text
 from .safety import atomic_write, write_json, safe_path, snapshot, local_transaction
-from .client import ELabFTWClient, UploadConfirmationError
+from .client import ELabFTWClient, UploadConfirmationError, upload_sha256
 from .config import TargetConfig
 from . import sync_log
 from .merge import has_conflict_markers
@@ -373,9 +373,12 @@ def _upload_body_file(client, entity, eid, path, uploaded, root, name=None, reco
     return result
 
 
-def _matching_upload(entries, size, digest, client, entity, eid, strict, preferred):
+def _matching_upload(entries, name, size, digest, client, entity, eid, strict, preferred):
     # 受領済みの版を優先し、同サイズの旧版が先頭でも残りの候補を調べる。
+    expected = {uid for uid, r in preferred.items() if r["name"] == name and r["sha256"] == digest} if isinstance(preferred, dict) else set()
     for entry in sorted(entries, key=lambda e: e["id"] not in preferred):
+        if expected and entry["id"] not in expected:
+            continue
         if entry["size"] != size or (not strict and not size):
             continue
         remote_hash = entry.get("hash")
@@ -385,6 +388,8 @@ def _matching_upload(entries, size, digest, client, entity, eid, strict, preferr
             remote_hash = client.upload_digest(entity_type=entity, entity_id=eid, upload_id=entry["id"])
         if not remote_hash or remote_hash == digest:
             return entry
+    if expected:
+        raise ConflictError(f"受領した添付 ID {sorted(expected)} の URL・内容を確認できません。一覧を確認して通常の push を再実行してください")
     return None
 
 
@@ -414,14 +419,14 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
             rn = u.get("real_name")
             ln = u.get("long_name")
             st = u.get("storage")
-            if rn and ln and st:
+            if rn and ln and st is not None and st != "":
                 existing.setdefault(rn, []).append({
                     "url": f"{client.base_url}/app/download.php?f={ln}&name={rn}&storage={st}",
                     "size": int(u.get("filesize", 0) or 0),
                     "id": u.get("id"),
-                    "hash": u.get("hash") or u.get("sha256") or None,
+                    "hash": upload_sha256(u) if strict else u.get("hash") or u.get("sha256"),
                 })
-        # id 昇順でソートし、最小 id の添付を正本として安定させる
+        # 照合済み ID の優先度が同じ候補間は ID 昇順で選ぶ
         for entries in existing.values():
             entries.sort(key=lambda e: e.get("id") or 0)
     except Exception:
@@ -447,7 +452,7 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
         entries = existing.get(real_name, [])
         local_size = img_path.stat().st_size
         local_hash = _compute_file_hash(img_path)
-        reuse = _matching_upload(entries, local_size, local_hash, client, entity, entity_id, strict, preferred)
+        reuse = _matching_upload(entries, real_name, local_size, local_hash, client, entity, entity_id, strict, preferred)
         if reuse:
             _remember_asset(verified, src, local_hash)
             # サイズ（+ハッシュ）一致の1件を再利用し、残りの重複は削除予約
@@ -731,12 +736,12 @@ def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClien
             rn = u.get("real_name")
             ln = u.get("long_name")
             st = u.get("storage")
-            if rn and ln and st:
+            if rn and ln and st is not None and st != "":
                 existing.setdefault(rn, []).append({
                     "url": f"{client.base_url}/app/download.php?f={ln}&name={rn}&storage={st}",
                     "size": int(u.get("filesize", 0) or 0),
                     "id": u.get("id"),
-                    "hash": (u.get("sha256") or u.get("hash")) if strict else None,
+                    "hash": upload_sha256(u) if strict else None,
                 })
         for entries in existing.values():
             entries.sort(key=lambda e: e.get("id") or 0)
@@ -764,7 +769,7 @@ def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClien
         local_size = video_path.stat().st_size
 
         local_hash = _compute_file_hash(video_path) if strict else None
-        reuse = _matching_upload(entries, local_size, local_hash, client, entity, entity_id, strict, preferred)
+        reuse = _matching_upload(entries, real_name, local_size, local_hash, client, entity, entity_id, strict, preferred)
         if reuse:
             _remember_asset(verified, src, local_hash)
             for e in entries:
@@ -853,12 +858,12 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
             rn = u.get("real_name")
             ln = u.get("long_name")
             st = u.get("storage")
-            if rn and ln and st:
+            if rn and ln and st is not None and st != "":
                 existing.setdefault(rn, []).append({
                     "url": f"{client.base_url}/app/download.php?f={ln}&name={rn}&storage={st}",
                     "size": int(u.get("filesize", 0) or 0),
                     "id": u.get("id"),
-                    "hash": (u.get("sha256") or u.get("hash")) if strict else None,
+                    "hash": upload_sha256(u) if strict else None,
                 })
         for entries in existing.values():
             entries.sort(key=lambda e: e.get("id") or 0)
@@ -889,7 +894,7 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
         local_size = file_path.stat().st_size
 
         local_hash = _compute_file_hash(file_path) if strict else None
-        reuse = _matching_upload(entries, local_size, local_hash, client, entity, entity_id, strict, preferred)
+        reuse = _matching_upload(entries, real_name, local_size, local_hash, client, entity, entity_id, strict, preferred)
         if reuse:
             _remember_asset(verified, src, local_hash)
             for e in entries:
@@ -1069,7 +1074,7 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
             if not force:
                 for e in entries:
                     if int(e.get("filesize", 0) or 0) == local_size:
-                        remote_hash = e.get("hash") or e.get("sha256")
+                        remote_hash = upload_sha256(e) if strict else e.get("hash") or e.get("sha256")
                         if strict and not remote_hash and e.get("id") is not None:
                             remote_hash = client.upload_digest(entity_type=entity, entity_id=entity_id, upload_id=e["id"])
                         if remote_hash and remote_hash != local_hash:
@@ -1612,7 +1617,7 @@ class EachDocsSyncer:
             raise ConflictError(f"受領した添付 ID #{uid} が一覧に現れていません。一覧への反映後に同じ文書を通常の push で再実行してください")
         if entry.get("real_name") != receipt["name"] or int(entry.get("filesize") or 0) != receipt["size"]:
             raise ConflictError("送信した添付の名前・サイズを確認できません")
-        digest = entry.get("sha256") or entry.get("hash")
+        digest = upload_sha256(entry)
         if not digest:
             digest = self.client.upload_digest(entity_type=self.entity, entity_id=eid, upload_id=uid)
         if digest != receipt["sha256"]:
@@ -1999,16 +2004,19 @@ class EachDocsSyncer:
             receipts = owned.get("body_receipts", []) or ([receipt] if receipt else [])
             if receipts and not force and owned.get("eid") == eid:
                 try:
+                    uploads_by_id = {u["id"]: u for u in result.get("uploads", [])}
+                    for r in owned.get("body_receipts", []):
+                        entry = uploads_by_id.get(r["id"], {})
+                        if not entry.get("long_name") or entry.get("storage") in (None, ""):
+                            raise ConflictError(f"受領した添付 ID #{r['id']} の URL が未反映です。一覧への反映後に通常の push を再実行してください")
                     additions = [self._verify_uploaded_attachment(eid, result.get("uploads", []), r) for r in receipts]
                     expected_uploads = sorted(owned["guard"]["uploads"] + additions, key=lambda u: str(u["id"]))
                     expected_guard = {**owned["guard"], "uploads": expected_uploads}
                     if expected_guard != current_guard:
                         raise ConflictError("添付の照合待ちの間にリモート情報が変更されました")
-                    result["confirmed_upload_ids"] = {r["id"] for r in receipts}
-                    owned["guard"] = expected_guard
-                    owned.pop("verifying_upload", None)
-                    owned.pop("body_receipts", None)
-                    self._save_pending(pending)
+                    result["confirmed_upload_ids"] = {r["id"]: r for r in receipts}
+                    # 再実行でも URL が確定するまで受領記録を使えるよう、ここではディスクから消さない。
+                    owned = {**owned, "guard": expected_guard}
                 except Exception as exc:
                     self.failures += 1
                     progress(f"  [{f.stem}] 添付検証を再開できません: {_error_text(self.client, exc)}。diffで確認してください",
@@ -2142,7 +2150,7 @@ class EachDocsSyncer:
                     entry = current.get(uid)
                     if not entry or entry["real_name"] != name or int(entry["filesize"] or 0) != size:
                         raise ConflictError("送信した本文用添付の名前・サイズを確認できません")
-                    stored_hash = entry["sha256"] or entry["hash"]
+                    stored_hash = upload_sha256(entry)
                     if not stored_hash:
                         stored_hash = self.client.upload_digest(entity_type=self.entity, entity_id=eid, upload_id=uid)
                     if stored_hash != digest:
