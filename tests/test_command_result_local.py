@@ -425,7 +425,8 @@ def test_batch_pull_prevents_overwrite_between_articles(project, tmp_path, dry_r
         assert not (tmp_path / "docs/entry8.md").exists()
 
 @pytest.mark.parametrize("dry_run", [True, False])
-def test_batch_protects_previously_pulled_asset_before_owner_is_processed(project, tmp_path, dry_run):
+@pytest.mark.parametrize("missing_directory", [False, True])
+def test_batch_protects_previously_pulled_asset_before_owner_is_processed(project, tmp_path, dry_run, missing_directory):
     path = tmp_path / ".elab-sync.yaml"
     cfg = yaml.safe_load(path.read_text())
     cfg["targets"][0]["attachments_dir"] = "assets"
@@ -441,15 +442,23 @@ def test_batch_protects_previously_pulled_asset_before_owner_is_processed(projec
         assert cli.run_pull(project).exit_code == 0
         (tmp_path / "assets/table.csv").write_bytes(b"local changes")
         (tmp_path / "docs/entry7.md").write_text("<<<<<<< local\n=======\n>>>>>>> remote")
+        if missing_directory:
+            (tmp_path / "assets/table.csv").unlink()
+            (tmp_path / "assets").rmdir()
         project.id, project.dry_run = [8, 7], dry_run
         res = cli.run_pull(project)
     assert "error" in res.data["documents"][0]
-    assert (tmp_path / "assets/table.csv").read_bytes() == b"local changes"
+    if not missing_directory:
+        assert (tmp_path / "assets/table.csv").read_bytes() == b"local changes"
     assert not (tmp_path / "docs/entry8.md").exists()
 
 
 @pytest.mark.parametrize("dry_run", [True, False])
-def test_pull_batch_can_reuse_renamed_document_path(project, tmp_path, dry_run):
+@pytest.mark.parametrize("tracked", [False, True])
+def test_pull_batch_can_reuse_renamed_document_path(project, tmp_path, dry_run, tracked):
+    if tracked:
+        (tmp_path / "docs/beta.md").write_text("second")
+        (tmp_path / ".ids/mapping.json").write_text('{"note.md":42,"beta.md":8}')
     project.target, project.entity, project.id, project.dir = "docs", "items", [42, 8], None
     project.force, project.dry_run = True, dry_run
     with patch.object(cli, "ELabFTWClient") as factory:
@@ -461,3 +470,48 @@ def test_pull_batch_can_reuse_renamed_document_path(project, tmp_path, dry_run):
     assert res.exit_code == 0 and res.data["pulled"] == 2
     if not dry_run:
         assert json.loads((tmp_path / ".ids/mapping.json").read_text()) == {"renamed.md": 42, "note.md": 8}
+
+
+@pytest.mark.parametrize("same_directory", [True, False])
+def test_unreadable_attachment_records_only_block_affected_destinations(project, tmp_path, same_directory):
+    config_path = tmp_path / ".elab-sync.yaml"
+    cfg = yaml.safe_load(config_path.read_text())
+    cfg["targets"][0]["attachments_dir"] = "assets"
+    cfg["targets"].append({"docs_dir": "other", "id_file": ".other/id",
+                           "attachments_dir": "assets" if same_directory else "other_assets"})
+    config_path.write_text(yaml.safe_dump(cfg))
+    (tmp_path / ".other").mkdir()
+    (tmp_path / ".other/mapping.json").write_text('{"old.md":55}')
+    (tmp_path / ".other/old.md.state.json").write_text("broken")
+    project.target, project.entity, project.id, project.dir = "docs", "items", [7], None
+    project.dry_run = True
+    with patch.object(cli, "ELabFTWClient") as factory:
+        factory.return_value.get_item.return_value = {"title": "new", "body": "body"}
+        factory.return_value.list_uploads.return_value = [{"id": 4, "real_name": "report.csv"}]
+        res = cli.run_pull(project)
+    assert res.exit_code == int(same_directory)
+
+
+def test_shared_attachment_still_checks_each_upload_id(project, tmp_path):
+    from hashlib import sha256
+    config_path = tmp_path / ".elab-sync.yaml"
+    cfg = yaml.safe_load(config_path.read_text())
+    cfg["targets"][0]["attachments_dir"] = "assets"
+    config_path.write_text(yaml.safe_dump(cfg))
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets/report.csv").write_bytes(b"shared")
+    (tmp_path / ".ids/mapping.json").write_text('{"note.md":42,"other.md":43}')
+    digest = sha256(b"shared").hexdigest()
+    entries = [{"id": i, "real_name": "report.csv", "hash": digest} for i in (1, 2)]
+    for name in ("note.md", "other.md"):
+        (tmp_path / ".ids" / f"{name}.state.json").write_text(json.dumps(
+            {"server": "https://example.invalid", "remote": {"uploads": entries[:1]}}))
+    project.target, project.entity, project.id, project.dir = "docs", "items", [42], None
+    project.dry_run = True
+    with patch.object(cli, "ELabFTWClient") as factory:
+        client = factory.return_value
+        client.base_url = "https://example.invalid"
+        client.get_item.return_value = {"title": "note", "body": "body"}
+        client.list_uploads.return_value = entries
+        res = cli.run_pull(project)
+    assert res.exit_code == 1 and "異なる添付 ID" in res.data["documents"][0]["error"]

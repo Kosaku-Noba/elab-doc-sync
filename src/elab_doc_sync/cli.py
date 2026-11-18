@@ -682,6 +682,8 @@ class _PullOutputs:
         self.spellings = {}
         self.names = {}
         self.owners = {}
+        self.unknown_directories = set()
+        self.upload_ids = {}
         self.released = set()
 
     @staticmethod
@@ -694,20 +696,23 @@ class _PullOutputs:
             if not target.attachments_dir:
                 continue
             directory = root / target.attachments_dir
-            if not directory.is_dir():
-                continue
             syncer = EachDocsSyncer(None, target, root)
-            server = get_client_for_target(config, target)[0].rstrip("/")
-            for name, eid in syncer._load_mapping(migrate=False).items():
-                state = syncer._state(name)
-                if not state:
-                    continue
-                for upload in state["remote"].get("uploads", []):
-                    real_name = upload.get("real_name")
-                    if real_name and not _is_image(real_name):
-                        key = self.key(directory / Path(real_name).name)
-                        owner_server = str(state.get("server") or server).rstrip("/")
-                        self.owners.setdefault(key, set()).add((owner_server, state.get("entity") or target.entity, eid))
+            try:
+                server = get_client_for_target(config, target)[0].rstrip("/")
+                for name, eid in syncer._load_mapping(migrate=False).items():
+                    state = syncer._state(name)
+                    if not state:
+                        continue
+                    owner_server = str(state.get("server") or server).rstrip("/")
+                    owner = (owner_server, state.get("entity") or target.entity, eid)
+                    for upload in state["remote"].get("uploads", []):
+                        real_name = upload.get("real_name")
+                        if real_name and not _is_image(real_name):
+                            key = self.key(directory / Path(real_name).name)
+                            self.owners.setdefault(key, set()).add(owner)
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                # 所有者が読めない添付ディレクトリだけを保護し、独立した記事の取得は続ける。
+                self.unknown_directories.add(self.key(directory))
 
     def include(self, other):
         self.files.update(other.files)
@@ -797,6 +802,10 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
         source = (server, entity_type, eid, asset, upload_id)
         owner = (server, entity_type, eid)
         owners = outputs.owners.get(key, set())
+        if outputs.key(path.parent) in outputs.unknown_directories:
+            raise ConflictError(f"添付の同期記録を読み取れず、保存先の所有者を確認できません: {path}")
+        if asset and article.upload_ids.setdefault(key, upload_id) != upload_id:
+            raise ConflictError(f"異なる添付 ID の保存先が重複しています: {path}")
         if owners - {owner}:
             digest = (upload or {}).get("sha256") or (upload or {}).get("hash")
             if owner not in owners or not digest or not path.is_file() or _compute_file_hash(path) != digest:
@@ -830,7 +839,7 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
         validate_output(old_path)
     if filename in mapping and mapping[filename] != eid and not is_temp_export and filepath not in outputs.released:
         raise ConflictError(f"{filename} は別のIDに紐付いています")
-    if old_path and old_path != filepath and filepath.exists():
+    if old_path and old_path != filepath and filepath.exists() and filepath not in outputs.released:
         raise ConflictError(f"リネーム先 {filename} が既に存在するため変更をスキップします")
     uploads = client.list_uploads(entity_type, eid)
     body_md = _remote_markdown(data, target)
