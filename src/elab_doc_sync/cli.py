@@ -7,7 +7,7 @@ import re
 import json
 import shutil
 import sys
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import yaml
@@ -457,10 +457,6 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
         if args.target and not candidates:
             raise ValueError("指定したターゲットの種別が --entity と一致しません")
         routing = replace(config, targets=candidates)
-        directory_target = _find_target_by_dir(config, entity, root, export) if export else None
-        if export and any((root / t.docs_dir).resolve() == (root / export).resolve() and
-                          t.entity != entity for t in config.targets):
-            raise ValueError("--dir のターゲットの種別が --entity と一致しません")
         for eid in args.id:
             tracked = [t for t in candidates if eid in EachDocsSyncer(None, t, root)._load_mapping(migrate=False).values()]
             if len(tracked) > 1:
@@ -471,8 +467,7 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
                 raise ValueError("複数の接続先があります。--target を指定してください")
             connection = (get_client_for_target(config, source or candidates[0]) if candidates else
                           (config.url, config.api_key, config.verify_ssl))
-            if directory_target and get_client_for_target(config, directory_target) != connection:
-                raise ValueError("--dir のターゲットの接続先が取得元と異なります")
+            directory_target = _pull_destination(config, root, export, entity, connection) if export else None
             client = ELabFTWClient(*connection)
             try:
                 data = client.get_experiment(eid) if entity == "experiments" else client.get_item(eid)
@@ -505,15 +500,22 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
                     category = data.get("category_title") or data.get("category")
                     folder = str(export) if export else (str(category or (tags[0] if tags else entity)).replace("/", "_").replace("\\", "_") + "/")
                     safe_path(root, folder)
-                    target = TargetConfig(title="", docs_dir=folder, id_file=f".elab-sync-ids/{folder.rstrip('/')}/default.id", entity=entity, tags=tags, category=category)
-                    if candidates:
-                        origin = source or candidates[0]
-                        target.profile, target.team = origin.profile, origin.team
-                    if not dry_run:
-                        from dataclasses import asdict
-                        append_target_to_yaml(config_path, asdict(target))
+                    target = _pull_destination(config, root, Path(folder), entity, connection)
+                    if target is None:
+                        id_file = f".elab-sync-ids/{folder.rstrip('/')}/default.id"
+                        if any((root / t.id_file).parent.resolve() == (root / id_file).parent.resolve()
+                               for t in config.targets):
+                            raise ValueError("新しい保存先の追跡情報が既存ターゲットと重複します")
+                        origin = source or (candidates[0] if candidates else None)
+                        target = TargetConfig(title="", docs_dir=folder, id_file=id_file, entity=entity,
+                                              tags=tags, category=category,
+                                              profile=origin.profile if origin else "default",
+                                              team=origin.team if origin else None)
+                        if not dry_run:
+                            append_target_to_yaml(config_path, asdict(target))
                         config.targets.append(target)
-                    res.say(f"  新規ターゲット{'予定' if dry_run else '追加'}: {folder}")
+                        candidates.append(target)
+                        res.say(f"  新規ターゲット{'予定' if dry_run else '追加'}: {folder}")
                 # Never reuse data fetched with another target's credentials.
                 destination = get_client_for_target(config, target)
                 if connection != destination:
@@ -525,6 +527,9 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
                 res.warn(f"  #{eid} の取得に失敗: {reason}")
                 failed += 1
     else:
+        if export:
+            for target in targets:
+                _pull_destination(config, root, export, target.entity, get_client_for_target(config, target))
         for target in targets:
             client = _make_client_for_target(config, target)
             syncer = EachDocsSyncer(client, target, root)
@@ -575,13 +580,21 @@ def cmd_pull(args):
     return result.exit_code
 
 
-def _find_target_by_dir(config, entity_type: str, project_root: Path, pull_dir: Path):
-    """指定ディレクトリに一致するターゲットを探す。"""
-    pull_dir_resolved = (project_root / pull_dir).resolve()
-    for t in config.targets:
-        if t.entity == entity_type and (project_root / t.docs_dir).resolve() == pull_dir_resolved:
-            return t
-    return None
+def _pull_destination(config, root, directory, entity, connection):
+    """既存の保存先を照合し、別種別・別接続先の管理下には書き込ませない。"""
+    dest = (root / directory).resolve()
+    match = None
+    for target in config.targets:
+        docs_dir = (root / target.docs_dir).resolve()
+        if not dest.is_relative_to(docs_dir):
+            continue
+        if target.entity != entity or get_client_for_target(config, target) != connection:
+            raise ValueError("保存先ターゲットの種別または接続先が取得元と異なります")
+        if dest == docs_dir:
+            if match is not None and Path(target.id_file).parent != Path(match.id_file).parent:
+                raise ValueError("保存先の追跡情報を一意に選べません")
+            match = target
+    return match
 
 
 def _find_or_create_target_for_pull(config, config_path, project_root, entity_type,
@@ -1059,7 +1072,7 @@ def run_clone(args, echo=None) -> CommandResult:
             doc["error"] = reason
             res.warn(f"  #{eid} の取得に失敗: {reason}")
             if (project_dir / RECOVERY).exists():
-                raise
+                raise RuntimeError(reason) from None
 
     if cloned == 0:
         # clone が作成したディレクトリのみ削除（既存ディレクトリは残す）
@@ -2603,7 +2616,7 @@ def main():
         print(f"設定・引数エラー: {exc}", file=sys.stderr)
         raise SystemExit(2)
     except Exception as exc:
-        print(f"エラー: {exc}", file=sys.stderr)
+        print(f"エラー: {error_text(exc)}", file=sys.stderr)
         raise SystemExit(1)
     finally:
         # eLabFTW 側の成否に関わらず通知する（通知しない条件は update_check.py 参照）

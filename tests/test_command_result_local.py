@@ -2,6 +2,7 @@
 
 import json
 from argparse import Namespace
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -31,7 +32,7 @@ def test_local_previews(project, capsys):
     project.local = True
     project.id = project.entity = None
     [doc] = cli.run_rm(project).data["documents"]
-    assert doc["entity_id"] == 42 and doc["path"].endswith("/docs/note.md")
+    assert doc["entity_id"] == 42 and Path(doc["path"]) == Path("docs/note.md").resolve()
     project.old, project.new = "docs/note.md", "docs/next.md"
     assert cli.run_mv(project).data["entity_id"] == 42
     [target] = cli.run_push(project).data["targets"]
@@ -87,7 +88,6 @@ def test_pull_uses_shared_candidate_profile_and_hides_key(project, tmp_path):
 
 
 def test_rm_reports_completed_deletions(project, tmp_path, monkeypatch):
-    from pathlib import Path
     project.id, project.entity, project.files = [41, 42], "items", []
     project.local, project.dry_run = True, False
     (tmp_path / "docs/a.md").touch()
@@ -160,3 +160,41 @@ def test_http_error_omits_signed_url():
     reply = requests.Response()
     reply.status_code = 403
     assert error_text(requests.HTTPError("https://server/?sig=secret", response=reply)) == "HTTP 403（権限がありません）"
+
+
+def test_batch_pull_validates_export_before_fetch(project, tmp_path):
+    cfg_path = tmp_path / ".elab-sync.yaml"
+    cfg = yaml.safe_load(cfg_path.read_text())
+    cfg["profiles"] = {"other": {"url": "https://other.invalid", "api_key": "other-key"}}
+    cfg["targets"].append({"docs_dir": "other", "profile": "other"})
+    cfg_path.write_text(yaml.safe_dump(cfg))
+    project.target, project.dir, project.id = "docs", "other", None
+    with patch.object(cli, "ELabFTWClient") as factory, pytest.raises(ValueError):
+        cli.run_pull(project)
+    factory.assert_not_called()
+
+
+def test_generated_pull_directory_cannot_mix_entity_types(project, tmp_path):
+    cfg_path = tmp_path / ".elab-sync.yaml"
+    before = cfg_path.read_bytes()
+    project.id, project.entity, project.dir = [1], "experiments", None
+    project.dry_run = False
+    with patch.object(cli, "ELabFTWClient") as factory:
+        factory.return_value.get_experiment.return_value = {"title": "entry", "category_title": "docs"}
+        res = cli.run_pull(project)
+    assert res.exit_code == 1 and before == cfg_path.read_bytes()
+    assert not (tmp_path / "docs/entry.md").exists()
+
+
+def test_multiple_ids_reuse_created_target(project, tmp_path):
+    project.id, project.entity, project.dir = [1, 2], "experiments", None
+    project.dry_run = False
+    with patch.object(cli, "ELabFTWClient") as factory:
+        client = factory.return_value
+        client.base_url = "https://example.invalid"
+        client.get_experiment.side_effect = lambda eid: {"title": f"entry{eid}", "category_title": "same"}
+        client.list_uploads.return_value = []
+        res = cli.run_pull(project)
+    assert res.exit_code == 0 and res.data["pulled"] == 2
+    targets = yaml.safe_load((tmp_path / ".elab-sync.yaml").read_text())["targets"]
+    assert sum(t["docs_dir"] == "same/" for t in targets) == 1
