@@ -253,6 +253,6 @@ YAML 設定読み込み・バリデーション。
 
 `run_pull(args, echo=None, choose_target=None)` は、保存先が曖昧で自動選択も指定されない場合に選択を求める。コールバックを省略すると、その ID の結果は `needs_target` となり、スキップとして数える。対話可能な CLI は `choose_target(config, entity, title)` を渡す。既存ターゲットを返すとそこに保存し、`"SKIP"` はスキップ、`None` は新規ターゲット作成を表す。dry-run では対話しない。
 
-`pull` は ID に種別がなければ終了コード 2、取得失敗または競合マーカーが残れば 1 を返す。競合文書は `data["conflict_files"]` から、取得失敗は各明細の `error` から判定する。`diff` は取得失敗で 1、セレクター不正で 2 を返し、成功時は `data["has_diff"]` で差分の有無を判定する。`push` のターゲット別 `failed` は文書単位の失敗で、全体の失敗件数にはターゲットの中断（`error`）も含む。
+`pull` は ID に種別がなければ終了コード 2、取得失敗または競合マーカーが残れば 1 を返す。今回のマージで競合マーカーが生じた文書は `data["conflict_files"]` から、既存マーカーによる拒否や取得失敗は各明細の `error` から判定する。`diff` は取得失敗で 1、セレクター不正で 2 を返し、成功時は `data["has_diff"]` で差分の有無を判定する。`push` のターゲット別 `failed` は文書単位の失敗で、全体の失敗件数にはターゲットの中断（`error`）も含む。中断までの確定件数は保持する。保存時に本文の一部が欠落した文書は更新・失敗の両方に数える。
 
-`rm` の `tracking` は予定、完了未確認、解除済みを表す。ローカル削除を指定すると、ファイルの不在を確認した件に `file_absent: true` が付く。`restore` の dry-run は例えば `paths: [{"path": "docs", "kind": "directory"}]` を返す。`file` はファイル、`absent` は退避時に存在せず復元で取り除く対象を表す。
+`rm` の `tracking` は予定（`would_untrack`）、完了未確認（`unconfirmed`）、解除済み（`untracked`）を表す。ローカル削除を指定すると、ファイルの不在を確認した件に `file_absent: true` が付く。途中失敗時にこの値がなければ追跡解除済みでもファイルの不在は未確認。`restore` の dry-run は例えば `paths: [{"path": "docs", "kind": "directory"}]` を返す。`file` はファイル、`absent` は退避時に存在せず復元で取り除く対象を表す。

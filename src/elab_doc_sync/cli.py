@@ -184,7 +184,7 @@ def _find_best_target(config, entity_type: str, remote_tags: list[str],
 
 
 def _resolve_pull_target_interactive(config, entity_type: str, remote_title: str) -> "TargetConfig | None":
-    """対話的にターゲットを選択させる。非対話環境では None を返す。"""
+    """既存ターゲットまたは新規作成を表す None を返す。入力終了・無効な選択は SKIP。"""
     matched = [t for t in config.targets if t.entity == entity_type]
     if not matched:
         return None
@@ -496,6 +496,9 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
                     folder = str(export) if export else (str(category or (tags[0] if tags else entity)).replace("/", "_").replace("\\", "_") + "/")
                     safe_path(root, folder)
                     target = TargetConfig(title="", docs_dir=folder, id_file=f".elab-sync-ids/{folder.rstrip('/')}/default.id", entity=entity, tags=tags, category=category)
+                    if candidates:
+                        origin = source or candidates[0]
+                        target.profile, target.team = origin.profile, origin.team
                     if not dry_run:
                         from dataclasses import asdict
                         append_target_to_yaml(config_path, asdict(target))
@@ -2022,7 +2025,7 @@ def run_rm(args, echo=None) -> CommandResult:
         if args.local:
             for name in selected:
                 path = selected[name]
-                if path.exists() and not path.is_file():
+                if path.is_symlink() or (path.exists() and not path.is_file()):
                     return fail(f"通常ファイルではありません: {path}")
 
     for syncer, mapping, excluded, selected in states:

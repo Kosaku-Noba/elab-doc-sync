@@ -1741,3 +1741,14 @@ def test_links_only_change_does_not_reapply_tags_or_category(project, fail_first
     client.add_tag.assert_not_called()
     client.patch_entity.assert_not_called()
     assert remote[1]['category'] == 9 and remote[1]['tags'] == []
+
+
+def test_run_push_hides_key_in_document_warning(project):
+    root, client, remote, syncer, args = project
+    client.api_key = "private-test-key"
+    client.update_item.side_effect = ValueError("header contains private-test-key")
+    (root / "docs/a.md").write_text("body", encoding="utf-8")
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
+        result = run_push(args(prune_attachments=False))
+    assert result.exit_code == 1 and any("***" in line for line in result.warnings)
+    assert "private-test-key" not in json.dumps(result.to_dict())

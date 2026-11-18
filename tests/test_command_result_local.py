@@ -105,3 +105,22 @@ def test_rm_reports_completed_deletions(project, tmp_path, monkeypatch):
     a, note = caught.value.partial_result.data["documents"]
     assert a["file_absent"] and "file_absent" not in note
     assert a["tracking"] == note["tracking"] == "untracked"
+
+
+def test_pull_new_target_keeps_source_profile(project, tmp_path):
+    path = tmp_path / ".elab-sync.yaml"
+    cfg = yaml.safe_load(path.read_text())
+    cfg["profiles"] = {"lab": {"url": "https://lab.invalid", "api_key": "lab-secret"}}
+    cfg["targets"] = [{"docs_dir": name, "profile": "lab"} for name in ("one", "two")]
+    path.write_text(yaml.safe_dump(cfg))
+    project.id, project.entity, project.auto, project.dir = [11], "items", False, None
+    project.dry_run = False
+    with patch.object(cli, "ELabFTWClient") as factory:
+        client = factory.return_value
+        client.base_url = "https://lab.invalid"
+        client.get_item.return_value = {"title": "doc", "body": "from lab", "category_title": "incoming"}
+        client.list_uploads.return_value = []
+        res = cli.run_pull(project, choose_target=lambda *_: None)
+    assert res.exit_code == 0 and "from lab" in (tmp_path / "incoming/doc.md").read_text()
+    assert yaml.safe_load(path.read_text())["targets"][-1]["profile"] == "lab"
+    assert {call.args[0] for call in factory.call_args_list} == {"https://lab.invalid"}

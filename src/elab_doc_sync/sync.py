@@ -158,7 +158,7 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
     except Exception as e:
         if strict:
             raise
-        progress(f"    ⚠ 添付ファイル一覧の取得に失敗（{entity} #{entity_id}、画像のローカル化をスキップ）: {e}", warning=True)
+        progress(f"    ⚠ 添付ファイル一覧の取得に失敗（{entity} #{entity_id}、画像のローカル化をスキップ）: {_error_text(client, e)}", warning=True)
         return body
     upload_map = {}
     id_map = {}
@@ -251,7 +251,7 @@ def _normalize_remote_image_urls(body: str, entity: str, entity_id: int, client:
         if uploads is None:
             uploads = client.list_uploads(entity, entity_id)
     except Exception as e:
-        progress(f"    ⚠ 添付ファイル一覧の取得に失敗（{entity} #{entity_id}、画像 URL の正規化をスキップ）: {e}", warning=True)
+        progress(f"    ⚠ 添付ファイル一覧の取得に失敗（{entity} #{entity_id}、画像 URL の正規化をスキップ）: {_error_text(client, e)}", warning=True)
         return body
     upload_map = {}
     id_map = {}
@@ -991,7 +991,7 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
                             client.delete_upload(entity, entity_id, e["id"])
                             progress(f"    🗑 {rn}（リモートから削除）")
                         except Exception as exc:
-                            progress(f"    ⚠ {rn} の削除に失敗: {exc}", warning=True)
+                            progress(f"    ⚠ {rn} の削除に失敗: {_error_text(client, exc)}", warning=True)
                             all_success = False
 
     return all_success
@@ -1012,7 +1012,7 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
     except Exception as e:
         if strict:
             raise
-        progress(f"    ⚠ 添付ファイル一覧の取得に失敗: {e}", warning=True)
+        progress(f"    ⚠ 添付ファイル一覧の取得に失敗: {_error_text(client, e)}", warning=True)
         return
     attachments_dir.mkdir(parents=True, exist_ok=True)
     for u in uploads:
@@ -1070,7 +1070,7 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
         except Exception as e:
             if strict:
                 raise
-            progress(f"    ⚠ 添付ファイルのダウンロードに失敗: {safe_name}: {e}", warning=True)
+            progress(f"    ⚠ 添付ファイルのダウンロードに失敗: {safe_name}: {_error_text(client, e)}", warning=True)
 
 
 
@@ -1121,6 +1121,11 @@ def _sync_links(client: ELabFTWClient, entity_type: str, entity_id: int, desired
     if not ok:
         progress("    （本文・タグ・カテゴリは送信済みです。リンク先の ID と権限を確認し、再度 push してください）")
     return ok
+
+
+def _error_text(client, exc):
+    """通信例外に含まれる認証情報を表示前に除く。"""
+    return redact(str(exc), getattr(client, "api_key", None))
 
 
 def _describe_error(exc):
@@ -1842,7 +1847,7 @@ class EachDocsSyncer:
             try:
                 category_id = self._resolve_target_category(observed_entities)
             except ValueError as exc:
-                progress(f"  カテゴリを解決できないため、カテゴリの設定が必要な文書の同期を中止しました: {exc}", warning=True)
+                progress(f"  カテゴリを解決できないため、カテゴリの設定が必要な文書の同期を中止しました: {_error_text(self.client, exc)}", warning=True)
                 kept = []
                 for job in jobs:
                     if needs_meta(*job):
@@ -1969,5 +1974,5 @@ class EachDocsSyncer:
                           "解消するまで、この文書は「送信待ち」のままになります。表記を見直して再度 push してください", warning=True)
             except Exception as exc:
                 self.failures += 1
-                progress(f"  [{f.stem}] 同期失敗: {exc}", warning=True)
+                progress(f"  [{f.stem}] 同期失敗: {_error_text(self.client, exc)}", warning=True)
         return self.updated
