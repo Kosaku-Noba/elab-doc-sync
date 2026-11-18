@@ -67,6 +67,7 @@ def hold_document(path: Path, backup: Path, expected_digest: str | None):
         except BaseException:
             if not held.exists():
                 held.parent.rmdir()
+                (backup / "displaced-location.json").unlink(missing_ok=True)
             raise
     try:
         if held.is_symlink() or not held.is_file():
@@ -253,13 +254,13 @@ def _held_documents(paths):
     return held
 
 
-def _clear_for_restore(path, held):
+def _clear_for_restore(path, held, directories):
     """文書・追跡情報を消去する。別マウント上のバックアップは残す。"""
     if path in held:
         return
-    if any(p.is_relative_to(path) for p in held):
+    if path.is_dir() and (path in directories or any(p.is_relative_to(path) for p in held)):
         for child in path.iterdir():
-            _clear_for_restore(child, held)
+            _clear_for_restore(child, held, directories)
     elif path.is_dir() and not path.is_symlink():
         shutil.rmtree(path)
     else:
@@ -278,6 +279,7 @@ def restore(root: Path, backup_id: str, dry_run: bool = False) -> list[dict]:
         progress(f"  復元対象: {entry['path']} ({entry['kind']})")
     if manifest.get("remote") is not None:
         progress(f"  リモート退避データの取り出し: {export_path}")
+    directories = {root / name for name in manifest["directories"]}
     held = _held_documents(paths)
     for name in manifest["files"]:
         destination = root / name
@@ -291,9 +293,11 @@ def restore(root: Path, backup_id: str, dry_run: bool = False) -> list[dict]:
         progress("  個別に取り出すには、files にある元のパスの sha256 と同名のファイルを、"
                  "この一覧と同じディレクトリから別の場所にコピーしてください。")
         for path in paths:
-            _clear_for_restore(path, held)
+            _clear_for_restore(path, held, directories)
         for name in manifest["directories"]:
-            safe_path(root, name).mkdir(parents=True, exist_ok=True)
+            directory = safe_path(root, name)
+            mode = 0o700 if directory.name.startswith(DISPLACED_PREFIX) else 0o777
+            directory.mkdir(mode=mode, parents=True, exist_ok=True)
         base = root / BACKUPS / backup_id
         for name, item in manifest["files"].items():
             destination = safe_path(root, name)

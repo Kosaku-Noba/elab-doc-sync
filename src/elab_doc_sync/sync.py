@@ -1693,9 +1693,12 @@ class EachDocsSyncer:
                           error=_error_text(self.client, exc))
         return result
 
+    def is_displaced_path(self, path):
+        return any(part.startswith(DISPLACED_PREFIX) for part in path.relative_to(self.docs_dir).parts[:-1])
+
     def _document_files(self):
         for path in self.docs_dir.glob(self.target.pattern):
-            if not any(part.startswith(DISPLACED_PREFIX) for part in path.relative_to(self.docs_dir).parts[:-1]) and path.is_file():
+            if not self.is_displaced_path(path) and path.is_file():
                 yield path
 
     def file_path(self, filename):

@@ -760,3 +760,22 @@ def test_selectors_exclude_displaced_files(project, tmp_path):
     project.dry_run = False
     assert cli.run_rm(project).exit_code != 0
     assert held.read_text() == "previous version"
+
+
+def test_restore_preserves_document_directory_and_private_stash_mode(tmp_path):
+    import os
+    from elab_doc_sync.safety import restore
+
+    docs = tmp_path / "docs"
+    stash = docs / ".elab-displaced-test"
+    stash.mkdir(mode=0o700, parents=True)
+    (stash / "body").write_bytes(b"preserved")
+    original_inode = docs.stat().st_ino
+    backup = snapshot(tmp_path, [docs], "pull")
+    (stash / "body").unlink()
+    stash.rmdir()
+    restore(tmp_path, backup)
+    assert docs.stat().st_ino == original_inode
+    assert (stash / "body").read_bytes() == b"preserved"
+    if os.name != "nt":
+        assert stash.stat().st_mode & 0o077 == 0

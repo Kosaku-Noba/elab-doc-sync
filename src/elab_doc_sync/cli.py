@@ -1989,6 +1989,8 @@ def run_link(args, echo=None) -> CommandResult:
     syncer = _make_syncer(_make_client_for_target(config, target), target, config_path.parent)
     syncer.link_syncers = _link_syncers(config, config_path.parent)
     path = safe_path(syncer.docs_dir, args.file)
+    if syncer.is_displaced_path(path):
+        raise ValueError("本文の退避場所は指定できません")
     res.data.update(path=str(path), entity=target.entity, entity_id=args.entity_id, new=getattr(args, "new", False))
     filename = path.name
     if not path.is_file():
@@ -2057,6 +2059,8 @@ def run_mv(args, echo=None) -> CommandResult:
             continue
         safe_path(syncer.docs_dir, old_rel)
         safe_path(syncer.docs_dir, new_rel)
+        if syncer.is_displaced_path(new_path) or syncer.is_displaced_path(old_path):
+            raise ValueError("本文の退避場所は指定できません")
         mapping = syncer._load_mapping(migrate=False)
         if old_path.name in mapping:
             matches.append((syncer, mapping))
