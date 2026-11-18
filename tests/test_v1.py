@@ -1772,7 +1772,7 @@ def test_prune_preserves_body_uploads_on_create_and_update(project, keep_previou
         assert pdf["long_name"] in remote[1]["body"]
         uploads[1].append({"id": 200, "real_name": "remove.csv", "long_name": "old-data"})
         (root / "docs/items_1_protocol.pdf").write_bytes(b"new PDF")
-        body = "![file](items_1_protocol.pdf) [external](https://other.test/remove.csv)"
+        body = "![file](items_1_protocol.pdf) [external](https://other.test/remove.csv) [csv](https://other.test/uploads/200)"
         if keep_previous:
             body += " [previous](https://example.test/uploads/%31%30%30)"
         (root / "docs/a.md").write_text(body)
@@ -1805,3 +1805,44 @@ def test_prune_preview_keeps_results_across_errors(project):
     assert a["prune_candidates"][0]["id"] == 11
     assert "error" in b and "prune_candidates" not in b and c["prune_candidates"] == []
     client.delete_upload.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["delete", "remote_edit", "rename"])
+def test_prune_records_progress_and_protects_concurrent_edits(project, failure):
+    root, client, remote, syncer, args = push_note(project)
+    uploads = _stateful_uploads(client)
+    cfg = root / ".elab-sync.yaml"
+    config = yaml.safe_load(cfg.read_text())
+    config["targets"][0]["attachments_dir"] = "assets"
+    cfg.write_text(yaml.safe_dump(config))
+    assets = root / "assets"
+    assets.mkdir()
+    uploads[1] = [{"id": i, "real_name": f"old{i}.csv", "long_name": f"stored{i}"} for i in (201, 202)]
+    if failure == "delete":
+        delete = client.delete_upload.side_effect
+        def fail_second(entity, eid, uid):
+            if uid == 202:
+                raise RuntimeError("temporary failure")
+            delete(entity, eid, uid)
+        client.delete_upload.side_effect = fail_second
+    else:
+        (assets / "new.txt").write_bytes(b"payload")
+        upload = client.upload_file.side_effect
+        def concurrent_change(entity, eid, path):
+            result = upload(entity, eid, path)
+            if failure == "rename":
+                uploads[eid][-1]["real_name"] = "renamed.txt"
+            else:
+                remote[eid]["body"] = "[file](https://example.test/uploads/201)"
+            return result
+        client.upload_file.side_effect = concurrent_change
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
+        assert run_push(args(prune_attachments=True, force=True)).exit_code == 1
+        if failure == "delete":
+            assert [u["id"] for u in uploads[1]] == [202]
+            client.delete_upload.side_effect = delete
+            assert run_push(args(prune_attachments=True)).exit_code == 0
+            assert uploads[1] == []
+        else:
+            client.delete_upload.assert_not_called()
+            assert {201, 202} <= {u["id"] for u in uploads[1]}

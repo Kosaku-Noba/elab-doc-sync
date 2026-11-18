@@ -910,14 +910,19 @@ def _count_local_attachments(attachments_dir: Path | None) -> int:
     return sum(1 for f in attachments_dir.iterdir() if f.is_file() and not _is_image(f.name))
 
 
-def _referenced_upload_ids(uploads, body):
+def _referenced_upload_ids(uploads, body, base_url):
+    def retain_local_url(match):
+        value = match.group()
+        return value if _hosts_match(base_url, value) else ""
+
     decoded = unquote(_html.unescape(body))
+    decoded = re.sub(r"""(?:https?:)?//[^\s<>"')]+""", retain_local_url, decoded, flags=re.I)
     ids = set(re.findall(r"/uploads/(\d+)(?!\d)", decoded))
     return {u["id"] for u in uploads if u.get("id") is not None
             and (str(u["id"]) in ids or (u.get("long_name") and u["long_name"] in decoded))}
 
 
-def _prune_candidates(uploads, local_names, pattern, body=""):
+def _prune_candidates(uploads, local_names, pattern, body, base_url):
     from fnmatch import fnmatch
     referenced_names = set(local_names)
     for regex in (IMAGE_RE, _LINK_RE):
@@ -931,14 +936,14 @@ def _prune_candidates(uploads, local_names, pattern, body=""):
             elif regex is _LINK_RE and (_is_image(src) or src.split("#", 1)[0].endswith(".md")):
                 continue
             referenced_names.add(name)
-    referenced_ids = _referenced_upload_ids(uploads, body)
+    referenced_ids = _referenced_upload_ids(uploads, body, base_url)
     return [u for u in uploads if u.get("id") is not None and u.get("real_name")
             and u["real_name"] not in referenced_names and not _is_image(u["real_name"])
             and fnmatch(u["real_name"], pattern) and u["id"] not in referenced_ids]
 
 
 def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int, client: ELabFTWClient, *, force: bool = False, pattern: str = "*", prune: bool = False, strict: bool = False,
-                      prune_ids=None, body="", pruned=None, added=None) -> bool:
+                      prune_ids=None, body="", deferred_prune=None, on_upload=None) -> bool:
     """attachments_dir 内の非画像ファイルをリモートにアップロードする。
 
     差分検知: サイズ一致 → リモートに hash/sha256 フィールドがあれば
@@ -950,7 +955,8 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
     prune: True の場合、ローカルに存在しないリモート添付を削除する。
 
     prune_ids は本文更新前に確認した ID に削除対象を限定する。body から参照する添付は保護する。
-    pruned・added には同期中に削除・追加を確認した ID を記録する。
+    deferred_prune が指定された場合は候補 ID をそこに集め、削除は呼び出し側が復旧記録を保存してから行う。
+    on_upload は新しい添付の ID と送信ファイルで呼び出し、次の変更前にアップロードを確認する。
 
     Returns:
         True: 全ファイル同期成功（またはスキップ）
@@ -1001,8 +1007,8 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
             if result.get("url"):
                 progress(f"    ✓ {f.name}")
                 stale = [e for e in entries if e.get("id") is not None]
-                if added is not None and result.get("id") is not None:
-                    added.add(result["id"])
+                if on_upload is not None:
+                    on_upload(result.get("id"), f)
             else:
                 progress(f"    ✗ アップロード失敗: {f.name}", warning=True)
                 stale = []
@@ -1017,14 +1023,15 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
     if prune:
         local_names = {f.name for f in local_files}
         uploads = [entry for group in existing.values() for entry in group]
-        for entry in _prune_candidates(uploads, local_names, pattern, body):
+        for entry in _prune_candidates(uploads, local_names, pattern, body, client.base_url):
             if prune_ids is not None and entry["id"] not in prune_ids:
+                continue
+            if deferred_prune is not None:
+                deferred_prune.add(entry["id"])
                 continue
             name = entry["real_name"]
             try:
                 client.delete_upload(entity, entity_id, entry["id"])
-                if pruned is not None:
-                    pruned.add(entry["id"])
                 progress(f"    🗑 {name}（リモートから削除）")
             except Exception as exc:
                 progress(f"    ⚠ {name} の削除に失敗: {_error_text(client, exc)}", warning=True)
@@ -1441,7 +1448,7 @@ class EachDocsSyncer:
                 lines.append(f"添付変更: {new_uploads[uid].get('real_name')} (#{uid})")
         return lines, old["body"], new["body"]
 
-    def _delete_stale_uploads(self, eid, stale_ids, pending, filename):
+    def _delete_stale_uploads(self, eid, stale_ids, pending, filename, prune_ids=()):
         """差し替え前の古い版の添付を削除し、削除できた ID の集合を返す。best-effort。
 
         文書の本文・タグ・カテゴリ・添付の同期がすべて済んだ後にだけ呼ぶ。
@@ -1449,9 +1456,15 @@ class EachDocsSyncer:
         削除しない。削除の途中で止まっても再開できるよう、削除候補を先に
         pending の deleting に記録する。
         """
-        body = self._get_entity(eid).get("body") or ""
+        def checked_body():
+            data = self._get_entity(eid)
+            if any(data.get(k) != v for k, v in pending[filename]["stored"].items()):
+                raise ConflictError("添付削除前にリモート本文が変更されました。diffで確認してください")
+            return data.get("body") or ""
+
+        body = checked_body()
         by_id = {u.get("id"): u for u in self.client.list_uploads(self.entity, eid)}
-        protected = _referenced_upload_ids(by_id.values(), body)
+        protected = _referenced_upload_ids(by_id.values(), body, self.client.base_url)
         candidates = [uid for uid in dict.fromkeys(stale_ids) if uid in by_id and uid not in protected]
         if not candidates:
             return set()
@@ -1459,12 +1472,15 @@ class EachDocsSyncer:
         self._save_pending(pending)
         deleted = set()
         for uid in candidates:
+            checked_body()
             name = by_id[uid].get("real_name")
             try:
                 self.client.delete_upload(self.entity, eid, uid)
                 deleted.add(uid)
                 progress(f"    古い版の添付を削除しました: {name} (#{uid})")
             except Exception:
+                if uid in prune_ids:
+                    raise
                 import logging
                 logging.getLogger(__name__).debug("古い添付の削除失敗", exc_info=True)
                 progress(f"    ⚠ 古い版の添付を削除できませんでした: {name} (#{uid})", warning=True)
@@ -1789,7 +1805,7 @@ class EachDocsSyncer:
                     doc["error"] = _error_text(self.client, exc)
                     continue
                 body = self.file_path(doc["filename"]).read_text(encoding="utf-8")
-                candidates = _prune_candidates(uploads, local_names, self.target.attachments_pattern, body)
+                candidates = _prune_candidates(uploads, local_names, self.target.attachments_pattern, body, self.client.base_url)
                 doc["prune_candidates"] = [{"id": u["id"], "name": u["real_name"]} for u in candidates]
         return results
 
@@ -1992,25 +2008,29 @@ class EachDocsSyncer:
                 links_ok = _sync_links(self.client, self.entity, eid, self.target.links) if links_changed else True
                 if not links_ok:
                     raise RuntimeError("本文更新後にリンク同期が失敗しました。リモートを確認して再実行してください")
+                def confirm_upload(uid, path):
+                    uploads = self.client.list_uploads(self.entity, eid)
+                    entry = next((u for u in uploads if uid is not None and u.get("id") == uid), None)
+                    if not entry or entry.get("real_name") != path.name or int(entry.get("filesize") or 0) != path.stat().st_size:
+                        raise ConflictError("送信した添付の名前・サイズを確認できません")
+                    digest = entry.get("sha256") or entry.get("hash")
+                    if digest and digest != _compute_file_hash(path):
+                        raise ConflictError("送信した添付の内容が一致しません")
+                    additions = self._remote_signature({}, [entry])["uploads"]
+                    expected_uploads = pending[f.name]["guard"]["uploads"] + additions
+                    checkpoint({"uploads": sorted(expected_uploads, key=lambda u: str(u["id"]))})
+
+                prune_ids = set()
                 att_ok = True
-                pruned, added = set(), set()
                 if self.target.attachments_dir:
                     att_ok = _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, eid, self.client,
                                                force=force, pattern=self.target.attachments_pattern, prune=prune_attachments, strict=True,
                                                prune_ids={u["id"] for u in result.get("uploads", []) if u.get("id") is not None},
-                                               body=raw_body + "\n" + body, pruned=pruned, added=added)
-                if tags_ok is False or category_ok is False or not att_ok:
-                    raise RuntimeError("本文更新後、メタデータまたは添付の同期が失敗しました。再実行してください")
-                if pruned or added:
-                    expected_uploads = [u for u in pending[f.name]["guard"]["uploads"] if u["id"] not in pruned]
-                    if added:
-                        current = self.client.list_uploads(self.entity, eid)
-                        new_uploads = self._remote_signature({}, [u for u in current if u.get("id") in added])["uploads"]
-                        if {u["id"] for u in new_uploads} != added:
-                            raise ConflictError("送信した添付を確認できません")
-                        expected_uploads.extend(new_uploads)
-                    checkpoint({"uploads": sorted(expected_uploads, key=lambda u: str(u["id"]))})
-                deleted = self._delete_stale_uploads(eid, stale_uploads, pending, f.name) if stale_uploads else set()
+                                               body=raw_body + "\n" + body, deferred_prune=prune_ids, on_upload=confirm_upload)
+                if not att_ok:
+                    raise RuntimeError("本文更新後、添付の同期が失敗しました。再実行してください")
+                stale_uploads.extend(sorted(prune_ids))
+                deleted = self._delete_stale_uploads(eid, stale_uploads, pending, f.name, prune_ids) if stale_uploads else set()
                 if "deleting" in pending[f.name]:
                     checkpoint({"uploads": [u for u in pending[f.name]["guard"]["uploads"] if u.get("id") not in deleted]})
                     pending[f.name].pop("deleting")
@@ -2018,8 +2038,10 @@ class EachDocsSyncer:
                 data = self._get_entity(eid)
                 uploads = self.client.list_uploads(self.entity, eid)
                 actual = self._remote_signature(data, uploads)
-                if any(actual[k] != pending[f.name]["guard"][k] for k in ("category", "tags")):
-                    raise ConflictError("完了確認時にリモートのカテゴリ・タグが期待値と異なります")
+                if any(data.get(k) != v for k, v in pending[f.name]["stored"].items()):
+                    raise ConflictError("完了確認時にリモート本文が変更されました")
+                if any(actual[k] != pending[f.name]["guard"][k] for k in ("category", "tags", "uploads")):
+                    raise ConflictError("完了確認時にリモートのカテゴリ・タグ・添付が期待値と異なります")
                 base = self.remote_base(data, uploads, eid, mapping, links, f)
                 # When eLabFTW dropped <...>, record what it kept as the synced local
                 # body: the file stays "送信待ち", and pull merges instead of

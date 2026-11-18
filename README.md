@@ -134,7 +134,7 @@ export ELABFTW_API_KEY="your_key"
 
 `pull` は `auto: true` または `dir` を指定します。`clone` の API キーはサーバープロセスの環境変数 `ELABFTW_API_KEY` で渡します。`dir` を省くと設定ファイルの隣の `elab-clone-<先頭ID>` に保存します。パスや正規表現には空文字列・空白のみの値を指定できません。既定の保存先もシンボリックリンクならエラーになります。接続先は明示した既定プロファイル（`elabftw` または `profiles.default`）の URL を使い、名前付きプロファイルしかない場合や設定のない場所から開始する場合はサーバー起動時に `--clone-url https://elab.example.org` を指定します。`init`、`update`、`entity-status set`、`profile add/remove` は CLI から使います。
 
-ツール応答の `structuredContent` は `exit_code`、`data`、`messages`、`warnings` を含みます。SDK が引数の型などを実行前に拒否した場合は `structuredContent` がなく、`isError` と `content` に理由が返ります。終了コードが非ゼロなら `isError` が立ちます。複数件の操作が途中で止まった場合は `data` で完了した変更を確認できます。タグの部分結果で `result` がない記事は反映状況が未確認です。再試行前に `tag_list` で確認してください。`push` で `prune_attachments: true` を指定すると、プレビューはリモートを読み、文書ごとに削除候補の添付名と ID を返します。添付一覧の取得に成功して候補がなければ `prune_candidates: []`、失敗した文書には `error` が入ります。失敗時は全体が `exit_code: 1`、`isError: true` となり、成功した文書の結果も `data.targets[].documents[]` から読めます。既存のルート直下の `mcp_server.py` は開発ワークフロー用です。
+ツール応答の `structuredContent` は `exit_code`、`data`、`messages`、`warnings` を含みます。SDK が引数の型などを実行前に拒否した場合は `structuredContent` がなく、`isError` と `content` に理由が返ります。終了コードが非ゼロなら `isError` が立ちます。複数件の操作が途中で止まった場合は `data` で完了した変更を確認できます。タグの部分結果で `result` がない記事は反映状況が未確認です。再試行前に `tag_list` で確認してください。`push` で `prune_attachments: true` を指定すると、プレビューはリモートを読み、文書ごとに削除候補の添付名と ID を返します。添付一覧の取得に成功して候補がなければ `prune_candidates: []`、失敗した文書には `error` が入ります。添付ディレクトリ未設定なら候補欄は省略し、設定先が存在しない場合やリモート ID が未確定の場合は通信せず空配列を返します。失敗時は全体が `exit_code: 1`、`isError: true` となり、成功した文書の結果も `data.targets[].documents[]` から読めます。既存のルート直下の `mcp_server.py` は開発ワークフロー用です。
 
 ## 日常の使い方
 
@@ -501,7 +501,7 @@ targets:
 
 `attachments/` に置いたファイルが push 時に自動アップロードされます。本文から `[データ](data/result.csv)` のようにリンクしたファイルもアップロードされ、リンクが eLabFTW の URL に変わります。
 
-本文から参照している画像・ファイルを同じ名前のまま差し替えると、push 時に新しい版をアップロードし、本文から参照されなくなった古い版の添付を削除します（`--prune-attachments` は不要）。`--prune-attachments` は、attachments_dir が存在する場合、attachments_pattern に一致し、同名のローカル添付も本文からの参照もない非画像添付を削除する push のオプションです。削除した添付は esync のバックアップからは復元できません。`esync push --dry-run --prune-attachments` はリモートの添付一覧を読み、`attachments_pattern` に一致する非画像添付のうちローカル添付ディレクトリに同名ファイルがなく、本文のリンクにも使わない削除候補の ID と名前を表示します。取得に失敗した文書は理由を表示し、残りの文書の確認を続けます。
+本文から参照している画像・ファイルを同じ名前のまま差し替えると、push 時に新しい版をアップロードし、本文から参照されなくなった古い版の添付を削除します（`--prune-attachments` は不要）。`--prune-attachments` は、attachments_dir が存在する場合、attachments_pattern に一致し、同名のローカル添付も本文からの参照もない非画像添付を削除する push のオプションです。例えば別ホストの `https://other.test/remove.csv` は同名の添付を保護しません。接続先の `/uploads/%31%30%30` を参照するリンクは ID 100 を保護します。削除した添付は esync のバックアップからは復元できません。`esync push --dry-run --prune-attachments` はリモートの添付一覧を読み、`attachments_pattern` に一致する非画像添付のうちローカル添付ディレクトリに同名ファイルがなく、本文のリンクにも使わない削除候補の ID と名前を表示します。取得に失敗した文書は理由を表示し、残りの文書の確認を続けます。
 
 画像・動画・ファイルリンク・添付の送信対象は、プロジェクト内の通常ファイルに限定します。プロジェクト外への参照、隠しファイル・隠しディレクトリ、シンボリックリンクは拒否します。[送信制約と復旧](docs/13_MIGRATION_V1.md#バックアップと復元) も参照してください。
 

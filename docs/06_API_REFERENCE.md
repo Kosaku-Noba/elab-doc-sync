@@ -68,7 +68,7 @@
 | `_sync_tags(client, entity_type, entity_id, desired_tags)` | 設定タグを追記し既存タグを保持。成功・追加不要なら `True`、取得・更新失敗なら `False`。タグなしのnull応答は空タグとして扱う |
 | `_sync_category(client, entity_type, entity_id, category, current=None)` | カテゴリ設定。現在値と同じなら PATCH を省略。成功・不要なら `True`、失敗なら警告を出して `False` |
 | `_sync_links(client, entity_type, entity_id, desired_links)` | `links` の記事へのリンクのうち未作成のものを追加。既存は削除しない。1件でも失敗すれば `False`（残りは続行） |
-| `_sync_attachments(attachments_dir, entity, entity_id, client, *, force=False, pattern="*", prune=False, strict=False)` | 添付ファイルの差分同期 |
+| `_sync_attachments(attachments_dir, entity, entity_id, client, *, force=False, pattern="*", prune=False, strict=False, prune_ids=None, body="", deferred_prune=None, on_upload=None)` | 添付ファイルの差分同期。本文と事前に確認した ID を使って削除候補を絞る。`deferred_prune` を渡すと候補 ID をそこに集め、呼び出し側が削除する。`on_upload(id, path)` は各アップロード後の確認用 |
 | `_shell_quote(value, windows=None)` | 案内に表示するコマンドの引用（PowerShell 対応） |
 
 #### 正規表現定数
