@@ -16,7 +16,7 @@ from pathlib import Path
 import yaml
 from markdownify import markdownify as html_to_md
 
-from .safety import atomic_write, write_json, safe_path, snapshot, local_transaction, project_command, restore, BACKUPS, RECOVERY
+from .safety import hold_document, atomic_write, write_json, safe_path, snapshot, local_transaction, project_command, restore, BACKUPS, RECOVERY
 from .config import TargetConfig
 from .client import ELabFTWClient
 from .config import load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, append_target_to_yaml
@@ -865,11 +865,6 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
     tracked_path = old_path or filepath
     initial_digest = _compute_file_hash(tracked_path) if tracked_path.is_file() else None
 
-    def check_local_body():
-        digest = _compute_file_hash(tracked_path) if tracked_path.is_file() else None
-        if digest != initial_digest:
-            raise ConflictError(f"取得中に本文が変更されました: {tracked_path}。restore の前に編集内容を復元対象の外へコピーしてください")
-
     uploads = client.list_uploads(entity_type, eid)
     body_md = _remote_markdown(data, target)
     if target.attachments_dir:
@@ -910,7 +905,7 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
     paths = [docs_dir] if is_temp_export else syncer.backup_paths()
     if target.attachments_dir:
         paths.append(project_root / target.attachments_dir)
-    with local_transaction(project_root, paths, f"pull:{entity_type}/{eid}"):
+    with local_transaction(project_root, paths, f"pull:{entity_type}/{eid}") as backup_id:
         docs_dir.mkdir(parents=True, exist_ok=True)
         body_md = _download_images(body_md, entity_type, eid, client, parent, strict=True, keep_existing=merge,
                                    uploads=uploads, check_path=validate_output, exclusive_paths=exclusive_paths)
@@ -925,15 +920,16 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
         if target.attachments_dir:
             _download_attachments(entity_type, eid, client, project_root / target.attachments_dir, strict=True,
                                   keep_existing=merge, uploads=uploads, exclusive_paths=exclusive_paths)
-        check_local_body()
-        local_md, conflicts = body_md, 0
-        if merge:
-            local_md, conflicts = merge_text(syncer.load_base(old_name), old_path.read_text(encoding="utf-8").strip(),
-                                             body_md, remote_label=f"#{eid}")
-        atomic_write(filepath, local_md + "\n", exclusive=filepath in exclusive_paths)
-        if old_path and old_path != filepath:
-            check_local_body()
-            old_path.unlink(missing_ok=True)
+        with hold_document(tracked_path, project_root / BACKUPS / backup_id, initial_digest) as held:
+            local_md, conflicts = body_md, 0
+            if merge:
+                local_md, conflicts = merge_text(syncer.load_base(old_name), held.read_text(encoding="utf-8").strip(),
+                                                 body_md, remote_label=f"#{eid}")
+            if tracked_path != filepath and tracked_path.exists():
+                raise ConflictError(f"取得中に改名元に本文が保存されました: {tracked_path}")
+            # 元のディレクトリ項目は退避済み。その後のエディタ保存には上書きしない。
+            mode = held.stat().st_mode & 0o777 if held is not None else None
+            atomic_write(filepath, local_md + "\n", mode=mode, exclusive=True)
         if not is_temp_export:
             applied_links = syncer.applied_links(old_name or filename)
             if old_name and old_name != filename:

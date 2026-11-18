@@ -658,3 +658,33 @@ def test_legacy_mapping_skips_retired_paths(project, tmp_path):
     assert not syncer.mapping_file.exists()
     assert syncer._load_mapping() == {"note.md": 42}
     assert json.loads(syncer.mapping_file.read_text()) == {"note.md": 42}
+
+
+@pytest.mark.parametrize("rename", [True, False])
+def test_pull_captures_edit_at_replacement(project, tmp_path, monkeypatch, rename):
+    from elab_doc_sync.safety import BACKUPS, RECOVERY
+
+    project.target, project.entity, project.id, project.dir = "docs", "items", [42], None
+    project.force, project.dry_run = True, False
+    original = tmp_path / "docs/note.md"
+    rename_path = Path.rename
+
+    def save_then_rename(src, dest):
+        if src == original and dest.parent.name == "displaced":
+            src.write_text("edited at replacement")
+        return rename_path(src, dest)
+
+    monkeypatch.setattr(Path, "rename", save_then_rename)
+    with patch.object(cli, "ELabFTWClient") as factory:
+        client = factory.return_value
+        client.base_url = "https://example.invalid"
+        client.get_item.return_value = {"title": "renamed" if rename else "note", "body": "remote change"}
+        client.list_uploads.return_value = []
+        res = cli.run_pull(project)
+    assert res.exit_code == 1 and original.read_text() == "edited at replacement"
+    assert json.loads((tmp_path / ".ids/mapping.json").read_text()) == {"note.md": 42}
+    project.backup_id = json.loads((tmp_path / RECOVERY).read_text())["backup"]
+    saved = tmp_path / BACKUPS / project.backup_id / "displaced/note.md"
+    assert saved.read_text() == "edited at replacement"
+    assert cli.run_restore(project).exit_code == 0
+    assert saved.read_text() == "edited at replacement"
