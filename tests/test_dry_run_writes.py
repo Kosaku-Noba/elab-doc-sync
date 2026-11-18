@@ -121,12 +121,67 @@ def test_entity_status_set_dry_run_skips_prompt(MockClient, tmp_path, capsys, mo
     (tmp_path / "docs" / "b.md").write_text("# B\n", encoding="utf-8")
     (tmp_path / ".elab-sync-ids" / "mapping.json").write_text(json.dumps({"a.md": 42, "b.md": 43}))
     monkeypatch.setattr("builtins.input", MagicMock(side_effect=AssertionError("input() must not be called")))
+    client = MockClient.return_value
+    client.get_entity.side_effect = lambda etype, eid: (
+        {"status": 1, "status_title": "Running"} if eid == 42 else {"status": 3, "status_title": "Done"})
     cmd_entity_status(Namespace(config=str(cfg), target=None, status_action="set", status_id="3", id=None,
                                 dry_run=True))
-    MockClient.return_value.patch_entity.assert_not_called()
+    client.patch_entity.assert_not_called()
     out = capsys.readouterr().out
-    assert "リソース #42: ステータスを #3 に変更予定" in out
-    assert "リソース #43: ステータスを #3 に変更予定" in out
+    assert "リソース #42: ステータスを Running から #3 に変更予定" in out
+    assert "リソース #43: すでにステータス #3（Done）です" in out
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_entity_status_set_rejects_non_numeric_id(MockClient, tmp_path, dry_run):
+    cfg = _project(tmp_path)
+    with pytest.raises(ValueError, match="数値"):
+        cmd_entity_status(Namespace(config=str(cfg), target=None, status_action="set", status_id="done", id=42,
+                                    dry_run=dry_run))
+    MockClient.return_value.patch_entity.assert_not_called()
+
+
+def _legacy_project(tmp_path):
+    """id_file が別ディレクトリにあり、旧形式の共有 mapping.json だけが残るプロジェクト。"""
+    data = {
+        "elabftw": {"url": "https://elab.example.com", "api_key": "key", "verify_ssl": False},
+        "targets": [{"title": "T", "docs_dir": "docs/", "pattern": "*.md", "mode": "each", "entity": "items",
+                     "id_file": ".elab-sync-ids/t/default.id"}],
+    }
+    cfg = tmp_path / ".elab-sync.yaml"
+    cfg.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "a.md").write_text("# A\n", encoding="utf-8")
+    (tmp_path / ".elab-sync-ids").mkdir()
+    (tmp_path / ".elab-sync-ids" / "mapping.json").write_text(json.dumps({"a.md": 42}))
+    return cfg
+
+
+def _tree(root):
+    return sorted(str(p.relative_to(root)) for p in root.rglob("*"))
+
+
+@pytest.mark.parametrize("args", [
+    dict(command=cmd_tag, tag_action="add", tag_name="x", id=None, entity=None),
+    dict(command=cmd_relate, relate_action="add", target_ids=[5], to="items", id=None, entity=None),
+    dict(command=cmd_metadata, meta_action="set", keyvalues=["k=v"], id=None),
+    dict(command=cmd_entity_status, status_action="set", status_id="3", id=None),
+])
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_dry_run_does_not_migrate_legacy_mapping(MockClient, tmp_path, capsys, args):
+    cfg = _legacy_project(tmp_path)
+    client = MockClient.return_value
+    client.get_tags.return_value = []
+    client.list_links.return_value = []
+    client.get_metadata.return_value = {}
+    client.get_metadata_raw.return_value = ""
+    client.get_entity.return_value = {"status": 1, "status_title": "Running"}
+    before = _tree(tmp_path)
+    command = args.pop("command")
+    command(Namespace(config=str(cfg), target=None, dry_run=True, **args))
+    assert _tree(tmp_path) == before
+    assert "#42" in capsys.readouterr().out
 
 
 @patch("elab_doc_sync.cli.ELabFTWClient")

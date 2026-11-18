@@ -384,6 +384,7 @@ esync push
 
 ```bash
 esync tag list                                      # 同期済みの全文書のタグ
+esync tag --dry-run add "重要"                      # 追加される文書を事前に確認（送信しない）
 esync tag add "重要"                                # 同期済みの全文書に追加
 esync tag add "new-tag" --id 42 --entity items      # 記事を指定
 esync category list --entity items
@@ -397,12 +398,15 @@ esync category set "試薬" --id 42 --entity items
 esync tag -t TeamB_docs add "new-tag" --id 42 --entity items
 ```
 
+`tag`・`category`・`relate`・`metadata`・`entity-status` の変更と `new` は `--dry-run` で予定だけを確認できます。eLabFTW から現在の値を読む通信は行いますが、変更は送信しません（`new` はファイルを作りません）。
+
 push のたびに付けたいタグ・カテゴリは、ターゲットの `tags`・`category` に書きます。push はタグを追加するだけで外さないため、外すときは `esync tag remove` を使います。
 
 ### ステータスやメタデータをまとめて変更したい
 
 ```bash
 esync entity-status -t 実験メモ show                 # 各文書の現在のステータス
+esync entity-status -t 実験メモ --dry-run set 2      # 現在のステータスと変更予定を確認
 esync entity-status -t 実験メモ set 2                # 全文書を変更（確認あり）
 esync metadata -t 実験メモ set project=A phase=2     # メタデータ（JSON）に追記
 ```

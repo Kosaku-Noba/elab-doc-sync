@@ -1084,12 +1084,12 @@ HELP_EPILOG = """\
 """
 
 
-def _get_entity_ids(client, syncer, target, args_id=None):
-    """ターゲットに紐づくエンティティ ID のリストを返す。"""
+def _get_entity_ids(client, syncer, target, args_id=None, migrate=True):
+    """ターゲットに紐づくエンティティ ID のリストを返す。migrate=False（dry-run）では旧紐付けを移行しない。"""
     if args_id:
         return [(args_id, target.entity)]
     if target.mode == "each":
-        mapping = syncer._load_mapping()
+        mapping = syncer._load_mapping(migrate=migrate)
         return [(eid, target.entity) for eid in mapping.values()] if mapping else []
     eid = syncer.read_item_id()
     return [(eid, target.entity)] if eid else []
@@ -1119,7 +1119,7 @@ def cmd_tag(args):
             continue
         client = _make_client_for_target(config, target)
         syncer = _make_syncer(client, target, project_root)
-        ids = _get_entity_ids(client, syncer, target, direct_id)
+        ids = _get_entity_ids(client, syncer, target, direct_id, migrate=not getattr(args, "dry_run", False))
         if not ids:
             print(f"  [{target.title or target.docs_dir}] 同期済みエンティティなし")
             continue
@@ -1248,7 +1248,7 @@ def cmd_relate(args):
             if not _matches_target(target, args.target):
                 continue
             syncer = _make_syncer(None, target, project_root)
-            ids = _get_entity_ids(None, syncer, target)
+            ids = _get_entity_ids(None, syncer, target, migrate=not getattr(args, "dry_run", False))
             if not ids:
                 print(f"  [{target.title or target.docs_dir}] 同期済みエンティティなし")
                 continue
@@ -1314,7 +1314,8 @@ def cmd_metadata(args):
             continue
         client = _make_client_for_target(config, target)
         syncer = _make_syncer(client, target, project_root)
-        ids = _get_entity_ids(client, syncer, target, getattr(args, "id", None))
+        ids = _get_entity_ids(client, syncer, target, getattr(args, "id", None),
+                              migrate=not getattr(args, "dry_run", False))
         if not ids:
             print(f"  [{target.title or target.docs_dir}] 同期済みエンティティなし")
             continue
@@ -1938,7 +1939,7 @@ def cmd_entity_status(args):
         client = _make_client_for_target(config, target)
         syncer = _make_syncer(client, target, project_root)
         target_id = getattr(args, "id", None)
-        ids = _get_entity_ids(client, syncer, target, target_id)
+        ids = _get_entity_ids(client, syncer, target, target_id, migrate=not getattr(args, "dry_run", False))
         if not ids:
             print(f"  [{target.title or target.docs_dir}] 同期済みエンティティなし")
             continue
@@ -1954,10 +1955,21 @@ def cmd_entity_status(args):
             status_name = entity.get("status_title") or entity.get("status", {}).get("title", "不明")
             print(f"  [{label}] {_entity_label(etype)} #{eid}: {status_name}")
     elif args.status_action == "set":
+        try:
+            status_id = int(args.status_id)
+        except ValueError:
+            raise ValueError(f"ステータス ID は数値で指定してください: {args.status_id}") from None
         if getattr(args, "dry_run", False):
             for client, label, eid, etype in all_ids:
-                print(f"  [{label}] {_entity_label(etype)} #{eid}: ステータスを #{args.status_id} に変更予定"
-                      f"（{client.base_url}）")
+                entity = client.get_entity(etype, eid)
+                current = entity.get("status")
+                current = current.get("id") if isinstance(current, dict) else current
+                name = entity.get("status_title") or "不明"
+                head = f"  [{label}] {_entity_label(etype)} #{eid}"
+                if current is not None and str(current) == str(status_id):
+                    print(f"{head}: すでにステータス #{status_id}（{name}）です")
+                else:
+                    print(f"{head}: ステータスを {name} から #{status_id} に変更予定（{client.base_url}）")
             return
         if len(all_ids) > 1 and not getattr(args, "id", None):
             print(f"  対象: {len(all_ids)} 件のエンティティ")
@@ -1968,7 +1980,7 @@ def cmd_entity_status(args):
                 print("  中断しました")
                 return
         for client, label, eid, etype in all_ids:
-            client.patch_entity(etype, eid, status=int(args.status_id))
+            client.patch_entity(etype, eid, status=status_id)
             print(f"  [{label}] {_entity_label(etype)} #{eid}: ステータスを変更しました")
 
 

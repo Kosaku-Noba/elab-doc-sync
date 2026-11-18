@@ -42,7 +42,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q
 | test_sync_log.py | 13 | 同期ログ |
 | test_merge.py | 10 | 3-way マージ |
 | test_search.py | 23 | `esync search`（v1.3.0 で追加。表の合計には含まない） |
-| test_dry_run_writes.py | 13 | eLabFTW を書き換えるコマンドと `new` の `--dry-run`（v1.3.0 より後に追加。表の合計には含まない） |
+| test_dry_run_writes.py | 19 | eLabFTW を書き換えるコマンドと `new` の `--dry-run`（v1.3.0 より後に追加。表の合計には含まない） |
 | test_integration.py | 6 | 実機（既存） |
 | test_integration_v1.py | 5 | 実機（v1.0 以降） |
 
@@ -120,7 +120,8 @@ UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q
 ### 3.8.2 test_dry_run_writes.py
 
 - `tag add/remove`・`relate add/remove`・`metadata set`・`category set`・`entity-status set` の `--dry-run` が送信せず予定を表示すること（既存タグ・既存リンクの判定、マージ後のメタデータ）
-- `entity-status set --dry-run` が複数件でも確認の入力を求めないこと、`new --dry-run` がファイルを作らないこと
+- `entity-status set --dry-run` が現在のステータスを読み、複数件でも確認の入力を求めないこと、数値でないステータス ID の拒否、`new --dry-run` がファイルを作らないこと
+- dry-run で旧形式の共有 `mapping.json` を移行せず、プロジェクトのファイルを変更しないこと
 - argparse からの `--dry-run` の受け付けとロックを取らないこと、`init`・`profile add/remove` は従来どおり拒否すること
 
 ### 3.9 実機テスト（test_integration.py / test_integration_v1.py）

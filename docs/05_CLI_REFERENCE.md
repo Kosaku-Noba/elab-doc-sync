@@ -193,7 +193,7 @@ esync clone --url URL --entity TYPE --id ID [--dir DIR] [--no-verify]
 
 `esync` の直後（`esync -t X push`）またはサブコマンドの直後（`esync push -t X`。`tag` などは下位の `add` などの前）に書きます（`update`・`whoami` を除く）。両方に書いた場合はサブコマンドの後の値が優先されます。各コマンドで意味を持つものだけが効きます。
 
-- `--dry-run` に対応するのは push・pull・`clone`・`rm`・`mv`・`link`・`restore`・`new`・`tag add/remove`・`relate add/remove`・`metadata set`・`entity-status set`・`category set` です（`status`・`diff` などの読み取りコマンドでは効果がありません）。eLabFTW を書き換えるコマンドは現在の値を読んで「追加予定」「既にあります」などの予定を表示し、送信しません。`entity-status set` は確認の入力を求めません。`new` はファイルを作らずに作成先を表示します。`init`・`profile add/remove` に付けると、何もせずエラー（終了コード 2）になります
+- `--dry-run` に対応するのは push・pull・`clone`・`rm`・`mv`・`link`・`restore`・`new`・`tag add/remove`・`relate add/remove`・`metadata set`・`entity-status set`・`category set` です（`status`・`diff` などの読み取りコマンドでは効果がありません）。eLabFTW を書き換えるコマンドは現在の値（タグ・リンク・メタデータ・カテゴリ・ステータス）を読んで「追加予定」「既にあります」などの予定を表示し、送信しません。`entity-status set` は対象ごとに現在のステータスと変更先を表示し、確認の入力を求めません（ステータス ID が数値でなければ、本実行と同じくエラー）。旧形式の紐付け情報があっても移行しません。`new` はファイルを作らずに作成先を表示します。`init`・`profile add/remove` に付けると、何もせずエラー（終了コード 2）になります
 - `--force` は push・pull で使います（`new` では既存ファイルの上書き）
 - `--prune-attachments` は push 専用です。pull など他のコマンドに付けても無視され、添付は削除されません
 - `--version` は `esync --version` の形でだけ使えます
