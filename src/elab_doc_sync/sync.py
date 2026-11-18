@@ -20,7 +20,7 @@ from urllib.parse import unquote, urlsplit
 
 from .result import progress, error_text
 from .safety import atomic_write, write_json, safe_path, snapshot, local_transaction
-from .client import ELabFTWClient
+from .client import ELabFTWClient, UploadConfirmationError
 from .config import TargetConfig
 from . import sync_log
 from .merge import has_conflict_markers
@@ -345,7 +345,7 @@ def _cache_uploaded(existing: dict[str, list[dict]], real_name: str, url: str,
     )
 
 
-def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None, uploaded=None) -> str:
+def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None, uploaded=None, verified=None) -> str:
     """Markdown 内のローカル画像を eLabFTW にアップロードし URL に書き換える。
 
     upload_file はファイルパスの basename を real_name としてリモートに保存する。
@@ -405,6 +405,8 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
                 reuse = e
                 break
         if reuse:
+            if verified is not None:
+                verified[src] = local_hash
             # サイズ（+ハッシュ）一致の1件を再利用し、残りの重複は削除予約
             for e in entries:
                 if e is not reuse and e.get("id") is not None:
@@ -423,6 +425,8 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
         progress(f"    画像をアップロード中: {real_name}")
         result = _upload_body_file(client, entity, entity_id, upload_path, uploaded)
         if result.get("url"):
+            if verified is not None:
+                verified[src] = uploaded[result["id"]][2]
             for e in entries:
                 if e is not reuse and e.get("id") is not None and not e.get("fresh"):
                     stale_ids.append(e["id"])
@@ -679,7 +683,7 @@ def _is_video(filename: str) -> bool:
     return Path(filename).suffix.lower() in VIDEO_EXTENSIONS
 
 
-def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None, uploaded=None) -> str:
+def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None, uploaded=None, verified=None) -> str:
     """Markdown 内の動画リンクを eLabFTW にアップロードし <video> タグに書き換える。
 
     対象:
@@ -731,6 +735,8 @@ def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClien
             if actual != _compute_file_hash(video_path):
                 reuse = None
         if reuse:
+            if verified is not None:
+                verified[src] = actual
             for e in entries:
                 if e is not reuse and e.get("id") is not None:
                     stale_ids.append(e["id"])
@@ -740,6 +746,8 @@ def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClien
         progress(f"    動画をアップロード中: {real_name}")
         result = _upload_body_file(client, entity, entity_id, video_path, uploaded)
         if result.get("url"):
+            if verified is not None:
+                verified[src] = uploaded[result["id"]][2]
             for e in entries:
                 if e is not reuse and e.get("id") is not None and not e.get("fresh"):
                     stale_ids.append(e["id"])
@@ -797,7 +805,7 @@ def _count_local_videos(body: str) -> int:
     return count
 
 
-def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None, uploaded=None) -> str:
+def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None, uploaded=None, verified=None) -> str:
     """Markdown 内の非画像・非動画ファイルリンクを eLabFTW にアップロードし URL に書き換える。
 
     対象:
@@ -854,6 +862,8 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
             if actual != _compute_file_hash(file_path):
                 reuse = None
         if reuse:
+            if verified is not None:
+                verified[src] = actual
             for e in entries:
                 if e is not reuse and e.get("id") is not None:
                     stale_ids.append(e["id"])
@@ -863,6 +873,8 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
         progress(f"    ファイルをアップロード中: {real_name}")
         result = _upload_body_file(client, entity, entity_id, file_path, uploaded)
         if result.get("url"):
+            if verified is not None:
+                verified[src] = uploaded[result["id"]][2]
             for e in entries:
                 if e is not reuse and e.get("id") is not None and not e.get("fresh"):
                     stale_ids.append(e["id"])
@@ -980,7 +992,7 @@ def _prune_candidates(uploads, local_names, pattern, body, base_url):
 
 
 def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int, client: ELabFTWClient, *, force: bool = False, pattern: str = "*", prune: bool = False, strict: bool = False,
-                      prune_ids=None, body="", deferred_prune=None, on_upload=None) -> bool:
+                      prune_ids=None, body="", deferred_prune=None, on_upload=None, verified=None, save_receipt=None) -> bool:
     """attachments_dir 内の非画像ファイルをリモートにアップロードする。
 
     差分検知: サイズ一致 → リモートに hash/sha256 フィールドがあれば
@@ -1040,7 +1052,12 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
             stale = [e for e in entries if e is not reuse and e.get("id") is not None]
         else:
             progress(f"    添付ファイルをアップロード中: {f.name}")
-            result = client.upload_file(entity, entity_id, str(f))
+            try:
+                result = client.upload_file(entity, entity_id, str(f))
+            except UploadConfirmationError as exc:
+                if exc.receipt and save_receipt is not None:
+                    save_receipt(exc.receipt)
+                raise
             if result.get("url"):
                 progress(f"    ✓ {f.name}")
                 stale = [e for e in entries if e.get("id") is not None]
@@ -1050,6 +1067,8 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
                 progress(f"    ✗ アップロード失敗: {f.name}", warning=True)
                 stale = []
                 all_success = False
+        if verified is not None and (reuse or result.get("url")):
+            verified[f.name] = local_hash
         for e in ([] if strict else stale):
             try:
                 client.delete_upload(entity, entity_id, e["id"])
@@ -1416,16 +1435,21 @@ class EachDocsSyncer:
         else:
             self.client.update_item(eid, **fields)
 
-    def _compute_assets_hash(self, raw_body, filename=None):
+    def _compute_assets_hash(self, raw_body, filename=None, *, body_evidence=None, directory_evidence=None):
         parts = []
         document_dir = self.file_path(filename).parent if filename else self.docs_dir
         for m in [*IMAGE_RE.finditer(raw_body), *_LINK_RE.finditer(raw_body)]:
             src = m.group(2)
             if src.startswith(("http://", "https://", "#")) or src.split("#")[0].endswith(".md"):
                 continue
+            if body_evidence is not None:
+                parts.append(f"{src}:{body_evidence.get(src, 'missing')}")
+                continue
             path = _resolve_asset_path(document_dir, self.project_root, src, strict=True)
             parts.append(f"{src}:{_compute_file_hash(path) if path.is_file() else 'missing'}")
-        if self.target.attachments_dir:
+        if directory_evidence is not None:
+            parts.extend(f"{name}:{digest}" for name, digest in sorted(directory_evidence.items()))
+        elif self.target.attachments_dir:
             att_dir = self.project_root / self.target.attachments_dir
             if att_dir.is_dir():
                 for f in sorted(att_dir.glob(self.target.attachments_pattern)):
@@ -1917,7 +1941,7 @@ class EachDocsSyncer:
                 continue
             eid = mapping.get(f.name)
             result = self.inspect(f.name, eid)
-            result["assets_hash"] = self._compute_assets_hash(result["body"], f.name)
+            self._compute_assets_hash(result["body"], f.name)  # 送信前に参照パスの範囲を検証
             state = result["state"]
             if result.get("data"):
                 observed_entities.append(result["data"])
@@ -2047,9 +2071,10 @@ class EachDocsSyncer:
                 previous = result.get("created_data") or result.get("data") or self._get_entity(eid)
                 stale_uploads: list[int] = []
                 uploaded = {}
-                body = _rewrite_images(raw_body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded)
-                body = _rewrite_videos(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded)
-                body = _rewrite_file_links(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded)
+                verified_body, verified_directory = {}, {}
+                body = _rewrite_images(raw_body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded, verified=verified_body)
+                body = _rewrite_videos(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded, verified=verified_body)
+                body = _rewrite_file_links(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded, verified=verified_body)
                 body = _rewrite_local_links(body, self.entity, self.client.base_url, mapping, source=f, links=links)
                 body = body if self.target.body_format == "md" else _md_to_html(body)
                 expected = {"body": body, "title": f.stem, "content_type": 2 if self.target.body_format == "md" else 1}
@@ -2130,9 +2155,12 @@ class EachDocsSyncer:
                 links_ok = _sync_links(self.client, self.entity, eid, self.target.links) if links_changed else True
                 if not links_ok:
                     raise RuntimeError("本文更新後にリンク同期が失敗しました。リモートを確認して再実行してください")
-                def confirm_upload(receipt):
+                def save_receipt(receipt):
                     pending[f.name]["verifying_upload"] = receipt
                     self._save_pending(pending)
+
+                def confirm_upload(receipt):
+                    save_receipt(receipt)
                     uploads = self.client.list_uploads(self.entity, eid)
                     entry = self._verify_uploaded_attachment(eid, uploads, receipt)
                     expected_uploads = pending[f.name]["guard"]["uploads"] + [entry]
@@ -2145,7 +2173,8 @@ class EachDocsSyncer:
                     att_ok = _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, eid, self.client,
                                                force=force, pattern=self.target.attachments_pattern, prune=prune_attachments, strict=True,
                                                prune_ids=planned_prune,
-                                               body=raw_body + "\n" + body, deferred_prune=prune_ids, on_upload=confirm_upload)
+                                               body=raw_body + "\n" + body, deferred_prune=prune_ids, on_upload=confirm_upload,
+                                               verified=verified_directory, save_receipt=save_receipt)
                 if not att_ok:
                     raise RuntimeError("本文更新後、添付の同期が失敗しました。再実行してください")
                 stale_uploads.extend(sorted(prune_ids))
@@ -2170,7 +2199,8 @@ class EachDocsSyncer:
                     applied = {t: sorted(set(applied.get(t, [])) | set(ids))
                                for t, ids in {**applied, **self.target.links}.items()}
                 self._save_baseline(f.name, base if dropped else raw_body, data, uploads, base=base, links=applied,
-                                    assets_hash=result["assets_hash"])
+                                    assets_hash=self._compute_assets_hash(raw_body, f.name, body_evidence=verified_body,
+                                                                         directory_evidence=verified_directory))
                 pending.pop(f.name, None)
                 self._save_pending(pending)
                 sync_log.record(self.project_root / sync_log.DEFAULT_LOG_PATH, action="push", target=f.stem,

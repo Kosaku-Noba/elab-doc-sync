@@ -144,7 +144,7 @@ eLabFTW API v2 クライアント（`ELabFTWClient(base_url, api_key, verify_ssl
 | `append_body(exp_id, text)` / `replace_body(exp_id, body)` | 実験ノート本文の追記・置換 |
 | `get_entity(entity_type, entity_id)` | 汎用エンティティ取得（削除済みの判定はしない） |
 | `patch_entity(entity_type, entity_id, **fields)` | 汎用エンティティ更新 |
-| `upload_file(entity_type, entity_id, filepath, comment="")` | ファイルアップロード。POST は一度。応答不明時は新規 ID・名前・SHA-256 が一意に一致した場合に続行し、特定できない場合は確認手順を含む例外 |
+| `upload_file(entity_type, entity_id, filepath, comment="")` | ファイルアップロード。POST は一度。正常応答では Location の ID を優先し、候補がなければ `url=None` を返す。応答不明時は新規 ID・名前・SHA-256 が一意に一致した場合に続行し、特定できない場合は確認手順を含む例外 |
 | `list_uploads(entity_type, entity_id)` | アップロード一覧 |
 | `delete_upload(entity_type, entity_id, upload_id)` | アップロード削除 |
 | `download_upload(*, entity_type, entity_id, upload_id)` | アップロードダウンロード |

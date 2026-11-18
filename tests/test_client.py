@@ -460,7 +460,7 @@ def test_resolve_category_id_not_found_suggests_numeric_id(mock_req, client):
         client.resolve_category_id("items", "SPECIFICATION", current={"category": 65, "category_title": "OTHER"})
 
 
-@pytest.mark.parametrize("outcome", ["timeout", "disconnect", "server_error"])
+@pytest.mark.parametrize("outcome", ["timeout", "disconnect", "server_error", "cut_response", "redirect"])
 @pytest.mark.parametrize("new_count", [0, 1, 2])
 @patch("elab_doc_sync.client.requests.request")
 def test_upload_unknown_response_is_never_reposted(mock_req, client, tmp_path, outcome, new_count):
@@ -476,6 +476,10 @@ def test_upload_unknown_response_is_never_reposted(mock_req, client, tmp_path, o
         failure = _mock_response()
         failure.status_code = 503
         failure.raise_for_status.side_effect = requests.HTTPError(response=failure)
+    if outcome == "cut_response":
+        failure = requests.exceptions.ChunkedEncodingError()
+    if outcome == "redirect":
+        failure = _mock_response(status_code=307, headers={"location": "/elsewhere"})
     mock_req.side_effect = [_mock_response([entry]), failure, _mock_response(entries)]
     if new_count == 1:
         assert client.upload_file("items", 1, str(img))["id"] == 11
@@ -483,6 +487,7 @@ def test_upload_unknown_response_is_never_reposted(mock_req, client, tmp_path, o
         with pytest.raises(RuntimeError, match="添付一覧"):
             client.upload_file("items", 1, str(img))
     assert [c.args[0] for c in mock_req.call_args_list] == ["GET", "POST", "GET"]
+    assert mock_req.call_args_list[1].kwargs["allow_redirects"] is False
 
 
 @patch("elab_doc_sync.client.requests.request")
@@ -601,3 +606,17 @@ def test_upload_digest_reads_text_attachment_in_chunks(client):
     assert digest == hashlib.sha256(b"protocol notes").hexdigest()
     assert request.call_args.kwargs["stream"]
     response.iter_content.assert_called_once_with(chunk_size=1024 * 1024)
+
+@patch("elab_doc_sync.client.requests.request")
+def test_preserve_upload_receipt_after_listing_failure(mock_req, client, tmp_path):
+    import hashlib
+    from requests import Timeout
+    from elab_doc_sync.client import UploadConfirmationError
+
+    path = tmp_path / "data.csv"
+    path.write_bytes(b"values")
+    mock_req.side_effect = [_mock_response([]), _mock_response(headers={"location": "/uploads/8"}), Timeout()]
+    with pytest.raises(UploadConfirmationError) as error:
+        client.upload_file("items", 1, str(path))
+    assert error.value.receipt == {"id": 8, "name": "data.csv", "size": 6,
+                                   "sha256": hashlib.sha256(b"values").hexdigest()}

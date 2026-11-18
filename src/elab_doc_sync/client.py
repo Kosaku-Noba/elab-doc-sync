@@ -12,6 +12,14 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logger = logging.getLogger(__name__)
 
 
+class UploadConfirmationError(RuntimeError):
+    """一覧で確認できなかった添付と、サーバーから受領した ID の記録。"""
+
+    def __init__(self, message, receipt):
+        super().__init__(message)
+        self.receipt = receipt
+
+
 class ELabFTWClient:
     def __init__(self, base_url: str, api_key: str, verify_ssl: bool = True):
         self.base_url = base_url.rstrip("/")
@@ -143,7 +151,11 @@ class ELabFTWClient:
     # ── uploads ──────────────────────────────────────────────
 
     def upload_file(self, entity_type: str, entity_id: int, filepath: str, comment: str = "") -> dict:
-        """送信は一度。応答不明時は新しい添付の名前と SHA-256 を照合する。"""
+        """成功時は Location を優先し、候補がなければ url=None を返す。
+
+        応答不明時は再送せず、新しい添付の名前と SHA-256 を照合する。
+        特定できない場合は UploadConfirmationError に確認手順を含める。
+        """
         url = f"/api/v2/{entity_type}/{entity_id}/uploads"
         filename = Path(filepath).name
         previous_ids = {u["id"] for u in self.list_uploads(entity_type, entity_id)}
@@ -152,13 +164,22 @@ class ELabFTWClient:
         unknown = (f"{entity_type} #{entity_id} の添付 {filename!r} の送信結果を確認できません。"
                    "自動再送を停止しました。esync diff と eLabFTW の添付一覧で ID・名前・内容を確認してください")
         response = None
+        receipt = None
         try:
             response = self._req("POST", url, headers=self._auth_headers,
-                                 files={"file": (filename, payload)}, data={"comment": comment}, timeout=60)
+                                 files={"file": (filename, payload)}, data={"comment": comment}, timeout=60,
+                                 allow_redirects=False)
+            if 300 <= response.status_code < 400:
+                response = None
+            else:
+                location = response.headers.get("location", "").rstrip("/").split("/")[-1]
+                if location.isdecimal() and int(location) not in previous_ids:
+                    receipt = {"id": int(location), "name": filename, "size": len(payload), "sha256": digest}
         except requests.HTTPError as exc:
             if exc.response is None or exc.response.status_code < 500:
                 raise
-        except (requests.Timeout, requests.ConnectionError):
+        except (requests.Timeout, requests.ConnectionError, requests.exceptions.ChunkedEncodingError,
+                requests.exceptions.ContentDecodingError):
             pass
         try:
             candidates = [u for u in self.list_uploads(entity_type, entity_id)
@@ -184,7 +205,7 @@ class ELabFTWClient:
                     unverified = [u for u in candidates if not (u.get("sha256") or u.get("hash"))]
                     upload = max(same or unverified, key=lambda u: u["id"], default=None)
         except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
-            raise RuntimeError(unknown) from exc
+            raise UploadConfirmationError(unknown, receipt) from exc
         if upload is None:
             return {"filename": filename, "url": None}
         return {

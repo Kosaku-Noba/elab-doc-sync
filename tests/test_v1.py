@@ -2012,3 +2012,24 @@ def test_push_keeps_local_attachment_edit_pending(project):
     client.upload_file.side_effect = upload
     assert syncer.sync() == 1
     assert syncer.inspect("note.md", 1)["state"] == "最新"
+
+
+def test_asset_baseline_matches_version_uploaded_after_preflight(project):
+    root, client, remote, syncer, args = project
+    syncer.target.attachments_dir = "assets"
+    path = root / "assets/data.csv"
+    path.parent.mkdir()
+    path.write_bytes(b"one")
+    (root / "docs/a.md").write_text("document")
+    _stateful_uploads(client)
+    update = client.update_item.side_effect
+
+    def edit_before_upload(*args, **kwargs):
+        update(*args, **kwargs)
+        path.write_bytes(b"two")
+
+    client.update_item.side_effect = edit_before_upload
+    assert syncer.sync() == 1
+    assert syncer.inspect("a.md", 1)["state"] == "最新"
+    path.write_bytes(b"one")
+    assert syncer.inspect("a.md", 1)["state"] == "送信待ち"
