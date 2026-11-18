@@ -401,7 +401,8 @@ def test_pull_rejects_two_uploads_for_single_image(project, tmp_path, dry_run):
 
 
 @pytest.mark.parametrize("dry_run", [True, False])
-def test_batch_pull_prevents_overwrite_between_articles(project, tmp_path, dry_run):
+@pytest.mark.parametrize("other_name", ["table.csv", "Table.csv"])
+def test_batch_pull_prevents_overwrite_between_articles(project, tmp_path, dry_run, other_name):
     path = tmp_path / ".elab-sync.yaml"
     cfg = yaml.safe_load(path.read_text())
     cfg["targets"][0]["attachments_dir"] = "assets"
@@ -412,7 +413,7 @@ def test_batch_pull_prevents_overwrite_between_articles(project, tmp_path, dry_r
         client = factory.return_value
         client.get_item.side_effect = lambda eid: {"title": f"entry{eid}", "body": "body"}
         client.list_uploads.side_effect = lambda entity, eid: (
-            [{"id": eid + 20, "real_name": "table.csv"}] if eid != 9 else [])
+            [{"id": eid + 20, "real_name": "table.csv" if eid == 7 else other_name}] if eid != 9 else [])
         client.download_upload.side_effect = lambda **kwargs: str(kwargs["entity_id"]).encode()
         res = cli.run_pull(project)
     assert res.data["failed"] == 1 and res.data["pulled"] == 2
@@ -422,3 +423,41 @@ def test_batch_pull_prevents_overwrite_between_articles(project, tmp_path, dry_r
         assert (tmp_path / "assets/table.csv").read_bytes() == b"7"
         assert (tmp_path / "docs/entry9.md").is_file()
         assert not (tmp_path / "docs/entry8.md").exists()
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_batch_protects_previously_pulled_asset_before_owner_is_processed(project, tmp_path, dry_run):
+    path = tmp_path / ".elab-sync.yaml"
+    cfg = yaml.safe_load(path.read_text())
+    cfg["targets"][0]["attachments_dir"] = "assets"
+    path.write_text(yaml.safe_dump(cfg))
+    project.target, project.entity, project.id, project.dir = "docs", "items", [7], None
+    project.dry_run = False
+    with patch.object(cli, "ELabFTWClient") as factory:
+        client = factory.return_value
+        client.base_url = "https://example.invalid"
+        client.get_item.side_effect = lambda eid: {"title": f"entry{eid}", "body": "body"}
+        client.list_uploads.side_effect = lambda entity, eid: [{"id": eid * 10, "real_name": "table.csv"}]
+        client.download_upload.return_value = b"original"
+        assert cli.run_pull(project).exit_code == 0
+        (tmp_path / "assets/table.csv").write_bytes(b"local changes")
+        (tmp_path / "docs/entry7.md").write_text("<<<<<<< local\n=======\n>>>>>>> remote")
+        project.id, project.dry_run = [8, 7], dry_run
+        res = cli.run_pull(project)
+    assert "error" in res.data["documents"][0]
+    assert (tmp_path / "assets/table.csv").read_bytes() == b"local changes"
+    assert not (tmp_path / "docs/entry8.md").exists()
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_pull_batch_can_reuse_renamed_document_path(project, tmp_path, dry_run):
+    project.target, project.entity, project.id, project.dir = "docs", "items", [42, 8], None
+    project.force, project.dry_run = True, dry_run
+    with patch.object(cli, "ELabFTWClient") as factory:
+        client = factory.return_value
+        client.base_url = "https://example.invalid"
+        client.get_item.side_effect = lambda eid: {"title": "renamed" if eid == 42 else "note", "body": "body"}
+        client.list_uploads.return_value = []
+        res = cli.run_pull(project)
+    assert res.exit_code == 0 and res.data["pulled"] == 2
+    if not dry_run:
+        assert json.loads((tmp_path / ".ids/mapping.json").read_text()) == {"renamed.md": 42, "note.md": 8}
