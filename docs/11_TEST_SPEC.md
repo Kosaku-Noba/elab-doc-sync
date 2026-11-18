@@ -44,6 +44,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q
 | test_search.py | 23 | `esync search`（v1.3.0 で追加。表の合計には含まない） |
 | test_dry_run_writes.py | 19 | eLabFTW を書き換えるコマンドと `new` の `--dry-run`（v1.3.0 より後に追加。表の合計には含まない） |
 | test_command_result.py | 15 | 参照系コマンドの `run_*` が返す `CommandResult`（v1.3.0 より後に追加。表の合計には含まない） |
+| test_command_result_remote.py | 11 | eLabFTW を書き換えるコマンドと `new` の `run_*`（v1.3.0 より後に追加。表の合計には含まない） |
 | test_integration.py | 6 | 実機（既存） |
 | test_integration_v1.py | 5 | 実機（v1.0 以降） |
 
@@ -131,6 +132,13 @@ UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q
 - `whoami`・`profile list` の結果に API キーを含めないこと（接続エラーの例外メッセージを含む）、`redact` の各表記
 - `verify` が旧形式の共有 `mapping.json` を移行せず、ファイルを変更しないこと
 - CLI が 1 行ずつ表示し、途中で例外になってもそれまでの表示が残ること
+
+### 3.8.4 test_command_result_remote.py
+
+- `run_tag`・`run_relate`・`run_metadata`・`run_category`・`run_entity_status`・`run_new` の `data`（各件の `result`、同期済みでないターゲット）
+- 引数の誤りが `warnings` と終了コード 1 になり、`echo` なしでは表示しないこと。CLI では警告が標準エラー出力に出ること
+- `metadata set` が `key=value` 以外の指定を読み取り前に拒否すること
+- `entity-status set` が `confirm` なしでは複数件を変更せずエラーにすること、確認で中止できること
 
 ### 3.9 実機テスト（test_integration.py / test_integration_v1.py）
 

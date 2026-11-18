@@ -199,18 +199,22 @@ YAML 設定読み込み・バリデーション。
 
 | クラス・関数 | 説明 |
 |---|---|
-| `CommandResult(exit_code=0, data={}, messages=[], echo=None)` | `run_*` が返す結果。`data` は機械可読な結果（JSON 化できる値のみ、API キーは含めない）、`messages` は人向けの表示行 |
-| `CommandResult.say(message="")` | 表示行を追加し、`echo` があればそれにも渡す（CLI は `print` を渡して 1 行ずつ表示する） |
-| `CommandResult.to_dict()` | `exit_code`・`data`・`messages` の辞書 |
+| `CommandResult(exit_code=0, data={}, messages=[], warnings=[], echo=None)` | `run_*` が返す結果。`data` は機械可読な結果（JSON 化できる値のみ、API キーは含めない）、`messages` は人向けの表示行、`warnings` は警告・エラーの行 |
+| `CommandResult.say(message="")` | 表示行を追加し、`echo` があれば `echo(message)` を呼ぶ |
+| `CommandResult.warn(message)` | 警告・エラーの行を追加し、`echo` があれば `echo(message, stderr=True)` を呼ぶ |
+| `CommandResult.fail(message, exit_code=1)` | `warn` して終了コードを設定し、自身を返す |
+| `CommandResult.to_dict()` | `exit_code`・`data`・`messages`・`warnings` の辞書 |
+| `cli_echo(message, stderr=False)` | CLI 用の表示先（`stderr=True` は標準エラー出力）。`cmd_*` はこれを `echo` に渡して 1 行ずつ表示する |
 | `redact(text, *secrets)` | `text` 中の秘密値（そのまま・repr・バイト列表記・改行で区切った 4 文字以上の各部分）を `***` に置き換える |
 
 ### `elab_doc_sync.cli` の `run_*`
 
-`cmd_*(args)` は `run_*(args, echo=print).exit_code` を返す。`run_*` は `echo` を省略すると何も表示しない。
+`cmd_*(args)` は `run_*(args, echo=cli_echo).exit_code` を返す。`run_*` は `echo` を省略すると何も表示しない。
 
 成功・失敗の判定:
 
-- `exit_code` は CLI の終了コードと同じ。`run_status` は競合などの要対応状態で 1、それ以外の参照系は常に 0
+- `exit_code` は CLI の終了コードと同じ。`run_status` は競合などの要対応状態で 1。引数の誤り（`tag` の `--id` と `--entity` の片方だけ、`metadata set` の `key=value` 以外、`new` の `--template-id` なし・既存ファイル）は `warnings` に理由を入れて 1。それ以外は 0
+- 書き換え系の各件の `result`（下表）で、実際に変更したか（`added` など）、dry-run の予定か（`would_*`）、変更不要だったか（`exists`・`already`・`not_found`・`self`）を区別する
 - `run_verify` は問題を見つけても `exit_code` は 0。`data["issues"]` と各文書の `ok` を確認する
 - `run_whoami` は接続に失敗したプロファイルも `exit_code` 0 で返し、そのプロファイルの `error` に理由を入れる（API キーは `redact` で除く）
 - 設定の誤り・通信の失敗など、上記以外のエラーは `CommandResult` にならず例外として呼び出し元に伝わる（CLI は終了コード 2 / 1 にする）。呼び出し側で例外を処理する
@@ -225,3 +229,9 @@ YAML 設定読み込み・バリデーション。
 | `run_verify` | `documents`（`target`・`file`・`entity`・`entity_id`・`ok`・`problem`）、`unsynced_targets`、`issues` |
 | `run_backup` | `backups`（`id`・`reason`） |
 | `run_profile_list` | `profiles`（`name`・`url`・`has_api_key`・`verify_ssl`） |
+| `run_tag` | `action`・`dry_run`・`unsynced_targets`、`entities`（`target`・`entity`・`entity_id`。list は `tags`、add/remove は `tag`・`result`: `added`/`exists`/`would_add`/`removed`/`not_found`/`would_remove`） |
+| `run_relate` | `action`・`dry_run`・`unsynced_targets`、`sources`（`entity`・`entity_id`。list は `links`: 種別ごとの `id`・`title`）、`changes`（`entity`・`entity_id`・`to_entity`・`to_id`・`result`: `added`/`exists`/`would_add`/`removed`/`not_found`/`would_remove`/`self`） |
+| `run_metadata` | `action`・`dry_run`・`unsynced_targets`、`entities`（`target`・`entity`・`entity_id`・`metadata`。set は `result`: `updated`/`would_update`、既存を読めなかったとき `unreadable_existing`） |
+| `run_category` | `action`。list は `entity`・`categories`（`id`・`title`）、show は `entity`・`entity_id`・`category`（`id`・`title` または null）、set は `entity`・`entity_id`・`dry_run`・`category_id`・`result`（`set`/`already`/`would_set`） |
+| `run_entity_status(args, echo=None, confirm=None)` | `action`・`dry_run`・`unsynced_targets`、`entities`（`target`・`entity`・`entity_id`。show は `status`、set は `result`: `changed`/`would_change`/`already` と dry-run 時の `current`）、set は `status_id`、確認で中止したとき `cancelled`。`--id` なしで複数件を変更するときは `confirm(prompt) -> bool` で確認し、`confirm` が None なら変更せず `ValueError` |
+| `run_new` | list は `templates`（`id`・`title`）。作成は `path`・`title`・`template_id`・`template_title`・`dry_run`・`created` |

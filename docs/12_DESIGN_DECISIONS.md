@@ -230,6 +230,12 @@ eLabFTW は Markdown 本文の保存時に `>` を `&gt;`、`&` を `&amp;` に�
 
 `CommandResult.say` は `echo` に渡した関数（CLI では `print`）でその場で表示する。結果をまとめて最後に表示すると、`status`・`verify` など件数の多いコマンドで表示が遅れ、途中で例外になったときにそれまでの表示が失われるため。
 
-### 13.3 段階的な移行
+### 13.3 警告・エラーと対話
+
+`CommandResult.warn` の行は `messages` と分けて `warnings` に入れ、CLI では標準エラー出力に出す。引数の誤りで `sys.exit(1)` していた箇所は、`fail` で `warnings` に理由を入れて終了コード 1 を返す（CLI の終了コードは変わらない）。
+
+`entity-status set` の複数件確認は `input()` を直接呼ばず、呼び出し元が `confirm` を渡す。`confirm` がない（MCP など対話できない）ときは推測で変更せずエラーにする。
+
+### 13.4 段階的な移行
 
 参照系（`status`・`log`・`list`・`search`・`whoami`・`verify`・`backup list`・`profile list`）から移行し、eLabFTW を書き換えるコマンド、ローカルを変更するコマンドの順に移す。読み書き両方を持つ `tag`・`relate`・`metadata`・`category`・`entity-status`・`new` は書き換え系と一緒に移す。
