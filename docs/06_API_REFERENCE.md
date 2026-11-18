@@ -148,6 +148,7 @@ eLabFTW API v2 クライアント（`ELabFTWClient(base_url, api_key, verify_ssl
 | `list_uploads(entity_type, entity_id)` | アップロード一覧 |
 | `delete_upload(entity_type, entity_id, upload_id)` | アップロード削除 |
 | `download_upload(*, entity_type, entity_id, upload_id)` | アップロードダウンロード |
+| `upload_digest(*, entity_type, entity_id, upload_id)` | 本文用・ディレクトリ添付の照合用 SHA-256。テキストも含めて応答を分割して読み、ローカルのハッシュと比較する |
 | `list_items_types()` / `list_experiments_categories()` | カテゴリ一覧（リソース / 実験ノート） |
 | `list_categories(entity_type)` | 種別に応じたカテゴリ一覧 |
 | `resolve_category_id(entity_type, category, current=None)` | カテゴリ名→ID 解決（一覧にない場合は `current` の `category_title` も使う） |

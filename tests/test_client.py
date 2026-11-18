@@ -612,3 +612,15 @@ def test_list_links_null_is_empty(mock_req, client):
     mock_req.return_value = _mock_response()
     mock_req.return_value.json.return_value = None
     assert client.list_links("items", 1, "experiments") == []
+
+
+def test_upload_digest_reads_text_attachment_in_chunks(client):
+    import hashlib
+    with patch.object(client, "_req") as request:
+        response = request.return_value.__enter__.return_value
+        response.headers = {"Content-Type": "text/plain"}
+        response.iter_content.return_value = [b"protocol", b" notes"]
+        digest = client.upload_digest(entity_type="items", entity_id=1, upload_id=44)
+    assert digest == hashlib.sha256(b"protocol notes").hexdigest()
+    assert request.call_args.kwargs["stream"]
+    response.iter_content.assert_called_once_with(chunk_size=1024 * 1024)

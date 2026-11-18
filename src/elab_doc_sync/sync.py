@@ -399,7 +399,7 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
                 # リモートのハッシュフィールドがあれば使う、なければサイズ一致で再利用
                 remote_hash = e.get("hash")
                 if strict and not remote_hash and e.get("id") is not None:
-                    remote_hash = hashlib.sha256(client.download_upload(entity_type=entity, entity_id=entity_id, upload_id=e["id"])).hexdigest()
+                    remote_hash = client.upload_digest(entity_type=entity, entity_id=entity_id, upload_id=e["id"])
                 if remote_hash and remote_hash != local_hash:
                     continue
                 reuse = e
@@ -727,8 +727,8 @@ def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClien
 
         reuse = next((e for e in entries if e["size"] and e["size"] == local_size), None)
         if reuse and strict:
-            actual = client.download_upload(entity_type=entity, entity_id=entity_id, upload_id=reuse["id"])
-            if hashlib.sha256(actual).hexdigest() != _compute_file_hash(video_path):
+            actual = client.upload_digest(entity_type=entity, entity_id=entity_id, upload_id=reuse["id"])
+            if actual != _compute_file_hash(video_path):
                 reuse = None
         if reuse:
             for e in entries:
@@ -850,8 +850,8 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
 
         reuse = next((e for e in entries if e["size"] and e["size"] == local_size), None)
         if reuse and strict:
-            actual = client.download_upload(entity_type=entity, entity_id=entity_id, upload_id=reuse["id"])
-            if hashlib.sha256(actual).hexdigest() != _compute_file_hash(file_path):
+            actual = client.upload_digest(entity_type=entity, entity_id=entity_id, upload_id=reuse["id"])
+            if actual != _compute_file_hash(file_path):
                 reuse = None
         if reuse:
             for e in entries:
@@ -936,7 +936,10 @@ def _referenced_upload_ids(uploads, body, base_url):
         if ":" in host:
             host = str(ipaddress.IPv6Address(host))
         elif host:
-            host = idna.encode(host, uts46=True).decode("ascii").lower()
+            # WHATWG のドメイン区切りと既定ポートに合わせる。ASCII の "_" はブラウザーでも有効。
+            host = idna.uts46_remap(host, std3_rules=False).rstrip(".").lower()
+            if not host.isascii():
+                host = idna.encode(host, uts46=True).decode("ascii").lower()
         port = parsed.port if parsed.port is not None else {"http": 80, "https": 443}.get(scheme)
         return scheme, host, port
 
@@ -1027,7 +1030,7 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
                 if int(e.get("filesize", 0) or 0) == local_size:
                     remote_hash = e.get("hash") or e.get("sha256")
                     if strict and not remote_hash and e.get("id") is not None:
-                        remote_hash = hashlib.sha256(client.download_upload(entity_type=entity, entity_id=entity_id, upload_id=e["id"])).hexdigest()
+                        remote_hash = client.upload_digest(entity_type=entity, entity_id=entity_id, upload_id=e["id"])
                     if remote_hash and remote_hash != local_hash:
                         continue
                     reuse = e
@@ -2021,8 +2024,7 @@ class EachDocsSyncer:
                         raise ConflictError("送信した本文用添付の名前・サイズを確認できません")
                     stored_hash = entry["sha256"] or entry["hash"]
                     if not stored_hash:
-                        payload = self.client.download_upload(entity_type=self.entity, entity_id=eid, upload_id=uid)
-                        stored_hash = hashlib.sha256(payload).hexdigest()
+                        stored_hash = self.client.upload_digest(entity_type=self.entity, entity_id=eid, upload_id=uid)
                     if stored_hash != digest:
                         raise ConflictError("送信した本文用添付の内容が一致しません")
                 stale_uploads = [uid for uid in stale_uploads if uid not in uploaded]
@@ -2033,6 +2035,13 @@ class EachDocsSyncer:
                 pending[f.name] = {"eid": eid, "expected": expected, "before": before, "guard": guard,
                                    "needs": {"meta": meta_changed, "links": links_changed}}
                 self._save_pending(pending)
+                # 添付ハッシュを確認する間に本文・メタデータ・添付が変わっていないか再読する。
+                latest = self._get_entity(eid)
+                latest_signature = self._remote_signature(latest, self.client.list_uploads(self.entity, eid))
+                if any(latest.get(k) != v for k, v in before.items()) or any(latest_signature[k] != v for k, v in guard.items()):
+                    raise ConflictError("本文更新前にリモートが変更されました。diffで確認してください")
+                if stale_uploads or prune_attachments:
+                    _referenced_upload_ids(guard["uploads"], body, self.client.base_url)
                 self._update_entity(eid, **expected)
                 def checkpoint(expected_changes=None):
                     """Confirm the predicted result, never adopt an unknown update.
@@ -2074,7 +2083,9 @@ class EachDocsSyncer:
                     if not entry or entry.get("real_name") != path.name or int(entry.get("filesize") or 0) != path.stat().st_size:
                         raise ConflictError("送信した添付の名前・サイズを確認できません")
                     digest = entry.get("sha256") or entry.get("hash")
-                    if digest and digest != _compute_file_hash(path):
+                    if not digest:
+                        digest = self.client.upload_digest(entity_type=self.entity, entity_id=eid, upload_id=uid)
+                    if digest != _compute_file_hash(path):
                         raise ConflictError("送信した添付の内容が一致しません")
                     additions = self._remote_signature({}, [entry])["uploads"]
                     expected_uploads = pending[f.name]["guard"]["uploads"] + additions

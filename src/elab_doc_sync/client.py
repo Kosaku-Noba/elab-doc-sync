@@ -203,6 +203,16 @@ class ELabFTWClient:
         """エンティティの添付ファイル一覧を返す。"""
         return self._req("GET", f"/api/v2/{entity_type}/{entity_id}/uploads").json()
 
+    def upload_digest(self, *, entity_type: str, entity_id: int, upload_id: int) -> str:
+        """照合用に添付の実体を分割して読み、MIME にかかわらず SHA-256 を返す。"""
+        digest = hashlib.sha256()
+        with self._req("GET", f"/api/v2/{entity_type}/{entity_id}/uploads/{upload_id}",
+                       headers={**self._auth_headers, "Accept": "application/octet-stream"},
+                       params={"format": "binary"}, stream=True) as response:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                digest.update(chunk)
+        return digest.hexdigest()
+
     def download_upload(self, *, entity_type: str, entity_id: int, upload_id: int) -> bytes:
         """添付ファイル（画像含む全種別）のバイナリを返す。
 

@@ -1902,3 +1902,39 @@ def test_repeated_basename_keeps_both_new_uploads(project):
     assert syncer.sync() == 1
     assert [u["id"] for u in uploads[1]] == [100, 101]
     assert remote[1]["body"].count("blob100") == 2 and "blob101" in remote[1]["body"]
+
+
+def test_body_edit_during_upload_hash_check_survives(project):
+    from hashlib import sha256
+    root, client, remote, syncer, args = project
+    uploads = _stateful_uploads(client)
+    (root / "docs/a.md").write_text("![image](photo.png)")
+    photo = root / "docs/photo.png"
+    photo.write_bytes(b"first")
+    assert syncer.sync() == 1
+    photo.write_bytes(b"replacement")
+    upload = client.upload_file.side_effect
+    def upload_without_hash(entity, eid, path):
+        result = upload(entity, eid, path)
+        uploads[eid][-1].pop("hash")
+        return result
+    def check_digest(**kwargs):
+        remote[1]["body"] = "concurrent edit"
+        return sha256(b"replacement").hexdigest()
+    client.upload_file.side_effect = upload_without_hash
+    client.upload_digest.side_effect = check_digest
+    assert syncer.sync() == 0 and syncer.failures == 1
+    assert remote[1]["body"] == "concurrent edit"
+    assert uploads[1][0]["id"] == 100
+    client.delete_upload.assert_not_called()
+
+
+@pytest.mark.parametrize("url,protected", [
+    ("https://example.test。/uploads/201", True),
+    ("https://my_server.example/uploads/201", False),
+])
+def test_prune_understands_equivalent_and_external_origins(url, protected):
+    from elab_doc_sync.sync import _prune_candidates
+    entries = [{"id": 201, "real_name": "old.csv"}]
+    candidates = _prune_candidates(entries, set(), "*", f"[note]({url})", "https://example.test")
+    assert candidates == ([] if protected else entries)
