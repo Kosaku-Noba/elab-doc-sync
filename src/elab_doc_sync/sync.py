@@ -14,7 +14,7 @@ import markdown
 from markdownify import markdownify as html_to_md
 import html as _html
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 from .result import progress, error_text
 from .safety import atomic_write, write_json, safe_path, snapshot, local_transaction
@@ -911,12 +911,21 @@ def _count_local_attachments(attachments_dir: Path | None) -> int:
 
 
 def _referenced_upload_ids(uploads, body, base_url):
-    def retain_local_url(match):
-        value = match.group()
-        return value if _hosts_match(base_url, value) else ""
+    def origin(url, default_scheme):
+        parsed = urlsplit(url)
+        scheme = parsed.scheme.lower() or default_scheme
+        host = (parsed.hostname or "").rstrip(".").encode("idna").decode("ascii").lower()
+        port = parsed.port if parsed.port is not None else {"http": 80, "https": 443}.get(scheme)
+        return scheme, host, port
 
-    decoded = unquote(_html.unescape(body))
-    decoded = re.sub(r"""(?:https?:)?//[^\s<>"')]+""", retain_local_url, decoded, flags=re.I)
+    server = origin(str(base_url), "https")
+
+    def retain_local_url(match):
+        return match.group() if origin(match.group(), server[0]) == server else ""
+
+    # %20 などの復号前に URL 全体を切り出し、別サーバーのパスを除外する。
+    text = re.sub(r"""(?:https?:)?//[^\s<>"')]+""", retain_local_url, _html.unescape(body), flags=re.I)
+    decoded = unquote(text)
     ids = set(re.findall(r"/uploads/(\d+)(?!\d)", decoded))
     return {u["id"] for u in uploads if u.get("id") is not None
             and (str(u["id"]) in ids or (u.get("long_name") and u["long_name"] in decoded))}
@@ -936,10 +945,13 @@ def _prune_candidates(uploads, local_names, pattern, body, base_url):
             elif regex is _LINK_RE and (_is_image(src) or src.split("#", 1)[0].endswith(".md")):
                 continue
             referenced_names.add(name)
-    referenced_ids = _referenced_upload_ids(uploads, body, base_url)
-    return [u for u in uploads if u.get("id") is not None and u.get("real_name")
+    candidates = [u for u in uploads if u.get("id") is not None and u.get("real_name")
             and u["real_name"] not in referenced_names and not _is_image(u["real_name"])
-            and fnmatch(u["real_name"], pattern) and u["id"] not in referenced_ids]
+            and fnmatch(u["real_name"], pattern)]
+    if not candidates:
+        return []
+    referenced_ids = _referenced_upload_ids(candidates, body, base_url)
+    return [u for u in candidates if u["id"] not in referenced_ids]
 
 
 def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int, client: ELabFTWClient, *, force: bool = False, pattern: str = "*", prune: bool = False, strict: bool = False,
@@ -1449,7 +1461,10 @@ class EachDocsSyncer:
         return lines, old["body"], new["body"]
 
     def _delete_stale_uploads(self, eid, stale_ids, pending, filename, prune_ids=()):
-        """差し替え前の古い版の添付を削除し、削除できた ID の集合を返す。best-effort。
+        """旧版・明示的な整理候補を削除し、削除できた ID の集合を返す。
+
+        旧版の削除に失敗したら警告を返して続ける。prune_ids の削除失敗は例外を伝播し、
+        未完了記録を残して同じオプションでの再開を可能にする。
 
         文書の本文・タグ・カテゴリ・添付の同期がすべて済んだ後にだけ呼ぶ。
         現在の本文から long_name または /uploads/{id} で参照されている添付は
@@ -1471,7 +1486,12 @@ class EachDocsSyncer:
         pending[filename]["deleting"] = candidates
         self._save_pending(pending)
         deleted = set()
+        expected_uploads = pending[filename]["guard"]["uploads"]
         for uid in candidates:
+            current = self.client.list_uploads(self.entity, eid)
+            expected = [u for u in expected_uploads if u["id"] not in deleted]
+            if self._remote_signature({}, current)["uploads"] != expected:
+                raise ConflictError("削除前にリモート添付が変更されました。diffで確認してください")
             checked_body()
             name = by_id[uid].get("real_name")
             try:
@@ -1801,12 +1821,11 @@ class EachDocsSyncer:
             for doc in results:
                 try:
                     uploads = self.client.list_uploads(self.entity, doc["entity_id"]) if directory.is_dir() and doc["entity_id"] else []
+                    body = self.file_path(doc["filename"]).read_text(encoding="utf-8")
+                    candidates = _prune_candidates(uploads, local_names, self.target.attachments_pattern, body, self.client.base_url)
+                    doc["prune_candidates"] = [{"id": u["id"], "name": u["real_name"]} for u in candidates]
                 except Exception as exc:
                     doc["error"] = _error_text(self.client, exc)
-                    continue
-                body = self.file_path(doc["filename"]).read_text(encoding="utf-8")
-                candidates = _prune_candidates(uploads, local_names, self.target.attachments_pattern, body, self.client.base_url)
-                doc["prune_candidates"] = [{"id": u["id"], "name": u["real_name"]} for u in candidates]
         return results
 
     def _resolve_target_category(self, entities):

@@ -1772,9 +1772,9 @@ def test_prune_preserves_body_uploads_on_create_and_update(project, keep_previou
         assert pdf["long_name"] in remote[1]["body"]
         uploads[1].append({"id": 200, "real_name": "remove.csv", "long_name": "old-data"})
         (root / "docs/items_1_protocol.pdf").write_bytes(b"new PDF")
-        body = "![file](items_1_protocol.pdf) [external](https://other.test/remove.csv) [csv](https://other.test/uploads/200)"
+        body = "![file](items_1_protocol.pdf) [external](https://other.test/remove.csv) [csv](https://other.test/some%20path/uploads/200)"
         if keep_previous:
-            body += " [previous](https://example.test/uploads/%31%30%30)"
+            body += " [previous](https://EXAMPLE.test:443/uploads/%31%30%30)"
         (root / "docs/a.md").write_text(body)
         preview = run_push(args(prune_attachments=True, dry_run=True, force=True))
         doc = preview.data["targets"][0]["documents"][0]
@@ -1785,7 +1785,8 @@ def test_prune_preserves_body_uploads_on_create_and_update(project, keep_previou
     assert uploads[1][-1]["long_name"] in remote[1]["body"]
 
 
-def test_prune_preview_keeps_results_across_errors(project):
+@pytest.mark.parametrize("invalid_link", [True, False])
+def test_prune_preview_keeps_results_across_errors(project, invalid_link):
     root, client, remote, syncer, args = project
     cfg = root / ".elab-sync.yaml"
     data = yaml.safe_load(cfg.read_text())
@@ -1797,7 +1798,11 @@ def test_prune_preview_keeps_results_across_errors(project):
     (root / ".ids/mapping.json").write_text(json.dumps(names))
     for name in names:
         (root / "docs" / name).write_text("body")
-    client.list_uploads.side_effect = [[{"id": 11, "real_name": "x.csv"}], ValueError("unavailable"), []]
+    broken = ValueError("unavailable")
+    if invalid_link:
+        (root / "docs/b.md").write_text("example: https://[hostname]/")
+        broken = [{"id": 12, "real_name": "b.csv"}]
+    client.list_uploads.side_effect = [[{"id": 11, "real_name": "x.csv"}], broken, []]
     with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
         result = run_push(args(prune_attachments=True, dry_run=True))
     assert result.exit_code == 1
@@ -1807,7 +1812,7 @@ def test_prune_preview_keeps_results_across_errors(project):
     client.delete_upload.assert_not_called()
 
 
-@pytest.mark.parametrize("failure", ["delete", "remote_edit", "rename"])
+@pytest.mark.parametrize("failure", ["delete", "remote_edit", "rename", "rename_before_delete"])
 def test_prune_records_progress_and_protects_concurrent_edits(project, failure):
     root, client, remote, syncer, args = push_note(project)
     uploads = _stateful_uploads(client)
@@ -1818,12 +1823,14 @@ def test_prune_records_progress_and_protects_concurrent_edits(project, failure):
     assets = root / "assets"
     assets.mkdir()
     uploads[1] = [{"id": i, "real_name": f"old{i}.csv", "long_name": f"stored{i}"} for i in (201, 202)]
-    if failure == "delete":
+    if failure in {"delete", "rename_before_delete"}:
         delete = client.delete_upload.side_effect
         def fail_second(entity, eid, uid):
-            if uid == 202:
+            if uid == 202 and failure == "delete":
                 raise RuntimeError("temporary failure")
             delete(entity, eid, uid)
+            if failure == "rename_before_delete" and uid == 201:
+                uploads[eid][0]["real_name"] = "retained.pdf"
         client.delete_upload.side_effect = fail_second
     else:
         (assets / "new.txt").write_bytes(b"payload")
@@ -1843,6 +1850,8 @@ def test_prune_records_progress_and_protects_concurrent_edits(project, failure):
             client.delete_upload.side_effect = delete
             assert run_push(args(prune_attachments=True)).exit_code == 0
             assert uploads[1] == []
+        elif failure == "rename_before_delete":
+            assert [(u["id"], u["real_name"]) for u in uploads[1]] == [(202, "retained.pdf")]
         else:
             client.delete_upload.assert_not_called()
             assert {201, 202} <= {u["id"] for u in uploads[1]}
