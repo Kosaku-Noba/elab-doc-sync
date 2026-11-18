@@ -200,16 +200,17 @@ class ELabFTWClient:
             else:
                 location = response.headers.get("location", "").rstrip("/").split("/")[-1]
                 upload = next((u for u in candidates if str(u["id"]) == location), None)
-                if upload is None and candidates:
+                if upload is None and receipt is None and candidates:
                     same = [u for u in candidates if (u.get("sha256") or u.get("hash")) == digest]
                     unverified = [u for u in candidates if not (u.get("sha256") or u.get("hash"))]
                     upload = max(same or unverified, key=lambda u: u["id"], default=None)
         except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
             raise UploadConfirmationError(unknown, receipt) from exc
         if upload is None:
-            return {"filename": filename, "url": None}
+            return {"filename": filename, "url": None, **({"receipt": receipt} if receipt else {})}
         return {
             "id": upload.get("id"), "filename": filename,
+            "receipt": {"id": upload["id"], "name": filename, "size": len(payload), "sha256": digest},
             "url": f"{self.base_url}/app/download.php?f={upload['long_name']}&name={filename}&storage={upload['storage']}",
         }
 

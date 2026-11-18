@@ -3,6 +3,8 @@
 CLI tool — not intended for use as a library.
 """
 
+from contextlib import contextmanager, nullcontext
+from fnmatch import fnmatch
 import hashlib
 import ipaddress
 import idna
@@ -315,6 +317,32 @@ def _resolve_asset_path(docs_dir: Path, project_root: Path, source: str, strict=
     raise FileNotFoundError(source)
 
 
+@contextmanager
+def _staged_asset(root, source):
+    """検証したファイルを専用一時ディレクトリにコピーし、同じ内容を照合・送信する。"""
+    source = Path(source)
+    checked = _resolve_asset_path(root, root, str(source), strict=True)
+    with tempfile.TemporaryDirectory() as directory:
+        staged = Path(directory) / source.name
+        with source.open("rb") as reader:
+            current = _resolve_asset_path(root, root, str(source), strict=True)
+            if current != checked or not _os.path.samestat(_os.fstat(reader.fileno()), current.stat()):
+                raise ConflictError(f"読込中に添付の保存先が変わりました: {source}")
+            with staged.open("xb") as writer:
+                shutil.copyfileobj(reader, writer)
+        yield staged
+
+
+def _remember_asset(verified, src, digest):
+    if verified is not None and verified.setdefault(src, digest) != digest:
+        raise ConflictError(f"送信中に同じ添付の内容が変わりました: {src}")
+
+
+def _directory_assets(directory, pattern):
+    return [f for f in sorted(directory.iterdir())
+            if f.is_file() and not _is_image(f.name) and fnmatch(f.name, pattern)]
+
+
 def _upload_body_file(client, entity, eid, path, uploaded):
     """本文に埋め込むアップロードの ID・名前・サイズ・内容を本文更新前の確認用に残す。"""
     path = Path(path)
@@ -322,6 +350,9 @@ def _upload_body_file(client, entity, eid, path, uploaded):
         expected = (path.name, path.stat().st_size, _compute_file_hash(path))
     result = client.upload_file(entity, eid, str(path))
     if uploaded is not None and result.get("url"):
+        receipt = result.get("receipt")
+        if receipt:
+            expected = (receipt["name"], receipt["size"], receipt["sha256"])
         uid = result.get("id")
         if uid is None:
             raise ConflictError("送信した本文用添付の ID を特定できません")
@@ -405,8 +436,7 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
                 reuse = e
                 break
         if reuse:
-            if verified is not None:
-                verified[src] = local_hash
+            _remember_asset(verified, src, local_hash)
             # サイズ（+ハッシュ）一致の1件を再利用し、残りの重複は削除予約
             for e in entries:
                 if e is not reuse and e.get("id") is not None:
@@ -426,7 +456,7 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
         result = _upload_body_file(client, entity, entity_id, upload_path, uploaded)
         if result.get("url"):
             if verified is not None:
-                verified[src] = uploaded[result["id"]][2]
+                _remember_asset(verified, src, uploaded[result["id"]][2])
             for e in entries:
                 if e is not reuse and e.get("id") is not None and not e.get("fresh"):
                     stale_ids.append(e["id"])
@@ -736,7 +766,7 @@ def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClien
                 reuse = None
         if reuse:
             if verified is not None:
-                verified[src] = actual
+                _remember_asset(verified, src, actual)
             for e in entries:
                 if e is not reuse and e.get("id") is not None:
                     stale_ids.append(e["id"])
@@ -747,7 +777,7 @@ def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClien
         result = _upload_body_file(client, entity, entity_id, video_path, uploaded)
         if result.get("url"):
             if verified is not None:
-                verified[src] = uploaded[result["id"]][2]
+                _remember_asset(verified, src, uploaded[result["id"]][2])
             for e in entries:
                 if e is not reuse and e.get("id") is not None and not e.get("fresh"):
                     stale_ids.append(e["id"])
@@ -863,7 +893,7 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
                 reuse = None
         if reuse:
             if verified is not None:
-                verified[src] = actual
+                _remember_asset(verified, src, actual)
             for e in entries:
                 if e is not reuse and e.get("id") is not None:
                     stale_ids.append(e["id"])
@@ -874,7 +904,7 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
         result = _upload_body_file(client, entity, entity_id, file_path, uploaded)
         if result.get("url"):
             if verified is not None:
-                verified[src] = uploaded[result["id"]][2]
+                _remember_asset(verified, src, uploaded[result["id"]][2])
             for e in entries:
                 if e is not reuse and e.get("id") is not None and not e.get("fresh"):
                     stale_ids.append(e["id"])
@@ -992,7 +1022,7 @@ def _prune_candidates(uploads, local_names, pattern, body, base_url):
 
 
 def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int, client: ELabFTWClient, *, force: bool = False, pattern: str = "*", prune: bool = False, strict: bool = False,
-                      prune_ids=None, body="", deferred_prune=None, on_upload=None, verified=None, save_receipt=None) -> bool:
+                      prune_ids=None, body="", deferred_prune=None, on_upload=None, verified=None, save_receipt=None, project_root=None) -> bool:
     """attachments_dir 内の非画像ファイルをリモートにアップロードする。
 
     差分検知: サイズ一致 → リモートに hash/sha256 フィールドがあれば
@@ -1013,9 +1043,7 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
     """
     if not attachments_dir or not attachments_dir.is_dir():
         return True
-    from fnmatch import fnmatch
-    local_files = [f for f in sorted(attachments_dir.iterdir())
-                   if f.is_file() and not _is_image(f.name) and fnmatch(f.name, pattern)]
+    local_files = _directory_assets(attachments_dir, pattern)
     if not local_files and not prune:
         return True
 
@@ -1032,48 +1060,56 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
             raise
 
     all_success = True
-    for f in local_files:
-        entries = existing.get(f.name, [])
-        local_size = f.stat().st_size
-        local_hash = _compute_file_hash(f) if not force or on_upload is not None else None
-        reuse = None
-        if not force:
-            for e in entries:
-                if int(e.get("filesize", 0) or 0) == local_size:
-                    remote_hash = e.get("hash") or e.get("sha256")
-                    if strict and not remote_hash and e.get("id") is not None:
-                        remote_hash = client.upload_digest(entity_type=entity, entity_id=entity_id, upload_id=e["id"])
-                    if remote_hash and remote_hash != local_hash:
-                        continue
-                    reuse = e
-                    break
-        if reuse:
-            progress(f"    ✓ {f.name}（既存添付を再利用）")
-            stale = [e for e in entries if e is not reuse and e.get("id") is not None]
-        else:
-            progress(f"    添付ファイルをアップロード中: {f.name}")
-            try:
-                result = client.upload_file(entity, entity_id, str(f))
-            except UploadConfirmationError as exc:
-                if exc.receipt and save_receipt is not None:
-                    save_receipt(exc.receipt)
-                raise
-            if result.get("url"):
-                progress(f"    ✓ {f.name}")
-                stale = [e for e in entries if e.get("id") is not None]
-                if on_upload is not None:
-                    on_upload({"id": result.get("id"), "name": f.name, "size": local_size, "sha256": local_hash})
+    for source in local_files:
+        staged = _staged_asset(project_root, source) if project_root is not None else nullcontext(source)
+        with staged as f:
+            entries = existing.get(f.name, [])
+            local_size = f.stat().st_size
+            local_hash = _compute_file_hash(f) if not force or on_upload is not None else None
+            reuse = None
+            if not force:
+                for e in entries:
+                    if int(e.get("filesize", 0) or 0) == local_size:
+                        remote_hash = e.get("hash") or e.get("sha256")
+                        if strict and not remote_hash and e.get("id") is not None:
+                            remote_hash = client.upload_digest(entity_type=entity, entity_id=entity_id, upload_id=e["id"])
+                        if remote_hash and remote_hash != local_hash:
+                            continue
+                        reuse = e
+                        break
+            if reuse:
+                progress(f"    ✓ {f.name}（既存添付を再利用）")
+                stale = [e for e in entries if e is not reuse and e.get("id") is not None]
             else:
-                progress(f"    ✗ アップロード失敗: {f.name}", warning=True)
-                stale = []
-                all_success = False
-        if verified is not None and (reuse or result.get("url")):
-            verified[f.name] = local_hash
-        for e in ([] if strict else stale):
-            try:
-                client.delete_upload(entity, entity_id, e["id"])
-            except Exception:
-                pass
+                progress(f"    添付ファイルをアップロード中: {f.name}")
+                try:
+                    result = client.upload_file(entity, entity_id, str(f))
+                except UploadConfirmationError as exc:
+                    if exc.receipt and save_receipt is not None:
+                        save_receipt(exc.receipt)
+                    raise
+                receipt = result.get("receipt") or {"id": result.get("id"), "name": f.name,
+                                                    "size": local_size, "sha256": local_hash}
+                if result.get("url"):
+                    local_hash = receipt["sha256"]
+                    progress(f"    ✓ {f.name}")
+                    stale = [e for e in entries if e.get("id") is not None]
+                    if on_upload is not None:
+                        on_upload(receipt)
+                else:
+                    if receipt["id"] is not None and save_receipt is not None:
+                        save_receipt(receipt)
+                        raise ConflictError("受領した添付 ID が一覧に現れていません。eLabFTW の添付一覧を確認してください")
+                    progress(f"    ✗ アップロード失敗: {f.name}", warning=True)
+                    stale = []
+                    all_success = False
+            if verified is not None and (reuse or result.get("url")):
+                verified[f.name] = local_hash
+            for e in ([] if strict else stale):
+                try:
+                    client.delete_upload(entity, entity_id, e["id"])
+                except Exception:
+                    pass
 
     # prune: ローカルに存在しないリモート添付を削除（pattern に一致するもののみ）
     if prune:
@@ -1440,7 +1476,8 @@ class EachDocsSyncer:
         document_dir = self.file_path(filename).parent if filename else self.docs_dir
         for m in [*IMAGE_RE.finditer(raw_body), *_LINK_RE.finditer(raw_body)]:
             src = m.group(2)
-            if src.startswith(("http://", "https://", "#")) or src.split("#")[0].endswith(".md"):
+            if (src.startswith(("http://", "https://", "#", "mailto:", "data:")) or src.split("#")[0].endswith(".md")
+                    or (m.re is _LINK_RE and _is_image(src))):
                 continue
             if body_evidence is not None:
                 parts.append(f"{src}:{body_evidence.get(src, 'missing')}")
@@ -1452,10 +1489,9 @@ class EachDocsSyncer:
         elif self.target.attachments_dir:
             att_dir = self.project_root / self.target.attachments_dir
             if att_dir.is_dir():
-                for f in sorted(att_dir.glob(self.target.attachments_pattern)):
-                    if f.is_file() and not _is_image(f.name):
-                        checked = _resolve_asset_path(self.project_root, self.project_root, str(f), strict=True)
-                        parts.append(f"{f.name}:{_compute_file_hash(checked)}")
+                for f in _directory_assets(att_dir, self.target.attachments_pattern):
+                    checked = _resolve_asset_path(self.project_root, self.project_root, str(f), strict=True)
+                    parts.append(f"{f.name}:{_compute_file_hash(checked)}")
         return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
 
     def _assets_changed(self, filename, raw_body):
@@ -2174,7 +2210,7 @@ class EachDocsSyncer:
                                                force=force, pattern=self.target.attachments_pattern, prune=prune_attachments, strict=True,
                                                prune_ids=planned_prune,
                                                body=raw_body + "\n" + body, deferred_prune=prune_ids, on_upload=confirm_upload,
-                                               verified=verified_directory, save_receipt=save_receipt)
+                                               verified=verified_directory, save_receipt=save_receipt, project_root=self.project_root)
                 if not att_ok:
                     raise RuntimeError("本文更新後、添付の同期が失敗しました。再実行してください")
                 stale_uploads.extend(sorted(prune_ids))

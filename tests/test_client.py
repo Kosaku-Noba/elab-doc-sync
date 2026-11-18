@@ -620,3 +620,13 @@ def test_preserve_upload_receipt_after_listing_failure(mock_req, client, tmp_pat
         client.upload_file("items", 1, str(path))
     assert error.value.receipt == {"id": 8, "name": "data.csv", "size": 6,
                                    "sha256": hashlib.sha256(b"values").hexdigest()}
+
+
+@patch("elab_doc_sync.client.requests.request")
+def test_acknowledged_id_missing_from_listing_returns_receipt(mock_req, client, tmp_path):
+    path = tmp_path / "table.csv"
+    path.write_bytes(b"test")
+    mock_req.side_effect = [_mock_response([]), _mock_response(headers={"location": "/uploads/8"}),
+                            _mock_response([{"id": 9, "real_name": path.name, "long_name": "other", "storage": 1}])]
+    result = client.upload_file("items", 1, str(path))
+    assert result["url"] is None and result["receipt"]["id"] == 8
