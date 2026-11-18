@@ -68,7 +68,7 @@ pull: [セットアップガイド](https://elab.example.com/database.php?mode=v
 - `*.state.json`: 前回のローカル本文・画像/添付・設定ハッシュ、接続先（`server`・`entity`・`profile`・`team`）、本文形式、リモートの比較情報（`remote`）、張り終えたリンク（`links`、`links` を設定したターゲットのみ）。
 - `*.base`: 前回同期時の eLabFTW の本文（pull と同じ Markdown 形式。`body_format: md` では HTML エスケープした形で保存）。pull のマージ基準。
 - `*.synced`: 前回同期時のローカルの本文。`diff` の「ローカルの変更」の比較元。
-- `pending.json`: 同期途中の作成・更新・添付検証の記録。本文更新前の最終照合でも残り得るため、「同期未完了」だけで本文が反映されたかは判定できない。
+- `pending.json`: 本文用の画像・動画・ファイル送信後は受領 ID と転送内容の情報を保持し、本文 PATCH 前に停止した場合も照合に使う。 同期途中の作成・更新・添付検証の記録。本文更新前の最終照合でも残り得るため、「同期未完了」だけで本文が反映されたかは判定できない。
 - `excluded.json`: `esync rm` で追跡解除したファイル名。
 - `*.hash` / `*.remote_hash` / `*.meta_hash` / `*.assets_hash`: 旧状態からの移行・互換用情報。
 - `.elab-sync-operations/`: 作成要求の記録。ローカル復元で消さない。

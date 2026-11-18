@@ -155,6 +155,7 @@ class ELabFTWClient:
 
         応答不明時は再送せず、新しい添付の名前と SHA-256 を照合する。
         特定できない場合は UploadConfirmationError に確認手順を含める。
+        URL を返す場合は receipt に id・name・size・sha256 を含める。
         """
         url = f"/api/v2/{entity_type}/{entity_id}/uploads"
         filename = Path(filepath).name

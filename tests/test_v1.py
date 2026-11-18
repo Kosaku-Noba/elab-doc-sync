@@ -2033,3 +2033,26 @@ def test_asset_baseline_matches_version_uploaded_after_preflight(project):
     assert syncer.inspect("a.md", 1)["state"] == "最新"
     path.write_bytes(b"one")
     assert syncer.inspect("a.md", 1)["state"] == "送信待ち"
+
+
+def test_delayed_body_upload_listing_resumes_without_repost(project):
+    from hashlib import sha256
+    root, client, remote, syncer, args = project
+    path = root / "docs/plot.png"
+    path.write_bytes(b"image")
+    (root / "docs/a.md").write_text("![plot](plot.png)")
+    _stateful_uploads(client)
+    upload = client.upload_file.side_effect
+
+    def delayed(entity, eid, filename):
+        result = upload(entity, eid, filename)
+        return {"url": None, "receipt": {"id": result["id"], "name": path.name, "size": 5,
+                                         "sha256": sha256(b"image").hexdigest()}}
+
+    client.upload_file.side_effect = delayed
+    assert syncer.sync() == 0
+    assert syncer._pending()["a.md"]["body_receipts"][0]["id"] == 100
+    assert not remote[1]["body"]
+    assert syncer.sync() == 1
+    assert "blob100" in remote[1]["body"]
+    assert client.upload_file.call_count == 1
