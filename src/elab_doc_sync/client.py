@@ -143,51 +143,48 @@ class ELabFTWClient:
     # ── uploads ──────────────────────────────────────────────
 
     def upload_file(self, entity_type: str, entity_id: int, filepath: str, comment: str = "") -> dict:
-        """ファイルをアップロードする（Timeout/ConnectionError/5xx で1回リトライ）。
-
-        filepath の basename が eLabFTW 上の real_name として保存される。
-        entity_type は 'items' または 'experiments'。
-
-        リトライ対象: requests.exceptions.Timeout, ConnectionError, HTTPError(5xx)
-        4xx は即失敗。POST が非冪等なため、リトライで重複が生じた場合は
-        同名ファイルの最新を採用し、古い重複は呼び出し元で掃除される前提。
-
-        アップロードした添付は、POST 応答の Location の ID で特定する。取れない
-        場合は同名・同ハッシュのうち ID が最大のものを使う。同ハッシュがなければ、
-        ハッシュを持たない同名添付のうち ID が最大のもの（内容は未検証）を使う。
-        どれもなければ特定できないとして url=None を返す。一覧の並び順は
-        サーバーにより異なる（eLabFTW 5.5 は新しい順）ため頼らない。
-        """
+        """送信は一度。応答不明時は新しい添付の名前と SHA-256 を照合する。"""
         url = f"/api/v2/{entity_type}/{entity_id}/uploads"
-        response = None
-        for attempt in range(2):
-            try:
-                with open(filepath, "rb") as f:
-                    response = self._req("POST", url, headers=self._auth_headers,
-                                         files={"file": f}, data={"comment": comment}, timeout=60)
-                break
-            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
-                if attempt == 0:
-                    continue
-                raise
-            except requests.exceptions.HTTPError as e:
-                if e.response is not None and e.response.status_code >= 500 and attempt == 0:
-                    continue
-                raise
-        uploads = self._req("GET", url).json()
         filename = Path(filepath).name
-        candidates = [u for u in uploads if u.get("real_name") == filename and u.get("long_name") and u.get("storage")]
-        location = str(getattr(response, "headers", {}).get("location", "") or "").rstrip("/").split("/")[-1]
-        new_id = int(location) if location.isdigit() else None
-        upload = next((u for u in candidates if u.get("id") == new_id), None)
-        if upload is None and candidates:
-            with open(filepath, "rb") as f:
-                local_hash = hashlib.sha256(f.read()).hexdigest()
-            same = [u for u in candidates if (u.get("hash") or u.get("sha256")) == local_hash]
-            # ハッシュを返さないサーバーでは内容を確かめられないため、最大 ID を使う
-            unknown = [u for u in candidates if not (u.get("hash") or u.get("sha256"))]
-            if same or unknown:
-                upload = max(same or unknown, key=lambda u: u.get("id") or 0)
+        previous_ids = {u["id"] for u in self.list_uploads(entity_type, entity_id)}
+        payload = Path(filepath).read_bytes()
+        digest = hashlib.sha256(payload).hexdigest()
+        unknown = (f"{entity_type} #{entity_id} の添付 {filename!r} の送信結果を確認できません。"
+                   "自動再送を停止しました。esync diff と eLabFTW の添付一覧で ID・名前・内容を確認してください")
+        response = None
+        try:
+            response = self._req("POST", url, headers=self._auth_headers,
+                                 files={"file": (filename, payload)}, data={"comment": comment}, timeout=60)
+        except requests.HTTPError as exc:
+            if exc.response is None or exc.response.status_code < 500:
+                raise
+        except (requests.Timeout, requests.ConnectionError):
+            pass
+        try:
+            candidates = [u for u in self.list_uploads(entity_type, entity_id)
+                          if u["id"] not in previous_ids and u.get("real_name") == filename
+                          and u.get("long_name") and u.get("storage") is not None]
+            if response is None:
+                matches = []
+                for candidate in candidates:
+                    remote_digest = candidate.get("sha256") or candidate.get("hash")
+                    if not remote_digest:
+                        remote_digest = self.upload_digest(entity_type=entity_type, entity_id=entity_id,
+                                                           upload_id=candidate["id"])
+                    if remote_digest == digest:
+                        matches.append(candidate)
+                if len(matches) != 1:
+                    raise ValueError("一致する新規添付を一意に特定できません")
+                upload = matches[0]
+            else:
+                location = response.headers.get("location", "").rstrip("/").split("/")[-1]
+                upload = next((u for u in candidates if str(u["id"]) == location), None)
+                if upload is None and candidates:
+                    same = [u for u in candidates if (u.get("sha256") or u.get("hash")) == digest]
+                    unverified = [u for u in candidates if not (u.get("sha256") or u.get("hash"))]
+                    upload = max(same or unverified, key=lambda u: u["id"], default=None)
+        except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
+            raise RuntimeError(unknown) from exc
         if upload is None:
             return {"filename": filename, "url": None}
         return {

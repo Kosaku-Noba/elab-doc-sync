@@ -1440,9 +1440,6 @@ class EachDocsSyncer:
         saved = state["assets_hash"] if state else hp.read_text().strip() if hp.exists() else None
         return saved is not None and saved != self._compute_assets_hash(raw_body, filename)
 
-    def _save_assets_hash(self, filename, raw_body):
-        atomic_write(self.hash_dir / f"{filename}.assets_hash", self._compute_assets_hash(raw_body, filename) + "\n")
-
     def _remote_signature(self, data, uploads):
         return {"body": data.get("body") or "", "title": data.get("title") or "",
                 "content_type": data.get("content_type"), "category": _category_value(data.get("category")), "tags": _tag_names(data.get("tags")),
@@ -1561,6 +1558,13 @@ class EachDocsSyncer:
             raise ConflictError("送信した添付の内容が一致しません")
         return self._remote_signature({}, [entry])["uploads"][0]
 
+    @staticmethod
+    def _resume_versions(owned):
+        # PATCH の保存結果を確認した後は、編集者が以前の版に戻した場合も競合とする。
+        if owned.get("stored") is not None:
+            return [owned["stored"]]
+        return [v for v in (owned.get("expected"), owned.get("before")) if v is not None]
+
     def _resume_mismatch(self, owned, eid, data, current_guard):
         """未完了の同期記録と現在のリモートで食い違う項目の表示名を返す。"""
         if owned.get("eid") != eid:
@@ -1568,7 +1572,7 @@ class EachDocsSyncer:
         labels = [] if self._guard_matches(owned, current_guard) else [
             REMOTE_FIELD_LABELS[k] for k in ("category", "tags", "uploads")
             if (owned.get("guard") or {}).get(k) != current_guard.get(k)]
-        versions = [v for v in (owned.get("expected"), owned.get("stored"), owned.get("before")) if v is not None]
+        versions = self._resume_versions(owned)
         if not any(all(data.get(k) == v for k, v in version.items()) for version in versions):
             keys = {k for version in versions for k in version}
             labels[:0] = [REMOTE_FIELD_LABELS[k] for k in ("body", "title", "content_type")
@@ -1611,7 +1615,7 @@ class EachDocsSyncer:
         body = _normalize_remote_image_urls(body, self.entity, eid, self.client, uploads=uploads)
         return _rewrite_elab_links_to_local(body, self.client.base_url, mapping, self.entity, source=source, links=links)
 
-    def _save_baseline(self, filename, raw_body, data, uploads, base=None, links=None):
+    def _save_baseline(self, filename, raw_body, data, uploads, base=None, links=None, assets_hash=None):
         """Record a completed sync. base defaults to raw_body (pull/link write the remote body).
 
         links is the record of links already applied; pull and link pass the
@@ -1622,11 +1626,13 @@ class EachDocsSyncer:
         self._save_hash(filename, raw_body)
         self._save_remote_hash(filename, data.get("body") or "")
         self._save_meta_hash(filename, Path(filename).stem, self.target.category, self.target.tags)
-        self._save_assets_hash(filename, raw_body)
+        if assets_hash is None:
+            assets_hash = self._compute_assets_hash(raw_body, filename)
+        atomic_write(self.hash_dir / f"{filename}.assets_hash", assets_hash + "\n")
         write_json(self.hash_dir / f"{filename}.state.json", {
             "version": 1, "server": str(self.client.base_url), "entity": self.entity,
             "profile": self.target.profile, "team": self.target.team, "body_format": self.target.body_format,
-            "local_hash": _compute_hash(raw_body), "assets_hash": self._compute_assets_hash(raw_body, filename),
+            "local_hash": _compute_hash(raw_body), "assets_hash": assets_hash,
             "meta_hash": _compute_meta_hash(Path(filename).stem, self.target.category, self.target.tags),
             "remote": self._remote_signature(data, uploads),
             **({"links": links} if links else {}),
@@ -1909,9 +1915,9 @@ class EachDocsSyncer:
         for f in md_files:
             if only is not None and f.name not in only:
                 continue
-            self._compute_assets_hash(f.read_text(encoding="utf-8").strip(), f.name)
             eid = mapping.get(f.name)
             result = self.inspect(f.name, eid)
+            result["assets_hash"] = self._compute_assets_hash(result["body"], f.name)
             state = result["state"]
             if result.get("data"):
                 observed_entities.append(result["data"])
@@ -1925,13 +1931,11 @@ class EachDocsSyncer:
             # before/expected are the body fields before/after our PATCH. Either
             # may be observed after a lost response. guard covers metadata and
             # uploads: these must still match the last confirmed checkpoint.
-            expected = owned.get("expected")
-            before = owned.get("before")
             current_guard = {k: v for k, v in self._remote_signature(result.get("data", {}), result.get("uploads", [])).items() if k not in ("body", "title", "content_type")}
             # stored is the body as eLabFTW saved it after our PATCH; eLabFTW may
             # rewrite what we sent (e.g. "> " to "&gt; "), so expected alone never matches.
             receipt = owned.get("verifying_upload")
-            if receipt and owned.get("eid") == eid:
+            if receipt and not force and owned.get("eid") == eid:
                 try:
                     addition = self._verify_uploaded_attachment(eid, result.get("uploads", []), receipt)
                     expected_uploads = sorted(owned["guard"]["uploads"] + [addition], key=lambda u: str(u["id"]))
@@ -1946,10 +1950,9 @@ class EachDocsSyncer:
                     progress(f"  [{f.stem}] 添付検証を再開できません: {_error_text(self.client, exc)}。diffで確認してください",
                              warning=True)
                     continue
-            stored = owned.get("stored")
             resuming = bool(owned.get("eid") == eid and self._guard_matches(owned, current_guard) and any(
                 version is not None and all(result["data"].get(k) == v for k, v in version.items())
-                for version in (expected, stored, before)))
+                for version in self._resume_versions(owned)))
             if not force and owned and not resuming:
                 self.failures += 1
                 progress(f"  [{f.stem}] 前回の push が途中で止まった後に eLabFTW 側が変更されたため、自動では再開しません", warning=True)
@@ -2019,10 +2022,19 @@ class EachDocsSyncer:
                 mapping[f.name] = eid
                 self._save_mapping(mapping)
                 result["entity_id"] = eid
-                result["created_data"] = self._get_entity(eid)
+                try:
+                    result["created_data"] = self._get_entity(eid)
+                except Exception as exc:
+                    self.failures += 1
+                    result["creation_read_failed"] = True
+                    progress(f"  [{f.stem}] #{eid} を作成しましたが、本文更新前の取得に失敗しました: "
+                             f"{_error_text(self.client, exc)}", warning=True)
+                    continue
                 progress(f"  [{f.stem}] #{eid} を新規作成しました")
         links = self.link_targets(mapping) if jobs else None
         for f, result, resuming in jobs:
+            if result.get("creation_read_failed"):
+                continue
             eid = result["entity_id"]
             raw_body = result["body"]
             try:
@@ -2157,7 +2169,8 @@ class EachDocsSyncer:
                 if links_ok and links_changed:
                     applied = {t: sorted(set(applied.get(t, [])) | set(ids))
                                for t, ids in {**applied, **self.target.links}.items()}
-                self._save_baseline(f.name, base if dropped else raw_body, data, uploads, base=base, links=applied)
+                self._save_baseline(f.name, base if dropped else raw_body, data, uploads, base=base, links=applied,
+                                    assets_hash=result["assets_hash"])
                 pending.pop(f.name, None)
                 self._save_pending(pending)
                 sync_log.record(self.project_root / sync_log.DEFAULT_LOG_PATH, action="push", target=f.stem,

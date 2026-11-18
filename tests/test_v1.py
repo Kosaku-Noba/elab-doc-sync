@@ -1961,7 +1961,8 @@ def test_prune_without_candidates_allows_invalid_url_example(project):
     assert "[hostname]" in remote[1]["body"]
 
 
-def test_directory_upload_verification_resumes_after_read_error(project):
+@pytest.mark.parametrize("rollback", [False, True])
+def test_directory_upload_verification_resumes_after_read_error(project, rollback):
     from hashlib import sha256
     root, client, remote, syncer, args = project
     syncer.target.attachments_dir = "assets"
@@ -1981,5 +1982,33 @@ def test_directory_upload_verification_resumes_after_read_error(project):
     assert syncer._pending()["a.md"]["verifying_upload"]["id"] == 100
     client.upload_digest.side_effect = None
     client.upload_digest.return_value = sha256(b"notes").hexdigest()
-    assert syncer.sync() == 1 and syncer._pending() == {}
+    if rollback:
+        remote[1]["body"] = syncer._pending()["a.md"]["before"]["body"]
+        assert syncer.sync() == 0 and syncer._pending()
+        assert remote[1]["body"] != "document"
+    else:
+        assert syncer.sync() == 1 and syncer._pending() == {}
     assert client.upload_file.call_count == 1
+
+
+def test_push_keeps_local_attachment_edit_pending(project):
+    root, client, remote, syncer, args = project
+    syncer.target.attachments_dir = "assets"
+    path = root / "assets/file.csv"
+    path.parent.mkdir()
+    path.write_bytes(b"one")
+    (root / "docs/note.md").write_text("body")
+    _stateful_uploads(client)
+    upload = client.upload_file.side_effect
+
+    def edit_after_upload(*args):
+        receipt = upload(*args)
+        path.write_bytes(b"two")
+        return receipt
+
+    client.upload_file.side_effect = edit_after_upload
+    assert syncer.sync() == 1
+    assert syncer.inspect("note.md", 1)["state"] == "送信待ち"
+    client.upload_file.side_effect = upload
+    assert syncer.sync() == 1
+    assert syncer.inspect("note.md", 1)["state"] == "最新"
