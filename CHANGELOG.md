@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### 追加
+
+- `tag add/remove`・`relate add/remove`・`metadata set`・`category set`・`entity-status set`・`new` が `--dry-run` に対応した。eLabFTW の現在の値を読んで予定（「追加予定」「既にあります」など）を表示し、送信・ファイル作成はしない。`entity-status set --dry-run` は複数件でも確認の入力を求めない。これまでは付けるとエラー（終了コード 2）だった。`init`・`profile add/remove` は従来どおりエラーになる。
+
 ## v1.3.0 (2026-11-09)
 
 ### 追加

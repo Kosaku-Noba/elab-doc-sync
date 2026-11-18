@@ -42,6 +42,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q
 | test_sync_log.py | 13 | 同期ログ |
 | test_merge.py | 10 | 3-way マージ |
 | test_search.py | 23 | `esync search`（v1.3.0 で追加。表の合計には含まない） |
+| test_dry_run_writes.py | 13 | eLabFTW を書き換えるコマンドと `new` の `--dry-run`（v1.3.0 より後に追加。表の合計には含まない） |
 | test_integration.py | 6 | 実機（既存） |
 | test_integration_v1.py | 5 | 実機（v1.0 以降） |
 
@@ -115,6 +116,12 @@ UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q
 - `limit`/`offset` と続きの有無、サーバーの offset の利用、走査上限の通知、最終更新日のクライアント側絞り込みと打ち切り（ピン留めを除く）、`all` の統合順（ピン留めが取得枠を使わない）、`--scope team`（チーム不明の記事・ユーザー）
 - 取得コマンドへの `-t` の引き継ぎ、ホストとパスの両方が一致する接続先だけの追跡情報
 - 人向け出力・`--json`（ローカルパス・取得コマンド・本文）、argparse からの呼び出し
+
+### 3.8.2 test_dry_run_writes.py
+
+- `tag add/remove`・`relate add/remove`・`metadata set`・`category set`・`entity-status set` の `--dry-run` が送信せず予定を表示すること（既存タグ・既存リンクの判定、マージ後のメタデータ）
+- `entity-status set --dry-run` が複数件でも確認の入力を求めないこと、`new --dry-run` がファイルを作らないこと
+- argparse からの `--dry-run` の受け付けとロックを取らないこと、`init`・`profile add/remove` は従来どおり拒否すること
 
 ### 3.9 実機テスト（test_integration.py / test_integration_v1.py）
 
