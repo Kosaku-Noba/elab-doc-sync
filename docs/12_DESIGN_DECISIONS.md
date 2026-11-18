@@ -244,7 +244,8 @@ eLabFTW は Markdown 本文の保存時に `>` を `&gt;`、`&` を `&amp;` に�
 
 - `result` のある件: 変更済み（`added`・`removed`・`changed`・`set`・`updated`）、dry-run の予定（`would_*`）、変更不要（`exists`・`already`・`not_found`・`self`）のいずれか
 - `result` のない件: 完了未確認。送信前に失敗したか、eLabFTW 側で変更された後に応答を受け取れなかったかを区別できないため、再試行の前に `tag list`・`relate list`・`entity-status show` などで実際の状態を確認する
-- まだ処理していない件は含まれない（失敗した時点までに記録した件だけが残る）。`category set` と `new` は 1 件だけのため、`data` の `result` がない／`created` が false なら完了未確認
+- まだ処理していない件は含まれない（失敗した時点までに記録した件だけが残る）
+- `category set` と `new` は 1 件だけを扱う。例外の `partial_result` で `category set` の `result` がなければ eLabFTW の `category show` で、`new` の `created` が false ならローカルの `path` のファイルで実際の状態を確認する（正常に返った結果の `created: false` は dry-run か作成の拒否で、完了未確認ではない）
 
 ### 13.5 段階的な移行
 
