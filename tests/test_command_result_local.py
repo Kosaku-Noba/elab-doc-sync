@@ -68,3 +68,40 @@ def test_pull_result_partial_failure(project, capsys):
     assert {d["entity_id"] for d in res.data["documents"]} == {42, 43}
     assert any("取得予定" in line for line in res.messages)
     assert capsys.readouterr() == ("", "")
+
+
+def test_pull_uses_shared_candidate_profile_and_hides_key(project, tmp_path):
+    path = tmp_path / ".elab-sync.yaml"
+    cfg = yaml.safe_load(path.read_text())
+    cfg["profiles"] = {"lab": {"url": "https://lab.invalid", "api_key": "private-key"}}
+    cfg["targets"] = [{"docs_dir": name, "profile": "lab"} for name in ("one", "two")]
+    path.write_text(yaml.safe_dump(cfg))
+    project.id, project.entity, project.auto, project.dir = [1, 2], "items", False, None
+    project.dry_run = False
+    with patch.object(cli, "ELabFTWClient") as factory:
+        factory.return_value.get_item.side_effect = [ValueError("header: private-key"), {"title": "X"}]
+        res = cli.run_pull(project, choose_target=lambda *_: "SKIP")
+    assert all(call.args[0] == "https://lab.invalid" for call in factory.call_args_list)
+    assert "private-key" not in json.dumps(res.to_dict())
+    assert res.data["documents"][1]["result"] == "skipped"
+
+
+def test_rm_reports_completed_deletions(project, tmp_path, monkeypatch):
+    from pathlib import Path
+    project.id, project.entity, project.files = [41, 42], "items", []
+    project.local, project.dry_run = True, False
+    (tmp_path / "docs/a.md").touch()
+    (tmp_path / ".ids/mapping.json").write_text('{"a.md":41,"note.md":42}')
+    original = Path.unlink
+
+    def unlink(path, *args, **kwargs):
+        if path == tmp_path / "docs/note.md":
+            raise OSError("busy")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    with pytest.raises(OSError) as caught:
+        cli.run_rm(project)
+    a, note = caught.value.partial_result.data["documents"]
+    assert a["file_absent"] and "file_absent" not in note
+    assert a["tracking"] == note["tracking"] == "untracked"

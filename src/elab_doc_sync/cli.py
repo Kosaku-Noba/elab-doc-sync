@@ -286,19 +286,20 @@ def run_push(args, echo=None) -> CommandResult:
 
         try:
             count = syncer.sync(force=args.force, prune_attachments=args.prune_attachments, only=only)
-            summary.update(updated=count, failed=syncer.failures, skipped=syncer.skipped)
-            updated += count
-            failed += syncer.failures
-            skipped += syncer.skipped
-        except ConflictError as e:
-            summary["error"] = str(e)
+        except Exception as exc:
+            count = syncer.updated
+            reason = redact(str(exc), get_client_for_target(config, target)[1])
+            summary["error"] = reason
             failed += 1
-            res.warn(f"  ⚠ 競合検出: {e}")
-        except Exception as e:
-            summary["error"] = str(e)
-            failed += 1
-            label = target.title or f"each: {target.docs_dir}"
-            res.warn(f"  [{label}] エラー: {e}")
+            if isinstance(exc, ConflictError):
+                res.warn(f"  ⚠ 競合検出: {reason}")
+            else:
+                label = target.title or f"each: {target.docs_dir}"
+                res.warn(f"  [{label}] エラー: {reason}")
+        summary.update(updated=count, failed=syncer.failures, skipped=syncer.skipped)
+        updated += count
+        failed += syncer.failures
+        skipped += syncer.skipped
         if (project_root / RECOVERY).exists():
             break
 
@@ -460,7 +461,9 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
             source = target or (candidates[0] if len(candidates) == 1 else None)
             if source is None and len({get_client_for_target(config, t) for t in candidates}) > 1:
                 raise ValueError("複数の接続先があります。--target を指定してください")
-            client = _make_client_for_target(config, source) if source else ELabFTWClient(config.url, config.api_key, config.verify_ssl)
+            connection = (get_client_for_target(config, source or candidates[0]) if candidates else
+                          (config.url, config.api_key, config.verify_ssl))
+            client = ELabFTWClient(*connection)
             try:
                 data = client.get_experiment(eid) if entity == "experiments" else client.get_item(eid)
                 if export:
@@ -483,6 +486,7 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
                             else:
                                 target = choose_target(config, entity, data.get("title", ""))
                                 if target == "SKIP":
+                                    res.data["documents"].append({"entity_id": eid, "entity": entity, "result": "skipped"})
                                     skipped += 1
                                     continue
                 if target is None:
@@ -498,13 +502,16 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
                         config.targets.append(target)
                     res.say(f"  新規ターゲット{'予定' if dry_run else '追加'}: {folder}")
                 # Never reuse data fetched with another target's credentials.
-                if source is not None and get_client_for_target(config, source) != get_client_for_target(config, target):
-                    client = _make_client_for_target(config, target)
+                destination = get_client_for_target(config, target)
+                if connection != destination:
+                    connection = destination
+                    client = ELabFTWClient(*connection)
                     data = client.get_experiment(eid) if entity == "experiments" else client.get_item(eid)
                 jobs.append((client, target, eid, data))
             except Exception as exc:
-                res.data["documents"].append({"entity": entity, "entity_id": eid, "error": str(exc)})
-                res.warn(f"  #{eid} の取得に失敗: {exc}")
+                reason = redact(str(exc), connection[1])
+                res.data["documents"].append({"entity": entity, "server": connection[0], "entity_id": eid, "error": reason})
+                res.warn(f"  #{eid} の取得に失敗: {reason}")
                 failed += 1
     else:
         for target in targets:
@@ -517,8 +524,10 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
                 try:
                     jobs.append((client, target, eid, syncer._get_entity(eid)))
                 except Exception as exc:
-                    res.data["documents"].append({"entity": target.entity, "target": target.docs_dir, "entity_id": eid, "error": str(exc)})
-                    res.warn(f"  #{eid} の取得に失敗: {exc}")
+                    reason = redact(str(exc), get_client_for_target(config, target)[1])
+                    res.data["documents"].append({"entity": target.entity, "server": client.base_url,
+                                                  "target": target.docs_dir, "entity_id": eid, "error": reason})
+                    res.warn(f"  #{eid} の取得に失敗: {reason}")
                     failed += 1
     for client, target, eid, data in jobs:
         doc = {"target": target.docs_dir, "entity": target.entity, "entity_id": eid, "server": client.base_url}
@@ -530,8 +539,9 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
             pulled += result
             skipped += int(result == 0)
         except Exception as exc:
-            doc["error"] = str(exc)
-            res.warn(f"  #{eid} の取得に失敗: {exc}")
+            reason = redact(str(exc), get_client_for_target(config, target)[1])
+            doc["error"] = reason
+            res.warn(f"  #{eid} の取得に失敗: {reason}")
             failed += 1
             if (root / RECOVERY).exists():
                 break
@@ -825,9 +835,10 @@ def run_diff(args, echo=None) -> CommandResult:
                 data = syncer._get_entity(eid)
                 uploads = syncer.client.list_uploads(target.entity, eid)
             except Exception as e:
-                doc["error"] = str(e)
+                reason = redact(str(e), get_client_for_target(config, target)[1])
+                doc["error"] = reason
                 failed = True
-                res.warn(f"  eLabFTW #{eid} の取得に失敗: {e}\n")
+                res.warn(f"  eLabFTW #{eid} の取得に失敗: {reason}\n")
                 continue
             result = syncer.inspect(filename, eid, data, uploads)
             doc["state"] = result["state"]
@@ -984,9 +995,10 @@ def run_clone(args, echo=None) -> CommandResult:
                                   False, False, dry_run=True)
                 doc["result"] = "would_clone"
             except Exception as exc:
-                doc["error"] = str(exc)
+                reason = redact(str(exc), api_key)
+                doc["error"] = reason
                 failed = True
-                res.warn(f"  #{eid} の確認に失敗: {exc}")
+                res.warn(f"  #{eid} の確認に失敗: {reason}")
         res.exit_code = int(failed)
         return res
 
@@ -1020,8 +1032,9 @@ def run_clone(args, echo=None) -> CommandResult:
         try:
             data = get_fn(eid)
         except Exception as e:
-            doc["error"] = str(e)
-            res.warn(f"  {entity_label} #{eid} の取得に失敗: {e}")
+            reason = redact(str(e), api_key)
+            doc["error"] = reason
+            res.warn(f"  {entity_label} #{eid} の取得に失敗: {reason}")
             continue
 
         try:
@@ -1031,8 +1044,9 @@ def run_clone(args, echo=None) -> CommandResult:
             cloned += count
             doc["result"] = "cloned" if count else "skipped"
         except Exception as exc:
-            doc["error"] = str(exc)
-            res.warn(f"  #{eid} の取得に失敗: {exc}")
+            reason = redact(str(exc), api_key)
+            doc["error"] = reason
+            res.warn(f"  #{eid} の取得に失敗: {reason}")
             if (project_dir / RECOVERY).exists():
                 raise
 
@@ -2018,15 +2032,24 @@ def run_rm(args, echo=None) -> CommandResult:
             res.say("  注意: 解除する文書への相対リンクは、今後の push でリモート URL に変換されなくなります。"
                   "参照元のリンクを eLabFTW の文書 URL に変更してください。")
         needs_change = any(name in mapping or name not in excluded or (args.local and path.exists()) for name, path in selected.items())
-        documents = [{"path": str(path), "entity_id": mapping.get(name), "entity": syncer.entity}
+        documents = [{"path": str(path), "entity_id": mapping.get(name), "entity": syncer.entity,
+                      "tracking": "would_untrack" if args.dry_run else "unconfirmed"}
                      for name, path in sorted(selected.items())]
+        res.data["documents"].extend(documents)
         if not args.dry_run and needs_change:
             with local_transaction(config_path.parent, syncer.backup_paths(), "rm:追跡解除"):
                 syncer.untrack(set(selected), mapping)
+                for doc in documents:
+                    doc["tracking"] = "untracked"
                 if args.local:
-                    for path in selected.values():
-                        path.unlink(missing_ok=True)
-        res.data["documents"].extend(documents)
+                    for doc in documents:
+                        Path(doc["path"]).unlink(missing_ok=True)
+                        doc["file_absent"] = True
+        elif not args.dry_run:
+            for doc in documents:
+                doc["tracking"] = "untracked"
+                if args.local:
+                    doc["file_absent"] = True
         for name in sorted(selected):
             action = "追跡解除予定" if args.dry_run else "追跡解除しました"
             res.say(f"  {action}: {selected[name]}")
