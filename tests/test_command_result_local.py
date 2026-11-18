@@ -368,7 +368,7 @@ def test_pull_compares_existing_case_alias_by_identity(project, tmp_path):
 
 
 @pytest.mark.parametrize("dry_run", [True, False])
-@pytest.mark.parametrize("destination", ["docs", "docs/sub"])
+@pytest.mark.parametrize("destination", ["docs", "docs/sub", "docs/new.md"])
 def test_pull_rejects_attachment_named_after_new_document(project, tmp_path, dry_run, destination):
     cfg_path = tmp_path / ".elab-sync.yaml"
     cfg = yaml.safe_load(cfg_path.read_text())
@@ -398,3 +398,27 @@ def test_pull_rejects_two_uploads_for_single_image(project, tmp_path, dry_run):
     assert res.exit_code == 1 and not (tmp_path / "docs/picture.md").exists()
     assert not (tmp_path / "docs/images").exists()
     client.download_upload.assert_not_called()
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_batch_pull_prevents_overwrite_between_articles(project, tmp_path, dry_run):
+    path = tmp_path / ".elab-sync.yaml"
+    cfg = yaml.safe_load(path.read_text())
+    cfg["targets"][0]["attachments_dir"] = "assets"
+    path.write_text(yaml.safe_dump(cfg))
+    project.target, project.entity, project.id, project.dir = "docs", "items", [7, 8, 9], None
+    project.dry_run = dry_run
+    with patch.object(cli, "ELabFTWClient") as factory:
+        client = factory.return_value
+        client.get_item.side_effect = lambda eid: {"title": f"entry{eid}", "body": "body"}
+        client.list_uploads.side_effect = lambda entity, eid: (
+            [{"id": eid + 20, "real_name": "table.csv"}] if eid != 9 else [])
+        client.download_upload.side_effect = lambda **kwargs: str(kwargs["entity_id"]).encode()
+        res = cli.run_pull(project)
+    assert res.data["failed"] == 1 and res.data["pulled"] == 2
+    if dry_run:
+        assert not (tmp_path / "assets").exists()
+    else:
+        assert (tmp_path / "assets/table.csv").read_bytes() == b"7"
+        assert (tmp_path / "docs/entry9.md").is_file()
+        assert not (tmp_path / "docs/entry8.md").exists()

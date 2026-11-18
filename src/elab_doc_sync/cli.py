@@ -549,12 +549,13 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
                                                   "target": target.docs_dir, "entity_id": eid, "error": reason})
                     res.warn(f"  #{eid} の取得に失敗: {reason}")
                     failed += 1
+    outputs = _PullOutputs()
     for client, target, eid, data in jobs:
         doc = {"target": target.docs_dir, "entity": target.entity, "entity_id": eid, "server": client.base_url}
         res.data["documents"].append(doc)
         try:
             result = _pull_entity_to_target(client, config, config_path, target, root, eid, data, target.entity,
-                                            args.force, export, dry_run=dry_run, conflict_files=conflict_files)
+                                            args.force, export, dry_run=dry_run, conflict_files=conflict_files, outputs=outputs)
             doc["result"] = ("would_pull" if dry_run else "pulled") if result else "skipped"
             pulled += result
             skipped += int(result == 0)
@@ -671,14 +672,29 @@ def _matches_relative_glob(path, pattern):
     return match(0, 0)
 
 
+class _PullOutputs:
+    """一回の取得で文書・添付が必要とするファイル、ディレクトリ、追跡名。"""
+
+    def __init__(self):
+        self.files = {}
+        self.directories = set()
+        self.names = {}
+
+    def include(self, other):
+        self.files.update(other.files)
+        self.directories.update(other.directories)
+        self.names.update(other.names)
+
+
 def _pull_entity_to_target(client, config, config_path, target, project_root,
-                           eid, data, entity_type, force, pull_dir_override, dry_run=False, conflict_files=None):
+                           eid, data, entity_type, force, pull_dir_override, dry_run=False, conflict_files=None, outputs=None):
     docs_dir = project_root / (pull_dir_override or Path(target.docs_dir))
     is_temp_export = docs_dir.resolve() != (project_root / target.docs_dir).resolve()
     syncer = EachDocsSyncer(client, target, project_root)
     syncer.link_syncers = _link_syncers(config, project_root)
     mapping = syncer._load_mapping(migrate=False)
-    planned_names = {}
+    article = _PullOutputs()
+    outputs = outputs or _PullOutputs()
 
     def check_path(path, *, asset=False):
         connection = get_client_for_target(config, target)
@@ -689,7 +705,7 @@ def _pull_entity_to_target(client, config, config_path, target, project_root,
             relative = path.relative_to(owner.docs_dir.resolve())
             if _matches_relative_glob(relative, owner.target.pattern):
                 key = (owner.docs_dir.resolve(), owner.target.pattern, path.name)
-                previous = planned_names.setdefault(key, path)
+                previous = outputs.names.get(key, article.names.setdefault(key, path))
                 if previous != path:
                     raise ConflictError(f"{path} と {previous} の追跡名が重複しています")
                 for local in owner.docs_dir.glob(owner.target.pattern):
@@ -709,14 +725,17 @@ def _pull_entity_to_target(client, config, config_path, target, project_root,
                         path.relative_to(owner.docs_dir.resolve()), owner.target.pattern):
                     raise ConflictError(f"{path} は既存の追跡名 {name} と重複します")
 
-    return _pull_each_entity(client, syncer, target, project_root, docs_dir, mapping,
+    result = _pull_each_entity(client, syncer, target, project_root, docs_dir, mapping,
                              {v: k for k, v in mapping.items()}, eid, data, entity_type,
-                             force, is_temp_export, dry_run=dry_run, conflict_files=conflict_files, check_path=check_path)
+                             force, is_temp_export, dry_run=dry_run, conflict_files=conflict_files, check_path=check_path,
+                             outputs=outputs, article=article)
+    outputs.include(article)
+    return result
 
 
 def _pull_each_entity(client, syncer, target, project_root, docs_dir,
                       mapping, reverse_mapping, eid, data, entity_type,
-                      force, is_temp_export, dry_run=False, conflict_files=None, check_path=None):
+                      force, is_temp_export, dry_run=False, conflict_files=None, check_path=None, outputs=None, article=None):
     title = data.get("title") or f"untitled_{eid}"
     if any(c in title for c in '/\\\x00<>:"|?*') or title in (".", ".."):
         raise ValueError(f"ファイル名にできないタイトルです: {title!r}")
@@ -726,7 +745,8 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
     # Keep a tracked document's subdirectory when the remote title changes.
     parent = old_path.parent if old_path else docs_dir
     filepath = safe_path(parent, filename)
-    planned_assets = {}
+    outputs = outputs or _PullOutputs()
+    article = article or _PullOutputs()
 
     def validate_output(path, *, asset=False, upload_id=None):
         safe_path(project_root, path.relative_to(project_root).as_posix())
@@ -734,10 +754,13 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
             raise ConflictError(f"保存先の親がディレクトリではありません: {path}")
         if path.exists() and not path.is_file():
             raise ConflictError(f"保存先が通常ファイルではありません: {path}")
+        source = (client.base_url, entity_type, eid, asset, upload_id)
+        for plan in (outputs, article):
+            if plan.files.get(path, source) != source or path in plan.directories or any(p in plan.files for p in path.parents):
+                raise ConflictError(f"取得するファイルの保存先が重複しています: {path}")
+        article.files[path] = source
+        article.directories.update(path.parents)
         if asset:
-            if path in planned_assets and planned_assets[path] != upload_id:
-                raise ConflictError(f"異なる添付の保存先が重複しています: {path}")
-            planned_assets[path] = upload_id
             for document in (filepath, old_path):
                 if document and (path == document or
                                  (path.exists() and document.exists() and path.samefile(document))):
@@ -754,6 +777,13 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
         raise ConflictError(f"リネーム先 {filename} が既に存在するため変更をスキップします")
     uploads = client.list_uploads(entity_type, eid)
     body_md = _remote_markdown(data, target)
+    if target.attachments_dir:
+        for upload in uploads:
+            name = upload.get("real_name")
+            if name and not _is_image(name) and Path(name).name not in ("", ".", ".."):
+                validate_output(safe_path(project_root / target.attachments_dir, Path(name).name), asset=True, upload_id=upload.get("id"))
+    _download_images(body_md, entity_type, eid, client, parent, uploads=uploads,
+                     check_path=validate_output, preview=True)
     merge = False
     if old_name and old_path.is_file():
         status = syncer.inspect(old_name, eid, data, uploads)
@@ -776,13 +806,6 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
                 return 0
     elif filepath.exists() and not force:
         raise ConflictError(f"{filename}: 既にローカルに存在、基準情報なし。--force の前に差分を確認してください")
-    if target.attachments_dir:
-        for upload in uploads:
-            name = upload.get("real_name")
-            if name and not _is_image(name) and Path(name).name not in ("", ".", ".."):
-                validate_output(safe_path(project_root / target.attachments_dir, Path(name).name), asset=True, upload_id=upload.get("id"))
-    _download_images(body_md, entity_type, eid, client, parent, uploads=uploads,
-                     check_path=validate_output, preview=True)
     if dry_run:
         action = "ローカル編集とマージ予定" if merge else "取得予定"
         progress(f"  [{title}] #{eid} → {filepath}（{action}）")
@@ -1082,6 +1105,7 @@ def run_clone(args, echo=None) -> CommandResult:
     client = ELabFTWClient(url, api_key, verify_ssl=not args.no_verify)
     get_fn = client.get_experiment if entity == "experiments" else client.get_item
 
+    outputs = _PullOutputs()
     if getattr(args, "dry_run", False):
         preview_target = TargetConfig(title="", docs_dir=docs_dir, id_file=".elab-sync-ids/default.id",
                                       entity=entity, attachments_dir="attachments")
@@ -1092,9 +1116,11 @@ def run_clone(args, echo=None) -> CommandResult:
             res.data["documents"].append(doc)
             try:
                 data = get_fn(eid)
+                article = _PullOutputs()
                 _pull_each_entity(client, preview_syncer, preview_target, project_dir.resolve(),
                                   (project_dir / docs_dir).resolve(), {}, {}, eid, data, entity,
-                                  False, False, dry_run=True)
+                                  False, False, dry_run=True, outputs=outputs, article=article)
+                outputs.include(article)
                 doc["result"] = "would_clone"
             except Exception as exc:
                 reason = error_text(exc, api_key)
@@ -1140,9 +1166,11 @@ def run_clone(args, echo=None) -> CommandResult:
             continue
 
         try:
+            article = _PullOutputs()
             count = _pull_each_entity(client, syncer, target, project_dir.resolve(), docs_path.resolve(),
                                         mapping, {v: k for k, v in mapping.items()}, eid, data, entity,
-                                        False, False)
+                                        False, False, outputs=outputs, article=article)
+            outputs.include(article)
             cloned += count
             doc["result"] = "cloned" if count else "skipped"
         except Exception as exc:
