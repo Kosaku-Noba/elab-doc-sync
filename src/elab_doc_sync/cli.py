@@ -8,6 +8,9 @@ import json
 import shutil
 import sys
 from dataclasses import asdict, replace
+from fnmatch import fnmatch
+from functools import lru_cache
+from unicodedata import normalize
 from pathlib import Path
 
 import yaml
@@ -653,6 +656,21 @@ def _create_target_from_remote(config, config_path, project_root, entity_type,
     return new_config.targets[-1]
 
 
+def _matches_relative_glob(path, pattern):
+    """まだ存在しないファイルも Path.glob と同じ階層単位で照合する。"""
+    names, parts = path.parts, Path(pattern).parts
+
+    @lru_cache(None)
+    def match(i, j):
+        if j == len(parts):
+            return i == len(names)
+        if parts[j] == "**":
+            return match(i, j + 1) or (i < len(names) and match(i + 1, j))
+        return i < len(names) and fnmatch(names[i], parts[j]) and match(i + 1, j + 1)
+
+    return match(0, 0)
+
+
 def _pull_entity_to_target(client, config, config_path, target, project_root,
                            eid, data, entity_type, force, pull_dir_override, dry_run=False, conflict_files=None):
     docs_dir = project_root / (pull_dir_override or Path(target.docs_dir))
@@ -666,10 +684,19 @@ def _pull_entity_to_target(client, config, config_path, target, project_root,
         for owner in syncer.link_syncers:
             if not path.is_relative_to(owner.docs_dir.resolve()):
                 continue
-            owner_mapping = owner._load_mapping(migrate=False)
-            if path.name in owner_mapping and (asset or owner_mapping[path.name] != eid):
-                if owner.file_path(path.name).resolve() == path.resolve():
-                    raise ConflictError(f"{path} は追跡済みの別文書です")
+            for name, tracked_id in owner._load_mapping(migrate=False).items():
+                if normalize("NFC", name).casefold() != normalize("NFC", path.name).casefold():
+                    continue
+                # docs/note.md と docs/sub/note.md を別々に追跡できるパターンもある。
+                tracked = owner.file_path(name)
+                same_path = tracked.resolve() == path.resolve() or (
+                    tracked.exists() and path.exists() and tracked.samefile(path))
+                if same_path:
+                    if asset or tracked_id != eid:
+                        raise ConflictError(f"{path} は追跡済みの別文書です")
+                elif name == path.name and _matches_relative_glob(
+                        path.relative_to(owner.docs_dir.resolve()), owner.target.pattern):
+                    raise ConflictError(f"{path} は既存の追跡名 {name} と重複します")
 
     return _pull_each_entity(client, syncer, target, project_root, docs_dir, mapping,
                              {v: k for k, v in mapping.items()}, eid, data, entity_type,
@@ -702,6 +729,7 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
             name = upload.get("real_name")
             if name and not _is_image(name) and Path(name).name not in ("", ".", ".."):
                 check_path(safe_path(project_root / target.attachments_dir, Path(name).name), asset=True)
+    body_md = _remote_markdown(data, target)
     merge = False
     if old_name and old_path.is_file():
         status = syncer.inspect(old_name, eid, data, uploads)
@@ -716,9 +744,6 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
             # Both sides changed: merge the remote body into the local edits.
             merge = state == "競合" and not is_temp_export
             metadata_pending = merge and syncer._has_meta_changed(old_name, Path(old_name).stem, target.category, target.tags)
-            if merge and dry_run:
-                progress(f"  [{title}] #{eid} → {filepath}（ローカル編集とマージ予定）")
-                return 1
             if state == "送信待ち":
                 progress(f"  [{title}] ローカル編集を保持（送信待ち）")
                 return 0
@@ -727,15 +752,18 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
                 return 0
     elif filepath.exists() and not force:
         raise ConflictError(f"{filename}: 既にローカルに存在、基準情報なし。--force の前に差分を確認してください")
+    if check_path:
+        _download_images(body_md, entity_type, eid, client, parent, uploads=uploads,
+                         check_path=check_path, preview=True)
     if dry_run:
-        progress(f"  [{title}] #{eid} → {filepath}（取得予定）")
+        action = "ローカル編集とマージ予定" if merge else "取得予定"
+        progress(f"  [{title}] #{eid} → {filepath}（{action}）")
         return 1
     paths = [docs_dir] if is_temp_export else syncer.backup_paths()
     if target.attachments_dir:
         paths.append(project_root / target.attachments_dir)
     with local_transaction(project_root, paths, f"pull:{entity_type}/{eid}"):
         docs_dir.mkdir(parents=True, exist_ok=True)
-        body_md = _remote_markdown(data, target)
         body_md = _download_images(body_md, entity_type, eid, client, parent, strict=True, keep_existing=merge,
                                    uploads=uploads if check_path else None, check_path=check_path)
         new_mapping = dict(mapping)

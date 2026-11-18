@@ -308,3 +308,51 @@ def test_child_target_can_update_its_own_document(project, tmp_path):
         res = cli.run_pull(project)
     assert res.exit_code == 0 and "updated child" in dest.read_text()
     assert (tmp_path / "docs/note.md").read_text() == "# note"
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_image_directory_conflict_before_transaction(project, tmp_path, dry_run):
+    cfg_path = tmp_path / ".elab-sync.yaml"
+    cfg = yaml.safe_load(cfg_path.read_text())
+    cfg["targets"].append({"docs_dir": "docs/images", "entity": "experiments"})
+    cfg_path.write_text(yaml.safe_dump(cfg))
+    project.target, project.entity, project.id, project.dir = "docs", "items", [3, 4], None
+    project.force, project.dry_run = True, dry_run
+    with patch.object(cli, "ELabFTWClient") as factory:
+        client = factory.return_value
+        client.base_url = "https://example.invalid"
+        client.get_item.side_effect = [{"title": "bad", "body": '<img src="/uploads/99">'},
+                                      {"title": "good", "body": "body"}]
+        client.list_uploads.return_value = [{"id": 99, "real_name": "abc.png"}]
+        res = cli.run_pull(project)
+    assert res.data["failed"] == res.data["pulled"] == 1
+    assert not (tmp_path / "docs/images").exists() and not (tmp_path / ".elab-sync-recovery.json").exists()
+    assert (tmp_path / "docs/good.md").exists() != dry_run
+
+
+def test_pull_rejects_new_duplicate_for_recursive_parent(project, tmp_path):
+    path = tmp_path / ".elab-sync.yaml"
+    cfg = yaml.safe_load(path.read_text())
+    cfg["targets"][0]["pattern"] = "**/*.md"
+    cfg["targets"].append({"docs_dir": "docs/sub", "id_file": ".child/id"})
+    path.write_text(yaml.safe_dump(cfg))
+    project.target, project.entity, project.id, project.dir = "docs/sub", "items", [7], None
+    project.dry_run = False
+    with patch.object(cli, "ELabFTWClient") as factory:
+        factory.return_value.get_item.return_value = {"title": "note", "body": "child"}
+        res = cli.run_pull(project)
+    assert res.exit_code == 1 and not (tmp_path / "docs/sub/note.md").exists()
+    assert (tmp_path / "docs/note.md").read_text() == "# note"
+
+
+def test_pull_compares_existing_case_alias_by_identity(project, tmp_path):
+    tracked = tmp_path / "docs/note.md"
+    alias = tracked.with_name("NOTE.md")
+    if not alias.exists():
+        alias.hardlink_to(tracked)
+    project.target, project.entity, project.id, project.dir = "docs", "items", [11], None
+    project.force, project.dry_run = True, False
+    with patch.object(cli, "ELabFTWClient") as factory:
+        factory.return_value.get_item.return_value = {"title": "NOTE", "body": "wrong"}
+        res = cli.run_pull(project)
+    assert res.exit_code == 1 and alias.read_text() == tracked.read_text() == "# note"

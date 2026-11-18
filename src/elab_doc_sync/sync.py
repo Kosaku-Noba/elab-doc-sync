@@ -148,7 +148,7 @@ def _parse_image_local_name(filename: str) -> str | None:
 
 
 def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, strict: bool = False,
-                     keep_existing: bool = False, uploads=None, check_path=None) -> str:
+                     keep_existing: bool = False, uploads=None, check_path=None, preview=False) -> str:
     """Markdown 内の eLabFTW 画像 URL をローカルにダウンロードし相対パスに書き換える。
 
     keep_existing=True では既存の画像ファイルを上書きしない（マージ時にローカルの編集を守る）。
@@ -190,16 +190,19 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
             # list_uploads にない画像: 絶対 URL に変換して保持
             if "app/download.php" in src and not src.startswith(("http://", "https://")):
                 abs_url = f"{client.base_url}/{src.lstrip('/')}"
-                progress(f"    画像を絶対 URL に変換: {Path(src).name[:40]}")
+                if not preview:
+                    progress(f"    画像を絶対 URL に変換: {Path(src).name[:40]}")
                 return f"![{alt}]({abs_url})"
             return m.group(0)
         real_name = matched_upload.get("real_name", f"upload_{matched_upload['id']}")
         local_name = _image_local_name(entity, entity_id, real_name)
         img_dir = docs_dir / "images"
-        img_dir.mkdir(parents=True, exist_ok=True)
-        dest = safe_path(img_dir, local_name)
+        dest = safe_path(docs_dir, f"images/{local_name}")
         if check_path:
             check_path(dest, asset=True)
+        if preview:
+            return m.group(0)
+        img_dir.mkdir(parents=True, exist_ok=True)
         if not dest.exists() or (strict and not keep_existing):
             data = client.download_upload(
                 entity_type=entity,
