@@ -3,7 +3,11 @@
 CLI tool — not intended for use as a library.
 """
 
+from contextlib import contextmanager, nullcontext
+from fnmatch import fnmatch
 import hashlib
+import ipaddress
+import idna
 import json
 import os as _os
 import re
@@ -14,10 +18,11 @@ import markdown
 from markdownify import markdownify as html_to_md
 import html as _html
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
+from .result import progress, error_text
 from .safety import atomic_write, write_json, safe_path, snapshot, local_transaction
-from .client import ELabFTWClient
+from .client import ELabFTWClient, UploadConfirmationError, upload_sha256
 from .config import TargetConfig
 from . import sync_log
 from .merge import has_conflict_markers
@@ -157,7 +162,7 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
     except Exception as e:
         if strict:
             raise
-        print(f"    ⚠ 添付ファイル一覧の取得に失敗（{entity} #{entity_id}、画像のローカル化をスキップ）: {e}")
+        progress(f"    ⚠ 添付ファイル一覧の取得に失敗（{entity} #{entity_id}、画像のローカル化をスキップ）: {_error_text(client, e)}", warning=True)
         return body
     upload_map = {}
     id_map = {}
@@ -188,7 +193,7 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
             # list_uploads にない画像: 絶対 URL に変換して保持
             if "app/download.php" in src and not src.startswith(("http://", "https://")):
                 abs_url = f"{client.base_url}/{src.lstrip('/')}"
-                print(f"    画像を絶対 URL に変換: {Path(src).name[:40]}")
+                progress(f"    画像を絶対 URL に変換: {Path(src).name[:40]}")
                 return f"![{alt}]({abs_url})"
             return m.group(0)
         real_name = matched_upload.get("real_name", f"upload_{matched_upload['id']}")
@@ -203,7 +208,7 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
                 upload_id=matched_upload["id"],
             )
             atomic_write(dest, data)
-            print(f"    画像をダウンロード: {real_name}")
+            progress(f"    画像をダウンロード: {real_name}")
         return f"![{alt}](images/{local_name})"
 
     return IMAGE_RE.sub(replace_match, body)
@@ -250,7 +255,7 @@ def _normalize_remote_image_urls(body: str, entity: str, entity_id: int, client:
         if uploads is None:
             uploads = client.list_uploads(entity, entity_id)
     except Exception as e:
-        print(f"    ⚠ 添付ファイル一覧の取得に失敗（{entity} #{entity_id}、画像 URL の正規化をスキップ）: {e}")
+        progress(f"    ⚠ 添付ファイル一覧の取得に失敗（{entity} #{entity_id}、画像 URL の正規化をスキップ）: {_error_text(client, e)}", warning=True)
         return body
     upload_map = {}
     id_map = {}
@@ -312,21 +317,96 @@ def _resolve_asset_path(docs_dir: Path, project_root: Path, source: str, strict=
     raise FileNotFoundError(source)
 
 
+@contextmanager
+def _staged_asset(root, source, name=None):
+    """検証したファイルを専用一時ディレクトリにコピーし、同じ内容を照合・送信する。"""
+    source = Path(source)
+    checked = _resolve_asset_path(root, root, str(source), strict=True)
+    with tempfile.TemporaryDirectory() as directory:
+        staged = Path(directory) / (name or source.name)
+        with source.open("rb") as reader:
+            current = _resolve_asset_path(root, root, str(source), strict=True)
+            if current != checked or not _os.path.samestat(_os.fstat(reader.fileno()), current.stat()):
+                raise ConflictError(f"読込中に添付の保存先が変わりました: {source}")
+            with staged.open("xb") as writer:
+                shutil.copyfileobj(reader, writer)
+        yield staged
+
+
+def _remember_asset(verified, src, digest):
+    if verified is not None and verified.setdefault(src, digest) != digest:
+        raise ConflictError(f"送信中に同じ添付の内容が変わりました: {src}")
+
+
+def _directory_assets(directory, pattern):
+    return [f for f in sorted(directory.iterdir())
+            if f.is_file() and not _is_image(f.name) and fnmatch(f.name, pattern)]
+
+
+def _upload_body_file(client, entity, eid, path, uploaded, root, name=None, record=None):
+    """送信に使ったファイルと受領 ID を本文の更新前に記録する。"""
+    with _staged_asset(root, path, name) as staged:
+        expected = (staged.name, staged.stat().st_size, _compute_file_hash(staged))
+        try:
+            result = client.upload_file(entity, eid, str(staged))
+        except UploadConfirmationError as exc:
+            if exc.receipt and record:
+                record(exc.receipt)
+            raise
+        receipt = result.get("receipt")
+        if receipt is None and result.get("id") is not None:
+            receipt = dict(id=result["id"], name=expected[0], size=expected[1], sha256=expected[2])
+        if receipt and record:
+            record(receipt)
+            if not result.get("url"):
+                raise ConflictError(f"受領した添付 ID #{receipt['id']} が一覧に現れていません。一覧への反映後に同じ文書を push してください")
+    if uploaded is not None and result.get("url"):
+        receipt = result.get("receipt")
+        if receipt:
+            expected = (receipt["name"], receipt["size"], receipt["sha256"])
+        uid = result.get("id")
+        if uid is None:
+            raise ConflictError("送信した本文用添付の ID を特定できません")
+        if uid in uploaded and uploaded[uid] != expected:
+            raise ConflictError("同じ添付 ID に異なる内容が返されました")
+        uploaded[uid] = expected
+    return result
+
+
+def _matching_upload(entries, name, size, digest, client, entity, eid, strict, preferred):
+    # 受領済みの版を優先し、同サイズの旧版が先頭でも残りの候補を調べる。
+    expected = {uid for uid, r in preferred.items() if r["name"] == name and r["sha256"] == digest} if isinstance(preferred, dict) else set()
+    for entry in sorted(entries, key=lambda e: e["id"] not in preferred):
+        if expected and entry["id"] not in expected:
+            continue
+        if entry["size"] != size or (not strict and not size):
+            continue
+        remote_hash = entry.get("hash")
+        if strict and not remote_hash:
+            if entry["id"] is None:
+                continue
+            remote_hash = client.upload_digest(entity_type=entity, entity_id=eid, upload_id=entry["id"])
+        if not remote_hash or remote_hash == digest:
+            return entry
+    if expected:
+        raise ConflictError(f"受領した添付 ID {sorted(expected)} の URL・内容を確認できません。一覧を確認して通常の push を再実行してください")
+    return None
+
+
 def _cache_uploaded(existing: dict[str, list[dict]], real_name: str, url: str,
                     size: int, upload_id, file_hash: str | None = None) -> None:
     """アップロード成功結果を Upload_Cache に登録し、以降の同一 real_name 参照で再利用させる。
 
     同一実行内で同じ real_name を複数回参照しても再アップロードせず、ここで登録した
     URL を再利用できるようにする。``fresh=True`` は本実行で新規アップロードした分を示し、
-    stale 削除対象から除外するためのマーカーとなる。``file_hash`` は画像のみ利用し、
-    動画・ファイルリンクでは ``None`` を渡す。
+    stale 削除対象から除外するためのマーカーとなる。``file_hash`` は照合済みの送信内容を表す。
     """
     existing.setdefault(real_name, []).append(
         {"url": url, "size": size, "id": upload_id, "hash": file_hash, "fresh": True}
     )
 
 
-def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None) -> str:
+def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None, uploaded=None, verified=None, record=None, preferred=()) -> str:
     """Markdown 内のローカル画像を eLabFTW にアップロードし URL に書き換える。
 
     upload_file はファイルパスの basename を real_name としてリモートに保存する。
@@ -339,21 +419,20 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
             rn = u.get("real_name")
             ln = u.get("long_name")
             st = u.get("storage")
-            if rn and ln and st:
+            if rn and ln and st is not None and st != "":
                 existing.setdefault(rn, []).append({
                     "url": f"{client.base_url}/app/download.php?f={ln}&name={rn}&storage={st}",
                     "size": int(u.get("filesize", 0) or 0),
                     "id": u.get("id"),
-                    "hash": u.get("hash") or u.get("sha256") or None,
+                    "hash": upload_sha256(u) if strict else u.get("hash") or u.get("sha256"),
                 })
-        # id 昇順でソートし、最小 id の添付を正本として安定させる
+        # 照合済み ID の優先度が同じ候補間は ID 昇順で選ぶ
         for entries in existing.values():
             entries.sort(key=lambda e: e.get("id") or 0)
     except Exception:
         if strict:
             raise
 
-    tmp_dirs: list[str] = []
     stale_ids: list[int] = []
 
     def replace_match(m):
@@ -367,70 +446,52 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
         if not img_path.exists():
             if strict:
                 raise FileNotFoundError(f"画像が見つかりません: {src}")
-            print(f"    ⚠ 画像が見つかりません: {src}")
+            progress(f"    ⚠ 画像が見つかりません: {src}", warning=True)
             return m.group(0)
         real_name = _parse_image_local_name(img_path.name) or img_path.name
         entries = existing.get(real_name, [])
         local_size = img_path.stat().st_size
         local_hash = _compute_file_hash(img_path)
-        # サイズ一致 → ハッシュでも確認（同名・同サイズ・別内容を検出）
-        reuse = None
-        for e in entries:
-            if e["size"] and e["size"] == local_size:
-                # リモートのハッシュフィールドがあれば使う、なければサイズ一致で再利用
-                remote_hash = e.get("hash")
-                if strict and not remote_hash and e.get("id") is not None:
-                    remote_hash = hashlib.sha256(client.download_upload(entity_type=entity, entity_id=entity_id, upload_id=e["id"])).hexdigest()
-                if remote_hash and remote_hash != local_hash:
-                    continue
-                reuse = e
-                break
+        reuse = _matching_upload(entries, real_name, local_size, local_hash, client, entity, entity_id, strict, preferred)
         if reuse:
+            _remember_asset(verified, src, local_hash)
             # サイズ（+ハッシュ）一致の1件を再利用し、残りの重複は削除予約
             for e in entries:
                 if e is not reuse and e.get("id") is not None:
                     stale_ids.append(e["id"])
-            print(f"    ✓ {real_name}（既存アップロードを再利用）")
+            progress(f"    ✓ {real_name}（既存アップロードを再利用）")
             return f"![{alt}]({reuse['url']})"
         # サイズ不一致 → 新規アップロードを試み、成功時のみ旧添付を削除予約
-        if real_name != img_path.name:
-            td = tempfile.mkdtemp()
-            tmp_dirs.append(td)
-            tmp_file = Path(td) / real_name
-            shutil.copy2(img_path, tmp_file)
-            upload_path = str(tmp_file)
-        else:
-            upload_path = str(img_path)
-        print(f"    画像をアップロード中: {real_name}")
-        result = client.upload_file(entity, entity_id, upload_path)
+        progress(f"    画像をアップロード中: {real_name}")
+        result = _upload_body_file(client, entity, entity_id, img_path, uploaded, project_root, real_name, record)
         if result.get("url"):
+            if verified is not None:
+                _remember_asset(verified, src, uploaded[result["id"]][2])
             for e in entries:
                 if e is not reuse and e.get("id") is not None and not e.get("fresh"):
                     stale_ids.append(e["id"])
-            _cache_uploaded(existing, real_name, result["url"],
-                            local_size, result.get("id"), local_hash)
-            print(f"    ✓ {real_name}")
+            if uploaded is not None:
+                _, local_size, local_hash = uploaded[result["id"]]
+            _cache_uploaded(existing, real_name, result["url"], local_size, result.get("id"), local_hash)
+            progress(f"    ✓ {real_name}")
             return f"![{alt}]({result['url']})"
         if strict:
             raise RuntimeError(f"アップロード失敗: {real_name}")
-        print(f"    ✗ アップロード失敗: {real_name}")
+        progress(f"    ✗ アップロード失敗: {real_name}", warning=True)
         return m.group(0)
 
-    try:
-        result = IMAGE_RE.sub(replace_match, body)
-        # アップロード成功後に古い添付を削除（失敗しても本文は壊さない）
-        # strict では削除せず、呼び出し元が同期成功後に削除できるよう返す
-        if strict and stale_out is not None:
-            stale_out.extend(stale_ids)
-        for uid in ([] if strict else stale_ids):
-            try:
-                client.delete_upload(entity, entity_id, uid)
-            except Exception:
-                pass
-        return result
-    finally:
-        for td in tmp_dirs:
-            shutil.rmtree(td, ignore_errors=True)
+    result = IMAGE_RE.sub(replace_match, body)
+    # アップロード成功後に古い添付を削除（失敗しても本文は壊さない）
+    # strict では削除せず、呼び出し元が同期成功後に削除できるよう返す
+    if strict and stale_out is not None:
+        stale_out.extend(stale_ids)
+    for uid in ([] if strict else stale_ids):
+        try:
+            client.delete_upload(entity, entity_id, uid)
+        except Exception:
+            pass
+    return result
+
 
 
 # ── ローカルファイルリンク ↔ eLabFTW URL 変換 ───────────────
@@ -660,7 +721,7 @@ def _is_video(filename: str) -> bool:
     return Path(filename).suffix.lower() in VIDEO_EXTENSIONS
 
 
-def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None) -> str:
+def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None, uploaded=None, verified=None, record=None, preferred=()) -> str:
     """Markdown 内の動画リンクを eLabFTW にアップロードし <video> タグに書き換える。
 
     対象:
@@ -675,11 +736,12 @@ def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClien
             rn = u.get("real_name")
             ln = u.get("long_name")
             st = u.get("storage")
-            if rn and ln and st:
+            if rn and ln and st is not None and st != "":
                 existing.setdefault(rn, []).append({
                     "url": f"{client.base_url}/app/download.php?f={ln}&name={rn}&storage={st}",
                     "size": int(u.get("filesize", 0) or 0),
                     "id": u.get("id"),
+                    "hash": upload_sha256(u) if strict else None,
                 })
         for entries in existing.values():
             entries.sort(key=lambda e: e.get("id") or 0)
@@ -699,37 +761,38 @@ def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClien
         if not video_path.exists():
             if strict:
                 raise FileNotFoundError(f"動画が見つかりません: {src}")
-            print(f"    ⚠ 動画が見つかりません: {src}")
+            progress(f"    ⚠ 動画が見つかりません: {src}", warning=True)
             return full_match
 
         real_name = video_path.name
         entries = existing.get(real_name, [])
         local_size = video_path.stat().st_size
 
-        reuse = next((e for e in entries if e["size"] and e["size"] == local_size), None)
-        if reuse and strict:
-            actual = client.download_upload(entity_type=entity, entity_id=entity_id, upload_id=reuse["id"])
-            if hashlib.sha256(actual).hexdigest() != _compute_file_hash(video_path):
-                reuse = None
+        local_hash = _compute_file_hash(video_path) if strict else None
+        reuse = _matching_upload(entries, real_name, local_size, local_hash, client, entity, entity_id, strict, preferred)
         if reuse:
+            _remember_asset(verified, src, local_hash)
             for e in entries:
                 if e is not reuse and e.get("id") is not None:
                     stale_ids.append(e["id"])
-            print(f"    ✓ {real_name}（既存アップロードを再利用）")
+            progress(f"    ✓ {real_name}（既存アップロードを再利用）")
             return f'<video src="{reuse["url"]}" controls>{alt}</video>'
 
-        print(f"    動画をアップロード中: {real_name}")
-        result = client.upload_file(entity, entity_id, str(video_path))
+        progress(f"    動画をアップロード中: {real_name}")
+        result = _upload_body_file(client, entity, entity_id, video_path, uploaded, project_root, record=record)
         if result.get("url"):
+            if verified is not None:
+                _remember_asset(verified, src, uploaded[result["id"]][2])
             for e in entries:
                 if e is not reuse and e.get("id") is not None and not e.get("fresh"):
                     stale_ids.append(e["id"])
-            _cache_uploaded(existing, real_name, result["url"], local_size, result.get("id"))
-            print(f"    ✓ {real_name}")
+            sent = uploaded[result["id"]] if uploaded is not None else (real_name, local_size, None)
+            _cache_uploaded(existing, real_name, result["url"], sent[1], result.get("id"), sent[2])
+            progress(f"    ✓ {real_name}")
             return f'<video src="{result["url"]}" controls>{alt}</video>'
         if strict:
             raise RuntimeError(f"アップロード失敗: {real_name}")
-        print(f"    ✗ アップロード失敗: {real_name}")
+        progress(f"    ✗ アップロード失敗: {real_name}", warning=True)
         return full_match
 
     # IMAGE_RE と _LINK_RE の両方から動画を検出。重複排除して後ろから置換。
@@ -778,7 +841,7 @@ def _count_local_videos(body: str) -> int:
     return count
 
 
-def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None) -> str:
+def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, project_root: Path, strict: bool = False, stale_out: list | None = None, uploaded=None, verified=None, record=None, preferred=()) -> str:
     """Markdown 内の非画像・非動画ファイルリンクを eLabFTW にアップロードし URL に書き換える。
 
     対象:
@@ -795,11 +858,12 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
             rn = u.get("real_name")
             ln = u.get("long_name")
             st = u.get("storage")
-            if rn and ln and st:
+            if rn and ln and st is not None and st != "":
                 existing.setdefault(rn, []).append({
                     "url": f"{client.base_url}/app/download.php?f={ln}&name={rn}&storage={st}",
                     "size": int(u.get("filesize", 0) or 0),
                     "id": u.get("id"),
+                    "hash": upload_sha256(u) if strict else None,
                 })
         for entries in existing.values():
             entries.sort(key=lambda e: e.get("id") or 0)
@@ -822,37 +886,38 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
         if not file_path.exists():
             if strict:
                 raise FileNotFoundError(f"ファイルが見つかりません: {src}")
-            print(f"    ⚠ ファイルが見つかりません: {src}")
+            progress(f"    ⚠ ファイルが見つかりません: {src}", warning=True)
             return full_match
 
         real_name = file_path.name
         entries = existing.get(real_name, [])
         local_size = file_path.stat().st_size
 
-        reuse = next((e for e in entries if e["size"] and e["size"] == local_size), None)
-        if reuse and strict:
-            actual = client.download_upload(entity_type=entity, entity_id=entity_id, upload_id=reuse["id"])
-            if hashlib.sha256(actual).hexdigest() != _compute_file_hash(file_path):
-                reuse = None
+        local_hash = _compute_file_hash(file_path) if strict else None
+        reuse = _matching_upload(entries, real_name, local_size, local_hash, client, entity, entity_id, strict, preferred)
         if reuse:
+            _remember_asset(verified, src, local_hash)
             for e in entries:
                 if e is not reuse and e.get("id") is not None:
                     stale_ids.append(e["id"])
-            print(f"    ✓ {real_name}（既存アップロードを再利用）")
+            progress(f"    ✓ {real_name}（既存アップロードを再利用）")
             return f'[{alt}]({reuse["url"]})'
 
-        print(f"    ファイルをアップロード中: {real_name}")
-        result = client.upload_file(entity, entity_id, str(file_path))
+        progress(f"    ファイルをアップロード中: {real_name}")
+        result = _upload_body_file(client, entity, entity_id, file_path, uploaded, project_root, record=record)
         if result.get("url"):
+            if verified is not None:
+                _remember_asset(verified, src, uploaded[result["id"]][2])
             for e in entries:
                 if e is not reuse and e.get("id") is not None and not e.get("fresh"):
                     stale_ids.append(e["id"])
-            _cache_uploaded(existing, real_name, result["url"], local_size, result.get("id"))
-            print(f"    ✓ {real_name}")
+            sent = uploaded[result["id"]] if uploaded is not None else (real_name, local_size, None)
+            _cache_uploaded(existing, real_name, result["url"], sent[1], result.get("id"), sent[2])
+            progress(f"    ✓ {real_name}")
             return f'[{alt}]({result["url"]})'
         if strict:
             raise RuntimeError(f"アップロード失敗: {real_name}")
-        print(f"    ✗ アップロード失敗: {real_name}")
+        progress(f"    ✗ アップロード失敗: {real_name}", warning=True)
         return full_match
 
     # IMAGE_RE と _LINK_RE の両方から非画像・非動画ファイルを検出
@@ -909,7 +974,59 @@ def _count_local_attachments(attachments_dir: Path | None) -> int:
     return sum(1 for f in attachments_dir.iterdir() if f.is_file() and not _is_image(f.name))
 
 
-def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int, client: ELabFTWClient, *, force: bool = False, pattern: str = "*", prune: bool = False, strict: bool = False) -> bool:
+def _referenced_upload_ids(uploads, body, base_url):
+    def origin(url, default_scheme):
+        parsed = urlsplit(url)
+        scheme = parsed.scheme.lower() or default_scheme
+        host = unquote(parsed.hostname or "").rstrip(".")
+        if ":" in host:
+            host = str(ipaddress.IPv6Address(host))
+        elif host:
+            # WHATWG のドメイン区切りと既定ポートに合わせる。ASCII の "_" はブラウザーでも有効。
+            host = idna.uts46_remap(host, std3_rules=False).rstrip(".").lower()
+            if not host.isascii():
+                host = idna.encode(host, uts46=True).decode("ascii").lower()
+        port = parsed.port if parsed.port is not None else {"http": 80, "https": 443}.get(scheme)
+        return scheme, host, port
+
+    server = origin(str(base_url), "https")
+
+    def retain_local_url(match):
+        return match.group() if origin(match.group(), server[0]) == server else ""
+
+    # %20 などの復号前に URL 全体を切り出し、別サーバーのパスを除外する。
+    text = re.sub(r"""(?:https?:)?//[^\s<>"')]+""", retain_local_url, _html.unescape(body).replace("\\", "/"), flags=re.I)
+    decoded = unquote(text)
+    ids = set(re.findall(r"/uploads/(\d+)(?!\d)", decoded))
+    return {u["id"] for u in uploads if u.get("id") is not None
+            and (str(u["id"]) in ids or (u.get("long_name") and u["long_name"] in decoded))}
+
+
+def _prune_candidates(uploads, local_names, pattern, body, base_url):
+    from fnmatch import fnmatch
+    referenced_names = set(local_names)
+    for regex in (IMAGE_RE, _LINK_RE):
+        for match in regex.finditer(body):
+            src = match.group(2)
+            if src.startswith(("http://", "https://", "//", "#", "mailto:", "data:")):
+                continue
+            name = Path(src).name
+            if regex is IMAGE_RE and not _is_video(src):
+                name = _parse_image_local_name(name) or name
+            elif regex is _LINK_RE and (_is_image(src) or src.split("#", 1)[0].endswith(".md")):
+                continue
+            referenced_names.add(name)
+    candidates = [u for u in uploads if u.get("id") is not None and u.get("real_name")
+            and u["real_name"] not in referenced_names and not _is_image(u["real_name"])
+            and fnmatch(u["real_name"], pattern)]
+    if not candidates:
+        return []
+    referenced_ids = _referenced_upload_ids(candidates, body, base_url)
+    return [u for u in candidates if u["id"] not in referenced_ids]
+
+
+def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int, client: ELabFTWClient, *, force: bool = False, pattern: str = "*", prune: bool = False, strict: bool = False,
+                      prune_ids=None, body="", deferred_prune=None, on_upload=None, verified=None, save_receipt=None, project_root=None) -> bool:
     """attachments_dir 内の非画像ファイルをリモートにアップロードする。
 
     差分検知: サイズ一致 → リモートに hash/sha256 フィールドがあれば
@@ -920,15 +1037,17 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
     pattern: glob パターンでアップロード対象をフィルタ。
     prune: True の場合、ローカルに存在しないリモート添付を削除する。
 
+    prune_ids は本文更新前に確認した ID に削除対象を限定する。body から参照する添付は保護する。
+    deferred_prune が指定された場合は候補 ID をそこに集め、削除は呼び出し側が復旧記録を保存してから行う。
+    on_upload は送信した ID・名前・サイズ・SHA-256 の辞書で呼び、次の変更前にアップロードを確認する。
+
     Returns:
         True: 全ファイル同期成功（またはスキップ）
         False: 1件以上のアップロードに失敗
     """
     if not attachments_dir or not attachments_dir.is_dir():
         return True
-    from fnmatch import fnmatch
-    local_files = [f for f in sorted(attachments_dir.iterdir())
-                   if f.is_file() and not _is_image(f.name) and fnmatch(f.name, pattern)]
+    local_files = _directory_assets(attachments_dir, pattern)
     if not local_files and not prune:
         return True
 
@@ -945,53 +1064,74 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
             raise
 
     all_success = True
-    for f in local_files:
-        entries = existing.get(f.name, [])
-        local_size = f.stat().st_size
-        local_hash = _compute_file_hash(f) if not force else None
-        reuse = None
-        if not force:
-            for e in entries:
-                if int(e.get("filesize", 0) or 0) == local_size:
-                    remote_hash = e.get("hash") or e.get("sha256")
-                    if strict and not remote_hash and e.get("id") is not None:
-                        remote_hash = hashlib.sha256(client.download_upload(entity_type=entity, entity_id=entity_id, upload_id=e["id"])).hexdigest()
-                    if remote_hash and remote_hash != local_hash:
-                        continue
-                    reuse = e
-                    break
-        if reuse:
-            print(f"    ✓ {f.name}（既存添付を再利用）")
-            stale = [e for e in entries if e is not reuse and e.get("id") is not None]
-        else:
-            print(f"    添付ファイルをアップロード中: {f.name}")
-            result = client.upload_file(entity, entity_id, str(f))
-            if result.get("url"):
-                print(f"    ✓ {f.name}")
-                stale = [e for e in entries if e.get("id") is not None]
+    for source in local_files:
+        staged = _staged_asset(project_root, source) if project_root is not None else nullcontext(source)
+        with staged as f:
+            entries = existing.get(f.name, [])
+            local_size = f.stat().st_size
+            local_hash = _compute_file_hash(f) if not force or on_upload is not None else None
+            reuse = None
+            if not force:
+                for e in entries:
+                    if int(e.get("filesize", 0) or 0) == local_size:
+                        remote_hash = upload_sha256(e) if strict else e.get("hash") or e.get("sha256")
+                        if strict and not remote_hash and e.get("id") is not None:
+                            remote_hash = client.upload_digest(entity_type=entity, entity_id=entity_id, upload_id=e["id"])
+                        if remote_hash and remote_hash != local_hash:
+                            continue
+                        reuse = e
+                        break
+            if reuse:
+                progress(f"    ✓ {f.name}（既存添付を再利用）")
+                stale = [e for e in entries if e is not reuse and e.get("id") is not None]
             else:
-                print(f"    ✗ アップロード失敗: {f.name}")
-                stale = []
-                all_success = False
-        for e in ([] if strict else stale):
-            try:
-                client.delete_upload(entity, entity_id, e["id"])
-            except Exception:
-                pass
+                progress(f"    添付ファイルをアップロード中: {f.name}")
+                try:
+                    result = client.upload_file(entity, entity_id, str(f))
+                except UploadConfirmationError as exc:
+                    if exc.receipt and save_receipt is not None:
+                        save_receipt(exc.receipt)
+                    raise
+                receipt = result.get("receipt") or {"id": result.get("id"), "name": f.name,
+                                                    "size": local_size, "sha256": local_hash}
+                if result.get("url"):
+                    local_hash = receipt["sha256"]
+                    progress(f"    ✓ {f.name}")
+                    stale = [e for e in entries if e.get("id") is not None]
+                    if on_upload is not None:
+                        on_upload(receipt)
+                else:
+                    if receipt["id"] is not None and save_receipt is not None:
+                        save_receipt(receipt)
+                        raise ConflictError("受領した添付 ID が一覧に現れていません。eLabFTW の添付一覧を確認してください")
+                    progress(f"    ✗ アップロード失敗: {f.name}", warning=True)
+                    stale = []
+                    all_success = False
+            if verified is not None and (reuse or result.get("url")):
+                verified[f.name] = local_hash
+            for e in ([] if strict else stale):
+                try:
+                    client.delete_upload(entity, entity_id, e["id"])
+                except Exception:
+                    pass
 
     # prune: ローカルに存在しないリモート添付を削除（pattern に一致するもののみ）
     if prune:
         local_names = {f.name for f in local_files}
-        for rn, entries in existing.items():
-            if rn not in local_names and fnmatch(rn, pattern):
-                for e in entries:
-                    if e.get("id") is not None:
-                        try:
-                            client.delete_upload(entity, entity_id, e["id"])
-                            print(f"    🗑 {rn}（リモートから削除）")
-                        except Exception as exc:
-                            print(f"    ⚠ {rn} の削除に失敗: {exc}")
-                            all_success = False
+        uploads = [entry for group in existing.values() for entry in group]
+        if prune_ids is not None:
+            uploads = [u for u in uploads if u.get("id") in prune_ids]
+        for entry in _prune_candidates(uploads, local_names, pattern, body, client.base_url):
+            if deferred_prune is not None:
+                deferred_prune.add(entry["id"])
+                continue
+            name = entry["real_name"]
+            try:
+                client.delete_upload(entity, entity_id, entry["id"])
+                progress(f"    🗑 {name}（リモートから削除）")
+            except Exception as exc:
+                progress(f"    ⚠ {name} の削除に失敗: {_error_text(client, exc)}", warning=True)
+                all_success = False
 
     return all_success
 
@@ -1011,7 +1151,7 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
     except Exception as e:
         if strict:
             raise
-        print(f"    ⚠ 添付ファイル一覧の取得に失敗: {e}")
+        progress(f"    ⚠ 添付ファイル一覧の取得に失敗: {_error_text(client, e)}", warning=True)
         return
     attachments_dir.mkdir(parents=True, exist_ok=True)
     for u in uploads:
@@ -1021,7 +1161,7 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
         # パストラバーサル防止: basename のみ使用
         safe_name = Path(rn).name
         if not safe_name or safe_name in (".", ".."):
-            print(f"    ⚠ 不正なファイル名をスキップ: {rn!r}")
+            progress(f"    ⚠ 不正なファイル名をスキップ: {rn!r}", warning=True)
             continue
         dest = safe_path(attachments_dir, safe_name)
         if keep_existing and dest.exists():
@@ -1064,12 +1204,12 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
                     Path(tmp_file.name).unlink(missing_ok=True)
                 raise
             if overwriting:
-                print(f"    ⚠ 上書き: {safe_name}（{entity} #{entity_id} の添付で既存ファイルを置換）")
-            print(f"    添付ファイルをダウンロード: {safe_name}")
+                progress(f"    ⚠ 上書き: {safe_name}（{entity} #{entity_id} の添付で既存ファイルを置換）", warning=True)
+            progress(f"    添付ファイルをダウンロード: {safe_name}")
         except Exception as e:
             if strict:
                 raise
-            print(f"    ⚠ 添付ファイルのダウンロードに失敗: {safe_name}: {e}")
+            progress(f"    ⚠ 添付ファイルのダウンロードに失敗: {safe_name}: {_error_text(client, e)}", warning=True)
 
 
 
@@ -1086,7 +1226,7 @@ def _sync_tags(client: ELabFTWClient, entity_type: str, entity_id: int, desired_
     except Exception:
         import logging
         logging.getLogger(__name__).debug("タグ同期失敗", exc_info=True)
-        print(f"    ⚠ タグ同期に失敗しました（本文の同期は成功しています）")
+        progress(f"    ⚠ タグ同期に失敗しました（本文の同期は成功しています）", warning=True)
         return False
     return True
 
@@ -1106,7 +1246,7 @@ def _sync_links(client: ELabFTWClient, entity_type: str, entity_id: int, desired
         try:
             existing = {link.get("entityid") for link in client.list_links(entity_type, entity_id, link_type)}
         except Exception as exc:
-            print(f"    ⚠ {label}へのリンク一覧の取得に失敗しました: {_describe_error(exc)}")
+            progress(f"    ⚠ {label}へのリンク一覧の取得に失敗しました: {_describe_error(exc)}", warning=True)
             ok = False
             continue
         for target_id in wanted:
@@ -1115,19 +1255,20 @@ def _sync_links(client: ELabFTWClient, entity_type: str, entity_id: int, desired
             try:
                 client.add_link(entity_type, entity_id, link_type, target_id)
             except Exception as exc:
-                print(f"    ⚠ {label} #{target_id} へのリンク追加に失敗しました: {_describe_error(exc)}")
+                progress(f"    ⚠ {label} #{target_id} へのリンク追加に失敗しました: {_describe_error(exc)}", warning=True)
                 ok = False
     if not ok:
-        print("    （本文・タグ・カテゴリは送信済みです。リンク先の ID と権限を確認し、再度 push してください）")
+        progress("    （本文・タグ・カテゴリは送信済みです。リンク先の ID と権限を確認し、再度 push してください）")
     return ok
 
 
+def _error_text(client, exc):
+    return error_text(exc, getattr(client, "api_key", None))
+
+
 def _describe_error(exc):
-    """利用者向けの失敗理由。HTTP エラーはステータスのみ（URL やヘッダーは出さない）。"""
-    status = getattr(getattr(exc, "response", None), "status_code", None)
-    if status is not None:
-        reason = {401: "認証エラー", 403: "権限がありません", 404: "見つかりません"}.get(status, "")
-        return f"HTTP {status}" + (f"（{reason}）" if reason else "")
+    if getattr(getattr(exc, "response", None), "status_code", None) is not None:
+        return error_text(exc)
     return type(exc).__name__
 
 
@@ -1174,7 +1315,7 @@ def _sync_category(client: ELabFTWClient, entity_type: str, entity_id: int, cate
     except Exception:
         import logging
         logging.getLogger(__name__).debug("カテゴリ同期失敗", exc_info=True)
-        print(f"    ⚠ カテゴリ同期に失敗しました（本文の同期は成功しています）")
+        progress(f"    ⚠ カテゴリ同期に失敗しました（本文の同期は成功しています）", warning=True)
         return False
     return True
 
@@ -1195,6 +1336,7 @@ class EachDocsSyncer:
         self.docs_dir = self.project_root / target.docs_dir
         self.mapping_file = (self.project_root / target.id_file).parent / "mapping.json"
         self.hash_dir = self.mapping_file.parent
+        self.updated = 0
         self.failures = 0
         self.skipped = 0
         # 文書間リンクの解決に使う全ターゲットの syncer（CLI が設定する）
@@ -1333,22 +1475,27 @@ class EachDocsSyncer:
         else:
             self.client.update_item(eid, **fields)
 
-    def _compute_assets_hash(self, raw_body, filename=None):
+    def _compute_assets_hash(self, raw_body, filename=None, *, body_evidence=None, directory_evidence=None):
         parts = []
         document_dir = self.file_path(filename).parent if filename else self.docs_dir
         for m in [*IMAGE_RE.finditer(raw_body), *_LINK_RE.finditer(raw_body)]:
             src = m.group(2)
-            if src.startswith(("http://", "https://", "#")) or src.split("#")[0].endswith(".md"):
+            if (src.startswith(("http://", "https://", "#", "mailto:", "data:")) or src.split("#")[0].endswith(".md")
+                    or (m.re is _LINK_RE and _is_image(src))):
+                continue
+            if body_evidence is not None:
+                parts.append(f"{src}:{body_evidence.get(src, 'missing')}")
                 continue
             path = _resolve_asset_path(document_dir, self.project_root, src, strict=True)
             parts.append(f"{src}:{_compute_file_hash(path) if path.is_file() else 'missing'}")
-        if self.target.attachments_dir:
+        if directory_evidence is not None:
+            parts.extend(f"{name}:{digest}" for name, digest in sorted(directory_evidence.items()))
+        elif self.target.attachments_dir:
             att_dir = self.project_root / self.target.attachments_dir
             if att_dir.is_dir():
-                for f in sorted(att_dir.glob(self.target.attachments_pattern)):
-                    if f.is_file() and not _is_image(f.name):
-                        checked = _resolve_asset_path(self.project_root, self.project_root, str(f), strict=True)
-                        parts.append(f"{f.name}:{_compute_file_hash(checked)}")
+                for f in _directory_assets(att_dir, self.target.attachments_pattern):
+                    checked = _resolve_asset_path(self.project_root, self.project_root, str(f), strict=True)
+                    parts.append(f"{f.name}:{_compute_file_hash(checked)}")
         return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
 
     def _assets_changed(self, filename, raw_body):
@@ -1356,9 +1503,6 @@ class EachDocsSyncer:
         hp = self.hash_dir / f"{filename}.assets_hash"
         saved = state["assets_hash"] if state else hp.read_text().strip() if hp.exists() else None
         return saved is not None and saved != self._compute_assets_hash(raw_body, filename)
-
-    def _save_assets_hash(self, filename, raw_body):
-        atomic_write(self.hash_dir / f"{filename}.assets_hash", self._compute_assets_hash(raw_body, filename) + "\n")
 
     def _remote_signature(self, data, uploads):
         return {"body": data.get("body") or "", "title": data.get("title") or "",
@@ -1402,34 +1546,50 @@ class EachDocsSyncer:
                 lines.append(f"添付変更: {new_uploads[uid].get('real_name')} (#{uid})")
         return lines, old["body"], new["body"]
 
-    def _delete_stale_uploads(self, eid, stale_ids, pending, filename):
-        """差し替え前の古い版の添付を削除し、削除できた ID の集合を返す。best-effort。
+    def _delete_stale_uploads(self, eid, stale_ids, pending, filename, prune_ids=()):
+        """旧版・明示的な整理候補を削除し、削除できた ID の集合を返す。
+
+        旧版の削除に失敗したら警告を出力して次の候補に進む。prune_ids の削除失敗は例外を伝播し、
+        未完了記録を残して同じオプションでの再開を可能にする。
 
         文書の本文・タグ・カテゴリ・添付の同期がすべて済んだ後にだけ呼ぶ。
         現在の本文から long_name または /uploads/{id} で参照されている添付は
         削除しない。削除の途中で止まっても再開できるよう、削除候補を先に
         pending の deleting に記録する。
         """
-        body = self._get_entity(eid).get("body") or ""
+        def checked_body():
+            data = self._get_entity(eid)
+            if any(data.get(k) != v for k, v in pending[filename]["stored"].items()):
+                raise ConflictError("添付削除前にリモート本文が変更されました。diffで確認してください")
+            return data.get("body") or ""
+
+        body = checked_body()
         by_id = {u.get("id"): u for u in self.client.list_uploads(self.entity, eid)}
-        candidates = [uid for uid in dict.fromkeys(stale_ids) if uid in by_id
-                      and not (by_id[uid].get("long_name") and by_id[uid]["long_name"] in body)
-                      and not re.search(rf"/uploads/{uid}(?!\d)", body)]
+        protected = _referenced_upload_ids(by_id.values(), body, self.client.base_url)
+        candidates = [uid for uid in dict.fromkeys(stale_ids) if uid in by_id and uid not in protected]
         if not candidates:
             return set()
         pending[filename]["deleting"] = candidates
         self._save_pending(pending)
         deleted = set()
+        expected_uploads = pending[filename]["guard"]["uploads"]
         for uid in candidates:
+            current = self.client.list_uploads(self.entity, eid)
+            expected = [u for u in expected_uploads if u["id"] not in deleted]
+            if self._remote_signature({}, current)["uploads"] != expected:
+                raise ConflictError("削除前にリモート添付が変更されました。diffで確認してください")
+            checked_body()
             name = by_id[uid].get("real_name")
             try:
                 self.client.delete_upload(self.entity, eid, uid)
                 deleted.add(uid)
-                print(f"    古い版の添付を削除しました: {name} (#{uid})")
+                progress(f"    古い版の添付を削除しました: {name} (#{uid})")
             except Exception:
+                if uid in prune_ids:
+                    raise
                 import logging
                 logging.getLogger(__name__).debug("古い添付の削除失敗", exc_info=True)
-                print(f"    ⚠ 古い版の添付を削除できませんでした: {name} (#{uid})")
+                progress(f"    ⚠ 古い版の添付を削除できませんでした: {name} (#{uid})", warning=True)
         return deleted
 
     @staticmethod
@@ -1449,6 +1609,28 @@ class EachDocsSyncer:
         expected = [u for u in guard.get("uploads", []) if u.get("id") not in deleting or u.get("id") in present]
         return {**guard, "uploads": expected} == current_guard
 
+    def _verify_uploaded_attachment(self, eid, uploads, receipt):
+        """保存した送信記録をサーバーの一覧・実体と照合し、確認できた署名を返す。"""
+        uid = receipt["id"]
+        entry = next((u for u in uploads if uid is not None and u.get("id") == uid), None)
+        if not entry:
+            raise ConflictError(f"受領した添付 ID #{uid} が一覧に現れていません。一覧への反映後に同じ文書を通常の push で再実行してください")
+        if entry.get("real_name") != receipt["name"] or int(entry.get("filesize") or 0) != receipt["size"]:
+            raise ConflictError("送信した添付の名前・サイズを確認できません")
+        digest = upload_sha256(entry)
+        if not digest:
+            digest = self.client.upload_digest(entity_type=self.entity, entity_id=eid, upload_id=uid)
+        if digest != receipt["sha256"]:
+            raise ConflictError("送信した添付の内容が一致しません")
+        return self._remote_signature({}, [entry])["uploads"][0]
+
+    @staticmethod
+    def _resume_versions(owned):
+        # PATCH の保存結果を確認した後は、編集者が以前の版に戻した場合も競合とする。
+        if owned.get("stored") is not None:
+            return [owned["stored"]]
+        return [v for v in (owned.get("expected"), owned.get("before")) if v is not None]
+
     def _resume_mismatch(self, owned, eid, data, current_guard):
         """未完了の同期記録と現在のリモートで食い違う項目の表示名を返す。"""
         if owned.get("eid") != eid:
@@ -1456,7 +1638,7 @@ class EachDocsSyncer:
         labels = [] if self._guard_matches(owned, current_guard) else [
             REMOTE_FIELD_LABELS[k] for k in ("category", "tags", "uploads")
             if (owned.get("guard") or {}).get(k) != current_guard.get(k)]
-        versions = [v for v in (owned.get("expected"), owned.get("stored"), owned.get("before")) if v is not None]
+        versions = self._resume_versions(owned)
         if not any(all(data.get(k) == v for k, v in version.items()) for version in versions):
             keys = {k for version in versions for k in version}
             labels[:0] = [REMOTE_FIELD_LABELS[k] for k in ("body", "title", "content_type")
@@ -1499,7 +1681,7 @@ class EachDocsSyncer:
         body = _normalize_remote_image_urls(body, self.entity, eid, self.client, uploads=uploads)
         return _rewrite_elab_links_to_local(body, self.client.base_url, mapping, self.entity, source=source, links=links)
 
-    def _save_baseline(self, filename, raw_body, data, uploads, base=None, links=None):
+    def _save_baseline(self, filename, raw_body, data, uploads, base=None, links=None, assets_hash=None):
         """Record a completed sync. base defaults to raw_body (pull/link write the remote body).
 
         links is the record of links already applied; pull and link pass the
@@ -1510,11 +1692,13 @@ class EachDocsSyncer:
         self._save_hash(filename, raw_body)
         self._save_remote_hash(filename, data.get("body") or "")
         self._save_meta_hash(filename, Path(filename).stem, self.target.category, self.target.tags)
-        self._save_assets_hash(filename, raw_body)
+        if assets_hash is None:
+            assets_hash = self._compute_assets_hash(raw_body, filename)
+        atomic_write(self.hash_dir / f"{filename}.assets_hash", assets_hash + "\n")
         write_json(self.hash_dir / f"{filename}.state.json", {
             "version": 1, "server": str(self.client.base_url), "entity": self.entity,
             "profile": self.target.profile, "team": self.target.team, "body_format": self.target.body_format,
-            "local_hash": _compute_hash(raw_body), "assets_hash": self._compute_assets_hash(raw_body, filename),
+            "local_hash": _compute_hash(raw_body), "assets_hash": assets_hash,
             "meta_hash": _compute_meta_hash(Path(filename).stem, self.target.category, self.target.tags),
             "remote": self._remote_signature(data, uploads),
             **({"links": links} if links else {}),
@@ -1570,7 +1754,7 @@ class EachDocsSyncer:
 
     def _print_next_actions(self, state, filename, eid=None):
         for action in self.next_actions(state, filename, eid):
-            print(f"    → {action}")
+            progress(f"    → {action}")
 
     def save_merge_baseline(self, filename, base, data, uploads, metadata_pending):
         """Record the remote side after merging it into local edits on pull.
@@ -1636,7 +1820,8 @@ class EachDocsSyncer:
                 result["state"] = "競合マーカーあり"
         except Exception as exc:
             status = getattr(getattr(exc, "response", None), "status_code", None)
-            result.update(state="リモート削除" if status == 404 else "確認失敗", error=str(exc))
+            result.update(state="リモート削除" if status == 404 else "確認失敗",
+                          error=_error_text(self.client, exc))
         return result
 
     def file_path(self, filename):
@@ -1695,7 +1880,7 @@ class EachDocsSyncer:
                 src.replace(dest)
         self._save_mapping(mapping)
 
-    def _detect_renames(self, mapping, md_files, entity_label):
+    def _detect_renames(self, mapping, md_files, entity_label, *, dry_run=False):
         files = {f.name: f for f in md_files}
         missing = set(mapping) - set(files) - self._load_excluded()
         new = set(files) - set(mapping)
@@ -1708,11 +1893,15 @@ class EachDocsSyncer:
             if len(matches) != 1 or any(n == matches[0] for _, n in pairs):
                 raise ConflictError("リネームの対応が不明です。esync mv 旧パス 新パス で指定するか、不要な追跡をrmしてください")
             pairs.append((old, matches[0]))
+        if dry_run:
+            for old, new_name in pairs:
+                mapping[new_name] = mapping.pop(old)
+            return mapping
         # No remote changes here; title updates use the normal conflict checks.
         with local_transaction(self.project_root, [self.hash_dir], "自動リネームの紐付け変更"):
             for old, new_name in pairs:
                 self.move_tracking(old, new_name, mapping)
-                print(f"  リネーム検出: {old} → {new_name}")
+                progress(f"  リネーム検出: {old} → {new_name}")
         return mapping
 
     def _check_remote_conflict(self, filename, eid):
@@ -1720,13 +1909,34 @@ class EachDocsSyncer:
         if result["state"] in ("競合", "取得待ち", "基準情報なし", "リモート削除", "確認失敗"):
             raise ConflictError(f"{filename}: {result['state']}。esync diff で確認し、pull または --force を選択してください")
 
-    def dry_run(self, only=None):
+    def dry_run(self, only=None, prune_attachments=False):
+        """添付整理指定時はリネーム・未完了 ID をメモリ内で補い、追跡記事の添付を読む。
+        attachments_dir 未設定なら prune_candidates は返さない。取得失敗は各文書の error に残す。
+        """
         mapping = self._load_mapping(migrate=False)
-        return [{"filename": f.name, "title": f.stem, "images": _count_local_images(body),
+        files = self.collect_files()
+        if prune_attachments:
+            for name, item in self._pending().items():
+                if item.get("eid") and name not in mapping:
+                    mapping[name] = item["eid"]
+            mapping = self._detect_renames(mapping, files, self.entity, dry_run=True)
+        results = [{"filename": f.name, "title": f.stem, "images": _count_local_images(body),
                  "videos": _count_local_videos(body), "file_links": _count_local_file_links(body),
                  "changed": self._has_changed(f.name, body), "entity_id": mapping.get(f.name)}
-                for f in self.collect_files() if only is None or f.name in only
+                for f in files if only is None or f.name in only
                 for body in [f.read_text(encoding="utf-8").strip()]]
+        if prune_attachments and self.target.attachments_dir:
+            directory = self.project_root / self.target.attachments_dir
+            local_names = {p.name for p in directory.iterdir() if p.is_file()} if directory.is_dir() else set()
+            for doc in results:
+                try:
+                    uploads = self.client.list_uploads(self.entity, doc["entity_id"]) if directory.is_dir() and doc["entity_id"] else []
+                    body = self.file_path(doc["filename"]).read_text(encoding="utf-8")
+                    candidates = _prune_candidates(uploads, local_names, self.target.attachments_pattern, body, self.client.base_url)
+                    doc["prune_candidates"] = [{"id": u["id"], "name": u["real_name"]} for u in candidates]
+                except Exception as exc:
+                    doc["error"] = _error_text(self.client, exc)
+        return results
 
     def _resolve_target_category(self, entities):
         """Resolve the target's category to an ID.
@@ -1748,7 +1958,7 @@ class EachDocsSyncer:
         are never mistaken for renamed or missing ones.
         """
         md_files = self.collect_files()
-        self.failures = self.skipped = 0
+        self.updated = self.failures = self.skipped = 0
         if not md_files:
             if self._load_excluded() and self.docs_dir.is_dir():
                 return 0
@@ -1771,52 +1981,71 @@ class EachDocsSyncer:
         for f in md_files:
             if only is not None and f.name not in only:
                 continue
-            self._compute_assets_hash(f.read_text(encoding="utf-8").strip(), f.name)
             eid = mapping.get(f.name)
             result = self.inspect(f.name, eid)
+            self._compute_assets_hash(result["body"], f.name)  # 送信前に参照パスの範囲を検証
             state = result["state"]
             if result.get("data"):
                 observed_entities.append(result["data"])
             if state in ("確認失敗", "リモート削除"):
                 self.failures += 1
                 reason = "eLabFTW で記事が削除されています（push では作り直しません）" if state == "リモート削除" else result.get("error", "")
-                print(f"  [{f.stem}] {state}: {reason}")
+                progress(f"  [{f.stem}] {state}: {reason}", warning=True)
                 self._print_next_actions(state, f.name, eid)
                 continue
             owned = pending.get(f.name, {})
             # before/expected are the body fields before/after our PATCH. Either
             # may be observed after a lost response. guard covers metadata and
             # uploads: these must still match the last confirmed checkpoint.
-            expected = owned.get("expected")
-            before = owned.get("before")
             current_guard = {k: v for k, v in self._remote_signature(result.get("data", {}), result.get("uploads", [])).items() if k not in ("body", "title", "content_type")}
             # stored is the body as eLabFTW saved it after our PATCH; eLabFTW may
             # rewrite what we sent (e.g. "> " to "&gt; "), so expected alone never matches.
-            stored = owned.get("stored")
+            receipt = owned.get("verifying_upload")
+            receipts = owned.get("body_receipts", []) or ([receipt] if receipt else [])
+            if receipts and not force and owned.get("eid") == eid:
+                try:
+                    uploads_by_id = {u["id"]: u for u in result.get("uploads", [])}
+                    for r in owned.get("body_receipts", []):
+                        entry = uploads_by_id.get(r["id"], {})
+                        if not entry.get("long_name") or entry.get("storage") in (None, ""):
+                            raise ConflictError(f"受領した添付 ID #{r['id']} の URL が未反映です。一覧への反映後に通常の push を再実行してください")
+                    additions = [self._verify_uploaded_attachment(eid, result.get("uploads", []), r) for r in receipts]
+                    expected_uploads = sorted(owned["guard"]["uploads"] + additions, key=lambda u: str(u["id"]))
+                    expected_guard = {**owned["guard"], "uploads": expected_uploads}
+                    if expected_guard != current_guard:
+                        raise ConflictError("添付の照合待ちの間にリモート情報が変更されました")
+                    result["confirmed_upload_ids"] = {r["id"]: r for r in receipts}
+                    # 再実行でも URL が確定するまで受領記録を使えるよう、ここではディスクから消さない。
+                    owned = {**owned, "guard": expected_guard}
+                except Exception as exc:
+                    self.failures += 1
+                    progress(f"  [{f.stem}] 添付検証を再開できません: {_error_text(self.client, exc)}。diffで確認してください",
+                             warning=True)
+                    continue
             resuming = bool(owned.get("eid") == eid and self._guard_matches(owned, current_guard) and any(
                 version is not None and all(result["data"].get(k) == v for k, v in version.items())
-                for version in (expected, stored, before)))
+                for version in self._resume_versions(owned)))
             if not force and owned and not resuming:
                 self.failures += 1
-                print(f"  [{f.stem}] 前回の push が途中で止まった後に eLabFTW 側が変更されたため、自動では再開しません")
+                progress(f"  [{f.stem}] 前回の push が途中で止まった後に eLabFTW 側が変更されたため、自動では再開しません", warning=True)
                 mismatch = self._resume_mismatch(owned, eid, result["data"], current_guard)
                 if mismatch:
-                    print(f"    前回の同期記録と異なる項目: {', '.join(mismatch)}")
+                    progress(f"    前回の同期記録と異なる項目: {', '.join(mismatch)}")
                 self._print_next_actions("再開不可", f.name, eid)
                 continue
             if state == "競合マーカーあり":
                 self.failures += 1
-                print(f"  [{f.stem}] 競合マーカーが残っています")
+                progress(f"  [{f.stem}] 競合マーカーが残っています", warning=True)
                 self._print_next_actions(state, f.name, eid)
                 continue
             if not force and not resuming and state in ("競合", "取得待ち", "基準情報なし"):
                 self.failures += 1
-                print(f"  [{f.stem}] {state}のため送信しません")
+                progress(f"  [{f.stem}] {state}のため送信しません", warning=True)
                 self._print_next_actions(state, f.name, eid)
                 continue
             if not force and not prune_attachments and not resuming and state == "最新":
                 self.skipped += 1
-                print(f"  [{f.stem}] 変更なし（スキップ）")
+                progress(f"  [{f.stem}] 変更なし（スキップ）")
                 continue
             jobs.append((f, result, resuming))
 
@@ -1839,12 +2068,12 @@ class EachDocsSyncer:
             try:
                 category_id = self._resolve_target_category(observed_entities)
             except ValueError as exc:
-                print(f"  カテゴリを解決できないため、カテゴリの設定が必要な文書の同期を中止しました: {exc}")
+                progress(f"  カテゴリを解決できないため、カテゴリの設定が必要な文書の同期を中止しました: {_error_text(self.client, exc)}", warning=True)
                 kept = []
                 for job in jobs:
                     if needs_meta(*job):
                         self.failures += 1
-                        print(f"  [{job[0].stem}] カテゴリ未解決のためスキップ（eLabFTW は変更していません）")
+                        progress(f"  [{job[0].stem}] カテゴリ未解決のためスキップ（eLabFTW は変更していません）", warning=True)
                     else:
                         kept.append(job)
                 jobs = kept
@@ -1865,10 +2094,19 @@ class EachDocsSyncer:
                 mapping[f.name] = eid
                 self._save_mapping(mapping)
                 result["entity_id"] = eid
-                print(f"  [{f.stem}] #{eid} を新規作成しました")
-        updated = 0
+                try:
+                    result["created_data"] = self._get_entity(eid)
+                except Exception as exc:
+                    self.failures += 1
+                    result["creation_read_failed"] = True
+                    progress(f"  [{f.stem}] #{eid} を作成しましたが、本文更新前の取得に失敗しました: "
+                             f"{_error_text(self.client, exc)}", warning=True)
+                    continue
+                progress(f"  [{f.stem}] #{eid} を新規作成しました")
         links = self.link_targets(mapping) if jobs else None
         for f, result, resuming in jobs:
+            if result.get("creation_read_failed"):
+                continue
             eid = result["entity_id"]
             raw_body = result["body"]
             try:
@@ -1878,23 +2116,71 @@ class EachDocsSyncer:
                         "title": result["data"].get("title"), "body": result["data"].get("body"),
                         "content_type": result["data"].get("content_type"),
                     })
+                previous = result.get("created_data") or result.get("data") or self._get_entity(eid)
                 stale_uploads: list[int] = []
-                body = _rewrite_images(raw_body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads)
-                body = _rewrite_videos(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads)
-                body = _rewrite_file_links(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads)
+                uploaded = {}
+                verified_body, verified_directory = {}, {}
+                body_receipts = []
+                def record_body_upload(receipt):
+                    if not body_receipts:
+                        baseline = self._remote_signature(previous, result.get("uploads", []))
+                        pending[f.name] = {"eid": eid, "before": {k: previous.get(k) for k in ("body", "title", "content_type")},
+                                           "guard": {k: baseline[k] for k in ("tags", "category", "uploads")},
+                                           "body_receipts": body_receipts,
+                                           "needs": {"meta": needs_meta(f, result, resuming),
+                                                     "links": needs_links(f, result, resuming)}}
+                    if receipt not in body_receipts:
+                        body_receipts.append(receipt)
+                    self._save_pending(pending)
+                preferred = result.get("confirmed_upload_ids", set())
+                body = _rewrite_images(raw_body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded, verified=verified_body, record=record_body_upload, preferred=preferred)
+                body = _rewrite_videos(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded, verified=verified_body, record=record_body_upload, preferred=preferred)
+                body = _rewrite_file_links(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded, verified=verified_body, record=record_body_upload, preferred=preferred)
                 body = _rewrite_local_links(body, self.entity, self.client.base_url, mapping, source=f, links=links)
                 body = body if self.target.body_format == "md" else _md_to_html(body)
                 expected = {"body": body, "title": f.stem, "content_type": 2 if self.target.body_format == "md" else 1}
-                previous = result.get("data") or self._get_entity(eid)
                 before = {key: previous.get(key) for key in expected}
                 guard = {k: v for k, v in self._remote_signature(previous, self.client.list_uploads(self.entity, eid)).items() if k not in ("body", "title", "content_type")}
+                # 本文のリンクを書き換える間に既存の添付が変わった場合は削除・本文更新を止める。
+                initial_uploads = self._remote_signature({}, result.get("uploads", []))["uploads"]
+                initial_ids = {u["id"] for u in initial_uploads}
+                current_originals = [u for u in guard["uploads"] if u["id"] in initial_ids]
+                current = {u["id"]: u for u in guard["uploads"]}
+                for uid, (name, size, digest) in uploaded.items():
+                    entry = current.get(uid)
+                    if not entry or entry["real_name"] != name or int(entry["filesize"] or 0) != size:
+                        raise ConflictError("送信した本文用添付の名前・サイズを確認できません")
+                    stored_hash = upload_sha256(entry)
+                    if not stored_hash:
+                        stored_hash = self.client.upload_digest(entity_type=self.entity, entity_id=eid, upload_id=uid)
+                    if stored_hash != digest:
+                        raise ConflictError("送信した本文用添付の内容が一致しません")
+                stale_uploads = [uid for uid in stale_uploads if uid not in uploaded]
+                if current_originals != initial_uploads or set(current) != initial_ids | set(uploaded) or not set(stale_uploads) <= initial_ids:
+                    raise ConflictError("本文の添付を準備している間にリモート添付が変更されました。diffで確認してください")
                 meta_changed = needs_meta(f, result, resuming)
                 links_changed = needs_links(f, result, resuming)
                 pending[f.name] = {"eid": eid, "expected": expected, "before": before, "guard": guard,
                                    "needs": {"meta": meta_changed, "links": links_changed}}
                 self._save_pending(pending)
+                # 添付ハッシュを確認する間に本文・メタデータ・添付が変わっていないか再読する。
+                planned_prune = set()
+                if prune_attachments and self.target.attachments_dir:
+                    directory = self.project_root / self.target.attachments_dir
+                    if directory.is_dir():
+                        candidates = _prune_candidates(initial_uploads, {p.name for p in directory.iterdir() if p.is_file()},
+                                                       self.target.attachments_pattern, raw_body + "\n" + body,
+                                                       self.client.base_url)
+                        planned_prune = {u["id"] for u in candidates}
+                if stale_uploads:
+                    _referenced_upload_ids(guard["uploads"], body, self.client.base_url)
+                latest_uploads = self.client.list_uploads(self.entity, eid)
+                latest = self._get_entity(eid)
+                latest_signature = self._remote_signature(latest, latest_uploads)
+                if any(latest.get(k) != v for k, v in before.items()) or any(latest_signature[k] != v for k, v in guard.items()):
+                    raise ConflictError("本文更新前にリモートが変更されました。diffで確認してください")
                 self._update_entity(eid, **expected)
-                def checkpoint(expected_changes=None):
+                def checkpoint(expected_changes=None, upload_verified=False):
                     """Confirm the predicted result, never adopt an unknown update.
 
                     expected_changes contains only values our completed operation
@@ -1908,6 +2194,8 @@ class EachDocsSyncer:
                     if observed_guard != expected_guard:
                         raise ConflictError("同期処理中にリモートのメタデータ・添付が変更されました。diffで確認してください")
                     pending[f.name]["guard"] = observed_guard
+                    if upload_verified:
+                        del pending[f.name]["verifying_upload"]
                     self._save_pending(pending)
                     return observed, signature["uploads"]
 
@@ -1928,13 +2216,30 @@ class EachDocsSyncer:
                 links_ok = _sync_links(self.client, self.entity, eid, self.target.links) if links_changed else True
                 if not links_ok:
                     raise RuntimeError("本文更新後にリンク同期が失敗しました。リモートを確認して再実行してください")
+                def save_receipt(receipt):
+                    pending[f.name]["verifying_upload"] = receipt
+                    self._save_pending(pending)
+
+                def confirm_upload(receipt):
+                    save_receipt(receipt)
+                    uploads = self.client.list_uploads(self.entity, eid)
+                    entry = self._verify_uploaded_attachment(eid, uploads, receipt)
+                    expected_uploads = pending[f.name]["guard"]["uploads"] + [entry]
+                    # checkpoint が成功するまで、ディスク上には検証待ち記録を残す。
+                    checkpoint({"uploads": sorted(expected_uploads, key=lambda u: str(u["id"]))}, upload_verified=True)
+
+                prune_ids = set()
                 att_ok = True
                 if self.target.attachments_dir:
                     att_ok = _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, eid, self.client,
-                                               force=force, pattern=self.target.attachments_pattern, prune=prune_attachments, strict=True)
-                if tags_ok is False or category_ok is False or not att_ok:
-                    raise RuntimeError("本文更新後、メタデータまたは添付の同期が失敗しました。再実行してください")
-                deleted = self._delete_stale_uploads(eid, stale_uploads, pending, f.name) if stale_uploads else set()
+                                               force=force, pattern=self.target.attachments_pattern, prune=prune_attachments, strict=True,
+                                               prune_ids=planned_prune,
+                                               body=raw_body + "\n" + body, deferred_prune=prune_ids, on_upload=confirm_upload,
+                                               verified=verified_directory, save_receipt=save_receipt, project_root=self.project_root)
+                if not att_ok:
+                    raise RuntimeError("本文更新後、添付の同期が失敗しました。再実行してください")
+                stale_uploads.extend(sorted(prune_ids))
+                deleted = self._delete_stale_uploads(eid, stale_uploads, pending, f.name, prune_ids) if stale_uploads else set()
                 if "deleting" in pending[f.name]:
                     checkpoint({"uploads": [u for u in pending[f.name]["guard"]["uploads"] if u.get("id") not in deleted]})
                     pending[f.name].pop("deleting")
@@ -1942,8 +2247,10 @@ class EachDocsSyncer:
                 data = self._get_entity(eid)
                 uploads = self.client.list_uploads(self.entity, eid)
                 actual = self._remote_signature(data, uploads)
-                if any(actual[k] != pending[f.name]["guard"][k] for k in ("category", "tags")):
-                    raise ConflictError("完了確認時にリモートのカテゴリ・タグが期待値と異なります")
+                if any(data.get(k) != v for k, v in pending[f.name]["stored"].items()):
+                    raise ConflictError("完了確認時にリモート本文が変更されました")
+                if any(actual[k] != pending[f.name]["guard"][k] for k in ("category", "tags", "uploads")):
+                    raise ConflictError("完了確認時にリモートのカテゴリ・タグ・添付が期待値と異なります")
                 base = self.remote_base(data, uploads, eid, mapping, links, f)
                 # When eLabFTW dropped <...>, record what it kept as the synced local
                 # body: the file stays "送信待ち", and pull merges instead of
@@ -1952,20 +2259,22 @@ class EachDocsSyncer:
                 if links_ok and links_changed:
                     applied = {t: sorted(set(applied.get(t, [])) | set(ids))
                                for t, ids in {**applied, **self.target.links}.items()}
-                self._save_baseline(f.name, base if dropped else raw_body, data, uploads, base=base, links=applied)
+                self._save_baseline(f.name, base if dropped else raw_body, data, uploads, base=base, links=applied,
+                                    assets_hash=self._compute_assets_hash(raw_body, f.name, body_evidence=verified_body,
+                                                                         directory_evidence=verified_directory))
                 pending.pop(f.name, None)
                 self._save_pending(pending)
                 sync_log.record(self.project_root / sync_log.DEFAULT_LOG_PATH, action="push", target=f.stem,
                                 entity=self.entity, entity_id=eid, files=[f.name])
-                updated += 1
-                print(f"  [{f.stem}] #{eid} を更新しました")
+                self.updated += 1
+                progress(f"  [{f.stem}] #{eid} を更新しました")
                 if dropped:
                     self.failures += 1
                     shown = ", ".join(dropped[:5]) + (f" ほか{len(dropped) - 5}件" if len(dropped) > 5 else "")
-                    print(f"  [{f.stem}] 警告: eLabFTW が本文の <…> を削除しました: {shown}")
-                    print("    ローカルの原稿はそのままですが、eLabFTW 上の本文からは失われています。"
-                          "解消するまで、この文書は「送信待ち」のままになります。表記を見直して再度 push してください")
+                    progress(f"  [{f.stem}] 警告: eLabFTW が本文の <…> を削除しました: {shown}", warning=True)
+                    progress("    ローカルの原稿はそのままですが、eLabFTW 上の本文からは失われています。"
+                          "解消するまで、この文書は「送信待ち」のままになります。表記を見直して再度 push してください", warning=True)
             except Exception as exc:
                 self.failures += 1
-                print(f"  [{f.stem}] 同期失敗: {exc}")
-        return updated
+                progress(f"  [{f.stem}] 同期失敗: {_error_text(self.client, exc)}", warning=True)
+        return self.updated

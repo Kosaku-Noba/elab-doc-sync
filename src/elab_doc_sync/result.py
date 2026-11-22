@@ -57,6 +57,21 @@ class CommandResult:
                 "warnings": self.warnings}
 
 
+def progress(message: str = "", *, warning: bool = False) -> None:
+    """深い同期処理の進捗を現在の結果へ渡す。単独で使う場合は CLI に表示する。"""
+    created = _created.get()
+    if created:
+        result = created[0]
+        if warning:
+            result.warnings.append(message)
+            if result.echo is not None:
+                result.echo(message)  # 従来の CLI では同期エンジンの通知を stdout に出す
+        else:
+            result.say(message)
+    else:
+        cli_echo(message)
+
+
 def returns_partial_result(fn):
     """run_* 用。途中で例外になったら、それまでの CommandResult を例外の partial_result に付ける。
 
@@ -85,7 +100,7 @@ def redact(text: str, *secrets: str | None) -> str:
     改行で区切られた各部分（4 文字以上）も置き換える。
     """
     for secret in secrets:
-        if not secret:
+        if not isinstance(secret, str) or not secret:
             continue
         variants = {secret, repr(secret)[1:-1], repr(secret.encode("utf-8"))[2:-1]}
         variants.update(part for part in secret.splitlines() if len(part.strip()) >= 4)
@@ -93,3 +108,12 @@ def redact(text: str, *secrets: str | None) -> str:
             if variant:
                 text = text.replace(variant, "***")
     return text
+
+
+def error_text(exc: Exception, api_key: str | None = None) -> str:
+    """HTTP エラーは URL を省き、それ以外の例外文では接続先の API キーを伏せる。"""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status is not None:
+        reason = {401: "認証エラー", 403: "権限がありません", 404: "見つかりません"}.get(status)
+        return f"HTTP {status}" + (f"（{reason}）" if reason else "")
+    return redact(str(exc), api_key)
