@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### 追加
+
+- 設定の `elabftw:` の欄と `profiles:` の各プロファイルに `api_key_env: <環境変数の名前>` を書けるようにした。送り先ごとに別の API キーを使うフォルダで、キーを設定ファイルに書かず、そのフォルダ用の環境変数から読める。優先の順は、(1) `api_key_env` に書いた名前の環境変数 → (2) `api_key_env` を書いていない default プロファイルだけ `ELABFTW_API_KEY` → (3) 設定ファイルの `api_key`。`api_key_env` を書いたのに環境変数が未設定・空のときは、`ELABFTW_API_KEY` や `api_key` に切り替えず、環境変数の名前を示してエラーにする（キーの値は表示しない）。`api_key_env` を書かない設定の動作は変わらない。
+- `esync profile add` に `--api-key-env` を追加した。`esync profile list` は `api_key_env` のプロファイルについて、環境変数の名前と設定の有無を表示する。
+
 ## v1.3.0 (2026-11-09)
 
 ### 追加

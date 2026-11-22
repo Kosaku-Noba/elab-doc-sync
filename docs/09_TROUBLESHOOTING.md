@@ -7,6 +7,7 @@
 | メッセージ | 原因 | 対処 |
 |---|---|---|
 | `API キーが設定されていません` | API キーが未設定 | `.elab-sync.yaml` の `api_key` に設定するか、`export ELABFTW_API_KEY="your_key"` を実行 |
+| `… の api_key_env に指定された環境変数 NAME が設定されていないか、空です` | `api_key_env` を書いたが、その環境変数が未設定・空（`ELABFTW_API_KEY` や `api_key` には切り替わらない） | `export NAME="your_key"` を実行するか、`api_key_env` を消す（消すと `ELABFTW_API_KEY` や `api_key` のキーに切り替わり、別の送り先に別のキーで接続しうるので、使うキーを確認する） |
 | `設定ファイルが見つかりません` | `.elab-sync.yaml` がない | `esync init` を実行 |
 | `eLabFTW の URL が設定されていません` | URL が空 | `.elab-sync.yaml` の `elabftw.url` を確認 |
 | `同期ターゲットが定義されていません` | targets が空 | `.elab-sync.yaml` の `targets` を確認 |

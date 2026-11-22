@@ -77,7 +77,7 @@ v1.0.1 以降の追加は上表の FR-29〜FR-37 と [CHANGELOG](../CHANGELOG.md
 
 ## セキュリティ考慮事項
 
-- API キーは環境変数 `ELABFTW_API_KEY` を優先（設定ファイルにも記載可能）
+- API キーは環境変数 `ELABFTW_API_KEY` を優先（設定ファイルにも記載可能）。ただし `api_key_env` を指定したプロファイルは、その名前の環境変数だけを参照し、未設定・空ならエラー（`ELABFTW_API_KEY`・`api_key` には切り替えない）
 - `verify_ssl: false` 設定時、urllib3 の InsecureRequestWarning を抑制
 - `.elab-sync-ids/` を `.gitignore` に追加することを推奨
 - プロファイルごとに個別の API キーを管理可能

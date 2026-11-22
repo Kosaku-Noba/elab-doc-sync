@@ -15,7 +15,7 @@ from markdownify import markdownify as html_to_md
 from .safety import atomic_write, write_json, safe_path, snapshot, local_transaction, project_command, restore, BACKUPS, RECOVERY
 from .config import TargetConfig
 from .client import ELabFTWClient
-from .config import load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, append_target_to_yaml
+from .config import load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, append_target_to_yaml, profile_connection
 from .merge import merge_text
 from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
 from . import sync_log
@@ -1336,8 +1336,13 @@ def cmd_whoami(args):
 
     for profile in profiles_to_show:
         if profile:
-            url, api_key, verify_ssl = profile.url, profile.api_key, profile.verify_ssl
             print(f"[profile: {profile.name}]")
+            try:
+                url, api_key, verify_ssl = profile_connection(profile)
+            except ValueError as e:
+                print(f"  エラー: {e}")
+                print()
+                continue
         else:
             url, api_key, verify_ssl = config.url, config.api_key, config.verify_ssl
             print("[default]")
@@ -1837,13 +1842,25 @@ def cmd_profile(args):
         elab = raw.get("elabftw", {})
         if "default" not in profiles and elab.get("url"):
             profiles["default"] = {"url": elab["url"], "api_key": elab.get("api_key", ""),
+                                   "api_key_env": elab.get("api_key_env"),
                                    "verify_ssl": elab.get("verify_ssl", True)}
         if not profiles:
             print("  プロファイルがありません")
             return
         for name, pdata in profiles.items():
             url = pdata.get("url", "?")
-            has_key = "✓" if pdata.get("api_key") else "✗"
+            env_name = pdata.get("api_key_env")
+            if env_name:
+                # 環境変数の名前と設定の有無だけを表示する（値は表示しない）。
+                # 名前として不正な値（キーの値の誤記など）は、表示せずに不正と示す
+                import os as _os
+                if not isinstance(env_name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", env_name.strip()):
+                    has_key = "api_key_env が環境変数の名前ではありません ✗"
+                else:
+                    is_set = bool(_os.environ.get(env_name.strip(), "").strip())
+                    has_key = f"環境変数 {env_name.strip()} " + ("✓" if is_set else "✗（未設定）")
+            else:
+                has_key = "✓" if pdata.get("api_key") else "✗"
             ssl = "SSL検証あり" if pdata.get("verify_ssl", True) else "SSL検証なし"
             print(f"  {name}: {url} (API キー: {has_key}, {ssl})")
 
@@ -1851,6 +1868,17 @@ def cmd_profile(args):
         name = args.profile_name
         url = args.url
         api_key = args.api_key or ""
+        raw_key_env = getattr(args, "api_key_env", None)
+        if raw_key_env is not None and not raw_key_env.strip():
+            print("エラー: --api-key-env が空です。環境変数の名前を指定してください", file=sys.stderr)
+            sys.exit(2)
+        api_key_env = (raw_key_env or "").strip()
+        if api_key_env and api_key:
+            print("エラー: --api-key と --api-key-env は同時に指定できません", file=sys.stderr)
+            sys.exit(2)
+        if api_key_env and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", api_key_env):
+            print("エラー: --api-key-env には環境変数の名前を指定してください（キーの値は指定しないでください）", file=sys.stderr)
+            sys.exit(2)
         verify_ssl = not args.no_verify
 
         raw = {}
@@ -1864,12 +1892,17 @@ def cmd_profile(args):
                 print("  中止しました")
                 return
 
-        profiles[name] = {"url": url, "api_key": api_key, "verify_ssl": verify_ssl}
+        if api_key_env:
+            profiles[name] = {"url": url, "api_key_env": api_key_env, "verify_ssl": verify_ssl}
+        else:
+            profiles[name] = {"url": url, "api_key": api_key, "verify_ssl": verify_ssl}
 
         content = yaml.dump(raw, default_flow_style=False, allow_unicode=True)
         atomic_write(config_path, content)
         print(f"  ✅ プロファイル '{name}' を追加しました")
-        if not api_key:
+        if api_key_env:
+            print(f"     環境変数 {api_key_env} に API キーを設定してください")
+        elif not api_key:
             print(f"     API キーを設定してください: .elab-sync.yaml の profiles.{name}.api_key")
 
     elif args.profile_action == "remove":
@@ -2157,6 +2190,8 @@ def main():
     profile_add_p.add_argument("profile_name", help="プロファイル名")
     profile_add_p.add_argument("--url", required=True, help="eLabFTW の URL")
     profile_add_p.add_argument("--api-key", default=None, help="API キー")
+    profile_add_p.add_argument("--api-key-env", default=None,
+                               help="API キーを読む環境変数の名前（キーを設定ファイルに書かない。--api-key とは同時に指定できない）")
     profile_add_p.add_argument("--no-verify", action="store_true", help="SSL 検証を無効化")
     profile_rm_p = profile_sub.add_parser("remove", help="プロファイルを削除")
     profile_rm_p.add_argument("profile_name", help="削除するプロファイル名")

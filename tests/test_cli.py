@@ -2186,3 +2186,88 @@ def test_entity_status_confirmation_shows_target_and_server(tmp_path, monkeypatc
     assert "- [B] リソース #42（https://server-b.com）" in out
     assert "[A] リソース #42: ステータスを変更しました" in out
     assert "[B] リソース #42: ステータスを変更しました" in out
+
+
+
+# PROF-api_key_env: profile add --api-key-env
+def _empty_cfg(tmp_path):
+    p = tmp_path / ".elab-sync.yaml"
+    p.write_text(yaml.dump({"targets": [{"docs_dir": "docs/"}]}, allow_unicode=True), encoding="utf-8")
+    return p
+
+
+def test_cmd_profile_add_api_key_env(tmp_path, capsys):
+    from elab_doc_sync.cli import cmd_profile
+    p = _empty_cfg(tmp_path)
+    args = Namespace(config=str(p), target=None, force=False, profile_action="add",
+                     profile_name="uptest", url="https://u.example", api_key=None,
+                     api_key_env="UPTEST_ELABFTW_API_KEY", no_verify=False)
+    cmd_profile(args)
+    out = capsys.readouterr().out
+    assert "UPTEST_ELABFTW_API_KEY" in out
+    raw = yaml.safe_load(p.read_text(encoding="utf-8"))
+    assert raw["profiles"]["uptest"] == {"url": "https://u.example", "api_key_env": "UPTEST_ELABFTW_API_KEY",
+                                         "verify_ssl": True}
+
+
+def test_cmd_profile_add_api_key_env_conflicts_with_api_key(tmp_path):
+    from elab_doc_sync.cli import cmd_profile
+    p = _empty_cfg(tmp_path)
+    args = Namespace(config=str(p), target=None, force=False, profile_action="add",
+                     profile_name="u", url="https://u.example", api_key="k", api_key_env="X", no_verify=False)
+    with pytest.raises(SystemExit):
+        cmd_profile(args)
+    assert "profiles" not in yaml.safe_load(p.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_cmd_profile_add_api_key_env_rejects_blank(tmp_path, capsys, value):
+    from elab_doc_sync.cli import cmd_profile
+    p = _empty_cfg(tmp_path)
+    args = Namespace(config=str(p), target=None, force=False, profile_action="add",
+                     profile_name="u", url="https://u.example", api_key=None,
+                     api_key_env=value, no_verify=False)
+    with pytest.raises(SystemExit) as exc:
+        cmd_profile(args)
+    assert exc.value.code == 2
+    assert "--api-key-env" in capsys.readouterr().err
+    assert "profiles" not in yaml.safe_load(p.read_text(encoding="utf-8"))
+
+
+def test_cmd_profile_add_api_key_env_rejects_non_name(tmp_path, capsys):
+    from elab_doc_sync.cli import cmd_profile
+    p = _empty_cfg(tmp_path)
+    args = Namespace(config=str(p), target=None, force=False, profile_action="add",
+                     profile_name="u", url="https://u.example", api_key=None,
+                     api_key_env="59-secretvalue", no_verify=False)
+    with pytest.raises(SystemExit):
+        cmd_profile(args)
+    assert "secretvalue" not in capsys.readouterr().err
+
+
+def test_cmd_profile_list_shows_env_name_not_value(tmp_path, capsys, monkeypatch):
+    from elab_doc_sync.cli import cmd_profile
+    monkeypatch.setenv("SET_ONE", "secret-VALUE")
+    monkeypatch.delenv("UNSET_ONE", raising=False)
+    data = {"profiles": {"a": {"url": "https://a.example", "api_key_env": "SET_ONE"},
+                         "b": {"url": "https://b.example", "api_key_env": "UNSET_ONE"}},
+            "targets": [{"docs_dir": "docs/"}]}
+    p = tmp_path / ".elab-sync.yaml"
+    p.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    cmd_profile(Namespace(config=str(p), target=None, force=False, profile_action="list"))
+    out = capsys.readouterr().out
+    assert "SET_ONE" in out and "UNSET_ONE" in out
+    assert "secret-VALUE" not in out
+    assert "未設定" in out
+
+
+def test_cmd_profile_list_does_not_echo_invalid_api_key_env(tmp_path, capsys):
+    from elab_doc_sync.cli import cmd_profile
+    data = {"profiles": {"a": {"url": "https://a.example", "api_key_env": "59-secretvalue"}},
+            "targets": [{"docs_dir": "docs/"}]}
+    p = tmp_path / ".elab-sync.yaml"
+    p.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    cmd_profile(Namespace(config=str(p), target=None, force=False, profile_action="list"))
+    out = capsys.readouterr().out
+    assert "secretvalue" not in out
+    assert "環境変数の名前ではありません" in out

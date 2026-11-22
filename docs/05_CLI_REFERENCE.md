@@ -390,10 +390,11 @@ esync verify [-t TARGET]
 ```bash
 esync profile list
 esync profile add team-b --url https://elab.example.com --api-key KEY [--no-verify]
+esync profile add team-c --url https://elab.example.com --api-key-env ENV_NAME [--no-verify]
 esync profile remove team-b
 ```
 
-`.elab-sync.yaml` の `profiles` セクションを編集します。`list` は URL・API キーの有無（✓/✗）・SSL 検証の有無を表示し、キー自体は表示しません。`elabftw` セクションは `default` として表示します。
+`.elab-sync.yaml` の `profiles` セクションを編集します。`--api-key-env` は、キーを設定ファイルに書かず、環境変数の名前を `api_key_env` として登録します（`--api-key` とは同時に指定できません）。`list` は URL・API キーの有無（✓/✗。`api_key_env` のときは環境変数の名前と設定の有無）・SSL 検証の有無を表示し、キー自体は表示しません。`elabftw` セクションは `default` として表示します。
 
 ## whoami — ユーザー情報
 

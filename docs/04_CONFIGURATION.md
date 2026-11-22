@@ -33,16 +33,22 @@ profiles:
     api_key: "key-b"
     verify_ssl: true
     team: "TeamB"
+  uptest:
+    url: "https://elab-test.example.com"
+    api_key_env: UPTEST_ELABFTW_API_KEY   # 環境変数の名前（キーの値は書かない）
 ```
 
 | キー | 必須 | デフォルト | 説明 |
 |---|---|---|---|
 | `url` | ✅ | — | eLabFTW の URL |
-| `api_key` | ✅ | — | API キー（`default` は環境変数で上書き可） |
+| `api_key` | `api_key_env` がなければ ✅（`default` は環境変数 `ELABFTW_API_KEY` だけでもよい） | — | API キー（`default` は環境変数で上書き可） |
+| `api_key_env` | — | — | API キーを読む環境変数の名前（半角英字またはアンダースコアで始まり、半角英数字とアンダースコアだけ）。指定すると、その環境変数だけを見る。空・null・空白だけはエラー |
 | `verify_ssl` | — | `true` | SSL 証明書を検証するか |
 | `team` | — | — | このキーが紐づくチーム名または ID。ターゲットの `team` からプロファイルを選ぶのに使う |
 
-環境変数 `ELABFTW_API_KEY` は default プロファイルの api_key を上書きする。`profiles` に `default` がなく `elabftw` セクションもない場合は、最初のプロファイルを既定の接続先として使う。プロファイルは `esync profile list/add/remove` でも編集できる。
+環境変数 `ELABFTW_API_KEY` は default プロファイルの api_key を上書きする（`api_key_env` を書いたプロファイルは除く）。
+
+`api_key_env` の優先の順: (1) `api_key_env` に書いた名前の環境変数（設定されていて空でないとき）→ (2) `api_key_env` を書いていない default プロファイル（と `elabftw` セクション）だけ `ELABFTW_API_KEY` → (3) 設定ファイルの `api_key`。`api_key_env` を書いたのに環境変数が未設定・空のときは、`ELABFTW_API_KEY` や `api_key` に黙って切り替えず、環境変数の名前を示してエラーにする（default は設定の読み込み時、名前付きのプロファイルはそのプロファイルを使うとき。`default` も `elabftw` もなく最初のプロファイルが既定の接続先になる場合は、そのプロファイルが読み込み時）。`elabftw` セクションにも同じ `api_key_env` を書ける。`profiles` に `default` がなく `elabftw` セクションもない場合は、最初のプロファイルを既定の接続先として使う。プロファイルは `esync profile list/add/remove` でも編集できる。
 
 ## ターゲット設定
 
@@ -163,5 +169,6 @@ push 時は各 `docs_dir` から送信され、pull 時はタグやタイトル�
 
 | 変数名 | 説明 |
 |---|---|
-| `ELABFTW_API_KEY` | default プロファイル（`elabftw` セクション）の api_key を上書き。`esync clone` でも使用 |
+| `ELABFTW_API_KEY` | default プロファイル（`elabftw` セクション）の api_key を上書き。`esync clone` でも使用。`api_key_env` を書いたプロファイルには効かない |
+| `api_key_env` で指定した名前 | そのプロファイルの API キー（名前は設定ファイルで決める） |
 | `ELABFTW_TEST_CONFIG` | 実機接続テストの設定ファイル（テスト専用、[テスト仕様](11_TEST_SPEC.md)） |
