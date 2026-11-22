@@ -152,18 +152,21 @@ def _parse_image_local_name(filename: str) -> str | None:
 
 
 def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, strict: bool = False,
-                     keep_existing: bool = False) -> str:
+                     keep_existing: bool = False, uploads=None, check_path=None, preview=False, exclusive_paths=()) -> str:
     """Markdown 内の eLabFTW 画像 URL をローカルにダウンロードし相対パスに書き換える。
 
+    preview=True は保存予定パスの検査のみ行い、画像の取得・ディレクトリの作成をしない。
     keep_existing=True では既存の画像ファイルを上書きしない（マージ時にローカルの編集を守る）。
     """
     try:
-        uploads = client.list_uploads(entity, entity_id)
+        if uploads is None:
+            uploads = client.list_uploads(entity, entity_id)
     except Exception as e:
         if strict:
             raise
         progress(f"    ⚠ 添付ファイル一覧の取得に失敗（{entity} #{entity_id}、画像のローカル化をスキップ）: {_error_text(client, e)}", warning=True)
         return body
+    saved = set()
     upload_map = {}
     id_map = {}
     for u in uploads:
@@ -193,23 +196,33 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
             # list_uploads にない画像: 絶対 URL に変換して保持
             if "app/download.php" in src and not src.startswith(("http://", "https://")):
                 abs_url = f"{client.base_url}/{src.lstrip('/')}"
-                progress(f"    画像を絶対 URL に変換: {Path(src).name[:40]}")
+                if not preview:
+                    progress(f"    画像を絶対 URL に変換: {Path(src).name[:40]}")
                 return f"![{alt}]({abs_url})"
             return m.group(0)
         real_name = matched_upload.get("real_name", f"upload_{matched_upload['id']}")
         local_name = _image_local_name(entity, entity_id, real_name)
         img_dir = docs_dir / "images"
+        dest = safe_path(docs_dir, f"images/{local_name}")
+        reference = f"![{alt}](images/{local_name})"
+        image = (dest, matched_upload["id"])
+        if image in saved:
+            return reference
+        if check_path:
+            check_path(dest, asset=True, upload_id=matched_upload["id"])
+        if preview:
+            return m.group(0)
         img_dir.mkdir(parents=True, exist_ok=True)
-        dest = safe_path(img_dir, local_name)
         if not dest.exists() or (strict and not keep_existing):
             data = client.download_upload(
                 entity_type=entity,
                 entity_id=entity_id,
                 upload_id=matched_upload["id"],
             )
-            atomic_write(dest, data)
+            atomic_write(dest, data, exclusive=dest in exclusive_paths)
             progress(f"    画像をダウンロード: {real_name}")
-        return f"![{alt}](images/{local_name})"
+        saved.add(image)
+        return reference
 
     return IMAGE_RE.sub(replace_match, body)
 
@@ -584,7 +597,7 @@ def _rewrite_local_links(body: str, entity: str, base_url: str,
                       他ターゲットのファイルへのリンクも解決するために使用
         source: この本文のローカルファイル。links と併せて相対パスを解決する
         links: 全ターゲットの文書とローカルパスの対応。source と併せて渡すと、これだけで解決する
-               （パス、次に一意なファイル名で照合し、mapping・all_mappings は使わない）。
+               （明示パスはそのまま照合する。ファイル名だけで指定され、その場所にファイルがない場合には、同種記事を優先して一意な同名文書を探す）。
                解決できないリンクはそのまま残す
     """
     def replace_link(m):
@@ -602,7 +615,13 @@ def _rewrite_local_links(body: str, entity: str, base_url: str,
 
         # 0. 全ターゲットの対応があれば、それだけで解決する（接続先の異なる紐付けは除外済み）
         if links is not None and source is not None:
-            url = links.url_for(Path(source).parent / link_path) or links.url_for_name(Path(link_path).name, entity)
+            named_path = Path(source).parent / link_path
+            try:
+                url = links.url_for(named_path)
+                if url is None and Path(link_path).name == link_path and not named_path.exists():
+                    url = links.url_for_name(link_path, entity)
+            except (OSError, ValueError, RuntimeError):
+                return m.group(0)
             return f"[{text}]({url}{fragment_suffix})" if url is not None else m.group(0)
 
         # パスからファイル名を抽出
@@ -1137,7 +1156,7 @@ def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int,
 
 
 def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, attachments_dir: Path, strict: bool = False,
-                          keep_existing: bool = False) -> None:
+                          keep_existing: bool = False, uploads=None, exclusive_paths=()) -> None:
     """リモートの非画像添付ファイルをローカルにダウンロードする。
 
     keep_existing=True では既存のファイルを上書きしない（マージ時にローカルの編集を守る）。
@@ -1147,13 +1166,13 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
     本ツールは単一プロセスでの実行を前提としている。
     """
     try:
-        uploads = client.list_uploads(entity, entity_id)
+        if uploads is None:
+            uploads = client.list_uploads(entity, entity_id)
     except Exception as e:
         if strict:
             raise
         progress(f"    ⚠ 添付ファイル一覧の取得に失敗: {_error_text(client, e)}", warning=True)
         return
-    attachments_dir.mkdir(parents=True, exist_ok=True)
     for u in uploads:
         rn = u.get("real_name")
         if not rn or _is_image(rn):
@@ -1164,6 +1183,9 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
             progress(f"    ⚠ 不正なファイル名をスキップ: {rn!r}", warning=True)
             continue
         dest = safe_path(attachments_dir, safe_name)
+        attachments_dir.mkdir(parents=True, exist_ok=True)
+        if dest in exclusive_paths and dest.exists():
+            raise FileExistsError(f"解放した保存先に別のファイルが作成されています: {dest}")
         if keep_existing and dest.exists():
             continue
         remote_size = int(u.get("filesize", 0) or 0)
@@ -1194,7 +1216,11 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
                     tp.chmod(orig_mode)
                 else:
                     tp.chmod(0o666 & ~_UMASK)
-                tp.replace(dest)
+                if dest in exclusive_paths:
+                    _os.link(tp, dest)
+                    tp.unlink()
+                else:
+                    tp.replace(dest)
             except Exception:
                 if tmp_file is not None:
                     try:
@@ -1342,6 +1368,13 @@ class EachDocsSyncer:
         # 文書間リンクの解決に使う全ターゲットの syncer（CLI が設定する）
         self.link_syncers = []
 
+    def readable_link_mapping(self):
+        """参照先候補を返す。読めない紐付けはリンクの自動変換には使わない。"""
+        try:
+            return self._load_mapping(migrate=False)
+        except (OSError, ValueError, TypeError, KeyError):
+            return {}
+
     def link_targets(self, mapping=None):
         """全ターゲットの追跡中の文書から、文書間リンクの対応を作る。
 
@@ -1352,24 +1385,30 @@ class EachDocsSyncer:
 
         def recorded_here(syncer, name):
             # 接続先を変える前の紐付けは、別サーバーの ID を指すため使わない
-            state = syncer._state(name)
-            return state is None or (state["server"] == str(syncer.client.base_url) and state["entity"] == syncer.entity)
+            try:
+                state = syncer._state(name)
+                return state is None or (state["server"] == str(syncer.client.base_url) and state["entity"] == syncer.entity)
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                return False
 
         for other in self.link_syncers:
             same_host = (other.client.base_url == self.client.base_url
                          or _hosts_match(self.client.base_url, other.client.base_url))
             if other.mapping_file == self.mapping_file or not same_host:
                 continue
-            for name, eid in other._load_mapping(migrate=False).items():
+            for name, eid in other.readable_link_mapping().items():
                 if not recorded_here(other, name):
                     continue
                 try:
                     links.add(other.entity, eid, other.file_path(name))
                 except ValueError:
                     continue  # 同名ファイルが複数ある文書は特定できない
-        for name, eid in (self._load_mapping(migrate=False) if mapping is None else mapping).items():
+        for name, eid in (self.readable_link_mapping() if mapping is None else mapping).items():
             if recorded_here(self, name):
-                links.add(self.entity, eid, self.file_path(name))
+                try:
+                    links.add(self.entity, eid, self.file_path(name))
+                except (OSError, ValueError):
+                    continue
         return links
 
     def _refresh_local_hash(self, filename, raw_body):
@@ -1387,22 +1426,33 @@ class EachDocsSyncer:
         return paths
 
     def _load_mapping(self, *, migrate=True):
-        if self.mapping_file.exists():
-            mapping = json.loads(self.mapping_file.read_text(encoding="utf-8"))
-        else:
-            legacy = self.project_root / ".elab-sync-ids/mapping.json"
-            mapping = {}
-            if legacy.exists() and legacy != self.mapping_file:
-                mapping = {name: eid for name, eid in json.loads(legacy.read_text(encoding="utf-8")).items()
-                           if (self.docs_dir / name).is_file()}
-                if mapping and migrate:
-                    snapshot(self.project_root, [self.hash_dir], "旧紐付けの移行")
-                    self._save_mapping(mapping)
-        if not isinstance(mapping, dict) or not all(isinstance(n, str) and Path(n).name == n and n not in ("", ".", "..")
-                                                    and isinstance(e, int) and e > 0 for n, e in mapping.items()):
-            raise ValueError(f"紐付け情報の形式が不正です: {self.mapping_file}")
-        if len(set(mapping.values())) != len(mapping):
-            raise ValueError("同じリモートIDに複数文書が紐付いています。紐付けを修正してください")
+        source = self.mapping_file
+        load_legacy = not source.exists()
+        if load_legacy:
+            source = self.project_root / ".elab-sync-ids/mapping.json"
+            if not source.exists() or source == self.mapping_file:
+                return {}
+        records = json.loads(source.read_text(encoding="utf-8"))
+        if not isinstance(records, dict):
+            raise ValueError(f"紐付け情報の形式が不正です: {source}")
+        mapping = {}
+        seen_ids = set()
+        for name, eid in records.items():
+            if not name or name in (".", "..") or Path(name).name != name or (load_legacy and "\\" in name):
+                if load_legacy:
+                    continue
+                raise ValueError(f"紐付け情報の形式が不正です: {source} のファイル名 {name!r}")
+            if load_legacy and not (self.docs_dir / name).is_file():
+                continue
+            if type(eid) is not int or eid <= 0:
+                raise ValueError(f"紐付け情報の形式が不正です: {source} の {name!r} の記事 ID")
+            if eid in seen_ids:
+                raise ValueError(f"同じリモートIDに複数文書が紐付いています。{source} の {name!r} と ID {eid} を確認してください")
+            seen_ids.add(eid)
+            mapping[name] = eid
+        if load_legacy and mapping and migrate:
+            snapshot(self.project_root, [self.hash_dir], "旧紐付けの移行")
+            self._save_mapping(mapping)
         return mapping
 
     def _save_mapping(self, mapping):

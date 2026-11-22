@@ -8,17 +8,20 @@ import json
 import shutil
 import sys
 from dataclasses import asdict, replace
+from fnmatch import fnmatch
+from functools import lru_cache
+from unicodedata import normalize
 from pathlib import Path
 
 import yaml
 from markdownify import markdownify as html_to_md
 
-from .safety import atomic_write, write_json, safe_path, snapshot, local_transaction, project_command, restore, BACKUPS, RECOVERY
+from .safety import hold_document, atomic_write, write_json, safe_path, snapshot, local_transaction, project_command, restore, BACKUPS, RECOVERY
 from .config import TargetConfig
 from .client import ELabFTWClient
 from .config import read_config as load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, append_target_to_yaml
 from .merge import merge_text
-from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _normalize_remote_image_urls, _download_attachments, _count_local_attachments, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
+from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _compute_file_hash, _is_image, _normalize_remote_image_urls, _download_attachments, _count_local_attachments, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
 from . import sync_log
 from .result import CommandResult, cli_echo, progress, error_text, returns_partial_result
 from . import update_check
@@ -90,12 +93,15 @@ def _relink_local_documents(syncers):
     changes = []
     for syncer in syncers:
         links = syncer.link_targets()
-        for name in syncer._load_mapping(migrate=False):
-            path = syncer.file_path(name)
-            if not path.is_file() or syncer._state(name) is None:
-                continue
-            body = path.read_text(encoding="utf-8").strip()
-            if syncer._has_changed(name, body):
+        for name in syncer.readable_link_mapping():
+            try:
+                path = syncer.file_path(name)
+                if not path.is_file() or syncer._state(name) is None:
+                    continue
+                body = path.read_text(encoding="utf-8").strip()
+                if syncer._has_changed(name, body):
+                    continue
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
                 continue
             relinked = _rewrite_elab_links_to_local(body, syncer.client.base_url, {}, syncer.entity,
                                                     source=path, links=links)
@@ -554,12 +560,14 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
                                                   "target": target.docs_dir, "entity_id": eid, "error": reason})
                     res.warn(f"  #{eid} の取得に失敗: {reason}")
                     failed += 1
+    outputs = _PullOutputs()
+    outputs.protect_tracked_attachments(config, root)
     for client, target, eid, data in jobs:
         doc = {"target": target.docs_dir, "entity": target.entity, "entity_id": eid, "server": client.base_url}
         res.data["documents"].append(doc)
         try:
             result = _pull_entity_to_target(client, config, config_path, target, root, eid, data, target.entity,
-                                            args.force, export, dry_run=dry_run, conflict_files=conflict_files)
+                                            args.force, export, dry_run=dry_run, conflict_files=conflict_files, outputs=outputs)
             doc["result"] = ("would_pull" if dry_run else "pulled") if result else "skipped"
             pulled += result
             skipped += int(result == 0)
@@ -661,31 +669,135 @@ def _create_target_from_remote(config, config_path, project_root, entity_type,
     return new_config.targets[-1]
 
 
+def _matches_relative_glob(path, pattern):
+    """まだ存在しないファイルも Path.glob と同じ階層単位で照合する。"""
+    names, parts = path.parts, Path(pattern).parts
+
+    @lru_cache(None)
+    def match(i, j):
+        if j == len(parts):
+            return i == len(names)
+        if parts[j] == "**":
+            return match(i, j + 1) or (i < len(names) and match(i + 1, j))
+        return i < len(names) and fnmatch(names[i], parts[j]) and match(i + 1, j + 1)
+
+    return match(0, 0)
+
+
+class _PullOutputs:
+    """一回の取得で文書・添付が必要とするファイル、ディレクトリ、追跡名。"""
+
+    def __init__(self):
+        self.files = {}
+        self.directories = set()
+        self.spellings = {}
+        self.names = {}
+        self.owners = {}
+        self.unknown_directories = set()
+        self.missing_records = set()
+        self.upload_ids = {}
+        self.released = set()
+
+    @staticmethod
+    def key(path):
+        return normalize("NFC", path.as_posix()).casefold()
+
+    def protect_tracked_attachments(self, config, root):
+        # 保存済みの同期記録だけを読むため、通信失敗や記事の取得順に左右されない。
+        for target in config.targets:
+            if not target.attachments_dir:
+                continue
+            directory = root / target.attachments_dir
+            syncer = EachDocsSyncer(None, target, root)
+            try:
+                server = get_client_for_target(config, target)[0].rstrip("/")
+                for name, eid in syncer._load_mapping(migrate=False).items():
+                    state = syncer._state(name)
+                    if state is None:
+                        self.missing_records.add(self.key(directory))
+                        continue
+                    owner_server = str(state.get("server") or server).rstrip("/")
+                    owner = (owner_server, state.get("entity") or target.entity, eid)
+                    uploads = state["remote"]["uploads"]
+                    if not isinstance(uploads, list):
+                        raise ValueError("添付一覧を確認できません")
+                    for upload in uploads:
+                        real_name = upload["real_name"]
+                        if not isinstance(real_name, str) or not real_name:
+                            raise ValueError("添付名を確認できません")
+                        if real_name and not _is_image(real_name):
+                            key = self.key(directory / Path(real_name).name)
+                            self.owners.setdefault(key, set()).add(owner)
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                # 所有者が読めない添付ディレクトリだけを保護し、独立した記事の取得は続ける。
+                self.unknown_directories.add(self.key(directory))
+
+    def include(self, other):
+        self.files.update(other.files)
+        self.directories.update(other.directories)
+        self.spellings.update(other.spellings)
+        self.names.update(other.names)
+        self.released.difference_update(other.files)
+        self.released.update(other.released)
+        if other.released:
+            for path in other.released:
+                self.files.pop(path, None)
+                self.spellings.pop(self.key(path), None)
+            self.names = {key: value for key, value in self.names.items() if value not in other.released}
+
+
 def _pull_entity_to_target(client, config, config_path, target, project_root,
-                           eid, data, entity_type, force, pull_dir_override, dry_run=False, conflict_files=None):
+                           eid, data, entity_type, force, pull_dir_override, dry_run=False, conflict_files=None, outputs=None):
     docs_dir = project_root / (pull_dir_override or Path(target.docs_dir))
     is_temp_export = docs_dir.resolve() != (project_root / target.docs_dir).resolve()
     syncer = EachDocsSyncer(client, target, project_root)
     syncer.link_syncers = _link_syncers(config, project_root)
     mapping = syncer._load_mapping(migrate=False)
-    def check_path(path):
+    article = _PullOutputs()
+    outputs = outputs or _PullOutputs()
+
+    def check_path(path, *, asset=False):
         connection = get_client_for_target(config, target)
         _pull_destination(config, project_root, path.parent, entity_type, connection)
         for owner in syncer.link_syncers:
-            if owner.target == target or not path.is_relative_to(owner.docs_dir.resolve()):
+            if not path.is_relative_to(owner.docs_dir.resolve()):
                 continue
-            owner_mapping = owner._load_mapping(migrate=False)
-            if path.name in owner_mapping and owner_mapping[path.name] != eid:
-                raise ConflictError(f"{path} は別のIDに紐付いています")
+            relative = path.relative_to(owner.docs_dir.resolve())
+            if _matches_relative_glob(relative, owner.target.pattern):
+                key = (owner.docs_dir.resolve(), owner.target.pattern, path.name)
+                previous = outputs.names.get(key, article.names.setdefault(key, path))
+                if previous != path:
+                    raise ConflictError(f"{path} と {previous} の追跡名が重複しています")
+                for local in owner.docs_dir.glob(owner.target.pattern):
+                    if local.is_file() and local.name == path.name and local != path and local not in outputs.released:
+                        raise ConflictError(f"{path} は既存ファイル {local} と同名です")
+            for name, tracked_id in owner._load_mapping(migrate=False).items():
+                if normalize("NFC", name).casefold() != normalize("NFC", path.name).casefold():
+                    continue
+                # docs/note.md と docs/sub/note.md を別々に追跡できるパターンもある。
+                tracked = owner.file_path(name)
+                if tracked in outputs.released:
+                    continue
+                same_path = tracked.resolve() == path.resolve() or (
+                    tracked.exists() and path.exists() and tracked.samefile(path))
+                if same_path:
+                    if asset or tracked_id != eid:
+                        raise ConflictError(f"{path} は追跡済みの別文書です")
+                elif name == path.name and _matches_relative_glob(
+                        path.relative_to(owner.docs_dir.resolve()), owner.target.pattern):
+                    raise ConflictError(f"{path} は既存の追跡名 {name} と重複します")
 
-    return _pull_each_entity(client, syncer, target, project_root, docs_dir, mapping,
+    result = _pull_each_entity(client, syncer, target, project_root, docs_dir, mapping,
                              {v: k for k, v in mapping.items()}, eid, data, entity_type,
-                             force, is_temp_export, dry_run=dry_run, conflict_files=conflict_files, check_path=check_path)
+                             force, is_temp_export, dry_run=dry_run, conflict_files=conflict_files, check_path=check_path,
+                             outputs=outputs, article=article)
+    outputs.include(article)
+    return result
 
 
 def _pull_each_entity(client, syncer, target, project_root, docs_dir,
                       mapping, reverse_mapping, eid, data, entity_type,
-                      force, is_temp_export, dry_run=False, conflict_files=None, check_path=None):
+                      force, is_temp_export, dry_run=False, conflict_files=None, check_path=None, outputs=None, article=None):
     title = data.get("title") or f"untitled_{eid}"
     if any(c in title for c in '/\\\x00<>:"|?*') or title in (".", ".."):
         raise ValueError(f"ファイル名にできないタイトルです: {title!r}")
@@ -695,15 +807,81 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
     # Keep a tracked document's subdirectory when the remote title changes.
     parent = old_path.parent if old_path else docs_dir
     filepath = safe_path(parent, filename)
-    if check_path:
-        check_path(filepath)
-        if old_path and old_path != filepath:
-            check_path(old_path)
-    if filename in mapping and mapping[filename] != eid and not is_temp_export:
+    outputs = outputs or _PullOutputs()
+    article = article or _PullOutputs()
+
+    exclusive_paths = set(outputs.released)
+    if not filepath.exists():
+        exclusive_paths.add(filepath)
+
+    def validate_output(path, *, asset=False, upload_id=None, upload=None):
+        safe_path(project_root, path.relative_to(project_root).as_posix())
+        if any(p.exists() and not p.is_dir() for p in path.parents):
+            raise ConflictError(f"保存先の親がディレクトリではありません: {path}")
+        if path.exists() and not path.is_file():
+            raise ConflictError(f"保存先が通常ファイルではありません: {path}")
+        key = outputs.key(path)
+        server = str(client.base_url).rstrip("/")
+        source = (server, entity_type, eid, asset, upload_id)
+        owner = (server, entity_type, eid)
+        owners = outputs.owners.get(key, set())
+        directory = outputs.key(path.parent)
+        if directory in outputs.unknown_directories or (directory in outputs.missing_records and path.exists()):
+            raise ConflictError(f"添付の同期記録を読み取れず、保存先の所有者を確認できません: {path}")
+        if directory in outputs.missing_records:
+            exclusive_paths.add(path)
+        if not dry_run and path in outputs.released and path.exists():
+            raise ConflictError(f"解放した保存先に別のファイルが作成されています: {path}")
+        if asset and article.upload_ids.setdefault(key, upload_id) != upload_id:
+            raise ConflictError(f"異なる添付 ID の保存先が重複しています: {path}")
+        if owners - {owner}:
+            digest = (upload or {}).get("sha256") or (upload or {}).get("hash")
+            if owner not in owners or not digest or not path.is_file() or _compute_file_hash(path) != digest:
+                raise ConflictError(f"{path} は別記事の追跡済み添付です")
+            # push が複数記事に添付した既知の同一データは、ダウンロードでも再利用する。
+            source = ("shared", digest)
+        parents = [outputs.key(p) for p in path.parents]
+        if asset and path.parent.is_dir():
+            for sibling in path.parent.iterdir():
+                if sibling.name != path.name and outputs.key(sibling) == key:
+                    raise ConflictError(f"添付名の大文字・小文字が既存ファイルと衝突しています: {path}")
+        for plan in (outputs, article):
+            spelling = plan.spellings.get(key)
+            if spelling and (asset or spelling[1]) and spelling[0] != path.as_posix():
+                raise ConflictError(f"添付の保存先が大文字・小文字だけ異なります: {path}")
+            if plan.files.get(path, source) != source or key in plan.directories or any(p in plan.spellings for p in parents):
+                raise ConflictError(f"取得するファイルの保存先が重複しています: {path}")
+        article.files[path] = source
+        article.spellings[key] = (path.as_posix(), asset)
+        article.directories.update(parents)
+        if asset:
+            for document in (filepath, old_path):
+                if document and (path == document or
+                                 (path.exists() and document.exists() and path.samefile(document))):
+                    raise ConflictError(f"画像・添付の保存先が本文と重複しています: {path}")
+        if check_path:
+            check_path(path, asset=asset)
+
+    validate_output(filepath)
+    if old_path and old_path != filepath:
+        validate_output(old_path)
+    if filename in mapping and mapping[filename] != eid and not is_temp_export and filepath not in outputs.released:
         raise ConflictError(f"{filename} は別のIDに紐付いています")
-    if old_path and old_path != filepath and filepath.exists():
+    if old_path and old_path != filepath and filepath.exists() and filepath not in outputs.released:
         raise ConflictError(f"リネーム先 {filename} が既に存在するため変更をスキップします")
+    # 同期前からある本文が、添付取得中に編集されても旧内容で処理しない。
+    tracked_path = old_path or filepath
+    initial_digest = _compute_file_hash(tracked_path) if tracked_path.is_file() else None
+
     uploads = client.list_uploads(entity_type, eid)
+    body_md = _remote_markdown(data, target)
+    if target.attachments_dir:
+        for upload in uploads:
+            name = upload.get("real_name")
+            if name and not _is_image(name) and Path(name).name not in ("", ".", ".."):
+                validate_output(safe_path(project_root / target.attachments_dir, Path(name).name), asset=True, upload_id=upload.get("id"), upload=upload)
+    _download_images(body_md, entity_type, eid, client, parent, uploads=uploads,
+                     check_path=validate_output, preview=True)
     merge = False
     if old_name and old_path.is_file():
         status = syncer.inspect(old_name, eid, data, uploads)
@@ -718,27 +896,27 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
             # Both sides changed: merge the remote body into the local edits.
             merge = state == "競合" and not is_temp_export
             metadata_pending = merge and syncer._has_meta_changed(old_name, Path(old_name).stem, target.category, target.tags)
-            if merge and dry_run:
-                progress(f"  [{title}] #{eid} → {filepath}（ローカル編集とマージ予定）")
-                return 1
             if state == "送信待ち":
                 progress(f"  [{title}] ローカル編集を保持（送信待ち）")
                 return 0
             if state == "最新" and old_path == filepath:
                 progress(f"  [{title}] 最新（スキップ）")
                 return 0
-    elif filepath.exists() and not force:
+    elif filepath.exists() and filepath not in outputs.released and not force:
         raise ConflictError(f"{filename}: 既にローカルに存在、基準情報なし。--force の前に差分を確認してください")
+    if old_path and old_path != filepath:
+        article.released.add(old_path)
     if dry_run:
-        progress(f"  [{title}] #{eid} → {filepath}（取得予定）")
+        action = "ローカル編集とマージ予定" if merge else "取得予定"
+        progress(f"  [{title}] #{eid} → {filepath}（{action}）")
         return 1
     paths = [docs_dir] if is_temp_export else syncer.backup_paths()
     if target.attachments_dir:
         paths.append(project_root / target.attachments_dir)
-    with local_transaction(project_root, paths, f"pull:{entity_type}/{eid}"):
+    with local_transaction(project_root, paths, f"pull:{entity_type}/{eid}") as backup_id:
         docs_dir.mkdir(parents=True, exist_ok=True)
-        body_md = _remote_markdown(data, target)
-        body_md = _download_images(body_md, entity_type, eid, client, parent, strict=True, keep_existing=merge)
+        body_md = _download_images(body_md, entity_type, eid, client, parent, strict=True, keep_existing=merge,
+                                   uploads=uploads, check_path=validate_output, exclusive_paths=exclusive_paths)
         new_mapping = dict(mapping)
         if old_name:
             new_mapping.pop(old_name, None)
@@ -749,14 +927,17 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
                                                target_docs_dir=target.docs_dir, source=filepath, links=links)
         if target.attachments_dir:
             _download_attachments(entity_type, eid, client, project_root / target.attachments_dir, strict=True,
-                                  keep_existing=merge)
-        local_md, conflicts = body_md, 0
-        if merge:
-            local_md, conflicts = merge_text(syncer.load_base(old_name), old_path.read_text(encoding="utf-8").strip(),
-                                             body_md, remote_label=f"#{eid}")
-        atomic_write(filepath, local_md + "\n")
-        if old_path and old_path != filepath:
-            old_path.unlink(missing_ok=True)
+                                  keep_existing=merge, uploads=uploads, exclusive_paths=exclusive_paths)
+        with hold_document(tracked_path, project_root / BACKUPS / backup_id, initial_digest) as held:
+            local_md, conflicts = body_md, 0
+            if merge:
+                local_md, conflicts = merge_text(syncer.load_base(old_name), held.read_text(encoding="utf-8").strip(),
+                                                 body_md, remote_label=f"#{eid}")
+            if tracked_path != filepath and tracked_path.exists():
+                raise ConflictError(f"取得中に改名元に本文が保存されました: {tracked_path}")
+            # 元のディレクトリ項目は退避済み。その後のエディタ保存には上書きしない。
+            mode = held.stat().st_mode & 0o777 if held is not None else None
+            atomic_write(filepath, local_md + "\n", mode=mode, exclusive=True)
         if not is_temp_export:
             applied_links = syncer.applied_links(old_name or filename)
             if old_name and old_name != filename:
@@ -1027,6 +1208,7 @@ def run_clone(args, echo=None) -> CommandResult:
     client = ELabFTWClient(url, api_key, verify_ssl=not args.no_verify)
     get_fn = client.get_experiment if entity == "experiments" else client.get_item
 
+    outputs = _PullOutputs()
     if getattr(args, "dry_run", False):
         preview_target = TargetConfig(title="", docs_dir=docs_dir, id_file=".elab-sync-ids/default.id",
                                       entity=entity, attachments_dir="attachments")
@@ -1037,9 +1219,11 @@ def run_clone(args, echo=None) -> CommandResult:
             res.data["documents"].append(doc)
             try:
                 data = get_fn(eid)
+                article = _PullOutputs()
                 _pull_each_entity(client, preview_syncer, preview_target, project_dir.resolve(),
                                   (project_dir / docs_dir).resolve(), {}, {}, eid, data, entity,
-                                  False, False, dry_run=True)
+                                  False, False, dry_run=True, outputs=outputs, article=article)
+                outputs.include(article)
                 doc["result"] = "would_clone"
             except Exception as exc:
                 reason = error_text(exc, api_key)
@@ -1085,9 +1269,11 @@ def run_clone(args, echo=None) -> CommandResult:
             continue
 
         try:
+            article = _PullOutputs()
             count = _pull_each_entity(client, syncer, target, project_dir.resolve(), docs_path.resolve(),
                                         mapping, {v: k for k, v in mapping.items()}, eid, data, entity,
-                                        False, False)
+                                        False, False, outputs=outputs, article=article)
+            outputs.include(article)
             cloned += count
             doc["result"] = "cloned" if count else "skipped"
         except Exception as exc:

@@ -237,10 +237,454 @@ def test_clone_recovery_hides_http_url(project, tmp_path, monkeypatch, capsys):
     error = requests.HTTPError("https://example.invalid/?sig=private-signature", response=response)
     with patch.object(cli, "ELabFTWClient") as factory:
         factory.return_value.get_item.return_value = {"title": "note", "body": "body"}
-        factory.return_value.list_uploads.side_effect = [[], error]
+        factory.return_value.list_uploads.return_value = [{"id": 1, "real_name": "asset.csv"}]
+        factory.return_value.download_upload.side_effect = error
         with pytest.raises(RuntimeError) as caught:
             cli.run_clone(project, echo=cli.cli_echo)
     res = caught.value.partial_result
     assert "HTTP 403" in str(caught.value)
     assert any("restore" in line for line in res.messages)
     assert "private-signature" not in str(caught.value) + capsys.readouterr().err + json.dumps(res.to_dict())
+
+
+def test_asset_cannot_replace_other_document(project, tmp_path):
+    path = tmp_path / ".elab-sync.yaml"
+    cfg = yaml.safe_load(path.read_text())
+    cfg["targets"][0]["attachments_dir"] = "other"
+    cfg["targets"].append({"docs_dir": "other", "id_file": ".other/id"})
+    path.write_text(yaml.safe_dump(cfg))
+    (tmp_path / ".other").mkdir()
+    (tmp_path / ".other/mapping.json").write_text('{"attachment.md":43}')
+    (tmp_path / "other").mkdir()
+    dest = tmp_path / "other/attachment.md"
+    dest.write_text("keep me")
+    project.target, project.dir, project.id = "docs", None, None
+    project.force, project.dry_run = True, False
+    with patch.object(cli, "ELabFTWClient") as factory:
+        client = factory.return_value
+        client.base_url = "https://example.invalid"
+        client.get_item.return_value = {"title": "note", "body": "body"}
+        client.list_uploads.return_value = [{"id": 9, "real_name": "attachment.md"}]
+        res = cli.run_pull(project)
+    assert res.exit_code == 1 and dest.read_text() == "keep me"
+    assert json.loads((tmp_path / ".other/mapping.json").read_text()) == {"attachment.md": 43}
+    client.download_upload.assert_not_called()
+
+
+def test_same_target_export_does_not_overwrite_other_id(project, tmp_path):
+    cfg_path = tmp_path / ".elab-sync.yaml"
+    cfg = yaml.safe_load(cfg_path.read_text())
+    cfg["targets"][0]["pattern"] = "**/*.md"
+    cfg_path.write_text(yaml.safe_dump(cfg))
+    sub = tmp_path / "docs/sub"
+    sub.mkdir()
+    dest = sub / "note.md"
+    (tmp_path / "docs/note.md").rename(dest)
+    project.target, project.dir, project.id, project.entity = "docs", "docs/sub", [1], "items"
+    project.force, project.dry_run = True, False
+    with patch.object(cli, "ELabFTWClient") as factory:
+        factory.return_value.get_item.return_value = {"title": "note", "body": "foreign"}
+        res = cli.run_pull(project)
+    assert res.exit_code == 1 and dest.read_text() == "# note"
+    assert json.loads((tmp_path / ".ids/mapping.json").read_text()) == {"note.md": 42}
+
+
+def test_child_target_can_update_its_own_document(project, tmp_path):
+    cfg_path = tmp_path / ".elab-sync.yaml"
+    cfg = yaml.safe_load(cfg_path.read_text())
+    cfg["targets"].append({"docs_dir": "docs/sub", "id_file": ".child/id"})
+    cfg_path.write_text(yaml.safe_dump(cfg))
+    dest = tmp_path / "docs/sub/note.md"
+    dest.parent.mkdir()
+    dest.write_text("child")
+    (tmp_path / ".child").mkdir()
+    (tmp_path / ".child/mapping.json").write_text('{"note.md": 7}')
+    project.target, project.dir, project.id = "docs/sub", None, None
+    project.force, project.dry_run = True, False
+    with patch.object(cli, "ELabFTWClient") as factory:
+        client = factory.return_value
+        client.base_url = "https://example.invalid"
+        client.get_item.return_value = {"title": "note", "body": "updated child"}
+        client.list_uploads.return_value = []
+        res = cli.run_pull(project)
+    assert res.exit_code == 0 and "updated child" in dest.read_text()
+    assert (tmp_path / "docs/note.md").read_text() == "# note"
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.parametrize("blocked_by_file", [False, True])
+def test_image_directory_conflict_before_transaction(project, tmp_path, dry_run, blocked_by_file):
+    cfg_path = tmp_path / ".elab-sync.yaml"
+    cfg = yaml.safe_load(cfg_path.read_text())
+    if blocked_by_file:
+        (tmp_path / "docs/images").write_text("keep")
+    else:
+        cfg["targets"].append({"docs_dir": "docs/images", "entity": "experiments"})
+    cfg_path.write_text(yaml.safe_dump(cfg))
+    project.target, project.entity, project.id, project.dir = "docs", "items", [3, 4], None
+    project.force, project.dry_run = True, dry_run
+    with patch.object(cli, "ELabFTWClient") as factory:
+        client = factory.return_value
+        client.base_url = "https://example.invalid"
+        client.get_item.side_effect = [{"title": "bad", "body": '<img src="/uploads/99">'},
+                                      {"title": "good", "body": "body"}]
+        client.list_uploads.return_value = [{"id": 99, "real_name": "abc.png"}]
+        res = cli.run_pull(project)
+    assert res.data["failed"] == res.data["pulled"] == 1
+    assert (tmp_path / "docs/images").is_file() == blocked_by_file
+    assert not (tmp_path / ".elab-sync-recovery.json").exists()
+    assert (tmp_path / "docs/good.md").exists() != dry_run
+
+
+@pytest.mark.parametrize("tracked", [True, False])
+def test_pull_rejects_new_duplicate_for_recursive_parent(project, tmp_path, tracked):
+    if not tracked:
+        (tmp_path / ".ids/mapping.json").write_text("{}")
+    path = tmp_path / ".elab-sync.yaml"
+    cfg = yaml.safe_load(path.read_text())
+    cfg["targets"][0]["pattern"] = "**/*.md"
+    cfg["targets"].append({"docs_dir": "docs/sub", "id_file": ".child/id"})
+    path.write_text(yaml.safe_dump(cfg))
+    project.target, project.entity, project.id, project.dir = "docs/sub", "items", [7], None
+    project.dry_run = False
+    with patch.object(cli, "ELabFTWClient") as factory:
+        factory.return_value.get_item.return_value = {"title": "note", "body": "child"}
+        res = cli.run_pull(project)
+    assert res.exit_code == 1 and not (tmp_path / "docs/sub/note.md").exists()
+    assert (tmp_path / "docs/note.md").read_text() == "# note"
+
+
+def test_pull_compares_existing_case_alias_by_identity(project, tmp_path):
+    tracked = tmp_path / "docs/note.md"
+    alias = tracked.with_name("NOTE.md")
+    if not alias.exists():
+        alias.hardlink_to(tracked)
+    project.target, project.entity, project.id, project.dir = "docs", "items", [11], None
+    project.force, project.dry_run = True, False
+    with patch.object(cli, "ELabFTWClient") as factory:
+        factory.return_value.get_item.return_value = {"title": "NOTE", "body": "wrong"}
+        res = cli.run_pull(project)
+    assert res.exit_code == 1 and alias.read_text() == tracked.read_text() == "# note"
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.parametrize("destination", ["docs", "docs/sub", "docs/new.md"])
+def test_pull_rejects_attachment_named_after_new_document(project, tmp_path, dry_run, destination):
+    cfg_path = tmp_path / ".elab-sync.yaml"
+    cfg = yaml.safe_load(cfg_path.read_text())
+    cfg["targets"][0].update(attachments_dir=destination, pattern="**/*.md")
+    cfg_path.write_text(yaml.safe_dump(cfg))
+    project.target, project.entity, project.id, project.dir = "docs", "items", [7], None
+    project.dry_run = dry_run
+    with patch.object(cli, "ELabFTWClient") as factory:
+        client = factory.return_value
+        client.get_item.return_value = {"title": "new", "body": "body"}
+        client.list_uploads.return_value = [{"id": 3, "real_name": "new.md"}]
+        res = cli.run_pull(project)
+    assert res.exit_code == 1 and not (tmp_path / "docs/new.md").exists()
+    assert not (tmp_path / ".elab-sync-recovery.json").exists()
+    client.download_upload.assert_not_called()
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_pull_rejects_two_uploads_for_single_image(project, tmp_path, dry_run):
+    project.target, project.entity, project.id, project.dir = "docs", "items", [7], None
+    project.dry_run = dry_run
+    with patch.object(cli, "ELabFTWClient") as factory:
+        client = factory.return_value
+        client.get_item.return_value = {"title": "picture", "body": '<img src="/uploads/1"><img src="/uploads/2">'}
+        client.list_uploads.return_value = [{"id": i, "real_name": "sample.png"} for i in (1, 2)]
+        res = cli.run_pull(project)
+    assert res.exit_code == 1 and not (tmp_path / "docs/picture.md").exists()
+    assert not (tmp_path / "docs/images").exists()
+    client.download_upload.assert_not_called()
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.parametrize("other_name", ["table.csv", "Table.csv"])
+def test_batch_pull_prevents_overwrite_between_articles(project, tmp_path, dry_run, other_name):
+    path = tmp_path / ".elab-sync.yaml"
+    cfg = yaml.safe_load(path.read_text())
+    cfg["targets"][0]["attachments_dir"] = "assets"
+    path.write_text(yaml.safe_dump(cfg))
+    project.target, project.entity, project.id, project.dir = "docs", "items", [7, 8, 9], None
+    project.dry_run = dry_run
+    with patch.object(cli, "ELabFTWClient") as factory:
+        client = factory.return_value
+        client.get_item.side_effect = lambda eid: {"title": f"entry{eid}", "body": "body"}
+        client.list_uploads.side_effect = lambda entity, eid: (
+            [{"id": eid + 20, "real_name": "table.csv" if eid == 7 else other_name}] if eid != 9 else [])
+        client.download_upload.side_effect = lambda **kwargs: str(kwargs["entity_id"]).encode()
+        res = cli.run_pull(project)
+    assert res.data["failed"] == 1 and res.data["pulled"] == 2
+    if dry_run:
+        assert not (tmp_path / "assets").exists()
+    else:
+        assert (tmp_path / "assets/table.csv").read_bytes() == b"7"
+        assert (tmp_path / "docs/entry9.md").is_file()
+        assert not (tmp_path / "docs/entry8.md").exists()
+
+@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.parametrize("missing_directory", [False, True])
+def test_batch_protects_previously_pulled_asset_before_owner_is_processed(project, tmp_path, dry_run, missing_directory):
+    path = tmp_path / ".elab-sync.yaml"
+    cfg = yaml.safe_load(path.read_text())
+    cfg["targets"][0]["attachments_dir"] = "assets"
+    path.write_text(yaml.safe_dump(cfg))
+    project.target, project.entity, project.id, project.dir = "docs", "items", [7], None
+    project.dry_run = False
+    with patch.object(cli, "ELabFTWClient") as factory:
+        client = factory.return_value
+        client.base_url = "https://example.invalid"
+        client.get_item.side_effect = lambda eid: {"title": f"entry{eid}", "body": "body"}
+        client.list_uploads.side_effect = lambda entity, eid: [{"id": eid * 10, "real_name": "table.csv"}]
+        client.download_upload.return_value = b"original"
+        assert cli.run_pull(project).exit_code == 0
+        (tmp_path / "assets/table.csv").write_bytes(b"local changes")
+        (tmp_path / "docs/entry7.md").write_text("<<<<<<< local\n=======\n>>>>>>> remote")
+        if missing_directory:
+            (tmp_path / "assets/table.csv").unlink()
+            (tmp_path / "assets").rmdir()
+        project.id, project.dry_run = [8, 7], dry_run
+        res = cli.run_pull(project)
+    assert "error" in res.data["documents"][0]
+    if not missing_directory:
+        assert (tmp_path / "assets/table.csv").read_bytes() == b"local changes"
+    assert not (tmp_path / "docs/entry8.md").exists()
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.parametrize("tracked", [False, True])
+def test_pull_batch_can_reuse_renamed_document_path(project, tmp_path, dry_run, tracked):
+    if tracked:
+        (tmp_path / "docs/beta.md").write_text("second")
+        (tmp_path / ".ids/mapping.json").write_text('{"note.md":42,"beta.md":8}')
+    project.target, project.entity, project.id, project.dir = "docs", "items", [42, 8], None
+    project.force, project.dry_run = True, dry_run
+    with patch.object(cli, "ELabFTWClient") as factory:
+        client = factory.return_value
+        client.base_url = "https://example.invalid"
+        client.get_item.side_effect = lambda eid: {"title": "renamed" if eid == 42 else "note", "body": "body"}
+        client.list_uploads.return_value = []
+        res = cli.run_pull(project)
+    assert res.exit_code == 0 and res.data["pulled"] == 2
+    if not dry_run:
+        assert json.loads((tmp_path / ".ids/mapping.json").read_text()) == {"renamed.md": 42, "note.md": 8}
+
+
+@pytest.mark.parametrize("same_directory", [True, False])
+@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.parametrize("record", ["broken", '{"remote":{}}'])
+def test_unreadable_attachment_records_only_block_affected_destinations(project, tmp_path, same_directory, dry_run, record):
+    config_path = tmp_path / ".elab-sync.yaml"
+    cfg = yaml.safe_load(config_path.read_text())
+    cfg["targets"][0]["attachments_dir"] = "assets"
+    cfg["targets"].append({"docs_dir": "other", "id_file": ".other/id",
+                           "attachments_dir": "assets" if same_directory else "other_assets"})
+    config_path.write_text(yaml.safe_dump(cfg))
+    (tmp_path / ".other").mkdir()
+    (tmp_path / ".other/mapping.json").write_text('{"old.md":55}')
+    (tmp_path / ".other/old.md.state.json").write_text(record)
+    (tmp_path / "other").mkdir()
+    (tmp_path / "other/old.md").write_text("keep")
+    project.target, project.entity, project.id, project.dir = "docs", "items", [7], None
+    project.dry_run = dry_run
+    with patch.object(cli, "ELabFTWClient") as factory:
+        factory.return_value.get_item.return_value = {"title": "new", "body": "body"}
+        factory.return_value.list_uploads.return_value = [{"id": 4, "real_name": "report.csv"}]
+        factory.return_value.base_url = "https://example.invalid"
+        factory.return_value.download_upload.return_value = b"csv"
+        res = cli.run_pull(project)
+    assert res.exit_code == int(same_directory)
+    assert not (tmp_path / ".elab-sync-recovery.json").exists()
+    assert (tmp_path / "docs/new.md").exists() == (not dry_run and not same_directory)
+
+
+def test_shared_attachment_still_checks_each_upload_id(project, tmp_path):
+    from hashlib import sha256
+    config_path = tmp_path / ".elab-sync.yaml"
+    cfg = yaml.safe_load(config_path.read_text())
+    cfg["targets"][0]["attachments_dir"] = "assets"
+    config_path.write_text(yaml.safe_dump(cfg))
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets/report.csv").write_bytes(b"shared")
+    (tmp_path / ".ids/mapping.json").write_text('{"note.md":42,"other.md":43}')
+    digest = sha256(b"shared").hexdigest()
+    entries = [{"id": i, "real_name": "report.csv", "hash": digest} for i in (1, 2)]
+    for name in ("note.md", "other.md"):
+        (tmp_path / ".ids" / f"{name}.state.json").write_text(json.dumps(
+            {"server": "https://example.invalid", "remote": {"uploads": entries[:1]}}))
+    project.target, project.entity, project.id, project.dir = "docs", "items", [42], None
+    project.dry_run = True
+    with patch.object(cli, "ELabFTWClient") as factory:
+        client = factory.return_value
+        client.base_url = "https://example.invalid"
+        client.get_item.return_value = {"title": "note", "body": "body"}
+        client.list_uploads.return_value = entries
+        res = cli.run_pull(project)
+    assert res.exit_code == 1 and "異なる添付 ID" in res.data["documents"][0]["error"]
+
+
+def test_rename_protects_new_file_at_released_path(project, tmp_path):
+    project.target, project.entity, project.id, project.dir = "docs", "items", [42, 8], None
+    project.force, project.dry_run = True, False
+    original = cli._pull_entity_to_target
+    released = tmp_path / "docs/note.md"
+    def pull(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if args[5] == 42:
+            released.write_text("editor save")
+        return result
+    with patch.object(cli, "ELabFTWClient") as factory, patch.object(cli, "_pull_entity_to_target", side_effect=pull):
+        client = factory.return_value
+        client.base_url = "https://example.invalid"
+        client.get_item.side_effect = lambda eid: {"title": "renamed" if eid == 42 else "note", "body": "body"}
+        client.list_uploads.return_value = []
+        res = cli.run_pull(project)
+    assert res.data["pulled"] == res.data["failed"] == 1
+    assert released.read_text() == "editor save"
+
+
+@pytest.mark.parametrize("asset", [True, False])
+def test_pull_preserves_recreated_file_during_download(project, tmp_path, asset):
+    cfg = Path(project.config)
+    settings = yaml.safe_load(cfg.read_text())
+    settings["targets"][0]["attachments_dir"] = "docs" if asset else "attachments"
+    cfg.write_text(yaml.safe_dump(settings))
+    project.target, project.entity, project.id, project.dir = "docs", "items", [42, 8], None
+    project.force, project.dry_run = True, False
+    released = tmp_path / "docs/note.md"
+
+    def download(**kwargs):
+        released.write_text("editor save")
+        return b"remote attachment"
+
+    with patch.object(cli, "ELabFTWClient") as factory:
+        client = factory.return_value
+        client.base_url = "https://example.invalid"
+        client.get_item.side_effect = lambda eid: {
+            "title": "renamed" if eid == 42 else ("second" if asset else "note"), "body": "body"}
+        client.list_uploads.side_effect = lambda entity, eid: (
+            [] if eid == 42 else [{"id": 7, "real_name": "note.md" if asset else "data.csv"}])
+        client.download_upload.side_effect = download
+        target = cli.load_config(cfg).targets[0]
+        cli.EachDocsSyncer(client, target, tmp_path)._save_baseline(
+            "note.md", "# note", {"title": "note", "body": "# note"}, [], base="# note")
+        res = cli.run_pull(project)
+    assert res.data["pulled"] == res.data["failed"] == 1
+    assert released.read_text() == "editor save"
+    from elab_doc_sync.safety import BACKUPS, RECOVERY
+    recovery_id = json.loads((tmp_path / RECOVERY).read_text())["backup"]
+    project.backup_id = recovery_id
+    restored = cli.run_restore(project)
+    assert restored.exit_code == 0
+    directory = tmp_path / BACKUPS
+    saved = next(p for p in directory.glob("*/manifest.json")
+                 if json.loads(p.read_text())["reason"] == f"restore:{recovery_id}")
+    digest = json.loads(saved.read_text())["files"]["docs/note.md"]["sha256"]
+    assert (saved.parent / digest).read_text() == "editor save"
+    assert str(saved) in "\n".join(restored.messages)
+
+
+def test_missing_state_keeps_existing_attachment(project, tmp_path):
+    cfg = Path(project.config)
+    settings = yaml.safe_load(cfg.read_text())
+    settings["targets"][0]["attachments_dir"] = "assets"
+    cfg.write_text(yaml.safe_dump(settings))
+    existing = tmp_path / "assets/table.csv"
+    existing.parent.mkdir()
+    existing.write_bytes(b"local edit")
+    project.target, project.entity, project.id, project.dir = "docs", "items", [8], None
+    project.force, project.dry_run = True, False
+    with patch.object(cli, "ELabFTWClient") as factory:
+        client = factory.return_value
+        client.get_item.return_value = {"title": "second", "body": "body"}
+        client.list_uploads.return_value = [{"id": 9, "real_name": "table.csv"}]
+        res = cli.run_pull(project)
+    assert res.exit_code == 1
+    assert existing.read_bytes() == b"local edit"
+    client.download_upload.assert_not_called()
+
+
+def test_unreadable_target_never_redirects_explicit_link(tmp_path):
+    from elab_doc_sync.sync import LinkTargets, _rewrite_local_links
+
+    intended = tmp_path / "a/ref.md"
+    intended.parent.mkdir()
+    intended.write_text("unreadable tracking record")
+    links = LinkTargets("https://example.invalid")
+    links.add("items", 9, tmp_path / "b/ref.md")
+    body = "[reference](../a/ref.md)"
+    assert _rewrite_local_links(body, "items", links.base_url, {}, source=tmp_path / "c/doc.md", links=links) == body
+
+
+def test_rename_source_edited_while_fetching_is_preserved(project, tmp_path):
+    config = Path(project.config)
+    settings = yaml.safe_load(config.read_text())
+    settings["targets"][0]["attachments_dir"] = "assets"
+    config.write_text(yaml.safe_dump(settings))
+    project.target, project.entity, project.id, project.dir = "docs", "items", [42], None
+    project.force, project.dry_run = False, False
+    original = tmp_path / "docs/note.md"
+    with patch.object(cli, "ELabFTWClient") as factory:
+        client = factory.return_value
+        client.base_url = "https://example.invalid"
+        target = cli.load_config(config).targets[0]
+        cli.EachDocsSyncer(client, target, tmp_path)._save_baseline(
+            "note.md", "# note", {"title": "note", "body": "# note"}, [], base="# note")
+        client.get_item.return_value = {"title": "renamed", "body": "new body"}
+        client.list_uploads.return_value = [{"id": 7, "real_name": "data.csv"}]
+
+        def download(**kwargs):
+            original.write_text("editor save")
+            return b"csv"
+
+        client.download_upload.side_effect = download
+        res = cli.run_pull(project)
+    assert res.exit_code == 1
+    assert original.read_text() == "editor save"
+    assert not (tmp_path / "docs/renamed.md").exists()
+    assert json.loads((tmp_path / ".ids/mapping.json").read_text()) == {"note.md": 42}
+
+
+def test_legacy_mapping_skips_retired_paths(project, tmp_path):
+    target = cli.load_config(Path(project.config)).targets[0]
+    (tmp_path / ".ids/mapping.json").unlink()
+    legacy = tmp_path / ".elab-sync-ids/mapping.json"
+    legacy.parent.mkdir()
+    legacy.write_text(json.dumps({"retired/missing.md": 2, "note.md": 42}))
+    syncer = cli.EachDocsSyncer(None, target, tmp_path)
+    assert syncer._load_mapping(migrate=False) == {"note.md": 42}
+    assert not syncer.mapping_file.exists()
+    assert syncer._load_mapping() == {"note.md": 42}
+    assert json.loads(syncer.mapping_file.read_text()) == {"note.md": 42}
+
+
+@pytest.mark.parametrize("rename", [True, False])
+def test_pull_captures_edit_at_replacement(project, tmp_path, monkeypatch, rename):
+    from elab_doc_sync.safety import BACKUPS, RECOVERY
+
+    project.target, project.entity, project.id, project.dir = "docs", "items", [42], None
+    project.force, project.dry_run = True, False
+    original = tmp_path / "docs/note.md"
+    rename_path = Path.rename
+
+    def save_then_rename(src, dest):
+        if src == original and dest.parent.name == "displaced":
+            src.write_text("edited at replacement")
+        return rename_path(src, dest)
+
+    monkeypatch.setattr(Path, "rename", save_then_rename)
+    with patch.object(cli, "ELabFTWClient") as factory:
+        client = factory.return_value
+        client.base_url = "https://example.invalid"
+        client.get_item.return_value = {"title": "renamed" if rename else "note", "body": "remote change"}
+        client.list_uploads.return_value = []
+        res = cli.run_pull(project)
+    assert res.exit_code == 1 and original.read_text() == "edited at replacement"
+    assert json.loads((tmp_path / ".ids/mapping.json").read_text()) == {"note.md": 42}
+    project.backup_id = json.loads((tmp_path / RECOVERY).read_text())["backup"]
+    saved = tmp_path / BACKUPS / project.backup_id / "displaced/note.md"
+    assert saved.read_text() == "edited at replacement"
+    assert cli.run_restore(project).exit_code == 0
+    assert saved.read_text() == "edited at replacement"

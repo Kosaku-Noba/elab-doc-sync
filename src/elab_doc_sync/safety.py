@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from functools import wraps
+import errno
 import hashlib
 import json
 import os
@@ -17,7 +18,7 @@ BACKUPS = ".elab-sync-backups"
 RECOVERY = ".elab-sync-recovery.json"
 
 
-def atomic_write(path: Path, data: str | bytes, mode: int | None = None) -> None:
+def atomic_write(path: Path, data: str | bytes, mode: int | None = None, *, exclusive=False) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_symlink():
@@ -31,9 +32,59 @@ def atomic_write(path: Path, data: str | bytes, mode: int | None = None) -> None
             stream.flush()
             os.fsync(stream.fileno())
         os.chmod(name, mode)
-        os.replace(name, path)
+        if exclusive:
+            os.link(name, path)
+        else:
+            os.replace(name, path)
     finally:
         Path(name).unlink(missing_ok=True)
+
+
+@contextmanager
+def hold_document(path: Path, backup: Path, expected_digest: str | None):
+    """対象のディレクトリ項目を先に移し、置換の瞬間にあった実ファイルを残す。"""
+    if expected_digest is None:
+        yield None
+        return
+    archive = backup / "displaced" / path.name
+    archive.parent.mkdir(mode=0o700)
+    held = archive
+    try:
+        path.rename(archive)
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+        # 別マウントでも元の名前の取り外しは同じディレクトリ内で行う。
+        held = Path(tempfile.mkdtemp(prefix=".elab-displaced-", dir=path.parent)) / "body"
+        try:
+            path.rename(held)
+        except BaseException:
+            held.parent.rmdir()
+            raise
+    archived = held == archive
+    try:
+        if held.is_symlink() or not held.is_file():
+            raise ValueError(f"保存先が通常の本文ファイルではなくなりました: {held}")
+        if not archived:
+            shutil.copy2(held, archive)
+            archived = True
+        digest = hashlib.sha256(held.read_bytes()).hexdigest()
+        if digest != expected_digest:
+            raise ValueError(f"取得中に本文が変更されました。退避した編集版: {archive}")
+        yield held
+    except BaseException:
+        # 外部で再作成されたファイルがあればそれを保持する。
+        try:
+            os.link(held, path, follow_symlinks=False)
+        except OSError:
+            pass
+        progress(f"  置換直前の版: {archive if archived else held}。restore 前に必要な編集を復元対象の外にコピーしてください",
+                 warning=True)
+        raise
+    finally:
+        if held != archive and archived:
+            held.unlink(missing_ok=True)
+            held.parent.rmdir()
 
 
 def write_json(path: Path, data) -> None:
@@ -200,7 +251,10 @@ def restore(root: Path, backup_id: str, dry_run: bool = False) -> list[dict]:
     if dry_run:
         return manifest["roots"]
     # Preserve everything currently present before restoring an earlier state.
-    with local_transaction(root, paths, f"restore:{backup_id}", recovering=True):
+    with local_transaction(root, paths, f"restore:{backup_id}", recovering=True) as saved:
+        progress(f"  復元直前のファイル一覧: {root / BACKUPS / saved / 'manifest.json'}")
+        progress("  個別に取り出すには、files にある元のパスの sha256 と同名のファイルを、"
+                 "この一覧と同じディレクトリから別の場所にコピーしてください。")
         for path in paths:
             if path.is_dir():
                 shutil.rmtree(path)
