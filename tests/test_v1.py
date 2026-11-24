@@ -2261,3 +2261,27 @@ def test_unmatched_backticks_in_separate_paragraphs_leave_image_active(project):
     assert syncer.dry_run()[0]["images"] == 1
     assert syncer.sync() == 1
     assert "blob100" in remote[1]["body"]
+
+
+def test_article_link_after_incomplete_image_example_never_uploads_markdown(project):
+    root, client, remote, syncer, _ = project
+    (root / "docs/other.md").write_text("linked note")
+    (root / "docs/a.md").write_text("`![`\n\n[related](other.md)")
+    assert syncer.dry_run()[0]["images"] == 0
+    assert syncer.sync() == 2
+    mapping = syncer._load_mapping()
+    assert remote[mapping["a.md"]]["body"].endswith(f"database.php?mode=view&id={mapping['other.md']})")
+    client.upload_file.assert_not_called()
+
+
+@pytest.mark.parametrize("image", [False, True])
+def test_attachment_with_bracket_in_code_label_is_uploaded(project, image):
+    root, client, remote, syncer, _ = project
+    _stateful_uploads(client)
+    filename = "plot.png" if image else "result.csv"
+    (root / f"docs/{filename}").write_bytes(b"content")
+    label = ("!" if image else "") + "[result `x[i]`]"
+    (root / "docs/a.md").write_text(f"{label}({filename})")
+    assert syncer.sync() == 1
+    client.upload_file.assert_called_once()
+    assert label in remote[1]["body"] and "blob100" in remote[1]["body"]

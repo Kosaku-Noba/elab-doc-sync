@@ -174,37 +174,76 @@ def _attachment_links(body, content_type):
     return parser.urls
 
 
+class _MarkdownLinkPositions(HTMLParser):
+    """Read labeled source positions from the links produced by Python-Markdown."""
+
+    def __init__(self, prefix):
+        super().__init__()
+        self.marker = re.compile(re.escape(prefix) + r"(\d+)-end")
+        self.starts = {}
+        self.ends = set()
+        self.anchor = None
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag not in ("a", "img"):
+            return
+        target = self.marker.match(attrs.get("href" if tag == "a" else "src") or "")
+        if target:
+            end = int(target[1])
+            if tag == "a":
+                self.anchor = end
+            else:
+                self._label(attrs.get("alt", ""), end, tag)
+
+    def _label(self, label, end, tag):
+        start = self.marker.match(label)
+        if start:
+            self.starts[int(start[1])] = tag
+            self.ends.add(end)
+
+    def handle_data(self, data):
+        if self.anchor is not None:
+            self._label(data, self.anchor, "a")
+            self.anchor = None
+
+    def handle_endtag(self, tag):
+        if tag == "a":
+            self.anchor = None
+
+
 def _protect_literal_links(body):
-    """Markdown が表示例として扱うリンク記法を、添付の置換・探索から外す。"""
+    """Keep only the Markdown link delimiters recognized in rendered href/src attributes."""
     if "](" not in body:
         return body, {}
     prefix = "elabsync" + uuid.uuid4().hex + "-"
-    positions = list(re.finditer(r"\]\([ \t]*<?", body))
-    parts = []
-    start = 0
-    for match in positions:
-        parts.extend((body[start:match.end()], f"{prefix}{match.start()}-end"))
-        start = match.end()
-    # Render the original block structure: only a genuine href/src contains its marker.
-    urls = _attachment_links("".join(parts) + body[start:], 2)
-    active = set()
-    for url in urls:
-        if isinstance(url, str) and url.startswith(prefix):
-            marker, separator, _ = url[len(prefix):].partition("-end")
-            if separator and marker.isdecimal():
-                active.add(int(marker))
-    parts = []
+    delimiters = re.compile(r"\[|\]\([ \t]*<?")
+    def mark(match):
+        return match.group() + f"{prefix}{match.start()}-end"
+    parser = _MarkdownLinkPositions(prefix)
+    parser.feed(_md_to_html(delimiters.sub(mark, body)))
+    parser.close()
+
+    # Leave the destination itself intact, including square brackets in file names.
+    in_destination = set()
+    for end in parser.ends:
+        stop = body.find(")", end + 2)
+        if stop != -1:
+            in_destination.update(range(end + 2, stop))
     literals = {}
-    start = 0
-    for match in positions:
-        if match.start() in active:
-            continue
-        marker = f"{prefix}{match.start()}-end"
-        # Keep the closing bracket to delimit the preceding label during regex matching.
-        parts.extend((body[start:match.start()+1], marker))
-        literals[marker] = "("
-        start = match.start() + 2
-    return "".join(parts) + body[start:], literals
+    def protect(match):
+        pos = match.start()
+        char = match.group()
+        if pos in in_destination:
+            return char
+        if (char == "[" and pos in parser.starts) or (char == "]" and pos in parser.ends):
+            return char
+        if char == "!" and parser.starts.get(pos + 1) != "a":
+            return char
+        marker = f"{prefix}{pos}-end"
+        literals[marker] = char
+        return marker
+    return re.sub(r"[\[\]]|!(?=\[)", protect, body), literals
 
 
 def _restore_literal_links(body, literals):
