@@ -918,6 +918,9 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
                 return 0
     elif filepath.exists() and filepath not in outputs.released and not force:
         raise ConflictError(f"{filename}: 既にローカルに存在、基準情報なし。--force の前に差分を確認してください")
+    if merge:
+        syncer.check_merge_asset_sources(old_name, uploads)
+    downloaded = {}
     expected_files = {}
     keep_paths = set()
     if target.attachments_dir:
@@ -939,7 +942,10 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
                 continue
             remote_hash = upload_sha256(upload) or client.upload_digest(entity_type=entity_type, entity_id=eid,
                                                                       upload_id=upload["id"])
-            if digest == remote_hash or (merge and old_hash == remote_hash):
+            old_digest = old.get("hash")
+            same_legacy_hash = (isinstance(old_digest, str) and re.fullmatch(r"[a-fA-F0-9]{32}", old_digest)
+                                and old_digest == upload.get("hash") and old.get("id") == upload.get("id"))
+            if digest == remote_hash or (merge and (old_hash == remote_hash or same_legacy_hash)):
                 keep_paths.add(dest)
                 continue
             raise ConflictError(f"ローカルの添付を上書きできません: {dest}。内容を確認し、必要なら別名で保存してください")
@@ -955,7 +961,7 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
     with local_transaction(project_root, paths, f"pull:{entity_type}/{eid}") as backup_id:
         docs_dir.mkdir(parents=True, exist_ok=True)
         body_md = _download_images(body_md, entity_type, eid, client, parent, strict=True, keep_existing=merge,
-                                   uploads=uploads, check_path=validate_output, exclusive_paths=exclusive_paths)
+                                   uploads=uploads, check_path=validate_output, exclusive_paths=exclusive_paths, digests=downloaded)
         new_mapping = dict(mapping)
         if old_name:
             new_mapping.pop(old_name, None)
@@ -967,7 +973,7 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
         if target.attachments_dir:
             _download_attachments(entity_type, eid, client, project_root / target.attachments_dir, strict=True,
                                   uploads=uploads, exclusive_paths=exclusive_paths, expected_files=expected_files,
-                                  backup=project_root / BACKUPS / backup_id, keep_paths=keep_paths)
+                                  backup=project_root / BACKUPS / backup_id, keep_paths=keep_paths, digests=downloaded)
             body_md = _localize_attachment_links(body_md, uploads, project_root / target.attachments_dir,
                                                 filepath, client.base_url, entity_type, eid)
         with hold_document(tracked_path, project_root / BACKUPS / backup_id, initial_digest) as held:
@@ -997,7 +1003,8 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
             if merge:
                 syncer.save_merge_baseline(filename, body_md, data, uploads, metadata_pending)
             else:
-                syncer._save_baseline(filename, body_md, data, uploads, links=applied_links)
+                assets_hash = syncer._compute_assets_hash(body_md, filename, downloaded=downloaded)
+                syncer._save_baseline(filename, body_md, data, uploads, links=applied_links, assets_hash=assets_hash)
             pending = syncer._pending()
             pending.pop(old_name or filename, None)
             syncer._save_pending(pending)

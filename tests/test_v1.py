@@ -484,6 +484,57 @@ def test_pull_retains_edit_made_while_downloading_attachment(project):
     assert (root / RECOVERY).exists()
 
 
+@pytest.mark.parametrize("name,syntax", [("protocol.pdf", "[file]"), ("plot.png", "![plot]")])
+def test_merge_stops_if_the_document_can_resend_an_old_asset(project, name, syntax):
+    from hashlib import sha256
+    root, client, remote, syncer, args = project
+    cfg = root / ".elab-sync.yaml"
+    config = yaml.safe_load(cfg.read_text())
+    config["targets"][0]["attachments_dir"] = "assets"
+    cfg.write_text(yaml.safe_dump(config))
+    syncer.target.attachments_dir = "assets"
+    uploads = _stateful_uploads(client)
+    (root / "docs" / name).write_bytes(b"old")
+    note = root / "docs/a.md"
+    note.write_text(f"{syntax}({name})")
+    assert syncer.sync() == 1
+    note.write_text(note.read_text() + "\nlocal edit")
+    uploads[1][0].update(hash=sha256(b"new").hexdigest(), long_name="newblob")
+    remote[1]["body"] = remote[1]["body"].replace("blob100", "newblob")
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
+        assert cmd_pull(args()) == 1
+    assert syncer.inspect("a.md", 1)["state"] == "競合"
+    assert (root / "docs" / name).read_bytes() == b"old"
+    assert not (root / RECOVERY).exists()
+
+
+def test_pull_uses_downloaded_digests_after_another_file_is_edited(project):
+    from hashlib import sha256
+    root, client, remote, syncer, args = project
+    cfg = root / ".elab-sync.yaml"
+    config = yaml.safe_load(cfg.read_text())
+    config["targets"][0]["attachments_dir"] = "assets"
+    cfg.write_text(yaml.safe_dump(config))
+    syncer.target.attachments_dir = "assets"
+    uploads = _stateful_uploads(client)
+    (root / "assets").mkdir()
+    a, b = (root / "assets" / name for name in ("a.csv", "b.csv"))
+    a.write_bytes(b"a")
+    b.write_bytes(b"b")
+    (root / "docs/note.md").write_text("[a](../assets/a.csv) [b](../assets/b.csv)")
+    assert syncer.sync() == 1
+    b_record = next(u for u in uploads[1] if u["real_name"] == b.name)
+    b_record.update(hash=sha256(b"new").hexdigest(), filesize=3)
+    def download(**kwargs):
+        a.write_bytes(b"local edit")
+        return b"new"
+    client.download_upload.side_effect = download
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
+        assert cmd_pull(args()) == 0
+    assert a.read_bytes() == b"local edit" and b.read_bytes() == b"new"
+    assert syncer.inspect("note.md", 1)["state"] == "送信待ち"
+
+
 def test_local_asset_edit_is_not_overwritten_by_remote_change(project):
     root, client, remote, syncer, args = project
     images = root / "docs/images"

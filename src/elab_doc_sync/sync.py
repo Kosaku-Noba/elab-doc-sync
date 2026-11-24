@@ -343,7 +343,7 @@ def _download_long_name(src):
 
 
 def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, strict: bool = False,
-                     keep_existing: bool = False, uploads=None, check_path=None, preview=False, exclusive_paths=()) -> str:
+                     keep_existing: bool = False, uploads=None, check_path=None, preview=False, exclusive_paths=(), digests=None) -> str:
     """Markdown 内の eLabFTW 画像 URL をローカルにダウンロードし相対パスに書き換える。
 
     preview=True は保存予定パスの検査のみ行い、画像の取得・ディレクトリの作成をしない。
@@ -406,6 +406,8 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
                 entity_id=entity_id,
                 upload_id=matched_upload["id"],
             )
+            if digests is not None:
+                digests[dest] = hashlib.sha256(data).hexdigest()
             atomic_write(dest, data, exclusive=dest in exclusive_paths)
             progress(f"    画像をダウンロード: {real_name}")
         saved.add(image)
@@ -1233,10 +1235,9 @@ def _localize_attachment_links(body, uploads, directory, source, base_url, entit
     def replace(link):
         local = paths.get(link.url)
         if local is None:
-            base, sep, fragment = link.url.partition("#")
-            if sep and base in paths and base.startswith("/"):
+            if link.url.startswith(("/app/download.php?", "/api/v2/")):
                 site = urlsplit(base_url)
-                return link.with_url(f"{site.scheme}://{site.netloc}{base}#{fragment}")
+                return link.with_url(f"{site.scheme}://{site.netloc}{link.url}")
             return link.original
         destination = _html.escape(local, quote=False)
         if not re.fullmatch(r"[\w./-]+", local) and link.original[link.target_start-1] != "<":
@@ -1247,14 +1248,13 @@ def _localize_attachment_links(body, uploads, directory, source, base_url, entit
 
 
 def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, attachments_dir: Path, strict: bool = False,
-                          keep_existing: bool = False, uploads=None, exclusive_paths=(), backup=None, expected_files=None, keep_paths=()) -> None:
+                          keep_existing: bool = False, uploads=None, exclusive_paths=(), backup=None, expected_files=None, keep_paths=(), digests=None) -> None:
     """リモートの非画像添付ファイルをローカルにダウンロードする。
 
-    keep_existing=True では既存のファイルを上書きしない（マージ時にローカルの編集を守る）。
-
-    書き込みはテンポラリファイル経由で行い、既存ファイルの部分破損を防ぐ。
-    fsync は行わないため、電源断やカーネルクラッシュ時のデータ保全は保証しない。
-    本ツールは単一プロセスでの実行を前提としている。
+    keep_paths にはマージ時に保持するパスを渡す。pull は expected_files に保存前の
+    SHA-256（新規作成なら None）を記録し、既存ファイルを backup に退避してから
+    atomic_write で排他的に公開する。digests には確認・取得した内容を記録する。
+    keep_existing=True は既存の呼び出し用で、保存済みのファイルをすべて保持する。
     """
     try:
         if uploads is None:
@@ -1278,6 +1278,8 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
         if dest in exclusive_paths and dest.exists():
             raise FileExistsError(f"解放した保存先に別のファイルが作成されています: {dest}")
         if dest in keep_paths or (keep_existing and dest.exists()):
+            if digests is not None:
+                digests[dest] = expected_files[dest]
             continue
         remote_size = int(u.get("filesize", 0) or 0)
         if dest.exists() and remote_size:
@@ -1288,6 +1290,8 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
                 if remote_hash:
                     local_hash = _compute_file_hash(dest)
                     if local_hash == remote_hash:
+                        if digests is not None:
+                            digests[dest] = local_hash
                         continue
                 elif not strict:
                     continue
@@ -1295,6 +1299,8 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
             overwriting = dest.exists()
             orig_mode = dest.stat().st_mode & 0o777 if overwriting else None
             data = client.download_upload(entity_type=entity, entity_id=entity_id, upload_id=u["id"])
+            if digests is not None:
+                digests[dest] = hashlib.sha256(data).hexdigest()
             if expected_files is not None:
                 expected = expected_files[dest]
                 with hold_document(dest, backup, expected, asset=True) as held:
@@ -1623,7 +1629,7 @@ class EachDocsSyncer:
         else:
             self.client.update_item(eid, **fields)
 
-    def _compute_assets_hash(self, raw_body, filename=None, *, body_evidence=None):
+    def _compute_assets_hash(self, raw_body, filename=None, *, body_evidence=None, downloaded=None):
         parts = []
         document_dir = self.file_path(filename).parent if filename else self.docs_dir
         # Preserve the image-first order used by existing asset hashes.
@@ -1636,8 +1642,39 @@ class EachDocsSyncer:
                 parts.append(f"{src}:{body_evidence.get(src, 'missing')}")
                 continue
             path = _resolve_asset_path(document_dir, self.project_root, src, strict=True)
-            parts.append(f"{src}:{_compute_file_hash(path) if path.is_file() else 'missing'}")
+            if downloaded is not None and path in downloaded:
+                parts.append(f"{src}:{downloaded[path]}")
+            else:
+                parts.append(f"{src}:{_compute_file_hash(path) if path.is_file() else 'missing'}")
         return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
+
+    def check_merge_asset_sources(self, filename, uploads):
+        """Refuse to adopt a changed remote upload while a merge can retain an older local source."""
+        previous = self._state(filename)["remote"]["uploads"]
+        current = self._remote_signature({}, uploads)["uploads"]
+        if previous == current:
+            return
+        source = self.file_path(filename)
+        directory = self.project_root / self.target.attachments_dir if self.target.attachments_dir else None
+        for link in _body_links(source.read_text(encoding="utf-8")):
+            src = link.url
+            if src.startswith(("http://", "https://", "//", "#", "mailto:", "data:")) or src.split("#")[0].endswith(".md"):
+                continue
+            path = _resolve_asset_path(source.parent, self.project_root, src, strict=True)
+            if not path.is_file():
+                continue
+            name = (_parse_image_local_name(path.name) if link.image else None) or path.name
+            old = [u for u in previous if u["real_name"] == name]
+            new = [u for u in current if u["real_name"] == name]
+            if new == old:
+                continue
+            # Normal non-image downloads perform a separate three-way check at this exact destination.
+            if directory and not _is_image(name) and new and path == directory / name:
+                continue
+            digest = _compute_file_hash(path)
+            if len(new) == 1 and upload_sha256(new[0]) == digest:
+                continue
+            raise ConflictError(f"{path}: リモート添付が変更されました。手元の本文と添付を別の場所に保存し、取得する版を確認してください")
 
     def _assets_changed(self, filename, raw_body):
         state = self._state(filename)
