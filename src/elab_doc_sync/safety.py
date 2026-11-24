@@ -246,12 +246,13 @@ def _held_documents(paths):
     for path in paths:
         if path.is_symlink():
             continue
-        if path.name == "body" and os.path.normcase(path.parent.name).startswith(DISPLACED_PREFIX) and path.is_file():
+        if path.name == "body" and path.parent.name.lower().startswith(DISPLACED_PREFIX) and path.is_file():
             held.add(path)
         elif path.is_dir():
-            if os.path.normcase(path.name).startswith(DISPLACED_PREFIX) and (path / "body").is_file() and not (path / "body").is_symlink():
+            if path.name.lower().startswith(DISPLACED_PREFIX) and (path / "body").is_file() and not (path / "body").is_symlink():
                 held.add(path / "body")
-            held.update(p for p in path.rglob(f"{DISPLACED_PREFIX}*/body") if p.is_file() and not p.is_symlink())
+            held.update(p for p in path.rglob("body") if p.parent.name.lower().startswith(DISPLACED_PREFIX)
+                        and p.is_file() and not p.is_symlink())
     return held
 
 
@@ -294,6 +295,20 @@ def _clear_for_restore(root, path, held, directories):
             clear(parent_fd, path)
         return
 
+    import _winapi
+
+    @contextmanager
+    def pin_directory(directory):
+        # FILE_SHARE_READ excludes renames and reparse-point writes until the handle closes.
+        # OPEN_REPARSE_POINT | BACKUP_SEMANTICS opens the directory entry itself.
+        handle = _winapi.CreateFile(str(directory), 0, 1, 0, 3, 0x00200000 | 0x02000000, 0)
+        try:
+            if directory.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                raise ValueError(f"再解析ポイントは復元対象外です: {directory}")
+            yield
+        finally:
+            _winapi.CloseHandle(handle)
+
     def clear_path(target):
         if target in held:
             return
@@ -304,14 +319,24 @@ def _clear_for_restore(root, path, held, directories):
         if info.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
             raise ValueError(f"再解析ポイントは復元対象外です: {target}")
         if stat.S_ISDIR(info.st_mode):
-            for child in target.iterdir():
-                clear_path(child)
+            with pin_directory(target):
+                for child in target.iterdir():
+                    clear_path(child)
             if target not in keep:
                 target.rmdir()
         else:
             target.unlink()
 
-    clear_path(path)
+    with ExitStack() as stack:
+        parent = root
+        stack.enter_context(pin_directory(parent))
+        for part in path.parent.relative_to(root).parts:
+            parent = parent / part
+            try:
+                stack.enter_context(pin_directory(parent))
+            except FileNotFoundError:
+                return
+        clear_path(path)
 
 
 def restore(root: Path, backup_id: str, dry_run: bool = False) -> list[dict]:
@@ -343,7 +368,7 @@ def restore(root: Path, backup_id: str, dry_run: bool = False) -> list[dict]:
             _clear_for_restore(root, path, held, directories)
         for name in manifest["directories"]:
             directory = safe_path(root, name)
-            mode = 0o700 if os.path.normcase(directory.name).startswith(DISPLACED_PREFIX) else 0o777
+            mode = 0o700 if directory.name.lower().startswith(DISPLACED_PREFIX) else 0o777
             directory.mkdir(mode=mode, parents=True, exist_ok=True)
             if mode == 0o700 and os.name == "posix":
                 fd = os.open(directory, os.O_DIRECTORY | os.O_NOFOLLOW)

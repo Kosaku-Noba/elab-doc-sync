@@ -178,7 +178,7 @@ def _protect_literal_links(body):
     """Markdown が表示例として扱うリンク記法を、添付の置換・探索から外す。"""
     if "](" not in body:
         return body, {}
-    pattern = re.compile(r"!?\[([^]\n]*)\]\(([^)\n]+)\)")
+    pattern = re.compile(r"!?\[([^]]*)\]\(([^)]+)\)")
     prefix = "elabsync" + uuid.uuid4().hex
     matches = list(pattern.finditer(body))
     parts = []
@@ -197,6 +197,12 @@ def _protect_literal_links(body):
             literals[marker + "-end"] = match.group()
             start = match.end()
     return "".join(parts) + body[start:], literals
+
+
+def _restore_literal_links(body, literals):
+    for marker, literal in literals.items():
+        body = body.replace(marker, literal)
+    return body
 
 
 def _download_long_name(src):
@@ -274,7 +280,8 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
         saved.add(image)
         return reference
 
-    return IMAGE_RE.sub(replace_match, body)
+    body, literals = _protect_literal_links(body)
+    return _restore_literal_links(IMAGE_RE.sub(replace_match, body), literals)
 
 
 # html_to_md 共通オプション: エスケープを抑制してラウンドトリップを安定させる
@@ -344,7 +351,8 @@ def _normalize_remote_image_urls(body: str, entity: str, entity_id: int, client:
             return f"![{alt}](images/{_image_local_name(entity, entity_id, real_name)})"
         return m.group(0)
 
-    return IMAGE_RE.sub(replace_match, body)
+    body, literals = _protect_literal_links(body)
+    return _restore_literal_links(IMAGE_RE.sub(replace_match, body), literals)
 
 
 def _compute_file_hash(filepath: Path) -> str:
@@ -698,7 +706,8 @@ def _rewrite_local_links(body: str, entity: str, base_url: str,
         # 解決できないリンクはそのまま残す
         return m.group(0)
 
-    return _LINK_RE.sub(replace_link, body)
+    body, literals = _protect_literal_links(body)
+    return _restore_literal_links(_LINK_RE.sub(replace_link, body), literals)
 
 
 def _rewrite_elab_links_to_local(body: str, base_url: str,
@@ -780,7 +789,8 @@ def _rewrite_elab_links_to_local(body: str, base_url: str,
         # 解決できない eLabFTW リンクはそのまま残す
         return m.group(0)
 
-    return _LINK_RE.sub(replace_link, body)
+    body, literals = _protect_literal_links(body)
+    return _restore_literal_links(_LINK_RE.sub(replace_link, body), literals)
 
 
 def _is_image(filename: str) -> bool:
@@ -1939,7 +1949,7 @@ class EachDocsSyncer:
         return result
 
     def is_displaced_path(self, path):
-        return any(_os.path.normcase(part).startswith(DISPLACED_PREFIX) for part in path.relative_to(self.docs_dir).parts[:-1])
+        return any(part.lower().startswith(DISPLACED_PREFIX) for part in path.relative_to(self.docs_dir).parts[:-1])
 
     def _document_files(self):
         for path in self.docs_dir.glob(self.target.pattern):
@@ -2276,8 +2286,7 @@ class EachDocsSyncer:
                 body = _rewrite_videos(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded, verified=verified_body, record=record_body_upload, preferred=preferred, used_urls=used_urls)
                 body = _rewrite_file_links(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded, verified=verified_body, record=record_body_upload, preferred=preferred, used_urls=used_urls)
                 body = _rewrite_local_links(body, self.entity, self.client.base_url, mapping, source=f, links=links)
-                for marker, literal in literals.items():
-                    body = body.replace(marker, literal)
+                body = _restore_literal_links(body, literals)
                 body = body if self.target.body_format == "md" else _md_to_html(body)
                 expected = {"body": body, "title": f.stem, "content_type": 2 if self.target.body_format == "md" else 1}
                 expected_links = _attachment_links(body, expected["content_type"]) if used_urls else {}
@@ -2341,8 +2350,8 @@ class EachDocsSyncer:
                         saved_body = observed.get("body") or ""
                         saved_type = observed.get("content_type")
                         saved_links = _attachment_links(saved_body, saved_type)
-                        if str(saved_type) == "2" and saved_body != body:
-                            saved_links |= _attachment_links(_html.unescape(saved_body), saved_type)
+                        if str(saved_type) == "2" and saved_body != body and _html.unescape(saved_body) == body:
+                            saved_links = expected_links
                         if any(saved_links[url] < count for url, count in expected_links.items() if url in used_urls.values()):
                             raise ConflictError("保存された本文の添付リンクを確認できません。本文と添付一覧を確認してください")
                     signature = self._remote_signature(observed, listed)

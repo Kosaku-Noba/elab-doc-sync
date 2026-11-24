@@ -2139,7 +2139,7 @@ def test_attachment_changed_after_patch_keeps_older_version(project, drop):
     assert syncer._pending()["a.md"]
 
 
-@pytest.mark.parametrize("example", ["`![plot](plot.png)`", "```md\n![plot](plot.png)\n```"])
+@pytest.mark.parametrize("example", ["`![plot](plot.png)`", "```md\n![plot](plot.png)\n```", "```md\n![plot\ncaption](plot.png)\n```"])
 def test_push_leaves_literal_attachment_examples_untouched(project, example):
     root, client, remote, syncer, _ = project
     path = root / "docs/plot.png"
@@ -2213,3 +2213,37 @@ def test_resume_after_old_receipt_has_been_deleted(project):
     assert syncer.sync() == 1
     assert client.upload_file.call_count == 2
     assert [u["id"] for u in uploads[1]] == [101]
+
+def test_literal_remote_image_is_preserved_when_pulled(project):
+    root, client, remote, syncer, args = project
+    _stateful_uploads(client)
+    (root / "docs/plot.png").write_bytes(b"old")
+    note = root / "docs/a.md"
+    note.write_text("![plot](plot.png)")
+    assert syncer.sync() == 1
+    example = "`" + remote[1]["body"] + "`"
+    note.write_text(example)
+    assert syncer.sync() == 1
+    remote[1]["body"] += "\n\nremote edit"
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
+        assert cmd_pull(args()) == 0
+    assert note.read_text().strip() == example + "\n\nremote edit"
+    client.download_upload.assert_not_called()
+
+
+def test_escaped_example_does_not_replace_missing_saved_link(project):
+    root, client, remote, syncer, _ = project
+    uploads = _stateful_uploads(client)
+    path = root / "docs/plot.png"
+    path.write_bytes(b"old")
+    note = root / "docs/a.md"
+    note.write_text("![plot](plot.png)")
+    assert syncer.sync() == 1
+    path.write_bytes(b"new")
+    url = "https://example.test/app/download.php?f=blob101&name=plot.png&storage=1"
+    example = _html.escape(f'<img src="{url}">')
+    note.write_text("![plot](plot.png)\n\n" + example)
+    client.update_item.side_effect = lambda eid, **fields: remote[eid].update({**fields, "body": example})
+    assert syncer.sync() == 0
+    assert len(uploads[1]) == 2
+    client.delete_upload.assert_not_called()
