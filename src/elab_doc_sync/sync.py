@@ -9,6 +9,7 @@ from functools import lru_cache
 from fnmatch import fnmatch
 import hashlib
 import ipaddress
+import posixpath
 import idna
 import json
 import os as _os
@@ -1189,7 +1190,7 @@ def _referenced_upload_ids(uploads, body, base_url):
         parsed = urlsplit(url)
         if (parsed.scheme or parsed.netloc) and origin(url, server[0]) != server:
             continue
-        path = unquote(parsed.path)
+        path = posixpath.normpath("/" + unquote(parsed.path).lstrip("/"))
         ids.update(re.findall(r"/uploads/(\d+)(?!\d)", path))
         if path.rsplit("/", 1)[-1] == "download.php":
             long_names.update(parse_qs(parsed.query).get("f", []))
@@ -1204,11 +1205,11 @@ def _prune_candidates(uploads, local_names, pattern, body, base_url):
     for tag, src in _attachment_links(body, 2, with_tags=True):
         if not src or src.startswith(("//", "#")):
             continue
-        src = src.strip(" \t\r\n\f")
+        src = src.strip(" \t\r\n\f").replace("\\", "/")
         parsed = urlsplit(src)
         if parsed.scheme or parsed.netloc:
             continue
-        path_name = Path(unquote(parsed.path)).name
+        path_name = posixpath.basename(posixpath.normpath(unquote(parsed.path)))
         referenced_names.update((Path(src).name, path_name))
         if tag == "img":
             referenced_names.add(_parse_image_local_name(path_name) or path_name)
@@ -2149,7 +2150,7 @@ class EachDocsSyncer:
 
     def dry_run(self, only=None, prune_attachments=False):
         """添付整理指定時はリネーム・未完了 ID をメモリ内で補い、追跡記事の添付を読む。
-        attachments_dir 未設定なら prune_candidates は返さない。取得失敗は各文書の error に残す。
+        attachments_dir 未設定なら prune_candidates は返さない。件数や本文を読めないときも各文書の error に残す。
         """
         mapping = self._load_mapping(migrate=False)
         files = self.collect_files()
@@ -2220,6 +2221,8 @@ class EachDocsSyncer:
                 mapping[name] = item["eid"]
                 self._save_mapping(mapping)
         mapping = self._detect_renames(mapping, md_files, self.entity)
+        prune_dir = self.project_root / self.target.attachments_dir if prune_attachments and self.target.attachments_dir else None
+        prune_links = self.link_targets(mapping) if prune_dir and prune_dir.is_dir() else None
         jobs = []
         observed_entities = []
         # Preflight all known destinations before creating any entities.
@@ -2229,6 +2232,14 @@ class EachDocsSyncer:
             eid = mapping.get(f.name)
             result = self.inspect(f.name, eid)
             self._compute_assets_hash(result["body"], f.name)  # 送信前に参照パスの範囲を検証
+            result["preview_prune_ids"] = set()
+            if prune_links is not None and eid and result.get("data"):
+                preview_body = _rewrite_local_links(result["body"], self.entity, self.client.base_url, mapping,
+                                                    source=f, links=prune_links)
+                names = {p.name for p in prune_dir.iterdir() if p.is_file()}
+                candidates = _prune_candidates(result.get("uploads", []), names, self.target.attachments_pattern,
+                                               preview_body, self.client.base_url)
+                result["preview_prune_ids"] = {u["id"] for u in candidates}
             state = result["state"]
             if result.get("data"):
                 observed_entities.append(result["data"])
@@ -2439,7 +2450,7 @@ class EachDocsSyncer:
                         candidates = _prune_candidates(initial_uploads, {p.name for p in directory.iterdir() if p.is_file()},
                                                        self.target.attachments_pattern, prune_body,
                                                        self.client.base_url)
-                        planned_prune = {u["id"] for u in candidates}
+                        planned_prune = result["preview_prune_ids"].intersection(u["id"] for u in candidates)
                 if stale_uploads:
                     _referenced_upload_ids(guard["uploads"], body, self.client.base_url)
                 latest_uploads = self.client.list_uploads(self.entity, eid)

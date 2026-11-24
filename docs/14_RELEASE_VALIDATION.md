@@ -227,7 +227,7 @@ wheel/sdist のビルドと、独立した Python 3.12 環境への wheel イン
 
 | 対象 | 結果 |
 |---|---|
-| Linux / Python 3.12、MCP SDK 込み | 843件成功。実機11件、PowerShell 関連5件、Windows の共有アクセス検証1件をスキップ |
+| Linux / Python 3.12、MCP SDK 込み | 846件成功。実機11件、PowerShell 関連5件、Windows の共有アクセス検証1件をスキップ |
 | Windows / Python 3.12 | `33de02f` で復元中のディレクトリの改名拒否テストを含め [Windows ジョブが成功](https://github.com/Kosaku-Noba/elab-doc-sync/actions/runs/45310877878/job/138166001439) |
 | eLabFTW 実機 | 11件成功。各一時記事の削除後に状態を確認 |
 | wheel / sdist | sdist から wheel をビルドし、独立した Python 3.12 環境で wheel と MCP 依存をインストール |

@@ -242,7 +242,7 @@ YAML 設定読み込み・バリデーション。
 
 | ローカル操作 | 主な `data` |
 |---|---|
-| `run_push` | ターゲット別の更新・スキップ・失敗件数。dry-run では `targets[].documents` にファイル名、変更の有無、ID、添付種別ごとの件数。`prune_attachments=True` かつ添付ディレクトリ設定ありなら削除候補を `prune_candidates`（`id`・`name`）に返す。確認に失敗した文書には代わりに `error` が入り、終了コードは 1 |
+| `run_push` | ターゲット別の更新・スキップ・失敗件数。dry-run では `targets[].documents` にファイル名、変更の有無、ID、添付種別ごとの件数。各文書の `error` を先に確認する。本文やリンクを読めない場合、件数と `changed` は省略される。`prune_attachments=True` かつ添付ディレクトリ設定ありなら削除候補を `prune_candidates`（`id`・`name`）に返す。確認に失敗した文書には代わりに `error` が入り、終了コードは 1 |
 | `run_pull` | `documents` に取得、取得予定、スキップ、エラーの明細。`conflict_files` は競合を残したパス |
 | `run_diff` | `documents` にパス、ID、状態と該当する差分行（`local_diff`、`remote_diff`、旧形式の `direct_diff`）。`has_diff` は全体の差分の有無 |
 | `run_clone` | 作成先 `path`、サーバー、種別、ID ごとの結果。実際に作成した場合の件数は `cloned` |

@@ -2427,3 +2427,32 @@ def test_preview_keeps_other_documents_when_one_link_cannot_be_mapped(project):
     (root / "docs/b.md").write_text("plain note")
     first, second = syncer.dry_run(prune_attachments=True)
     assert "error" in first and second["filename"] == "b.md" and "error" not in second
+
+
+def test_new_article_id_does_not_expand_prune_preview(project):
+    root, client, remote, syncer, _ = project
+    uploads = _stateful_uploads(client)
+    syncer.target.attachments_dir = "assets"
+    (root / "assets").mkdir()
+    asset = root / "assets/b.md"
+    asset.write_text("previous attachment")
+    note = root / "docs/a.md"
+    note.write_text("article")
+    assert syncer.sync() == 1
+    previous = uploads[1][0]["id"]
+    asset.unlink()
+    (root / "docs/b.md").write_text("new article")
+    note.write_text("[article](b.md)")
+    assert syncer.dry_run(prune_attachments=True)[0]["prune_candidates"] == []
+    assert syncer.sync(prune_attachments=True) == 2
+    assert [u["id"] for u in uploads[1]] == [previous]
+
+
+@pytest.mark.parametrize("body", [
+    "[download](https://example.test/api/v2/items/1/uploads/./100)",
+    r'<a href="folder\data.csv">document</a>',
+])
+def test_prune_resolves_browser_path_segments(body):
+    from elab_doc_sync.sync import _prune_candidates
+    uploads = [{"id": 100, "long_name": "blob100", "real_name": "data.csv"}]
+    assert not _prune_candidates(uploads, set(), "*", body, "https://example.test")
