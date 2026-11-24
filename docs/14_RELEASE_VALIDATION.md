@@ -227,7 +227,7 @@ wheel/sdist のビルドと、独立した Python 3.12 環境への wheel イン
 
 | 対象 | 結果 |
 |---|---|
-| Linux / Python 3.12、MCP SDK 込み | 846件成功。実機11件、PowerShell 関連5件、Windows の共有アクセス検証1件をスキップ |
+| Linux / Python 3.12、MCP SDK 込み | 849件成功。実機11件、PowerShell 関連5件、Windows の共有アクセス検証1件をスキップ |
 | Windows / Python 3.12 | `33de02f` で復元中のディレクトリの改名拒否テストを含め [Windows ジョブが成功](https://github.com/Kosaku-Noba/elab-doc-sync/actions/runs/45310877878/job/138166001439) |
 | eLabFTW 実機 | 11件成功。各一時記事の削除後に状態を確認 |
 | wheel / sdist | sdist から wheel をビルドし、独立した Python 3.12 環境で wheel と MCP 依存をインストール |
@@ -235,3 +235,5 @@ wheel/sdist のビルドと、独立した Python 3.12 環境への wheel イン
 インストールした `esync --version` は 1.4.0 を返しました。`elab-doc-sync-mcp` に stdio クライアントで接続し、30ツールの列挙、`profile_list` の呼び出し、応答に API キーが含まれないことを確認しました。
 
 実機では本文・画像・添付の往復、競合と復元、タグの追加、本文保存後の中断からの再開、画像差し替え後のリンク先と旧版の削除を確認しました。HTML 往復試験で同期直後の状態取得が一度「確認失敗」となりました。単独の再実行と、その後の全11件の実行で通過しました。今回の接続先は引用行の `>` をそのまま保存しました。保存時に本文をエスケープする場合の再開は回帰テストで確認しています。
+
+Issue #18 の統合後に Linux / Python 3.12 で再実行し、MCP SDK 込みで 849 件成功、17 件スキップ。共有ディレクトリを使う 2 ターゲットでの文書指定 push、強制 push での既存添付 ID の再利用、pull 後に編集した CSV の再送を模擬リモートで検証しました。上記の実機 11 件は統合前の結果です。

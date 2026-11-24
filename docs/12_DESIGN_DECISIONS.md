@@ -97,11 +97,7 @@ push 時の YAML `tags` 設定は **追記のみ** で動作する。リモー�
 
 ### 5.1 設計方針
 
-`attachments_dir` に置いたファイルを push 時に eLabFTW にアップロードする。画像（Markdown 中の `![](...)` 参照）とは別枠。
-
-**理由:**
-- PDF・CSV・Excel 等を Markdown 本文とは独立して管理したいケースへの対応
-- `attachments_pattern` で不要ファイルを除外可能
+push は各文書の Markdown にインラインリンクで指定したファイルを添付する。pull は非画像添付を `attachments_dir` に保存する。
 
 ### 5.2 prune-attachments
 

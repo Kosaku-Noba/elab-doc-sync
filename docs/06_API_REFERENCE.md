@@ -55,7 +55,6 @@
 | `_count_local_images(body)` | 本文中のローカル画像リンク数 |
 | `_count_local_videos(body)` | 本文中のローカル動画リンク数 |
 | `_count_local_file_links(body)` | 本文中の非画像・非動画ローカルファイルリンク数 |
-| `_count_local_attachments(attachments_dir)` | attachments_dir 内の非画像ファイル数 |
 | `_is_image(filename)` | 画像拡張子判定 |
 | `_is_video(filename)` | 動画拡張子判定 |
 | `_compute_hash(body)` | SHA-256 ハッシュ（先頭16文字） |
@@ -69,7 +68,6 @@
 | `_sync_tags(client, entity_type, entity_id, desired_tags)` | 設定タグを追記し既存タグを保持。成功・追加不要なら `True`、取得・更新失敗なら `False`。タグなしのnull応答は空タグとして扱う |
 | `_sync_category(client, entity_type, entity_id, category, current=None)` | カテゴリ設定。現在値と同じなら PATCH を省略。成功・不要なら `True`、失敗なら警告を出して `False` |
 | `_sync_links(client, entity_type, entity_id, desired_links)` | `links` の記事へのリンクのうち未作成のものを追加。既存は削除しない。1件でも失敗すれば `False`（残りは続行） |
-| `_sync_attachments(attachments_dir, entity, entity_id, client, *, force=False, pattern="*", prune=False, strict=False, prune_ids=None, body="", deferred_prune=None, on_upload=None)` | 添付ファイルの差分同期。本文と事前に確認した ID を使って削除候補を絞る。`deferred_prune` を渡すと候補 ID をそこに集め、呼び出し側が削除する。`on_upload(receipt)` にはアップロード後の ID・名前・サイズ・SHA-256 を渡す |
 | `_shell_quote(value, windows=None)` | 案内に表示するコマンドの引用（PowerShell 対応） |
 
 #### 正規表現定数
@@ -147,7 +145,7 @@ eLabFTW API v2 クライアント（`ELabFTWClient(base_url, api_key, verify_ssl
 | `list_uploads(entity_type, entity_id)` | アップロード一覧 |
 | `delete_upload(entity_type, entity_id, upload_id)` | アップロード削除 |
 | `download_upload(*, entity_type, entity_id, upload_id)` | アップロードダウンロード |
-| `upload_digest(*, entity_type, entity_id, upload_id)` | 本文用・ディレクトリ添付の照合用 SHA-256。テキストも含めて応答を分割して読み、16 進文字列を返す。呼び出し側がローカルの値と比較する |
+| `upload_digest(*, entity_type, entity_id, upload_id)` | 本文用添付の照合用 SHA-256。テキストも含めて応答を分割して読み、16 進文字列を返す。呼び出し側がローカルの値と比較する |
 | `list_items_types()` / `list_experiments_categories()` | カテゴリ一覧（リソース / 実験ノート） |
 | `list_categories(entity_type)` | 種別に応じたカテゴリ一覧 |
 | `resolve_category_id(entity_type, category, current=None)` | カテゴリ名→ID 解決（一覧にない場合は `current` の `category_title` も使う） |
@@ -242,7 +240,7 @@ YAML 設定読み込み・バリデーション。
 
 | ローカル操作 | 主な `data` |
 |---|---|
-| `run_push` | ターゲット別の更新・スキップ・失敗件数。dry-run では `targets[].documents` にファイル名、変更の有無、ID、添付種別ごとの件数。各文書の `error` を先に確認する。本文やリンクを読めない場合、件数と `changed` は省略される。`prune_attachments=True` かつ添付ディレクトリ設定ありなら削除候補を `prune_candidates`（`id`・`name`）に返す。確認に失敗した文書には代わりに `error` が入り、終了コードは 1 |
+| `run_push` | ターゲット別の更新・スキップ・失敗件数。dry-run では `targets[].documents` にファイル名、変更の有無、ID、添付種別ごとの件数。各文書の `error` を先に確認する。件数や `changed` の計算に失敗した文書では、それらの項目を省略する。件数の計算後に削除候補の照合に失敗した文書は、件数と `changed` を保持する。`prune_attachments=True` かつ添付ディレクトリ設定ありなら削除候補を `prune_candidates`（`id`・`name`）に返す。確認に失敗した文書には代わりに `error` が入り、終了コードは 1 |
 | `run_pull` | `documents` に取得、取得予定、スキップ、エラーの明細。`conflict_files` は競合を残したパス |
 | `run_diff` | `documents` にパス、ID、状態と該当する差分行（`local_diff`、`remote_diff`、旧形式の `direct_diff`）。`has_diff` は全体の差分の有無 |
 | `run_clone` | 作成先 `path`、サーバー、種別、ID ごとの結果。実際に作成した場合の件数は `cloned` |

@@ -22,7 +22,7 @@ from elab_doc_sync.sync import (
     _download_attachments,
     _download_images,
     _rewrite_images,
-    _sync_attachments,
+    _rewrite_file_links,
 )
 from elab_doc_sync.config import TargetConfig
 
@@ -115,7 +115,7 @@ class TestAttachmentUploadDownload:
         csv_data = b"col1,col2\n1,2\n3,4\n"
         (att_dir / "data.csv").write_bytes(csv_data)
 
-        _sync_attachments(att_dir, "items", test_item, client, force=False)
+        _rewrite_file_links("[file](data.csv)", "items", test_item, client, att_dir, tmp_path, strict=True)
 
         uploads = client.list_uploads("items", test_item)
         csv_uploads = [u for u in uploads if u.get("real_name") == "data.csv"]
@@ -129,7 +129,7 @@ class TestAttachmentUploadDownload:
         (att_dir / "report.pdf").write_bytes(pdf_data)
 
         # Upload
-        _sync_attachments(att_dir, "items", test_item, client, force=False)
+        _rewrite_file_links("[file](report.pdf)", "items", test_item, client, att_dir, tmp_path, strict=True)
 
         # Download to new dir
         pull_dir = tmp_path / "pulled_att"
@@ -146,11 +146,11 @@ class TestAttachmentUploadDownload:
         att_dir.mkdir()
         (att_dir / "notes.txt").write_bytes(b"hello world")
 
-        _sync_attachments(att_dir, "items", test_item, client, force=False)
+        _rewrite_file_links("[file](notes.txt)", "items", test_item, client, att_dir, tmp_path, strict=True)
         uploads_before = client.list_uploads("items", test_item)
 
         # Run again — should skip
-        _sync_attachments(att_dir, "items", test_item, client, force=False)
+        _rewrite_file_links("[file](notes.txt)", "items", test_item, client, att_dir, tmp_path, strict=True)
         uploads_after = client.list_uploads("items", test_item)
 
         txt_before = [u for u in uploads_before if u.get("real_name") == "notes.txt"]

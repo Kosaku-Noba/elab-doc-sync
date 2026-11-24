@@ -19,10 +19,10 @@ from markdownify import markdownify as html_to_md
 
 from .safety import hold_document, atomic_write, write_json, safe_path, snapshot, local_transaction, project_command, restore, BACKUPS, RECOVERY
 from .config import TargetConfig
-from .client import ELabFTWClient
+from .client import ELabFTWClient, upload_sha256
 from .config import read_config as load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, append_target_to_yaml, profile_connection, _parse_api_key_env
 from .merge import merge_text
-from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _compute_file_hash, _is_image, _normalize_remote_image_urls, _download_attachments, _count_local_attachments, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
+from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _compute_file_hash, _is_image, _normalize_remote_image_urls, _download_attachments, _localize_attachment_links, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
 from . import sync_log
 from .result import CommandResult, cli_echo, progress, error_text, returns_partial_result
 from . import update_check
@@ -266,6 +266,17 @@ def run_push(args, echo=None) -> CommandResult:
             selected = _select_documents(pairs, files, _compile_regexes(regex_expressions))
         except ValueError as e:
             return res.fail(f"エラー: {e}", 2)
+    prune_previews = {}
+    if not args.dry_run and getattr(args, "prune_attachments", False):
+        # Freeze every selected target before the first write can change cross-target links.
+        for index, (target, syncer) in enumerate(pairs):
+            only = None if selected is None else selected.get(index)
+            if target.attachments_dir and (selected is None or only):
+                try:
+                    prune_previews[index] = syncer.dry_run(only=only, prune_attachments=True)
+                except Exception as exc:
+                    reason = error_text(exc, get_client_for_target(config, target)[1])
+                    return res.fail(f"[{target.docs_dir}] 添付削除の事前確認に失敗: {reason}", 1)
     for index, (target, syncer) in enumerate(pairs):
         only = None if selected is None else selected.get(index)
         if selected is not None and not only:
@@ -275,9 +286,6 @@ def run_push(args, echo=None) -> CommandResult:
         res.data["targets"].append(summary)
         if args.dry_run:
             entity_label = "実験ノート" if target.entity == "experiments" else "リソース"
-            att_dir = (project_root / target.attachments_dir) if target.attachments_dir else None
-            att_count = _count_local_attachments(att_dir)
-            att_str = f"  添付: {att_count}件" if att_count else ""
             results = syncer.dry_run(only=only, prune_attachments=getattr(args, "prune_attachments", False))
             summary["documents"] = results
             if not results:
@@ -297,11 +305,12 @@ def run_push(args, echo=None) -> CommandResult:
                 res.say(f"  [{r['title']}] {status}")
                 for attachment in r.get("prune_candidates", []):
                     res.say(f"    添付削除候補: #{attachment['id']} {attachment['name']}")
-                res.say(f"    画像: {r['images']}件{video_str}{flink_str}{att_str}  → {dest}")
+                res.say(f"    画像: {r['images']}件{video_str}{flink_str}  → {dest}")
             continue
 
         try:
-            count = syncer.sync(force=args.force, prune_attachments=args.prune_attachments, only=only)
+            options = {"prune_preview": prune_previews[index]} if index in prune_previews else {}
+            count = syncer.sync(force=args.force, prune_attachments=args.prune_attachments, only=only, **options)
         except Exception as exc:
             count = syncer.updated
             reason = error_text(exc, get_client_for_target(config, target)[1])
@@ -909,6 +918,24 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
                 return 0
     elif filepath.exists() and filepath not in outputs.released and not force:
         raise ConflictError(f"{filename}: 既にローカルに存在、基準情報なし。--force の前に差分を確認してください")
+    if target.attachments_dir and not force and not merge:
+        # Unlinked files no longer mark the whole document as locally changed.
+        # Only replace a different local copy if it matches the last known remote version.
+        state = syncer._state(old_name) if old_name else None
+        previous = {u["real_name"]: upload_sha256(u) for u in state["remote"]["uploads"]} if state else {}
+        for upload in uploads:
+            name = upload.get("real_name")
+            if not name or _is_image(name) or Path(name).name in ("", ".", ".."):
+                continue
+            dest = safe_path(project_root / target.attachments_dir, Path(name).name)
+            if dest.is_file():
+                digest = _compute_file_hash(dest)
+                if previous.get(name) == digest or upload_sha256(upload) == digest:
+                    continue
+                if not upload_sha256(upload) and client.upload_digest(entity_type=entity_type, entity_id=eid,
+                                                                      upload_id=upload["id"]) == digest:
+                    continue
+                raise ConflictError(f"ローカルの添付を上書きできません: {dest}。内容を確認し、必要なら別名で保存してください")
     if old_path and old_path != filepath:
         article.released.add(old_path)
     if dry_run:
@@ -933,6 +960,8 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
         if target.attachments_dir:
             _download_attachments(entity_type, eid, client, project_root / target.attachments_dir, strict=True,
                                   keep_existing=merge, uploads=uploads, exclusive_paths=exclusive_paths)
+            body_md = _localize_attachment_links(body_md, uploads, project_root / target.attachments_dir,
+                                                filepath, client.base_url, entity_type, eid)
         with hold_document(tracked_path, project_root / BACKUPS / backup_id, initial_digest) as held:
             local_md, conflicts = body_md, 0
             if merge:

@@ -46,7 +46,7 @@ class TargetConfig:
     tags: list[str] = None    # push 時に自動設定するタグ
     body_format: str = BODY_FORMAT_DEFAULT
     attachments_dir: str | None = None  # 添付ファイルディレクトリ（画像以外）
-    attachments_pattern: str = "*"  # 添付ファイルの glob フィルタ
+    attachments_pattern: str = "*"  # prune する添付名の glob フィルタ
     category: str | int | None = None   # push 時に自動設定するカテゴリ（ID or 名前）
     title_pattern: str | None = None    # pull 時のタイトルマッチング用 glob パターン
     profile: str = "default"  # 使用するプロファイル名

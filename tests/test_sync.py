@@ -698,7 +698,7 @@ def test_md_to_html_underscore_in_math():
 # ── Attachment tests ─────────────────────────────────────
 
 from elab_doc_sync.sync import (
-    _is_image, _count_local_attachments, _sync_attachments, _download_attachments,
+    _is_image, _download_attachments,
 )
 
 
@@ -710,67 +710,6 @@ def test_is_image():
     assert _is_image("report.pdf") is False
     assert _is_image("data.csv") is False
     assert _is_image("archive.zip") is False
-
-
-# S-92: _count_local_attachments が非画像ファイルのみカウントする
-def test_count_local_attachments(tmp_path):
-    att_dir = tmp_path / "attachments"
-    att_dir.mkdir()
-    (att_dir / "report.pdf").write_bytes(b"pdf")
-    (att_dir / "data.csv").write_bytes(b"csv")
-    (att_dir / "photo.png").write_bytes(b"png")
-    assert _count_local_attachments(att_dir) == 2
-    assert _count_local_attachments(None) == 0
-    assert _count_local_attachments(tmp_path / "nonexistent") == 0
-
-
-# S-93: _sync_attachments がサイズ一致で再利用し、不一致で再アップロードする
-def test_sync_attachments_reuse_and_upload(tmp_path):
-    att_dir = tmp_path / "attachments"
-    att_dir.mkdir()
-    (att_dir / "report.pdf").write_bytes(b"x" * 100)
-    (att_dir / "new.csv").write_bytes(b"y" * 50)
-    (att_dir / "photo.png").write_bytes(b"img")  # 画像は除外
-
-    client = MagicMock()
-    client.list_uploads.return_value = [
-        {"real_name": "report.pdf", "filesize": 100, "id": 1},  # サイズ一致 → 再利用
-    ]
-    client.upload_file.return_value = {"url": "http://example.com/new.csv"}
-
-    _sync_attachments(att_dir, "items", 42, client)
-
-    # new.csv のみアップロードされる
-    client.upload_file.assert_called_once()
-    assert "new.csv" in client.upload_file.call_args[0][2]
-    # photo.png はアップロードされない
-    for call in client.upload_file.call_args_list:
-        assert "photo.png" not in call[0][2]
-
-
-# S-94: _sync_attachments が attachments_dir=None のとき何もしない
-def test_sync_attachments_none_dir():
-    client = MagicMock()
-    _sync_attachments(None, "items", 42, client)
-    client.list_uploads.assert_not_called()
-
-
-# S-95b: _sync_attachments force=True でサイズ一致でも再アップロードする
-def test_sync_attachments_force_reuploads(tmp_path):
-    att_dir = tmp_path / "attachments"
-    att_dir.mkdir()
-    (att_dir / "report.pdf").write_bytes(b"x" * 100)
-
-    client = MagicMock()
-    client.list_uploads.return_value = [
-        {"real_name": "report.pdf", "filesize": 100, "id": 1},
-    ]
-    client.upload_file.return_value = {"url": "http://example.com/report.pdf"}
-
-    _sync_attachments(att_dir, "items", 42, client, force=True)
-
-    client.upload_file.assert_called_once()
-    assert "report.pdf" in client.upload_file.call_args[0][2]
 
 
 # S-95: _download_attachments がパストラバーサルを防止する
@@ -1087,27 +1026,6 @@ def test_compute_file_hash(tmp_path):
     h2 = _compute_file_hash(f)
     assert h1 == h2
     assert len(h1) == 64  # SHA-256 hex
-
-
-# S-48: _sync_attachments with hash mismatch triggers re-upload
-def test_sync_attachments_hash_mismatch(tmp_path):
-    from elab_doc_sync.sync import _sync_attachments, _compute_file_hash
-    att_dir = tmp_path / "att"
-    att_dir.mkdir()
-    data = b"csv,data\n1,2\n"
-    (att_dir / "data.csv").write_bytes(data)
-
-    client = MagicMock()
-    client.list_uploads.return_value = [{
-        "real_name": "data.csv",
-        "filesize": len(data),
-        "id": 10,
-        "hash": "old_hash_different",
-    }]
-    client.upload_file.return_value = {"url": "https://elab/dl/data.csv", "id": 11}
-
-    _sync_attachments(att_dir, "items", 1, client, force=False)
-    client.upload_file.assert_called_once()
 
 
 # ── リンク変換テスト ─────────────────────────────────────────

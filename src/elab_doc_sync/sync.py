@@ -3,7 +3,7 @@
 CLI tool — not intended for use as a library.
 """
 
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
 from fnmatch import fnmatch
@@ -508,7 +508,7 @@ def _resolve_asset_path(docs_dir: Path, project_root: Path, source: str, strict=
                     break
                 if part.is_symlink():
                     raise ValueError(f"シンボリックリンクは送信できません: {source}")
-        if candidate.exists() or index == len(candidates) - 1:
+        if candidate.exists() or index == len(candidates) - 1 or ".." in Path(source).parts:
             return candidate.resolve()
     raise FileNotFoundError(source)
 
@@ -532,11 +532,6 @@ def _staged_asset(root, source, name=None):
 def _remember_asset(verified, src, digest):
     if verified is not None and verified.setdefault(src, digest) != digest:
         raise ConflictError(f"送信中に同じ添付の内容が変わりました: {src}")
-
-
-def _directory_assets(directory, pattern):
-    return [f for f in sorted(directory.iterdir())
-            if f.is_file() and not _is_image(f.name) and fnmatch(f.name, pattern)]
 
 
 def _upload_body_file(client, entity, eid, path, uploaded, root, name=None, record=None):
@@ -1152,12 +1147,6 @@ def _count_local_file_links(body: str) -> int:
     return count
 
 
-def _count_local_attachments(attachments_dir: Path | None) -> int:
-    if not attachments_dir or not attachments_dir.is_dir():
-        return 0
-    return sum(1 for f in attachments_dir.iterdir() if f.is_file() and not _is_image(f.name))
-
-
 def _referenced_upload_ids(uploads, body, base_url):
     def origin(url, default_scheme):
         parsed = urlsplit(url)
@@ -1190,7 +1179,7 @@ def _referenced_upload_ids(uploads, body, base_url):
         parsed = urlsplit(url)
         if (parsed.scheme or parsed.netloc) and origin(url, server[0]) != server:
             continue
-        path = posixpath.normpath("/" + unquote(parsed.path).lstrip("/"))
+        path = unquote(posixpath.normpath("/" + re.sub(r"%2e", ".", parsed.path, flags=re.I).lstrip("/")))
         ids.update(re.findall(r"/uploads/(\d+)(?!\d)", path))
         if path.rsplit("/", 1)[-1] == "download.php":
             long_names.update(parse_qs(parsed.query).get("f", []))
@@ -1222,115 +1211,33 @@ def _prune_candidates(uploads, local_names, pattern, body, base_url):
     return [u for u in candidates if u["id"] not in referenced_ids]
 
 
-def _sync_attachments(attachments_dir: Path | None, entity: str, entity_id: int, client: ELabFTWClient, *, force: bool = False, pattern: str = "*", prune: bool = False, strict: bool = False,
-                      prune_ids=None, body="", deferred_prune=None, on_upload=None, verified=None, save_receipt=None, project_root=None) -> bool:
-    """attachments_dir 内の非画像ファイルをリモートにアップロードする。
+def _localize_attachment_links(body, uploads, directory, source, base_url, entity, eid):
+    """Restore links to the files pull saves, using URLs belonging to this article."""
+    paths = {}
+    for upload in uploads:
+        name = upload.get("real_name")
+        if not name or Path(name).name != name or _is_image(name) or Path(name).suffix.lower() == ".md":
+            continue
+        local = _relative_link(directory / name, source.parent)
+        if name.startswith(".") or "\\" in local or any(ord(char) < 32 for char in local):
+            continue
+        url = upload_url(base_url, upload)
+        if url:
+            paths[url] = local
+        if upload.get("id") is not None:
+            path = f"/api/v2/{entity}/{eid}/uploads/{upload['id']}"
+            paths[path] = paths[base_url.rstrip("/") + path] = local
 
-    差分検知: サイズ一致 → リモートに hash/sha256 フィールドがあれば
-    ローカル SHA-256 と比較。strict=Trueではhash不在時に実体を取得して比較する。
-    strict=Falseは旧呼び出し用で、hash不在時はサイズ一致だけで再利用する。
-    strict=Trueは一覧取得エラーを伝播し、旧添付を保持する（明示pruneは別）。
-    force=True の場合は一致でも再アップロードする。
-    pattern: glob パターンでアップロード対象をフィルタ。
-    prune: True の場合、ローカルに存在しないリモート添付を削除する。
+    def replace(link):
+        local = paths.get(link.url)
+        if local is None:
+            return link.original
+        destination = _html.escape(local, quote=False)
+        if not re.fullmatch(r"[\w./-]+", local) and link.original[link.target_start-1] != "<":
+            destination = f"<{destination}>"
+        return link.with_url(destination)
 
-    prune_ids は本文更新前に確認した ID に削除対象を限定する。body から参照する添付は保護する。
-    deferred_prune が指定された場合は候補 ID をそこに集め、削除は呼び出し側が復旧記録を保存してから行う。
-    on_upload は送信した ID・名前・サイズ・SHA-256 の辞書で呼び、次の変更前にアップロードを確認する。
-
-    Returns:
-        True: 全ファイル同期成功（またはスキップ）
-        False: 1件以上のアップロードに失敗
-    """
-    if not attachments_dir or not attachments_dir.is_dir():
-        return True
-    local_files = _directory_assets(attachments_dir, pattern)
-    if not local_files and not prune:
-        return True
-
-    existing: dict[str, list[dict]] = {}
-    try:
-        for u in client.list_uploads(entity, entity_id):
-            rn = u.get("real_name")
-            if rn and not _is_image(rn):
-                existing.setdefault(rn, []).append(u)
-        for entries in existing.values():
-            entries.sort(key=lambda e: e.get("id") or 0)
-    except Exception:
-        if strict:
-            raise
-
-    all_success = True
-    for source in local_files:
-        staged = _staged_asset(project_root, source) if project_root is not None else nullcontext(source)
-        with staged as f:
-            entries = existing.get(f.name, [])
-            local_size = f.stat().st_size
-            local_hash = _compute_file_hash(f) if not force or on_upload is not None else None
-            reuse = None
-            if not force:
-                for e in entries:
-                    if int(e.get("filesize", 0) or 0) == local_size:
-                        remote_hash = upload_sha256(e) if strict else e.get("hash") or e.get("sha256")
-                        if strict and not remote_hash and e.get("id") is not None:
-                            remote_hash = client.upload_digest(entity_type=entity, entity_id=entity_id, upload_id=e["id"])
-                        if remote_hash and remote_hash != local_hash:
-                            continue
-                        reuse = e
-                        break
-            if reuse:
-                progress(f"    ✓ {f.name}（既存添付を再利用）")
-                stale = [e for e in entries if e is not reuse and e.get("id") is not None]
-            else:
-                progress(f"    添付ファイルをアップロード中: {f.name}")
-                try:
-                    result = client.upload_file(entity, entity_id, str(f))
-                except UploadConfirmationError as exc:
-                    if exc.receipt and save_receipt is not None:
-                        save_receipt(exc.receipt)
-                    raise
-                receipt = result.get("receipt") or {"id": result.get("id"), "name": f.name,
-                                                    "size": local_size, "sha256": local_hash}
-                if result.get("url"):
-                    local_hash = receipt["sha256"]
-                    progress(f"    ✓ {f.name}")
-                    stale = [e for e in entries if e.get("id") is not None]
-                    if on_upload is not None:
-                        on_upload(receipt)
-                else:
-                    if receipt["id"] is not None and save_receipt is not None:
-                        save_receipt(receipt)
-                        raise ConflictError("受領した添付 ID が一覧に現れていません。eLabFTW の添付一覧を確認してください")
-                    progress(f"    ✗ アップロード失敗: {f.name}", warning=True)
-                    stale = []
-                    all_success = False
-            if verified is not None and (reuse or result.get("url")):
-                verified[f.name] = local_hash
-            for e in ([] if strict else stale):
-                try:
-                    client.delete_upload(entity, entity_id, e["id"])
-                except Exception:
-                    pass
-
-    # prune: ローカルに存在しないリモート添付を削除（pattern に一致するもののみ）
-    if prune:
-        local_names = {f.name for f in local_files}
-        uploads = [entry for group in existing.values() for entry in group]
-        if prune_ids is not None:
-            uploads = [u for u in uploads if u.get("id") in prune_ids]
-        for entry in _prune_candidates(uploads, local_names, pattern, body, client.base_url):
-            if deferred_prune is not None:
-                deferred_prune.add(entry["id"])
-                continue
-            name = entry["real_name"]
-            try:
-                client.delete_upload(entity, entity_id, entry["id"])
-                progress(f"    🗑 {name}（リモートから削除）")
-            except Exception as exc:
-                progress(f"    ⚠ {name} の削除に失敗: {_error_text(client, exc)}", warning=True)
-                all_success = False
-
-    return all_success
+    return _replace_body_links(body, replace, images=False)
 
 
 def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, attachments_dir: Path, strict: bool = False,
@@ -1703,7 +1610,7 @@ class EachDocsSyncer:
         else:
             self.client.update_item(eid, **fields)
 
-    def _compute_assets_hash(self, raw_body, filename=None, *, body_evidence=None, directory_evidence=None):
+    def _compute_assets_hash(self, raw_body, filename=None, *, body_evidence=None):
         parts = []
         document_dir = self.file_path(filename).parent if filename else self.docs_dir
         # Preserve the image-first order used by existing asset hashes.
@@ -1717,14 +1624,6 @@ class EachDocsSyncer:
                 continue
             path = _resolve_asset_path(document_dir, self.project_root, src, strict=True)
             parts.append(f"{src}:{_compute_file_hash(path) if path.is_file() else 'missing'}")
-        if directory_evidence is not None:
-            parts.extend(f"{name}:{digest}" for name, digest in sorted(directory_evidence.items()))
-        elif self.target.attachments_dir:
-            att_dir = self.project_root / self.target.attachments_dir
-            if att_dir.is_dir():
-                for f in _directory_assets(att_dir, self.target.attachments_pattern):
-                    checked = _resolve_asset_path(self.project_root, self.project_root, str(f), strict=True)
-                    parts.append(f"{f.name}:{_compute_file_hash(checked)}")
         return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
 
     def _assets_changed(self, filename, raw_body):
@@ -1910,6 +1809,9 @@ class EachDocsSyncer:
         """
         body = _remote_markdown(data, self.target)
         body = _normalize_remote_image_urls(body, self.entity, eid, self.client, uploads=uploads)
+        if self.target.attachments_dir:
+            body = _localize_attachment_links(body, uploads, self.project_root / self.target.attachments_dir, source,
+                                              self.client.base_url, self.entity, eid)
         return _rewrite_elab_links_to_local(body, self.client.base_url, mapping, self.entity, source=source, links=links)
 
     def _save_baseline(self, filename, raw_body, data, uploads, base=None, links=None, assets_hash=None):
@@ -2172,7 +2074,7 @@ class EachDocsSyncer:
             try:
                 body = f.read_text(encoding="utf-8").strip()
                 doc.update(images=_count_local_images(body), videos=_count_local_videos(body),
-                           file_links=_count_local_file_links(body), changed=self._has_changed(f.name, body))
+                           file_links=_count_local_file_links(body), changed=self._has_changed(f.name, body) or self._assets_changed(f.name, body))
                 if directory:
                     uploads = self.client.list_uploads(self.entity, doc["entity_id"]) if directory.is_dir() and doc["entity_id"] else []
                     if article_links is not None:
@@ -2197,18 +2099,23 @@ class EachDocsSyncer:
         current = next((e for e in entities if len(ids) == 1 and e.get("category_title") == category), None)
         return self.client.resolve_category_id(self.entity, category, current=current)
 
-    def sync(self, force=False, prune_attachments=False, only=None):
+    def sync(self, force=False, prune_attachments=False, only=None, *, prune_preview=None):
         """Push the target's documents, or only the file names in `only`.
 
         Rename detection still looks at every document, so unselected files
         are never mistaken for renamed or missing ones.
         """
+        if self.target.attachments_dir:
+            _resolve_asset_path(self.project_root, self.project_root, self.target.attachments_dir, strict=True)
         md_files = self.collect_files()
         self.updated = self.failures = self.skipped = 0
         if not md_files:
             if self._load_excluded() and self.docs_dir.is_dir():
                 return 0
             raise FileNotFoundError(f"{self.docs_dir} に {self.target.pattern} に一致するファイルがありません")
+        if prune_attachments and self.target.attachments_dir and prune_preview is None:
+            prune_preview = self.dry_run(only=only, prune_attachments=True)
+        preview_by_name = {doc["filename"]: doc for doc in prune_preview or ()}
         mapping = self._load_mapping()
         pending = self._pending()
         unknown = [name for name, item in pending.items() if not item.get("eid")]
@@ -2221,8 +2128,6 @@ class EachDocsSyncer:
                 mapping[name] = item["eid"]
                 self._save_mapping(mapping)
         mapping = self._detect_renames(mapping, md_files, self.entity)
-        prune_dir = self.project_root / self.target.attachments_dir if prune_attachments and self.target.attachments_dir else None
-        prune_links = self.link_targets(mapping) if prune_dir and prune_dir.is_dir() else None
         jobs = []
         observed_entities = []
         # Preflight all known destinations before creating any entities.
@@ -2230,16 +2135,15 @@ class EachDocsSyncer:
             if only is not None and f.name not in only:
                 continue
             eid = mapping.get(f.name)
+            preview = preview_by_name.get(f.name, {})
+            if "error" in preview:
+                self.failures += 1
+                progress(f"  [{f.stem}] 添付削除の事前確認に失敗: {preview['error']}", warning=True)
+                continue
             result = self.inspect(f.name, eid)
             self._compute_assets_hash(result["body"], f.name)  # 送信前に参照パスの範囲を検証
-            result["preview_prune_ids"] = set()
-            if prune_links is not None and eid and result.get("data"):
-                preview_body = _rewrite_local_links(result["body"], self.entity, self.client.base_url, mapping,
-                                                    source=f, links=prune_links)
-                names = {p.name for p in prune_dir.iterdir() if p.is_file()}
-                candidates = _prune_candidates(result.get("uploads", []), names, self.target.attachments_pattern,
-                                               preview_body, self.client.base_url)
-                result["preview_prune_ids"] = {u["id"] for u in candidates}
+            result["preview_prune_ids"] = {u["id"] for u in preview.get("prune_candidates", [])
+                                           if eid is not None and eid == preview.get("entity_id")}
             state = result["state"]
             if result.get("data"):
                 observed_entities.append(result["data"])
@@ -2383,7 +2287,7 @@ class EachDocsSyncer:
                 previous = result.get("created_data") or result.get("data") or self._get_entity(eid)
                 stale_uploads: list[int] = []
                 uploaded = {}
-                verified_body, verified_directory = {}, {}
+                verified_body = {}
                 body_receipts = list(result["body_receipts"]) if resuming else []
                 def record_body_upload(receipt):
                     if not body_receipts:
@@ -2460,7 +2364,7 @@ class EachDocsSyncer:
                 if any(latest.get(k) != v for k, v in before.items()) or any(latest_signature[k] != v for k, v in guard.items()):
                     raise ConflictError("本文更新前にリモートが変更されました。diffで確認してください")
                 self._update_entity(eid, **expected)
-                def checkpoint(expected_changes=None, upload_verified=False):
+                def checkpoint(expected_changes=None):
                     """Confirm the predicted result, never adopt an unknown update.
 
                     expected_changes contains only values our completed operation
@@ -2484,8 +2388,6 @@ class EachDocsSyncer:
                     if observed_guard != expected_guard:
                         raise ConflictError("同期処理中にリモートのメタデータ・添付が変更されました。diffで確認してください")
                     pending[f.name]["guard"] = observed_guard
-                    if upload_verified:
-                        del pending[f.name]["verifying_upload"]
                     self._save_pending(pending)
                     return observed, signature["uploads"]
 
@@ -2506,28 +2408,12 @@ class EachDocsSyncer:
                 links_ok = _sync_links(self.client, self.entity, eid, self.target.links) if links_changed else True
                 if not links_ok:
                     raise RuntimeError("本文更新後にリンク同期が失敗しました。リモートを確認して再実行してください")
-                def save_receipt(receipt):
-                    pending[f.name]["verifying_upload"] = receipt
-                    self._save_pending(pending)
-
-                def confirm_upload(receipt):
-                    save_receipt(receipt)
-                    uploads = self.client.list_uploads(self.entity, eid)
-                    entry = self._verify_uploaded_attachment(eid, uploads, receipt)
-                    expected_uploads = pending[f.name]["guard"]["uploads"] + [entry]
-                    # checkpoint が成功するまで、ディスク上には検証待ち記録を残す。
-                    checkpoint({"uploads": sorted(expected_uploads, key=lambda u: str(u["id"]))}, upload_verified=True)
-
                 prune_ids = set()
-                att_ok = True
-                if self.target.attachments_dir:
-                    att_ok = _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, eid, self.client,
-                                               force=force, pattern=self.target.attachments_pattern, prune=prune_attachments, strict=True,
-                                               prune_ids=planned_prune,
-                                               body=prune_body, deferred_prune=prune_ids, on_upload=confirm_upload,
-                                               verified=verified_directory, save_receipt=save_receipt, project_root=self.project_root)
-                if not att_ok:
-                    raise RuntimeError("本文更新後、添付の同期が失敗しました。再実行してください")
+                if planned_prune and directory.is_dir():
+                    local_names = {p.name for p in directory.iterdir() if p.is_file()}
+                    candidates = _prune_candidates(self.client.list_uploads(self.entity, eid), local_names,
+                                                   self.target.attachments_pattern, prune_body, self.client.base_url)
+                    prune_ids = planned_prune.intersection(u["id"] for u in candidates)
                 stale_uploads.extend(sorted(prune_ids))
                 deleted = self._delete_stale_uploads(eid, stale_uploads, pending, f.name, prune_ids, check_download_urls) if stale_uploads else set()
                 if "deleting" in pending[f.name]:
@@ -2553,8 +2439,7 @@ class EachDocsSyncer:
                     applied = {t: sorted(set(applied.get(t, [])) | set(ids))
                                for t, ids in {**applied, **self.target.links}.items()}
                 self._save_baseline(f.name, base if dropped else raw_body, data, uploads, base=base, links=applied,
-                                    assets_hash=self._compute_assets_hash(raw_body, f.name, body_evidence=verified_body,
-                                                                         directory_evidence=verified_directory))
+                                    assets_hash=self._compute_assets_hash(raw_body, f.name, body_evidence=verified_body))
                 pending.pop(f.name, None)
                 self._save_pending(pending)
                 sync_log.record(self.project_root / sync_log.DEFAULT_LOG_PATH, action="push", target=f.stem,
