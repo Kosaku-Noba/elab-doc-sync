@@ -630,3 +630,38 @@ def test_acknowledged_id_missing_from_listing_returns_receipt(mock_req, client, 
                             _mock_response([{"id": 9, "real_name": path.name, "long_name": "other", "storage": 1}])]
     result = client.upload_file("items", 1, str(path))
     assert result["url"] is None and result["receipt"]["id"] == 8
+
+
+@pytest.mark.parametrize("storage,available", [("", False), (0, True)])
+@patch("elab_doc_sync.client.requests.request")
+def test_storage_required_before_returning_download_url(mock_req, client, tmp_path, storage, available):
+    path = tmp_path / "table.csv"
+    path.write_bytes(b"values")
+    entry = {"id": 4, "real_name": path.name, "long_name": "blob", "storage": storage}
+    mock_req.side_effect = [_mock_response([]), _mock_response(headers={"location": "/uploads/4"}),
+                            _mock_response([entry])]
+    result = client.upload_file("items", 1, str(path))
+    assert bool(result["url"]) is available and result["receipt"]["id"] == 4
+
+
+@patch("elab_doc_sync.client.requests.request")
+def test_successful_upload_without_location_verifies_legacy_digest(mock_req, client, tmp_path):
+    from hashlib import md5
+    path = tmp_path / "table.csv"
+    path.write_bytes(b"values")
+    entry = {"id": 4, "real_name": path.name, "long_name": "blob", "storage": 0, "hash": md5(b"values").hexdigest()}
+    binary = _mock_response()
+    binary.__enter__.return_value = binary
+    binary.iter_content.return_value = [b"val", b"ues"]
+    mock_req.side_effect = [_mock_response([]), _mock_response(), _mock_response([entry]), binary]
+    assert client.upload_file("items", 1, str(path))["id"] == 4
+
+
+def test_upload_url_encodes_query_values():
+    from urllib.parse import parse_qs, urlsplit
+    from elab_doc_sync.client import upload_url
+    from elab_doc_sync.sync import _download_long_name
+
+    url = upload_url("https://elab.example", {"long_name": "a/b#1", "real_name": "測定&A+(1).pdf", "storage": 0})
+    assert parse_qs(urlsplit(url).query) == {"f": ["a/b#1"], "name": ["測定&A+(1).pdf"], "storage": ["0"]}
+    assert not urlsplit(url).fragment and _download_long_name(url) == "a/b#1"

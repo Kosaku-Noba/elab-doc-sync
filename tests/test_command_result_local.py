@@ -685,6 +685,97 @@ def test_pull_captures_edit_at_replacement(project, tmp_path, monkeypatch, renam
     assert json.loads((tmp_path / ".ids/mapping.json").read_text()) == {"note.md": 42}
     project.backup_id = json.loads((tmp_path / RECOVERY).read_text())["backup"]
     saved = tmp_path / BACKUPS / project.backup_id / "displaced/note.md"
+    original.write_text("editor continued")
     assert saved.read_text() == "edited at replacement"
     assert cli.run_restore(project).exit_code == 0
     assert saved.read_text() == "edited at replacement"
+
+def test_displaced_file_on_another_mount_remains_recoverable(tmp_path, monkeypatch):
+    import errno
+    import hashlib
+    from elab_doc_sync.safety import BACKUPS, hold_document, restore
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    doc = docs / "note.md"
+    doc.write_bytes(b"original")
+    backup_id = snapshot(tmp_path, [docs], "before pull")
+    backup = tmp_path / BACKUPS / backup_id
+    rename = Path.rename
+
+    def cross_device(src, dest):
+        if dest.parent.name == "displaced":
+            raise OSError(errno.EXDEV, "different mount")
+        return rename(src, dest)
+
+    monkeypatch.setattr(Path, "rename", cross_device)
+    import os
+    if os.name == "nt":
+        with doc.open("ab"), pytest.raises(PermissionError):
+            with hold_document(doc, backup, hashlib.sha256(b"original").hexdigest()):
+                pytest.fail("open Windows document was replaced")
+        assert doc.read_bytes() == b"original"
+        return
+    with doc.open("ab") as editor:
+        with hold_document(doc, backup, hashlib.sha256(b"original").hexdigest()):
+            doc.write_bytes(b"published")
+        restore(tmp_path, backup_id)
+        assert doc.read_bytes() == b"original"
+        editor.write(b" last edit")
+    retained = json.loads((backup / "displaced-location.json").read_text())["path"]
+    assert (tmp_path / retained).read_bytes() == b"original last edit"
+    assert (backup / "displaced/note.md").read_bytes() == b"original"
+
+
+def test_restore_uses_existing_held_document_even_after_index_removed(tmp_path):
+    from elab_doc_sync.safety import restore
+
+    docs = tmp_path / "docs"
+    held = docs / ".elab-displaced-original/body"
+    held.parent.mkdir(parents=True)
+    held.write_bytes(b"saved version")
+    backup = snapshot(tmp_path, [docs], "test")
+    held.write_bytes(b"open editor version")
+    restore(tmp_path, backup)
+    assert held.read_bytes() == b"open editor version"
+    held.unlink()
+    restore(tmp_path, backup)
+    assert held.read_bytes() == b"saved version"
+
+
+def test_selectors_exclude_displaced_files(project, tmp_path):
+    cfg = Path(project.config)
+    data = yaml.safe_load(cfg.read_text())
+    data["targets"][0]["pattern"] = "**/*"
+    cfg.write_text(yaml.safe_dump(data))
+    held = tmp_path / "docs/.elab-displaced-test/body"
+    held.parent.mkdir()
+    held.write_text("previous version")
+    (tmp_path / ".ids/mapping.json").write_text('{"body": 42}')
+    project.files = [str(held)]
+    rejected = cli.run_push(project)
+    assert rejected.exit_code != 0 and any("見つかりません" in msg for msg in rejected.warnings)
+    project.id = project.entity = None
+    project.local = True
+    project.dry_run = False
+    assert cli.run_rm(project).exit_code != 0
+    assert held.read_text() == "previous version"
+
+
+def test_restore_preserves_document_directory_and_private_stash_mode(tmp_path):
+    import os
+    from elab_doc_sync.safety import restore
+
+    docs = tmp_path / "docs"
+    stash = docs / ".elab-displaced-test"
+    stash.mkdir(mode=0o700, parents=True)
+    (stash / "body").write_bytes(b"preserved")
+    original_inode = docs.stat().st_ino
+    backup = snapshot(tmp_path, [docs], "pull")
+    (stash / "body").unlink()
+    stash.rmdir()
+    restore(tmp_path, backup)
+    assert docs.stat().st_ino == original_inode
+    assert (stash / "body").read_bytes() == b"preserved"
+    if os.name != "nt":
+        assert stash.stat().st_mode & 0o077 == 0

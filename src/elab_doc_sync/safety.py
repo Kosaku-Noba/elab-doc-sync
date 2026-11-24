@@ -16,6 +16,7 @@ from .result import progress
 
 BACKUPS = ".elab-sync-backups"
 RECOVERY = ".elab-sync-recovery.json"
+DISPLACED_PREFIX = ".elab-displaced-"
 
 
 def atomic_write(path: Path, data: str | bytes, mode: int | None = None, *, exclusive=False) -> None:
@@ -46,6 +47,11 @@ def hold_document(path: Path, backup: Path, expected_digest: str | None):
     if expected_digest is None:
         yield None
         return
+    # 公開に必要な操作を本文を動かす前に、同じマウントで試す。
+    with tempfile.TemporaryDirectory(prefix=".elab-publish-", dir=path.parent) as probe_dir:
+        probe = Path(probe_dir) / "source"
+        probe.touch()
+        os.link(probe, probe.with_name("link"))
     archive = backup / "displaced" / path.name
     archive.parent.mkdir(mode=0o700)
     held = archive
@@ -54,37 +60,34 @@ def hold_document(path: Path, backup: Path, expected_digest: str | None):
     except OSError as exc:
         if exc.errno != errno.EXDEV:
             raise
-        # 別マウントでも元の名前の取り外しは同じディレクトリ内で行う。
-        held = Path(tempfile.mkdtemp(prefix=".elab-displaced-", dir=path.parent)) / "body"
+        held = Path(tempfile.mkdtemp(prefix=DISPLACED_PREFIX, dir=path.parent)) / "body"
         try:
+            write_json(backup / "displaced-location.json", {"path": held.relative_to(backup.parent.parent).as_posix()})
             path.rename(held)
         except BaseException:
-            held.parent.rmdir()
+            if not held.exists():
+                held.parent.rmdir()
+                (backup / "displaced-location.json").unlink(missing_ok=True)
             raise
-    archived = held == archive
     try:
         if held.is_symlink() or not held.is_file():
             raise ValueError(f"保存先が通常の本文ファイルではなくなりました: {held}")
-        if not archived:
-            shutil.copy2(held, archive)
-            archived = True
-        digest = hashlib.sha256(held.read_bytes()).hexdigest()
-        if digest != expected_digest:
+        data = held.read_bytes()
+        if held != archive:
+            atomic_write(archive, data)
+            progress(f"  別マウントの置換直前の実ファイル: {held}（場所の記録: {backup / 'displaced-location.json'}）")
+        if hashlib.sha256(data).hexdigest() != expected_digest:
             raise ValueError(f"取得中に本文が変更されました。退避した編集版: {archive}")
         yield held
     except BaseException:
-        # 外部で再作成されたファイルがあればそれを保持する。
-        try:
-            os.link(held, path, follow_symlinks=False)
-        except OSError:
-            pass
-        progress(f"  置換直前の版: {archive if archived else held}。restore 前に必要な編集を復元対象の外にコピーしてください",
-                 warning=True)
+        # 作業用のコピーを返す。退避した inode とその後の作業用の編集を分ける。
+        if held.is_file() and not held.is_symlink():
+            try:
+                atomic_write(path, held.read_bytes(), mode=held.stat().st_mode & 0o777, exclusive=True)
+            except OSError:
+                pass
+        progress(f"  置換直前の版: {held}。restore 前に必要な編集を復元対象の外にコピーしてください", warning=True)
         raise
-    finally:
-        if held != archive and archived:
-            held.unlink(missing_ok=True)
-            held.parent.rmdir()
 
 
 def write_json(path: Path, data) -> None:
@@ -236,6 +239,34 @@ def local_transaction(root: Path, paths: list[Path], reason: str, *, recovering=
         (root / RECOVERY).unlink()
 
 
+def _held_documents(paths):
+    """復元対象に実在する管理用の退避ファイルだけを保護する。"""
+    held = set()
+    for path in paths:
+        if path.is_symlink():
+            continue
+        if path.name == "body" and path.parent.name.startswith(DISPLACED_PREFIX) and path.is_file():
+            held.add(path)
+        elif path.is_dir():
+            if path.name.startswith(DISPLACED_PREFIX) and (path / "body").is_file() and not (path / "body").is_symlink():
+                held.add(path / "body")
+            held.update(p for p in path.rglob(f"{DISPLACED_PREFIX}*/body") if p.is_file() and not p.is_symlink())
+    return held
+
+
+def _clear_for_restore(path, held, directories):
+    """文書・追跡情報を消去する。別マウント上のバックアップは残す。"""
+    if path in held:
+        return
+    if path.is_dir() and (path in directories or any(p.is_relative_to(path) for p in held)):
+        for child in path.iterdir():
+            _clear_for_restore(child, held, directories)
+    elif path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink(missing_ok=True)
+
+
 def restore(root: Path, backup_id: str, dry_run: bool = False) -> list[dict]:
     root = root.resolve()
     pending_path = root / RECOVERY
@@ -248,6 +279,12 @@ def restore(root: Path, backup_id: str, dry_run: bool = False) -> list[dict]:
         progress(f"  復元対象: {entry['path']} ({entry['kind']})")
     if manifest.get("remote") is not None:
         progress(f"  リモート退避データの取り出し: {export_path}")
+    directories = {root / name for name in manifest["directories"]}
+    held = _held_documents(paths)
+    for name in manifest["files"]:
+        destination = root / name
+        if any(p != destination and p.is_relative_to(destination) for p in held):
+            raise ValueError(f"別マウントの退避場所と復元するファイルが重なっています: {name}")
     if dry_run:
         return manifest["roots"]
     # Preserve everything currently present before restoring an earlier state.
@@ -256,15 +293,16 @@ def restore(root: Path, backup_id: str, dry_run: bool = False) -> list[dict]:
         progress("  個別に取り出すには、files にある元のパスの sha256 と同名のファイルを、"
                  "この一覧と同じディレクトリから別の場所にコピーしてください。")
         for path in paths:
-            if path.is_dir():
-                shutil.rmtree(path)
-            else:
-                path.unlink(missing_ok=True)
+            _clear_for_restore(path, held, directories)
         for name in manifest["directories"]:
-            safe_path(root, name).mkdir(parents=True, exist_ok=True)
+            directory = safe_path(root, name)
+            mode = 0o700 if directory.name.startswith(DISPLACED_PREFIX) else 0o777
+            directory.mkdir(mode=mode, parents=True, exist_ok=True)
         base = root / BACKUPS / backup_id
         for name, item in manifest["files"].items():
-            atomic_write(safe_path(root, name), (base / item["sha256"]).read_bytes(), item["mode"])
+            destination = safe_path(root, name)
+            if destination not in held:
+                atomic_write(destination, (base / item["sha256"]).read_bytes(), item["mode"])
         if manifest.get("remote") is not None:
             write_json(export_path, manifest["remote"])
     return manifest["roots"]

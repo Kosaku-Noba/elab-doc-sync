@@ -8,6 +8,7 @@ import requests
 import urllib3
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlencode
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logger = logging.getLogger(__name__)
@@ -20,6 +21,14 @@ def upload_sha256(entry):
         if isinstance(value, str) and re.fullmatch(r"[A-Fa-f0-9]{64}", value):
             return value.lower()
     return None
+
+
+def upload_url(base_url, upload):
+    """eLabFTW の一覧から、取得可能な添付の URL を組み立てる。"""
+    if not upload.get("long_name") or not upload.get("real_name") or upload.get("storage") in (None, ""):
+        return None
+    query = urlencode({"f": upload["long_name"], "name": upload["real_name"], "storage": upload["storage"]}, quote_via=quote)
+    return f"{base_url}/app/download.php?{query}"
 
 
 class UploadConfirmationError(RuntimeError):
@@ -195,7 +204,7 @@ class ELabFTWClient:
         try:
             candidates = [u for u in self.list_uploads(entity_type, entity_id)
                           if u["id"] not in previous_ids and u.get("real_name") == filename
-                          and u.get("long_name") and u.get("storage") is not None]
+                          and upload_url(self.base_url, u)]
             if response is None:
                 matches = []
                 for candidate in candidates:
@@ -212,7 +221,13 @@ class ELabFTWClient:
                 location = response.headers.get("location", "").rstrip("/").split("/")[-1]
                 upload = next((u for u in candidates if str(u["id"]) == location), None)
                 if upload is None and receipt is None and candidates:
-                    same = [u for u in candidates if upload_sha256(u) == digest]
+                    same = []
+                    for candidate in candidates:
+                        known = upload_sha256(candidate)
+                        if not known and (candidate.get("hash") or candidate.get("sha256")):
+                            known = self.upload_digest(entity_type=entity_type, entity_id=entity_id, upload_id=candidate["id"])
+                        if known == digest:
+                            same.append(candidate)
                     unverified = [u for u in candidates if not (u.get("sha256") or u.get("hash"))]
                     upload = max(same or unverified, key=lambda u: u["id"], default=None)
         except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
@@ -222,7 +237,7 @@ class ELabFTWClient:
         return {
             "id": upload.get("id"), "filename": filename,
             "receipt": {"id": upload["id"], "name": filename, "size": len(payload), "sha256": digest},
-            "url": f"{self.base_url}/app/download.php?f={upload['long_name']}&name={filename}&storage={upload['storage']}",
+            "url": upload_url(self.base_url, upload),
         }
 
     def delete_upload(self, entity_type: str, entity_id: int, upload_id: int) -> None:

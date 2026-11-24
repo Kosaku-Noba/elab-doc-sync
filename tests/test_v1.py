@@ -2089,3 +2089,51 @@ def test_resume_prefers_confirmed_linked_csv(project, replacement):
     assert syncer.sync() == 1
     assert "blob101" in remote[1]["body"]
     assert client.upload_file.call_count == 2
+
+
+def test_missing_storage_before_patch_preserves_receipt_on_retry(project):
+    root, client, remote, syncer, args = project
+    (root / "docs/data.csv").write_bytes(b"new")
+    (root / "docs/a.md").write_text("[data](data.csv)")
+    uploads = _stateful_uploads(client)
+    read_list = client.list_uploads.side_effect
+
+    def lose_url(entity, eid):
+        pending = syncer._pending().get("a.md", {})
+        if pending.get("expected") and uploads.get(eid):
+            uploads[eid][0].pop("storage", None)
+        return read_list(entity, eid)
+
+    client.list_uploads.side_effect = lose_url
+    assert syncer.sync() == 0
+    assert not remote[1]["body"]
+    assert syncer.sync() == 0
+    client.list_uploads.side_effect = read_list
+    uploads[1][0]["storage"] = "1"
+    assert syncer.sync() == 1
+    assert client.upload_file.call_count == 1
+
+
+@pytest.mark.parametrize("drop", ["stored_link", "storage"])
+def test_attachment_changed_after_patch_keeps_older_version(project, drop):
+    root, client, remote, syncer, args = project
+    path = root / "docs/plot.png"
+    path.write_bytes(b"old")
+    (root / "docs/a.md").write_text("![plot](plot.png)")
+    uploads = _stateful_uploads(client)
+    assert syncer.sync() == 1
+    path.write_bytes(b"new")
+    update = client.update_item.side_effect
+
+    def altered(*args, **kwargs):
+        result = update(*args, **kwargs)
+        if drop == "stored_link":
+            remote[1]["body"] = "link removed"
+        else:
+            uploads[1][-1].pop("storage")
+        return result
+
+    client.update_item.side_effect = altered
+    assert syncer.sync() == 0
+    client.delete_upload.assert_not_called()
+    assert syncer._pending()["a.md"]

@@ -769,7 +769,7 @@ def _pull_entity_to_target(client, config, config_path, target, project_root,
                 previous = outputs.names.get(key, article.names.setdefault(key, path))
                 if previous != path:
                     raise ConflictError(f"{path} と {previous} の追跡名が重複しています")
-                for local in owner.docs_dir.glob(owner.target.pattern):
+                for local in owner._document_files():
                     if local.is_file() and local.name == path.name and local != path and local not in outputs.released:
                         raise ConflictError(f"{path} は既存ファイル {local} と同名です")
             for name, tracked_id in owner._load_mapping(migrate=False).items():
@@ -812,7 +812,8 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
     article = article or _PullOutputs()
 
     exclusive_paths = set(outputs.released)
-    if not filepath.exists():
+    initially_absent = not filepath.exists()
+    if initially_absent:
         exclusive_paths.add(filepath)
 
     def validate_output(path, *, asset=False, upload_id=None, upload=None):
@@ -872,7 +873,10 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
         raise ConflictError(f"リネーム先 {filename} が既に存在するため変更をスキップします")
     # 同期前からある本文が、添付取得中に編集されても旧内容で処理しない。
     tracked_path = old_path or filepath
-    initial_digest = _compute_file_hash(tracked_path) if tracked_path.is_file() else None
+    initial_digest = None
+    if tracked_path != filepath or not initially_absent:
+        if tracked_path.is_file():
+            initial_digest = _compute_file_hash(tracked_path)
 
     uploads = client.list_uploads(entity_type, eid)
     body_md = _remote_markdown(data, target)
@@ -939,6 +943,8 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
             # 元のディレクトリ項目は退避済み。その後のエディタ保存には上書きしない。
             mode = held.stat().st_mode & 0o777 if held is not None else None
             atomic_write(filepath, local_md + "\n", mode=mode, exclusive=True)
+            if tracked_path != filepath and tracked_path.exists():
+                raise ConflictError(f"本文の保存中に改名元が再作成されました: {tracked_path}")
         if not is_temp_export:
             applied_links = syncer.applied_links(old_name or filename)
             if old_name and old_name != filename:
@@ -1161,7 +1167,7 @@ def cmd_init(args):
 
     atomic_write(config_path, yaml.dump(data, default_flow_style=False, allow_unicode=True))
 
-    print("  Git管理対象外: .elab-sync.yaml, .elab-sync-ids/, .elab-sync-backups/, .elab-sync-operations/, .elab-sync-recovery.json")
+    print("  Git管理対象外: .elab-sync.yaml, .elab-sync-ids/, .elab-sync-backups/, .elab-displaced-*/, .elab-sync-operations/, .elab-sync-recovery.json")
 
     # テンプレートファイルのコピー
     print("\nテンプレートファイルを展開中...")
@@ -1301,7 +1307,7 @@ def run_clone(args, echo=None) -> CommandResult:
     # .gitignore（API キーを含む設定ファイルも除外）
     gitignore = project_dir / ".gitignore"
     if not gitignore.exists():
-        gitignore.write_text(".elab-sync-ids/\n.elab-sync.yaml\n.elab-sync-backups/\n.elab-sync-operations/\n.elab-sync-recovery.json\n")
+        gitignore.write_text(".elab-sync-ids/\n.elab-sync.yaml\n.elab-sync-backups/\n.elab-displaced-*/\n.elab-sync-operations/\n.elab-sync-recovery.json\n")
 
     res.say(f"\n✅ プロジェクトを作成しました: {project_dir}/ ({cloned} 件)")
     res.say(f"   API キーを設定してください:")
@@ -1998,6 +2004,8 @@ def run_link(args, echo=None) -> CommandResult:
     syncer = _make_syncer(_make_client_for_target(config, target), target, config_path.parent)
     syncer.link_syncers = _link_syncers(config, config_path.parent)
     path = safe_path(syncer.docs_dir, args.file)
+    if syncer.is_displaced_path(path):
+        raise ValueError("本文の退避場所は指定できません")
     res.data.update(path=str(path), entity=target.entity, entity_id=args.entity_id, new=getattr(args, "new", False))
     filename = path.name
     if not path.is_file():
@@ -2066,6 +2074,8 @@ def run_mv(args, echo=None) -> CommandResult:
             continue
         safe_path(syncer.docs_dir, old_rel)
         safe_path(syncer.docs_dir, new_rel)
+        if syncer.is_displaced_path(new_path) or syncer.is_displaced_path(old_path):
+            raise ValueError("本文の退避場所は指定できません")
         mapping = syncer._load_mapping(migrate=False)
         if old_path.name in mapping:
             matches.append((syncer, mapping))
@@ -2172,7 +2182,7 @@ def _select_documents(targets_and_syncers, files, regexes):
     candidates = []
     for index, (target, syncer) in enumerate(targets_and_syncers):
         excluded = syncer._load_excluded()
-        for path in sorted(syncer.docs_dir.glob(target.pattern)):
+        for path in sorted(syncer._document_files()):
             if path.is_file():
                 candidates.append((index, path, path.name in excluded))
     for kind, value in selectors:
@@ -2238,7 +2248,7 @@ def run_rm(args, echo=None) -> CommandResult:
                 # 同期エンジンのキーはファイル名。状態ファイル由来の外部パスは扱わない。
                 if Path(name).name != name or name in ("", ".", ".."):
                     continue
-                paths = [p for p in syncer.docs_dir.glob(syncer.target.pattern) if p.name == name]
+                paths = [p for p in syncer._document_files() if p.name == name]
                 if not paths:
                     paths = [syncer.docs_dir / name]
                 if path_matches:
