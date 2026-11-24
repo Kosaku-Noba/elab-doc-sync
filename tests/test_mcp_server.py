@@ -73,7 +73,8 @@ def test_stdio_tools(tmp_path):
     asyncio.run(run())
 
 
-def test_remote_preview_apply_and_partial_failure(tmp_path, monkeypatch):
+@pytest.mark.parametrize("env_key", [False, True])
+def test_remote_preview_apply_and_partial_failure(tmp_path, monkeypatch, env_key):
     from unittest.mock import MagicMock
     from mcp.shared.memory import create_connected_server_and_client_session
     from elab_doc_sync import cli, mcp_server
@@ -81,8 +82,10 @@ def test_remote_preview_apply_and_partial_failure(tmp_path, monkeypatch):
 
     cfg = tmp_path / ".elab-sync.yaml"
     key = "private-remote-key"
+    monkeypatch.setenv("ELAB_REMOTE_TEST_KEY", key)
+    credentials = {"api_key_env": "ELAB_REMOTE_TEST_KEY"} if env_key else {"api_key": key}
     cfg.write_text(yaml.safe_dump({
-        "elabftw": {"url": "https://example.invalid", "api_key": key},
+        "elabftw": {"url": "https://example.invalid", **credentials},
         "targets": [{"docs_dir": "docs", "id_file": ".ids/default.id"}],
     }))
     (tmp_path / ".ids").mkdir()

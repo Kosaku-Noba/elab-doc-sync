@@ -2137,3 +2137,79 @@ def test_attachment_changed_after_patch_keeps_older_version(project, drop):
     assert syncer.sync() == 0
     client.delete_upload.assert_not_called()
     assert syncer._pending()["a.md"]
+
+
+@pytest.mark.parametrize("example", ["`![plot](plot.png)`", "```md\n![plot](plot.png)\n```"])
+def test_push_leaves_literal_attachment_examples_untouched(project, example):
+    root, client, remote, syncer, _ = project
+    path = root / "docs/plot.png"
+    path.write_bytes(b"old")
+    note = root / "docs/a.md"
+    note.write_text("![plot](plot.png)")
+    uploads = _stateful_uploads(client)
+    assert syncer.sync() == 1
+    original = copy.deepcopy(uploads[1])
+    path.write_bytes(b"new")
+    note.write_text(example)
+    assert syncer.sync() == 1
+    assert uploads[1] == original
+    assert remote[1]["body"] == example
+
+
+def test_escaped_video_markup_can_be_verified_after_save(project):
+    root, client, remote, syncer, _ = project
+    _stateful_uploads(client)
+    (root / "docs/clip.mp4").write_bytes(b"video")
+    (root / "docs/a.md").write_text("[clip](clip.mp4)")
+    def save_escaped(eid, **fields):
+        fields["body"] = _html.escape(fields["body"])
+        remote[eid].update(fields)
+
+    client.update_item.side_effect = save_escaped
+    assert syncer.sync() == 1
+    assert "&lt;video" in remote[1]["body"]
+    assert "blob100" in remote[1]["body"]
+
+
+def test_retry_keeps_upload_receipts_per_document(project):
+    root, client, remote, syncer, _ = project
+    uploads = _stateful_uploads(client)
+    for name in ("a", "b"):
+        (root / f"docs/{name}.png").write_bytes(name.encode())
+        (root / f"docs/{name}.md").write_text(f"![{name}]({name}.png)")
+    update = client.update_item.side_effect
+    client.update_item.side_effect = RuntimeError("PATCH interrupted")
+    for _ in range(2):
+        assert syncer.sync() == 0
+        for name, pending in syncer._pending().items():
+            ids = {r["id"] for r in pending["body_receipts"]}
+            assert ids == {u["id"] for u in uploads[pending["eid"]]}
+    client.update_item.side_effect = update
+    assert syncer.sync() == 2
+    assert client.upload_file.call_count == 2
+
+
+def test_resume_after_old_receipt_has_been_deleted(project):
+    root, client, remote, syncer, _ = project
+    uploads = _stateful_uploads(client)
+    (root / "docs/a.md").write_text("![plot](plot.png)")
+    path = root / "docs/plot.png"
+    path.write_bytes(b"old")
+    update = client.update_item.side_effect
+    client.update_item.side_effect = RuntimeError("PATCH interrupted")
+    assert syncer.sync() == 0
+    client.update_item.side_effect = update
+    path.write_bytes(b"new")
+    read_list = client.list_uploads.side_effect
+
+    def interrupted(entity, eid):
+        if [u["id"] for u in uploads.get(eid, [])] == [101]:
+            raise ConnectionError("lost after delete")
+        return read_list(entity, eid)
+
+    client.list_uploads.side_effect = interrupted
+    assert syncer.sync() == 0
+    client.list_uploads.side_effect = read_list
+    assert syncer.sync() == 1
+    assert client.upload_file.call_count == 2
+    assert [u["id"] for u in uploads[1]] == [101]

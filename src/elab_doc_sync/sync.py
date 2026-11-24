@@ -14,6 +14,7 @@ import re
 import shlex
 import shutil
 import tempfile
+import uuid
 import markdown
 from markdownify import markdownify as html_to_md
 import html as _html
@@ -171,6 +172,31 @@ def _attachment_links(body, content_type):
     parser.feed(_md_to_html(body) if str(content_type) == "2" else body)
     parser.close()
     return parser.urls
+
+
+def _protect_literal_links(body):
+    """Markdown が表示例として扱うリンク記法を、添付の置換・探索から外す。"""
+    if "](" not in body:
+        return body, {}
+    pattern = re.compile(r"!?\[([^]\n]*)\]\(([^)\n]+)\)")
+    prefix = "elabsync" + uuid.uuid4().hex
+    matches = list(pattern.finditer(body))
+    parts = []
+    start = 0
+    for index, match in enumerate(matches):
+        parts.extend((body[start:match.start(2)], f"{prefix}-{index}"))
+        start = match.end(2)
+    links = _attachment_links("".join(parts) + body[start:], 2)
+    literals = {}
+    parts = []
+    start = 0
+    for index, match in enumerate(matches):
+        marker = f"{prefix}-{index}"
+        if marker not in links:
+            parts.extend((body[start:match.start()], marker + "-end"))
+            literals[marker + "-end"] = match.group()
+            start = match.end()
+    return "".join(parts) + body[start:], literals
 
 
 def _download_long_name(src):
@@ -1562,6 +1588,7 @@ class EachDocsSyncer:
 
     def _compute_assets_hash(self, raw_body, filename=None, *, body_evidence=None, directory_evidence=None):
         parts = []
+        raw_body, _ = _protect_literal_links(raw_body)
         document_dir = self.file_path(filename).parent if filename else self.docs_dir
         for m in [*IMAGE_RE.finditer(raw_body), *_LINK_RE.finditer(raw_body)]:
             src = m.group(2)
@@ -1912,7 +1939,7 @@ class EachDocsSyncer:
         return result
 
     def is_displaced_path(self, path):
-        return any(part.startswith(DISPLACED_PREFIX) for part in path.relative_to(self.docs_dir).parts[:-1])
+        return any(_os.path.normcase(part).startswith(DISPLACED_PREFIX) for part in path.relative_to(self.docs_dir).parts[:-1])
 
     def _document_files(self):
         for path in self.docs_dir.glob(self.target.pattern):
@@ -2015,11 +2042,12 @@ class EachDocsSyncer:
                 if item.get("eid") and name not in mapping:
                     mapping[name] = item["eid"]
             mapping = self._detect_renames(mapping, files, self.entity, dry_run=True)
-        results = [{"filename": f.name, "title": f.stem, "images": _count_local_images(body),
-                 "videos": _count_local_videos(body), "file_links": _count_local_file_links(body),
+        results = [{"filename": f.name, "title": f.stem, "images": _count_local_images(visible),
+                 "videos": _count_local_videos(visible), "file_links": _count_local_file_links(visible),
                  "changed": self._has_changed(f.name, body), "entity_id": mapping.get(f.name)}
                 for f in files if only is None or f.name in only
-                for body in [f.read_text(encoding="utf-8").strip()]]
+                for body in [f.read_text(encoding="utf-8").strip()]
+                for visible, _ in [_protect_literal_links(body)]]
         if prune_attachments and self.target.attachments_dir:
             directory = self.project_root / self.target.attachments_dir
             local_names = {p.name for p in directory.iterdir() if p.is_file()} if directory.is_dir() else set()
@@ -2096,11 +2124,15 @@ class EachDocsSyncer:
             # stored is the body as eLabFTW saved it after our PATCH; eLabFTW may
             # rewrite what we sent (e.g. "> " to "&gt; "), so expected alone never matches.
             receipt = owned.get("verifying_upload")
-            receipts = owned.get("body_receipts", []) + ([receipt] if receipt else [])
+            present_ids = {u["id"] for u in result.get("uploads", [])}
+            retired = set(owned.get("deleting", [])) - present_ids
+            body_receipts = [r for r in owned.get("body_receipts", []) if r["id"] not in retired]
+            result["body_receipts"] = body_receipts
+            receipts = body_receipts + ([receipt] if receipt else [])
             if receipts and not force and owned.get("eid") == eid:
                 try:
                     uploads_by_id = {u["id"]: u for u in result.get("uploads", [])}
-                    for r in owned.get("body_receipts", []):
+                    for r in body_receipts:
                         entry = uploads_by_id.get(r["id"], {})
                         if not entry.get("long_name") or entry.get("storage") in (None, ""):
                             raise ConflictError(f"受領した添付 ID #{r['id']} の URL が未反映です。一覧への反映後に通常の push を再実行してください")
@@ -2219,7 +2251,7 @@ class EachDocsSyncer:
                 stale_uploads: list[int] = []
                 uploaded = {}
                 verified_body, verified_directory = {}, {}
-                body_receipts = list(owned.get("body_receipts", [])) if resuming else []
+                body_receipts = list(result["body_receipts"]) if resuming else []
                 def record_body_upload(receipt):
                     if not body_receipts:
                         baseline = self._remote_signature(previous, result.get("uploads", []))
@@ -2239,13 +2271,18 @@ class EachDocsSyncer:
                         raise ConflictError("本文に使う添付 URL が変わりました。eLabFTW の添付一覧を確認してください")
 
                 preferred = result.get("confirmed_upload_ids", set())
-                body = _rewrite_images(raw_body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded, verified=verified_body, record=record_body_upload, preferred=preferred, used_urls=used_urls)
+                body, literals = _protect_literal_links(raw_body)
+                body = _rewrite_images(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded, verified=verified_body, record=record_body_upload, preferred=preferred, used_urls=used_urls)
                 body = _rewrite_videos(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded, verified=verified_body, record=record_body_upload, preferred=preferred, used_urls=used_urls)
                 body = _rewrite_file_links(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded, verified=verified_body, record=record_body_upload, preferred=preferred, used_urls=used_urls)
                 body = _rewrite_local_links(body, self.entity, self.client.base_url, mapping, source=f, links=links)
+                for marker, literal in literals.items():
+                    body = body.replace(marker, literal)
                 body = body if self.target.body_format == "md" else _md_to_html(body)
                 expected = {"body": body, "title": f.stem, "content_type": 2 if self.target.body_format == "md" else 1}
                 expected_links = _attachment_links(body, expected["content_type"]) if used_urls else {}
+                if any(not expected_links[url] for url in used_urls.values()):
+                    raise ConflictError("本文の添付リンクを確認できません。Markdown のリンク記法を確認してください")
                 before = {key: previous.get(key) for key in expected}
                 guard = {k: v for k, v in self._remote_signature(previous, self.client.list_uploads(self.entity, eid)).items() if k not in ("body", "title", "content_type")}
                 # 本文のリンクを書き換える間に既存の添付が変わった場合は削除・本文更新を止める。
@@ -2301,7 +2338,11 @@ class EachDocsSyncer:
                     listed = self.client.list_uploads(self.entity, eid)
                     check_download_urls(listed)
                     if used_urls:
-                        saved_links = _attachment_links(observed.get("body") or "", observed.get("content_type"))
+                        saved_body = observed.get("body") or ""
+                        saved_type = observed.get("content_type")
+                        saved_links = _attachment_links(saved_body, saved_type)
+                        if str(saved_type) == "2" and saved_body != body:
+                            saved_links |= _attachment_links(_html.unescape(saved_body), saved_type)
                         if any(saved_links[url] < count for url, count in expected_links.items() if url in used_urls.values()):
                             raise ConflictError("保存された本文の添付リンクを確認できません。本文と添付一覧を確認してください")
                     signature = self._remote_signature(observed, listed)
@@ -2358,6 +2399,8 @@ class EachDocsSyncer:
                 deleted = self._delete_stale_uploads(eid, stale_uploads, pending, f.name, prune_ids, check_download_urls) if stale_uploads else set()
                 if "deleting" in pending[f.name]:
                     checkpoint({"uploads": [u for u in pending[f.name]["guard"]["uploads"] if u.get("id") not in deleted]})
+                    if body_receipts:
+                        pending[f.name]["body_receipts"] = [r for r in body_receipts if r["id"] not in deleted]
                     pending[f.name].pop("deleting")
                     self._save_pending(pending)
                 data = self._get_entity(eid)

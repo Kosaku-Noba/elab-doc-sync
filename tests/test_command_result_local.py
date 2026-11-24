@@ -779,3 +779,21 @@ def test_restore_preserves_document_directory_and_private_stash_mode(tmp_path):
     assert (stash / "body").read_bytes() == b"preserved"
     if os.name != "nt":
         assert stash.stat().st_mode & 0o077 == 0
+
+
+def test_restore_tightens_existing_recovery_directory(tmp_path):
+    import os
+    from elab_doc_sync.safety import restore, snapshot
+    if os.name != "posix":
+        pytest.skip("POSIX mode bits")
+    docs = tmp_path / "docs"
+    stash = docs / ".elab-displaced-old"
+    stash.mkdir(parents=True)
+    body = stash / "body"
+    body.write_bytes(b"original")
+    backup = snapshot(tmp_path, [docs], "pull")
+    body.unlink()
+    stash.chmod(0o755)
+    restore(tmp_path, backup)
+    assert stash.stat().st_mode & 0o077 == 0
+    assert body.read_bytes() == b"original"

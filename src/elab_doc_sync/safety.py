@@ -1,6 +1,6 @@
 """Atomic local storage, process locking, and recoverable local snapshots."""
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from functools import wraps
 import errno
@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import tempfile
 import uuid
 
@@ -245,26 +246,72 @@ def _held_documents(paths):
     for path in paths:
         if path.is_symlink():
             continue
-        if path.name == "body" and path.parent.name.startswith(DISPLACED_PREFIX) and path.is_file():
+        if path.name == "body" and os.path.normcase(path.parent.name).startswith(DISPLACED_PREFIX) and path.is_file():
             held.add(path)
         elif path.is_dir():
-            if path.name.startswith(DISPLACED_PREFIX) and (path / "body").is_file() and not (path / "body").is_symlink():
+            if os.path.normcase(path.name).startswith(DISPLACED_PREFIX) and (path / "body").is_file() and not (path / "body").is_symlink():
                 held.add(path / "body")
             held.update(p for p in path.rglob(f"{DISPLACED_PREFIX}*/body") if p.is_file() and not p.is_symlink())
     return held
 
 
-def _clear_for_restore(path, held, directories):
-    """文書・追跡情報を消去する。別マウント上のバックアップは残す。"""
-    if path in held:
+def _clear_for_restore(root, path, held, directories):
+    """退避本文と復元後も使うディレクトリを残して、現在の内容を消去する。"""
+    keep = directories | {parent for item in held for parent in item.parents}
+    if os.name == "posix":
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+        def clear(parent_fd, target):
+            if target in held:
+                return
+            try:
+                mode = os.stat(target.name, dir_fd=parent_fd, follow_symlinks=False).st_mode
+            except FileNotFoundError:
+                return
+            if not stat.S_ISDIR(mode):
+                if stat.S_ISLNK(mode):
+                    raise ValueError(f"シンボリックリンクは復元対象外です: {target}")
+                os.unlink(target.name, dir_fd=parent_fd)
+                return
+            child_fd = os.open(target.name, flags, dir_fd=parent_fd)
+            try:
+                for name in os.listdir(child_fd):
+                    clear(child_fd, target / name)
+            finally:
+                os.close(child_fd)
+            if target not in keep:
+                os.rmdir(target.name, dir_fd=parent_fd)
+
+        with ExitStack() as stack:
+            parent_fd = os.open(root, flags)
+            stack.callback(os.close, parent_fd)
+            for part in path.parent.relative_to(root).parts:
+                try:
+                    parent_fd = os.open(part, flags, dir_fd=parent_fd)
+                except FileNotFoundError:
+                    return
+                stack.callback(os.close, parent_fd)
+            clear(parent_fd, path)
         return
-    if path.is_dir() and (path in directories or any(p.is_relative_to(path) for p in held)):
-        for child in path.iterdir():
-            _clear_for_restore(child, held, directories)
-    elif path.is_dir() and not path.is_symlink():
-        shutil.rmtree(path)
-    else:
-        path.unlink(missing_ok=True)
+
+    def clear_path(target):
+        if target in held:
+            return
+        try:
+            info = target.lstat()
+        except FileNotFoundError:
+            return
+        if info.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+            raise ValueError(f"再解析ポイントは復元対象外です: {target}")
+        if stat.S_ISDIR(info.st_mode):
+            for child in target.iterdir():
+                clear_path(child)
+            if target not in keep:
+                target.rmdir()
+        else:
+            target.unlink()
+
+    clear_path(path)
 
 
 def restore(root: Path, backup_id: str, dry_run: bool = False) -> list[dict]:
@@ -293,11 +340,17 @@ def restore(root: Path, backup_id: str, dry_run: bool = False) -> list[dict]:
         progress("  個別に取り出すには、files にある元のパスの sha256 と同名のファイルを、"
                  "この一覧と同じディレクトリから別の場所にコピーしてください。")
         for path in paths:
-            _clear_for_restore(path, held, directories)
+            _clear_for_restore(root, path, held, directories)
         for name in manifest["directories"]:
             directory = safe_path(root, name)
-            mode = 0o700 if directory.name.startswith(DISPLACED_PREFIX) else 0o777
+            mode = 0o700 if os.path.normcase(directory.name).startswith(DISPLACED_PREFIX) else 0o777
             directory.mkdir(mode=mode, parents=True, exist_ok=True)
+            if mode == 0o700 and os.name == "posix":
+                fd = os.open(directory, os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    os.fchmod(fd, mode)
+                finally:
+                    os.close(fd)
         base = root / BACKUPS / backup_id
         for name, item in manifest["files"].items():
             destination = safe_path(root, name)
