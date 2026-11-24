@@ -1254,7 +1254,7 @@ def _stateful_uploads(client):
         uid = sum(len(v) for v in uploads.values()) + 100
         uploads.setdefault(eid, []).append({'id': uid, 'real_name': source.name, 'long_name': f'blob{uid}', 'storage': '1',
                                             'filesize': len(content), 'hash': hashlib.sha256(content).hexdigest()})
-        return {'id': uid, 'url': f'https://example.test/app/download.php?f=blob{uid}&name={source.name}&storage=1'}
+        return {'id': uid, 'created': True, 'url': f'https://example.test/app/download.php?f=blob{uid}&name={source.name}&storage=1'}
     def delete(entity, eid, uid):
         uploads[eid] = [u for u in uploads[eid] if u['id'] != uid]
     client.upload_file.side_effect = upload
@@ -2420,6 +2420,48 @@ def test_retry_keeps_upload_receipts_per_document(project):
     client.update_item.side_effect = update
     assert syncer.sync() == 2
     assert client.upload_file.call_count == 2
+
+
+def test_retry_preserves_independently_uploaded_file_after_reuse(project):
+    root, client, remote, syncer, _ = project
+    uploads = _stateful_uploads(client)
+    note = root / "docs/a.md"
+    note.write_text("initial")
+    assert syncer.sync() == 1
+    path = root / "docs/plot.png"
+    path.write_bytes(b"manual attachment")
+    client.upload_file("items", 1, str(path))
+    note.write_text("![plot](plot.png)")
+    update = client.update_item.side_effect
+    client.update_item.side_effect = RuntimeError("PATCH interrupted")
+    assert syncer.sync(force=True) == 0
+    assert syncer._pending()["a.md"]["body_receipts"][0]["id"] == 100
+    client.update_item.side_effect = update
+    path.write_bytes(b"new content")
+    assert syncer.sync() == 1
+    assert [u["id"] for u in uploads[1]] == [100, 101]
+    client.delete_upload.assert_not_called()
+
+
+def test_resume_after_body_was_saved_still_cleans_up_replaced_upload(project):
+    root, client, remote, syncer, _ = project
+    uploads = _stateful_uploads(client)
+    (root / "docs/a.md").write_text("![plot](plot.png)")
+    path = root / "docs/plot.png"
+    path.write_bytes(b"old")
+    assert syncer.sync() == 1
+    path.write_bytes(b"new")
+    update = client.update_item.side_effect
+
+    def lose_response(eid, **fields):
+        update(eid, **fields)
+        raise ConnectionError("lost PATCH response")
+
+    client.update_item.side_effect = lose_response
+    assert syncer.sync() == 0
+    client.update_item.side_effect = update
+    assert syncer.sync() == 1
+    assert [u["id"] for u in uploads[1]] == [101]
 
 
 def test_resume_after_old_receipt_has_been_deleted(project):

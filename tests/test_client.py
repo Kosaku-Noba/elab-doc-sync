@@ -666,3 +666,17 @@ def test_upload_url_encodes_query_values():
     assert parse_qs(urlsplit(url).query) == {"f": ["a/b#1"], "name": ["測定&A+(1).pdf"], "storage": ["0"]}
     assert not urlsplit(url).fragment
     assert _article_upload(url, {"a/b#1": {"id": 7}}, {}, "https://elab.example", "items", 1) == {"id": 7}
+
+
+def test_article_upload_requires_the_configured_installation_path():
+    from elab_doc_sync.sync import _article_upload
+
+    base = "https://elab.example/lab"
+    item = {"id": 7}
+    def resolve(url):
+        return _article_upload(url, {"file": item}, {"7": item}, base, "items", 1)
+
+    assert resolve("./app/download.php?f=file") == item
+    assert resolve("/lab/api/v2/items/1/uploads/7") == item
+    assert resolve("/api/v2/items/1/uploads/7") is None
+    assert resolve("https://elab.example/app/download.php?f=file") is None

@@ -393,6 +393,7 @@ def test_pull_rejects_two_uploads_for_single_image(project, tmp_path, dry_run):
     project.dry_run = dry_run
     with patch.object(cli, "ELabFTWClient") as factory:
         client = factory.return_value
+        client.base_url = "https://example.invalid"
         client.get_item.return_value = {"title": "picture", "body": '<img src="/uploads/1"><img src="/uploads/2">'}
         client.list_uploads.return_value = [{"id": i, "real_name": "sample.png"} for i in (1, 2)]
         res = cli.run_pull(project)
@@ -412,6 +413,7 @@ def test_batch_pull_prevents_overwrite_between_articles(project, tmp_path, dry_r
     project.dry_run = dry_run
     with patch.object(cli, "ELabFTWClient") as factory:
         client = factory.return_value
+        client.base_url = "https://example.invalid"
         client.get_item.side_effect = lambda eid: {"title": f"entry{eid}", "body": "body"}
         client.list_uploads.side_effect = lambda entity, eid: (
             [{"id": eid + 20, "real_name": "table.csv" if eid == 7 else other_name}] if eid != 9 else [])

@@ -335,16 +335,17 @@ def _replace_body_links(body, replace, *, images):
 def _article_upload(src, by_name, by_id, base_url, entity, eid):
     """Resolve actual download endpoints on this installation and article."""
     try:
-        parsed = urlsplit(src)
-        server = _url_origin(str(base_url), "https")
-        if (parsed.scheme or parsed.netloc) and _url_origin(src, server[0]) != server:
+        base = str(base_url).rstrip("/") + "/"
+        absolute = urljoin(base, src)
+        if _url_origin(absolute, "https") != _url_origin(base, "https"):
             return None
+        parsed = urlsplit(absolute)
+        prefix = urlsplit(base).path
+        if not parsed.path.startswith(prefix):
+            return None
+        path = parsed.path[len(prefix):]
     except (ValueError, UnicodeError):
         return None
-    prefix = urlsplit(str(base_url)).path.rstrip("/")
-    path = parsed.path.lstrip("/")
-    if prefix and parsed.path.startswith(prefix + "/"):
-        path = parsed.path[len(prefix) + 1:]
     if path == "app/download.php":
         return by_name.get(parse_qs(parsed.query).get("f", [None])[0])
     match = re.fullmatch(r"(?:api/v2/" + re.escape(f"{entity}/{eid}") + r"/)?uploads/(\d+)/?", path)
@@ -558,13 +559,13 @@ def _upload_body_file(client, entity, eid, path, uploaded, root, name=None, reco
             result = client.upload_file(entity, eid, str(staged))
         except UploadConfirmationError as exc:
             if exc.receipt and record:
-                record(exc.receipt)
+                record({**exc.receipt, "created": True})
             raise
         receipt = result.get("receipt")
         if receipt is None and result.get("id") is not None:
             receipt = dict(id=result["id"], name=expected[0], size=expected[1], sha256=expected[2])
         if receipt and record:
-            record(receipt)
+            record({**receipt, "created": result.get("created") is True})
             if not result.get("url"):
                 raise ConflictError(f"受領した添付 ID #{receipt['id']} が一覧に現れていません。一覧への反映後に同じ文書を push してください")
     if uploaded is not None and result.get("url"):
@@ -1245,7 +1246,8 @@ def _localize_attachment_links(body, uploads, directory, source, base_url, entit
             paths[parsed.path + "?" + parsed.query] = local
         if upload.get("id") is not None:
             path = f"/api/v2/{entity}/{eid}/uploads/{upload['id']}"
-            paths[path] = paths[base_url.rstrip("/") + path] = local
+            absolute = base_url.rstrip("/") + path
+            paths[urlsplit(absolute).path] = paths[absolute] = local
 
     def replace(link):
         local = paths.get(link.url)
@@ -2379,7 +2381,7 @@ class EachDocsSyncer:
                                            "needs": {"meta": needs_meta(f, result, resuming),
                                                      "links": needs_links(f, result, resuming)}}
                     pending[f.name]["body_receipts"] = body_receipts
-                    if receipt not in body_receipts:
+                    if not any(all(r.get(k) == v for k, v in receipt.items()) for r in body_receipts):
                         body_receipts.append(receipt)
                     self._save_pending(pending)
                 used_urls = {}
@@ -2418,7 +2420,9 @@ class EachDocsSyncer:
                     previously_linked = _linked_article_upload_ids(result.get("uploads", []), previous.get("body"),
                                                                    previous.get("content_type"), self.client.base_url,
                                                                    self.entity, eid)
-                    owned_ids = previously_linked.union(result.get("confirmed_upload_ids", {}))
+                    owned_ids = previously_linked.union(r["id"] for r in body_receipts if r.get("created") is True)
+                    if resuming:
+                        owned_ids.update(pending[f.name].get("cleanup_ids", []))
                     stale_uploads = [uid for uid in stale_uploads if uid not in uploaded and uid in owned_ids]
                 if current_originals != initial_uploads or set(current) != initial_ids | set(uploaded) or not set(stale_uploads) <= initial_ids:
                     raise ConflictError("本文の添付を準備している間にリモート添付が変更されました。diffで確認してください")
@@ -2426,6 +2430,8 @@ class EachDocsSyncer:
                 links_changed = needs_links(f, result, resuming)
                 pending[f.name] = {"eid": eid, "expected": expected, "before": before, "guard": guard,
                                    "needs": {"meta": meta_changed, "links": links_changed}}
+                if stale_uploads:
+                    pending[f.name]["cleanup_ids"] = stale_uploads.copy()
                 if body_receipts:
                     pending[f.name]["body_receipts"] = body_receipts
                 self._save_pending(pending)

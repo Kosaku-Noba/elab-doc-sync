@@ -482,7 +482,7 @@ def test_rewrite_images_upload_strips_prefix(tmp_path):
 
 # S-62: _download_images handles /api/v2/.../uploads/{id} format (HTML editor images)
 def test_download_images_api_v2_url(tmp_path):
-    client = MagicMock()
+    client = MagicMock(base_url="https://elab.example.com")
     client.list_uploads.return_value = [
         {"id": 15579, "long_name": "9a/9ac3cd.png", "real_name": "photo.png", "storage": 2},
     ]
@@ -498,7 +498,7 @@ def test_download_images_api_v2_url(tmp_path):
 
 # S-63: _normalize_remote_image_urls handles /api/v2/.../uploads/{id} format
 def test_normalize_api_v2_url():
-    client = MagicMock()
+    client = MagicMock(base_url="https://elab.example.com")
     client.list_uploads.return_value = [
         {"id": 15579, "long_name": "9a/9ac3cd.png", "real_name": "photo.png", "storage": 2},
     ]
@@ -509,7 +509,7 @@ def test_normalize_api_v2_url():
 
 # S-64: upload_id prefix mismatch prevention (15 vs 15579)
 def test_download_images_no_prefix_mismatch(tmp_path):
-    client = MagicMock()
+    client = MagicMock(base_url="https://elab.example.com")
     client.list_uploads.return_value = [
         {"id": 15, "long_name": "aa/aa.png", "real_name": "wrong.png", "storage": 1},
         {"id": 15579, "long_name": "bb/bb.png", "real_name": "correct.png", "storage": 2},
@@ -523,7 +523,7 @@ def test_download_images_no_prefix_mismatch(tmp_path):
 
 # S-65: _normalize_remote_image_urls no prefix mismatch (15 vs 15579)
 def test_normalize_no_prefix_mismatch():
-    client = MagicMock()
+    client = MagicMock(base_url="https://elab.example.com")
     client.list_uploads.return_value = [
         {"id": 15, "long_name": "aa/aa.png", "real_name": "wrong.png", "storage": 1},
         {"id": 15579, "long_name": "bb/bb.png", "real_name": "correct.png", "storage": 2},
@@ -536,7 +536,7 @@ def test_normalize_no_prefix_mismatch():
 
 # S-66: trailing slash in upload URL is handled
 def test_download_images_trailing_slash(tmp_path):
-    client = MagicMock()
+    client = MagicMock(base_url="https://elab.example.com")
     client.list_uploads.return_value = [
         {"id": 100, "long_name": "xx/xx.png", "real_name": "img.png", "storage": 1},
     ]

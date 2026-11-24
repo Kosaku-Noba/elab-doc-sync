@@ -233,9 +233,10 @@ class ELabFTWClient:
         except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
             raise UploadConfirmationError(unknown, receipt) from exc
         if upload is None:
-            return {"filename": filename, "url": None, **({"receipt": receipt} if receipt else {})}
+            return {"filename": filename, "url": None, **({"receipt": receipt, "created": True} if receipt else {})}
         return {
             "id": upload.get("id"), "filename": filename,
+            "created": receipt is not None and receipt["id"] == upload["id"],
             "receipt": {"id": upload["id"], "name": filename, "size": len(payload), "sha256": digest},
             "url": upload_url(self.base_url, upload),
         }
