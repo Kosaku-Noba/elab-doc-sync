@@ -27,7 +27,7 @@ from html.parser import HTMLParser
 from collections import Counter
 
 from .result import progress, error_text
-from .safety import DISPLACED_PREFIX, atomic_write, write_json, safe_path, snapshot, local_transaction
+from .safety import hold_document, DISPLACED_PREFIX, atomic_write, write_json, safe_path, snapshot, local_transaction
 from .client import ELabFTWClient, UploadConfirmationError, upload_sha256, upload_url
 from .config import TargetConfig
 from . import sync_log
@@ -1224,6 +1224,8 @@ def _localize_attachment_links(body, uploads, directory, source, base_url, entit
         url = upload_url(base_url, upload)
         if url:
             paths[url] = local
+            parsed = urlsplit(url)
+            paths[parsed.path + "?" + parsed.query] = local
         if upload.get("id") is not None:
             path = f"/api/v2/{entity}/{eid}/uploads/{upload['id']}"
             paths[path] = paths[base_url.rstrip("/") + path] = local
@@ -1231,6 +1233,10 @@ def _localize_attachment_links(body, uploads, directory, source, base_url, entit
     def replace(link):
         local = paths.get(link.url)
         if local is None:
+            base, sep, fragment = link.url.partition("#")
+            if sep and base in paths and base.startswith("/"):
+                site = urlsplit(base_url)
+                return link.with_url(f"{site.scheme}://{site.netloc}{base}#{fragment}")
             return link.original
         destination = _html.escape(local, quote=False)
         if not re.fullmatch(r"[\w./-]+", local) and link.original[link.target_start-1] != "<":
@@ -1241,7 +1247,7 @@ def _localize_attachment_links(body, uploads, directory, source, base_url, entit
 
 
 def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, attachments_dir: Path, strict: bool = False,
-                          keep_existing: bool = False, uploads=None, exclusive_paths=()) -> None:
+                          keep_existing: bool = False, uploads=None, exclusive_paths=(), backup=None, expected_files=None, keep_paths=()) -> None:
     """リモートの非画像添付ファイルをローカルにダウンロードする。
 
     keep_existing=True では既存のファイルを上書きしない（マージ時にローカルの編集を守る）。
@@ -1271,7 +1277,7 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
         attachments_dir.mkdir(parents=True, exist_ok=True)
         if dest in exclusive_paths and dest.exists():
             raise FileExistsError(f"解放した保存先に別のファイルが作成されています: {dest}")
-        if keep_existing and dest.exists():
+        if dest in keep_paths or (keep_existing and dest.exists()):
             continue
         remote_size = int(u.get("filesize", 0) or 0)
         if dest.exists() and remote_size:
@@ -1289,6 +1295,13 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
             overwriting = dest.exists()
             orig_mode = dest.stat().st_mode & 0o777 if overwriting else None
             data = client.download_upload(entity_type=entity, entity_id=entity_id, upload_id=u["id"])
+            if expected_files is not None:
+                expected = expected_files[dest]
+                with hold_document(dest, backup, expected, asset=True) as held:
+                    mode = held.stat().st_mode & 0o777 if held else 0o666 & ~_UMASK
+                    atomic_write(dest, data, mode=mode, exclusive=True)
+                progress(f"    添付ファイルをダウンロード: {safe_name}")
+                continue
             # テンポラリファイルに書いてからリネーム（既存ファイル保護）
             tmp_file = None
             try:
@@ -2103,7 +2116,9 @@ class EachDocsSyncer:
         """Push the target's documents, or only the file names in `only`.
 
         Rename detection still looks at every document, so unselected files
-        are never mistaken for renamed or missing ones.
+        are never mistaken for renamed or missing ones. prune_preview contains this target's
+        dry_run(prune_attachments=True) results before writes to any selected target.
+        A direct sync call computes its own preview if needed.
         """
         if self.target.attachments_dir:
             _resolve_asset_path(self.project_root, self.project_root, self.target.attachments_dir, strict=True)

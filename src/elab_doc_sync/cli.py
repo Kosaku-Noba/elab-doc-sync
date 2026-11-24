@@ -918,24 +918,31 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
                 return 0
     elif filepath.exists() and filepath not in outputs.released and not force:
         raise ConflictError(f"{filename}: 既にローカルに存在、基準情報なし。--force の前に差分を確認してください")
-    if target.attachments_dir and not force and not merge:
-        # Unlinked files no longer mark the whole document as locally changed.
-        # Only replace a different local copy if it matches the last known remote version.
+    expected_files = {}
+    keep_paths = set()
+    if target.attachments_dir:
+        # Compare each file with its own baseline, even when only the article text needs a merge.
         state = syncer._state(old_name) if old_name else None
-        previous = {u["real_name"]: upload_sha256(u) for u in state["remote"]["uploads"]} if state else {}
+        previous = {u["real_name"]: u for u in state["remote"]["uploads"]} if state else {}
         for upload in uploads:
             name = upload.get("real_name")
             if not name or _is_image(name) or Path(name).name in ("", ".", ".."):
                 continue
             dest = safe_path(project_root / target.attachments_dir, Path(name).name)
-            if dest.is_file():
-                digest = _compute_file_hash(dest)
-                if previous.get(name) == digest or upload_sha256(upload) == digest:
-                    continue
-                if not upload_sha256(upload) and client.upload_digest(entity_type=entity_type, entity_id=eid,
-                                                                      upload_id=upload["id"]) == digest:
-                    continue
-                raise ConflictError(f"ローカルの添付を上書きできません: {dest}。内容を確認し、必要なら別名で保存してください")
+            digest = _compute_file_hash(dest) if dest.is_file() else None
+            expected_files[dest] = digest
+            if force or digest is None:
+                continue
+            old = previous.get(name, {})
+            old_hash = upload_sha256(old)
+            if old_hash == digest:
+                continue
+            remote_hash = upload_sha256(upload) or client.upload_digest(entity_type=entity_type, entity_id=eid,
+                                                                      upload_id=upload["id"])
+            if digest == remote_hash or (merge and old_hash == remote_hash):
+                keep_paths.add(dest)
+                continue
+            raise ConflictError(f"ローカルの添付を上書きできません: {dest}。内容を確認し、必要なら別名で保存してください")
     if old_path and old_path != filepath:
         article.released.add(old_path)
     if dry_run:
@@ -959,7 +966,8 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
                                                target_docs_dir=target.docs_dir, source=filepath, links=links)
         if target.attachments_dir:
             _download_attachments(entity_type, eid, client, project_root / target.attachments_dir, strict=True,
-                                  keep_existing=merge, uploads=uploads, exclusive_paths=exclusive_paths)
+                                  uploads=uploads, exclusive_paths=exclusive_paths, expected_files=expected_files,
+                                  backup=project_root / BACKUPS / backup_id, keep_paths=keep_paths)
             body_md = _localize_attachment_links(body_md, uploads, project_root / target.attachments_dir,
                                                 filepath, client.base_url, entity_type, eid)
         with hold_document(tracked_path, project_root / BACKUPS / backup_id, initial_digest) as held:

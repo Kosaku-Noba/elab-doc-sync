@@ -43,7 +43,7 @@ def atomic_write(path: Path, data: str | bytes, mode: int | None = None, *, excl
 
 
 @contextmanager
-def hold_document(path: Path, backup: Path, expected_digest: str | None):
+def hold_document(path: Path, backup: Path, expected_digest: str | None, *, asset=False):
     """対象のディレクトリ項目を先に移し、置換の瞬間にあった実ファイルを残す。"""
     if expected_digest is None:
         yield None
@@ -53,7 +53,11 @@ def hold_document(path: Path, backup: Path, expected_digest: str | None):
         probe = Path(probe_dir) / "source"
         probe.touch()
         os.link(probe, probe.with_name("link"))
-    archive = backup / "displaced" / path.name
+    slot = "displaced"
+    if asset:
+        slot = "displaced-asset-" + hashlib.sha256(str(path).encode()).hexdigest()
+    location = backup / f"{slot}-location.json"
+    archive = backup / slot / path.name
     archive.parent.mkdir(mode=0o700)
     held = archive
     try:
@@ -63,12 +67,12 @@ def hold_document(path: Path, backup: Path, expected_digest: str | None):
             raise
         held = Path(tempfile.mkdtemp(prefix=DISPLACED_PREFIX, dir=path.parent)) / "body"
         try:
-            write_json(backup / "displaced-location.json", {"path": held.relative_to(backup.parent.parent).as_posix()})
+            write_json(location, {"path": held.relative_to(backup.parent.parent).as_posix()})
             path.rename(held)
         except BaseException:
             if not held.exists():
                 held.parent.rmdir()
-                (backup / "displaced-location.json").unlink(missing_ok=True)
+                location.unlink(missing_ok=True)
             raise
     try:
         if held.is_symlink() or not held.is_file():
@@ -76,7 +80,7 @@ def hold_document(path: Path, backup: Path, expected_digest: str | None):
         data = held.read_bytes()
         if held != archive:
             atomic_write(archive, data)
-            progress(f"  別マウントの置換直前の実ファイル: {held}（場所の記録: {backup / 'displaced-location.json'}）")
+            progress(f"  別マウントの置換直前の実ファイル: {held}（場所の記録: {location}）")
         if hashlib.sha256(data).hexdigest() != expected_digest:
             raise ValueError(f"取得中に本文が変更されました。退避した編集版: {archive}")
         yield held

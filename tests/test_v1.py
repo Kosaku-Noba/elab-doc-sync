@@ -432,6 +432,58 @@ def test_pull_preserves_an_unlinked_attachment_edited_since_last_sync(project):
     client.download_upload.assert_not_called()
 
 
+@pytest.mark.parametrize("local_content,success", [(b"old", True), (b"locally changed", False)])
+def test_pull_merge_handles_each_linked_file_separately(project, local_content, success):
+    from hashlib import sha256
+    root, client, remote, syncer, args = project
+    cfg = root / ".elab-sync.yaml"
+    config = yaml.safe_load(cfg.read_text())
+    config["targets"][0]["attachments_dir"] = "assets"
+    cfg.write_text(yaml.safe_dump(config))
+    syncer.target.attachments_dir = "assets"
+    uploads = _stateful_uploads(client)
+    (root / "assets").mkdir()
+    pdf = root / "assets/protocol.pdf"
+    pdf.write_bytes(b"old")
+    note = root / "docs/a.md"
+    note.write_text("[file](../assets/protocol.pdf)")
+    assert syncer.sync() == 1
+    note.write_text(note.read_text() + "\nlocal note")
+    pdf.write_bytes(local_content)
+    uploads[1][0].update(hash=sha256(b"new").hexdigest(), long_name="newblob")
+    remote[1]["body"] = remote[1]["body"].replace("blob100", "newblob")
+    client.download_upload.return_value = b"new"
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
+        assert cmd_pull(args()) == (0 if success else 1)
+    assert pdf.read_bytes() == (b"new" if success else local_content)
+    if success:
+        assert syncer.sync() == 1 and client.upload_file.call_count == 1
+
+
+def test_pull_retains_edit_made_while_downloading_attachment(project):
+    root, client, remote, syncer, args = project
+    cfg = root / ".elab-sync.yaml"
+    config = yaml.safe_load(cfg.read_text())
+    config["targets"][0]["attachments_dir"] = "assets"
+    cfg.write_text(yaml.safe_dump(config))
+    syncer.target.attachments_dir = "assets"
+    uploads = _stateful_uploads(client)
+    (root / "assets").mkdir()
+    path = root / "assets/data.csv"
+    path.write_bytes(b"initial")
+    (root / "docs/a.md").write_text("[data](../assets/data.csv)")
+    assert syncer.sync() == 1
+    uploads[1][0].update(hash="a" * 64, filesize=9)
+    def download(**kwargs):
+        path.write_bytes(b"just edited")
+        return b"new bytes"
+    client.download_upload.side_effect = download
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
+        assert cmd_pull(args()) == 1
+    assert path.read_bytes() == b"just edited"
+    assert (root / RECOVERY).exists()
+
+
 def test_local_asset_edit_is_not_overwritten_by_remote_change(project):
     root, client, remote, syncer, args = project
     images = root / "docs/images"
