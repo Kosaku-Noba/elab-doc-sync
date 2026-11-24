@@ -22,6 +22,7 @@
 
 | 関数 | 説明 |
 |---|---|
+| `_body_links(body)` | Markdown の表示結果で確認した画像・リンクの種類、URL、元の本文中の位置を返す |
 | `_rewrite_images(body, entity, entity_id, client, docs_dir, project_root, strict=False, stale_out=None, uploaded=None, verified=None, record=None, preferred=(), used_urls=None)` | ローカル画像をアップロードし URL に書き換え。`stale_out` に旧版候補の ID、`uploaded` に今回送信した添付の ID と名前・サイズ・SHA-256 を集める。`verified` は参照ごとの照合済みハッシュ、`record(receipt)` は URL 未確定時を含む受領記録の保存先、`preferred` は再開時に照合する確認済み ID、`used_urls` は本文に採用した ID と URL。push は本文の更新前にリモートの一覧・内容と照合する |
 | `_rewrite_videos(...)` | 動画をアップロードし `<video>` タグに変換（引数は同上） |
 | `_rewrite_file_links(...)` | 非画像・非動画ファイルをアップロードし URL 書き換え（引数は同上） |
@@ -75,8 +76,6 @@
 
 | 定数 | パターン | 用途 |
 |---|---|---|
-| `IMAGE_RE` | `!\[...\](...)`  | 画像リンク検出 |
-| `_LINK_RE` | `(?<!!)\[...\](...)` | 通常リンク検出（画像除外） |
 | `_ELAB_URL_RE` | eLabFTW 記事 URL | pull 時の逆変換用 |
 | `UPLOAD_ID_RE` | `/uploads/{id}` | アップロード ID 抽出 |
 | `UPLOAD_LONGNAME_RE` | `?f=...` / `&f=...` | アップロードの `long_name` 抽出 |

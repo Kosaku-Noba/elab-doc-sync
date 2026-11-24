@@ -2331,3 +2331,42 @@ def test_escaped_square_brackets_in_attachment_label(project, image):
     assert syncer.sync() == 1
     client.upload_file.assert_called_once()
     assert label in remote[1]["body"] and "blob100" in remote[1]["body"]
+
+
+@pytest.mark.parametrize("title", ["", ' "measurement conditions"'])
+def test_rewrite_changes_only_the_file_destination(project, title):
+    from elab_doc_sync.client import upload_url
+    root, client, remote, syncer, _ = project
+    uploads = _stateful_uploads(client)
+    upload = client.upload_file.side_effect
+    def send(entity, eid, path):
+        result = upload(entity, eid, path)
+        result["url"] = upload_url(client.base_url, uploads[eid][-1])
+        return result
+    client.upload_file.side_effect = send
+    filename = "O'Brien.csv"
+    (root / "docs" / filename).write_bytes(b"values")
+    original = f"[report]({filename}{title})\n\nSupplement ('keep this')"
+    (root / "docs/a.md").write_text(original)
+    assert syncer.sync() == 1
+    assert remote[1]["body"] == original.replace(filename, upload_url(client.base_url, uploads[1][0]))
+
+
+def test_empty_destination_is_not_an_attachment(project):
+    root, client, remote, syncer, _ = project
+    body = "empty [link]() and ![image]()"
+    (root / "docs/a.md").write_text(body)
+    preview = syncer.dry_run()[0]
+    assert preview["images"] == preview["file_links"] == 0
+    assert syncer.sync() == 1 and remote[1]["body"] == body
+    client.upload_file.assert_not_called()
+
+
+def test_previous_image_first_asset_digest_is_retained(project):
+    import hashlib
+    root, _, _, syncer, _ = project
+    body = "[values](data.csv)\n\n![plot](plot.png)"
+    for filename in ("data.csv", "plot.png"):
+        (root / "docs" / filename).write_bytes(filename.encode())
+    parts = [f"{n}:{hashlib.sha256(n.encode()).hexdigest()}" for n in ("plot.png", "data.csv")]
+    assert syncer._compute_assets_hash(body, "a.md") == hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]

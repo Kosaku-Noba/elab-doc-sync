@@ -18,7 +18,6 @@ import shutil
 import tempfile
 import uuid
 import markdown
-from markdown.inlinepatterns import LinkInlineProcessor
 from markdownify import markdownify as html_to_md
 import html as _html
 from pathlib import Path
@@ -186,6 +185,7 @@ class _MarkdownLinkPositions(HTMLParser):
         self.marker = re.compile(re.escape(prefix) + r"(\d+)-end")
         self.destinations = destinations
         self.pairs = {}
+        self.titles = {}
         self.anchor = None
 
     def handle_starttag(self, tag, attrs):
@@ -196,6 +196,7 @@ class _MarkdownLinkPositions(HTMLParser):
         target = self.marker.match(url)
         if target and (tag, self.marker.sub("", url)) == self.destinations.get(int(target[1])):
             end = int(target[1])
+            self.titles[end] = self.marker.sub("", attrs.get("title") or "")
             if tag == "a":
                 self.anchor = end
             else:
@@ -224,12 +225,62 @@ class _BodyLink:
     url: str
     original: str
     image: bool
+    target_start: int
+    target_end: int
+
+    def with_url(self, url, *, as_file=False):
+        prefix = self.original[:self.target_start]
+        if as_file and self.image:
+            prefix = prefix[1:]
+        return prefix + url + self.original[self.target_end:]
 
 
-class _LinkExtent(LinkInlineProcessor):
-    # Only the end offset is needed here. The rendered element provides the URL.
-    def unescape(self, text):
-        return text
+_MD_ESCAPE = re.compile(r"""\\([!"#$%&'()*+,./:;<=>?@\[\\\]^_`{|}~-])""")
+_HTML_ENTITY = re.compile(r"&(?:#\d+|#x[\da-fA-F]+|[a-zA-Z][a-zA-Z0-9]+);")
+_DEST_START = re.compile(r"[ \t]*(?:\n[ \t]*)?(<)?")
+
+
+def _destination_span(body, closing, url, title):
+    """Match the known rendered target to source characters before changing any text."""
+    opening = _DEST_START.match(body, closing + 2)
+    start = pos = opening.end()
+    offset = 0
+    while offset < len(url) and pos < len(body):
+        token = _MD_ESCAPE.match(body, pos) or _HTML_ENTITY.match(body, pos)
+        if token:
+            value = token[1] if token.re is _MD_ESCAPE else _html.unescape(token[0])
+            if url.startswith(value, offset):
+                offset += len(value)
+                pos = token.end()
+                continue
+        if body[pos] != url[offset]:
+            return None
+        offset += 1
+        pos += 1
+    if offset != len(url):
+        return None
+    target_end = pos
+    if opening[1]:
+        if body[pos:pos+1] != ">":
+            return None
+        pos += 1
+    space = re.compile(r"[ \t]*(?:\n[ \t]*)?")
+    pos = space.match(body, pos).end()
+    if body[pos:pos+1] == ")" and not title:
+        return start, target_end, pos + 1
+    quote = body[pos:pos+1]
+    if quote not in ("'", '"'):
+        return None
+    title_start = pos + 1
+    while (pos := body.find(quote, pos + 1)) >= 0:
+        raw = body[title_start:pos]
+        if re.search(r"\n[ \t]*\n", raw):
+            break
+        end = space.match(body, pos+1).end()
+        value = _html.unescape(_MD_ESCAPE.sub(r"\1", raw))
+        if body[end:end+1] == ")" and re.sub(r"\s", " ", value) == title:
+            return start, target_end, end + 1
+    return None
 
 
 @lru_cache(maxsize=8)
@@ -255,17 +306,17 @@ def _body_links(body):
     parser.feed(_md_to_html(re.sub(r"\[|\]\([ \t]*<?", mark, body)))
     parser.close()
 
-    # Escaped punctuation is already opaque when Python-Markdown parses a destination.
-    # Mask each escape at equal width to retain offsets into the source document.
-    syntax = re.sub(r"""\\[\\()'"<>]""", "xx", body)
-    extent = _LinkExtent("")
     links = []
     for opening, (closing, tag, url) in sorted(parser.pairs.items()):
-        _, _, end, valid = extent.getLink(syntax, closing + 1)
-        if valid:
+        if not url:
+            continue
+        span = _destination_span(body, closing, url, parser.titles[closing])
+        if span:
+            target_start, target_end, end = span
             image = tag == "img"
             start = opening - 1 if image else opening
-            links.append(_BodyLink(start, end, body[opening+1:closing], url, body[start:end], image))
+            links.append(_BodyLink(start, end, body[opening+1:closing], url, body[start:end],
+                                   image, target_start-start, target_end-start))
     return tuple(links)
 
 
@@ -273,7 +324,7 @@ def _replace_body_links(body, replace, *, images):
     parts = []
     cursor = 0
     for link in _body_links(body):
-        if link.image == images and link.start >= cursor:
+        if (images is None or link.image == images) and link.start >= cursor:
             replacement = replace(link)
             if replacement != link.original:
                 parts.extend((body[cursor:link.start], replacement))
@@ -330,13 +381,13 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
                 abs_url = f"{client.base_url}/{src.lstrip('/')}"
                 if not preview:
                     progress(f"    画像を絶対 URL に変換: {Path(src).name[:40]}")
-                return f"![{alt}]({abs_url})"
+                return link.with_url(abs_url)
             return link.original
         real_name = matched_upload.get("real_name", f"upload_{matched_upload['id']}")
         local_name = _image_local_name(entity, entity_id, real_name)
         img_dir = docs_dir / "images"
         dest = safe_path(docs_dir, f"images/{local_name}")
-        reference = f"![{alt}](images/{local_name})"
+        reference = link.with_url(f"images/{local_name}")
         image = (dest, matched_upload["id"])
         if image in saved:
             return reference
@@ -423,7 +474,7 @@ def _normalize_remote_image_urls(body: str, entity: str, entity_id: int, client:
                 matched = id_map.get(uid_match.group(1))
         if matched:
             real_name = matched.get("real_name", f"upload_{matched['id']}")
-            return f"![{alt}](images/{_image_local_name(entity, entity_id, real_name)})"
+            return link.with_url(f"images/{_image_local_name(entity, entity_id, real_name)}")
         return link.original
 
     return _replace_body_links(body, replace_match, images=True)
@@ -604,7 +655,7 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
                 if e is not reuse and e.get("id") is not None:
                     stale_ids.append(e["id"])
             progress(f"    ✓ {real_name}（既存アップロードを再利用）")
-            return f"![{alt}]({reuse['url']})"
+            return link.with_url(reuse["url"])
         # サイズ不一致 → 新規アップロードを試み、成功時のみ旧添付を削除予約
         progress(f"    画像をアップロード中: {real_name}")
         result = _upload_body_file(client, entity, entity_id, img_path, uploaded, project_root, real_name, record)
@@ -620,7 +671,7 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
                 _, local_size, local_hash = uploaded[result["id"]]
             _cache_uploaded(existing, real_name, result["url"], local_size, result.get("id"), local_hash)
             progress(f"    ✓ {real_name}")
-            return f"![{alt}]({result['url']})"
+            return link.with_url(result["url"])
         if strict:
             raise RuntimeError(f"アップロード失敗: {real_name}")
         progress(f"    ✗ アップロード失敗: {real_name}", warning=True)
@@ -754,7 +805,7 @@ def _rewrite_local_links(body: str, entity: str, base_url: str,
                     url = links.url_for_name(link_path, entity)
             except (OSError, ValueError, RuntimeError):
                 return link.original
-            return f"[{text}]({url}{fragment_suffix})" if url is not None else link.original
+            return link.with_url(url + fragment_suffix) if url is not None else link.original
 
         # パスからファイル名を抽出
         target_filename = Path(link_path).name
@@ -765,7 +816,7 @@ def _rewrite_local_links(body: str, entity: str, base_url: str,
         if eid is not None:
             page = _ENTITY_TO_PAGE[target_entity]
             url = f"{base_url}/{page}.php?mode=view&id={eid}{fragment_suffix}"
-            return f"[{text}]({url})"
+            return link.with_url(url)
 
         # 2. 他のターゲットの mapping を検索
         if all_mappings:
@@ -774,7 +825,7 @@ def _rewrite_local_links(body: str, entity: str, base_url: str,
                 if eid is not None:
                     page = _ENTITY_TO_PAGE[other_entity]
                     url = f"{base_url}/{page}.php?mode=view&id={eid}{fragment_suffix}"
-                    return f"[{text}]({url})"
+                    return link.with_url(url)
 
         # 解決できないリンクはそのまま残す
         return link.original
@@ -837,12 +888,12 @@ def _rewrite_elab_links_to_local(body: str, base_url: str,
             path = links.path_for(link_entity, link_id)
             if path is None:
                 return link.original
-            return f"[{text}]({_relative_link(path, Path(source).resolve().parent)}{fragment})"
+            return link.with_url(_relative_link(path, Path(source).resolve().parent) + fragment)
 
         # 1. 同じターゲット内で解決
         if link_entity == entity and link_id in reverse:
             filename = reverse[link_id]
-            return f"[{text}](./{filename}{fragment})"
+            return link.with_url(f"./{filename}{fragment}")
 
         # 2. 他ターゲットで解決
         for docs_dir, other_entity, other_reverse in all_reverse:
@@ -854,9 +905,9 @@ def _rewrite_elab_links_to_local(body: str, base_url: str,
                         str(Path(docs_dir) / filename),
                         str(Path(target_docs_dir))
                     )
-                    return f"[{text}]({rel_path}{fragment})"
+                    return link.with_url(rel_path + fragment)
                 else:
-                    return f"[{text}](./{filename}{fragment})"
+                    return link.with_url(f"./{filename}{fragment}")
 
         # 解決できない eLabFTW リンクはそのまま残す
         return link.original
@@ -1021,7 +1072,8 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
 
     stale_ids: list[int] = []
 
-    def _process_file_match(alt: str, src: str, full_match: str) -> str:
+    def _process_file_match(link):
+        src, full_match = link.url, link.original
         if src.startswith(("http://", "https://", "#", "mailto:", "data:")):
             return full_match
         if _is_image(src) or _is_video(src):
@@ -1053,7 +1105,7 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
                 if e is not reuse and e.get("id") is not None:
                     stale_ids.append(e["id"])
             progress(f"    ✓ {real_name}（既存アップロードを再利用）")
-            return f'[{alt}]({reuse["url"]})'
+            return link.with_url(reuse["url"], as_file=True)
 
         progress(f"    ファイルをアップロード中: {real_name}")
         result = _upload_body_file(client, entity, entity_id, file_path, uploaded, project_root, record=record)
@@ -1068,31 +1120,13 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
             sent = uploaded[result["id"]] if uploaded is not None else (real_name, local_size, None)
             _cache_uploaded(existing, real_name, result["url"], sent[1], result.get("id"), sent[2])
             progress(f"    ✓ {real_name}")
-            return f'[{alt}]({result["url"]})'
+            return link.with_url(result["url"], as_file=True)
         if strict:
             raise RuntimeError(f"アップロード失敗: {real_name}")
         progress(f"    ✗ アップロード失敗: {real_name}", warning=True)
         return full_match
 
-    # 画像と通常のリンクから非画像・非動画ファイルを検出
-    matches: list[tuple[int, int, str, str, str]] = []
-    for link in _body_links(body):
-        src = link.url
-        if not src.startswith(("http://", "https://", "#", "mailto:", "data:")) and not _is_image(src) and not _is_video(src) and not src.split("#", 1)[0].endswith(".md"):
-            matches.append((link.start, link.end, link.label, src, link.original))
-
-    matches.sort(key=lambda x: x[0])
-    unique_matches: list[tuple[int, int, str, str, str]] = []
-    last_end = -1
-    for match in matches:
-        if match[0] >= last_end:
-            unique_matches.append(match)
-            last_end = match[1]
-
-    result = body
-    for start, end, alt, src, full in reversed(unique_matches):
-        replacement = _process_file_match(alt, src, full)
-        result = result[:start] + replacement + result[end:]
+    result = _replace_body_links(body, _process_file_match, images=None)
 
     if strict and stale_out is not None:
         stale_out.extend(stale_ids)
@@ -1654,7 +1688,7 @@ class EachDocsSyncer:
     def _compute_assets_hash(self, raw_body, filename=None, *, body_evidence=None, directory_evidence=None):
         parts = []
         document_dir = self.file_path(filename).parent if filename else self.docs_dir
-        for link in _body_links(raw_body):
+        for link in sorted(_body_links(raw_body), key=lambda entry: not entry.image):
             src = link.url
             if (src.startswith(("http://", "https://", "#", "mailto:", "data:")) or src.split("#")[0].endswith(".md")
                     or (not link.image and _is_image(src))):
