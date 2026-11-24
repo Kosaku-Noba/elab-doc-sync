@@ -2396,3 +2396,34 @@ def test_prune_keeps_rendered_reference_style_attachment():
     uploads = [{"id": 10, "real_name": "data.csv"}]
     assert _prune_candidates(uploads, set(), "*", "[report][data]\n\n[data]: data.csv",
                              "https://example.test") == []
+
+
+@pytest.mark.parametrize("body", [
+    r"[doc](https://example.test/app/download.php?f=blob\-100&name=data.csv&storage=1)",
+    '<a href="data.csv ">document</a>',
+])
+def test_prune_keeps_the_attachment_referenced_by_the_rendered_url(project, body):
+    root, client, remote, syncer, _ = project
+    uploads = _stateful_uploads(client)
+    syncer.target.attachments_dir = "assets"
+    (root / "assets").mkdir()
+    asset = root / "assets/data.csv"
+    asset.write_bytes(b"data")
+    note = root / "docs/a.md"
+    note.write_text("document")
+    assert syncer.sync() == 1
+    asset.unlink()
+    uploads[1][0]["long_name"] = "blob-100"
+    note.write_text(body)
+    assert syncer.dry_run(prune_attachments=True)[0]["prune_candidates"] == []
+    assert syncer.sync(force=True, prune_attachments=True) == 1
+    assert [u["id"] for u in uploads[1]] == [100]
+    client.delete_upload.assert_not_called()
+
+
+def test_preview_keeps_other_documents_when_one_link_cannot_be_mapped(project):
+    root, client, remote, syncer, _ = project
+    (root / "docs/a.md").write_text('> [x](data.csv\n> "conditions")')
+    (root / "docs/b.md").write_text("plain note")
+    first, second = syncer.dry_run(prune_attachments=True)
+    assert "error" in first and second["filename"] == "b.md" and "error" not in second

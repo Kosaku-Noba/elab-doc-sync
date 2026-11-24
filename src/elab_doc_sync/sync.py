@@ -1181,8 +1181,20 @@ def _referenced_upload_ids(uploads, body, base_url):
     text = re.sub(r"""(?:https?:)?//[^\s<>"')]+""", retain_local_url, _html.unescape(body).replace("\\", "/"), flags=re.I)
     decoded = unquote(text)
     ids = set(re.findall(r"/uploads/(\d+)(?!\d)", decoded))
+    long_names = set()
+    for src in _attachment_links(body, 2):
+        if not src:
+            continue
+        url = src.strip(" \t\r\n\f").replace("\\", "/")
+        parsed = urlsplit(url)
+        if (parsed.scheme or parsed.netloc) and origin(url, server[0]) != server:
+            continue
+        path = unquote(parsed.path)
+        ids.update(re.findall(r"/uploads/(\d+)(?!\d)", path))
+        if path.rsplit("/", 1)[-1] == "download.php":
+            long_names.update(parse_qs(parsed.query).get("f", []))
     return {u["id"] for u in uploads if u.get("id") is not None
-            and (str(u["id"]) in ids or (u.get("long_name") and u["long_name"] in decoded))}
+            and (str(u["id"]) in ids or (u.get("long_name") and (u["long_name"] in long_names or u["long_name"] in decoded)))}
 
 
 def _prune_candidates(uploads, local_names, pattern, body, base_url):
@@ -1192,6 +1204,7 @@ def _prune_candidates(uploads, local_names, pattern, body, base_url):
     for tag, src in _attachment_links(body, 2, with_tags=True):
         if not src or src.startswith(("//", "#")):
             continue
+        src = src.strip(" \t\r\n\f")
         parsed = urlsplit(src)
         if parsed.scheme or parsed.netloc:
             continue
@@ -2145,22 +2158,29 @@ class EachDocsSyncer:
                 if item.get("eid") and name not in mapping:
                     mapping[name] = item["eid"]
             mapping = self._detect_renames(mapping, files, self.entity, dry_run=True)
-        results = [{"filename": f.name, "title": f.stem, "images": _count_local_images(body),
-                 "videos": _count_local_videos(body), "file_links": _count_local_file_links(body),
-                 "changed": self._has_changed(f.name, body), "entity_id": mapping.get(f.name)}
-                for f in files if only is None or f.name in only
-                for body in [f.read_text(encoding="utf-8").strip()]]
-        if prune_attachments and self.target.attachments_dir:
-            directory = self.project_root / self.target.attachments_dir
-            local_names = {p.name for p in directory.iterdir() if p.is_file()} if directory.is_dir() else set()
-            for doc in results:
-                try:
+        directory = (self.project_root / self.target.attachments_dir
+                     if prune_attachments and self.target.attachments_dir else None)
+        local_names = {p.name for p in directory.iterdir() if p.is_file()} if directory and directory.is_dir() else set()
+        article_links = self.link_targets(mapping) if directory and directory.is_dir() else None
+        results = []
+        for f in files:
+            if only is not None and f.name not in only:
+                continue
+            doc = {"filename": f.name, "title": f.stem, "entity_id": mapping.get(f.name)}
+            results.append(doc)
+            try:
+                body = f.read_text(encoding="utf-8").strip()
+                doc.update(images=_count_local_images(body), videos=_count_local_videos(body),
+                           file_links=_count_local_file_links(body), changed=self._has_changed(f.name, body))
+                if directory:
                     uploads = self.client.list_uploads(self.entity, doc["entity_id"]) if directory.is_dir() and doc["entity_id"] else []
-                    body = self.file_path(doc["filename"]).read_text(encoding="utf-8")
+                    if article_links is not None:
+                        body = _rewrite_local_links(body, self.entity, self.client.base_url, mapping,
+                                                    source=f, links=article_links)
                     candidates = _prune_candidates(uploads, local_names, self.target.attachments_pattern, body, self.client.base_url)
                     doc["prune_candidates"] = [{"id": u["id"], "name": u["real_name"]} for u in candidates]
-                except Exception as exc:
-                    doc["error"] = _error_text(self.client, exc)
+            except Exception as exc:
+                doc["error"] = _error_text(self.client, exc)
         return results
 
     def _resolve_target_category(self, entities):
@@ -2410,11 +2430,14 @@ class EachDocsSyncer:
                 self._save_pending(pending)
                 # 添付ハッシュを確認する間に本文・メタデータ・添付が変わっていないか再読する。
                 planned_prune = set()
+                prune_body = body
                 if prune_attachments and self.target.attachments_dir:
                     directory = self.project_root / self.target.attachments_dir
                     if directory.is_dir():
+                        local_links = _rewrite_local_links(raw_body, self.entity, self.client.base_url, mapping, source=f, links=links)
+                        prune_body = local_links + "\n\n" + body
                         candidates = _prune_candidates(initial_uploads, {p.name for p in directory.iterdir() if p.is_file()},
-                                                       self.target.attachments_pattern, raw_body + "\n" + body,
+                                                       self.target.attachments_pattern, prune_body,
                                                        self.client.base_url)
                         planned_prune = {u["id"] for u in candidates}
                 if stale_uploads:
@@ -2490,7 +2513,7 @@ class EachDocsSyncer:
                     att_ok = _sync_attachments(self.project_root / self.target.attachments_dir, self.entity, eid, self.client,
                                                force=force, pattern=self.target.attachments_pattern, prune=prune_attachments, strict=True,
                                                prune_ids=planned_prune,
-                                               body=raw_body + "\n" + body, deferred_prune=prune_ids, on_upload=confirm_upload,
+                                               body=prune_body, deferred_prune=prune_ids, on_upload=confirm_upload,
                                                verified=verified_directory, save_receipt=save_receipt, project_root=self.project_root)
                 if not att_ok:
                     raise RuntimeError("本文更新後、添付の同期が失敗しました。再実行してください")

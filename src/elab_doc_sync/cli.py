@@ -286,7 +286,7 @@ def run_push(args, echo=None) -> CommandResult:
             for r in results:
                 if "error" in r:
                     failed += 1
-                    res.warn(f"  [{r['filename']}] #{r['entity_id']} 添付一覧の取得に失敗: {r['error']}")
+                    res.warn(f"  [{r['filename']}] #{r['entity_id']} プレビューに失敗: {r['error']}")
                     continue
                 status = "変更あり" if r["changed"] else "変更なし（スキップ）"
                 dest = f"{entity_label} #{r['entity_id']}" if r["entity_id"] else f"新しい{entity_label}"
