@@ -84,7 +84,7 @@ def test_upload_file(mock_req, client, tmp_path):
     img.write_bytes(b"\x89PNG")
     upload_resp = _mock_response()
     list_resp = _mock_response([{"real_name": "img.png", "long_name": "abc123", "storage": "1", "id": 99}])
-    mock_req.side_effect = [upload_resp, list_resp]
+    mock_req.side_effect = [_mock_response([]), upload_resp, list_resp]
     result = client.upload_file("items", 1, str(img))
     assert result["url"] is not None
     assert "img.png" in result["url"]
@@ -100,7 +100,7 @@ def test_upload_file_picks_new_upload_by_location(mock_req, client, tmp_path):
         {"real_name": "img.png", "long_name": "new-blob", "storage": "2", "id": 101},
         {"real_name": "img.png", "long_name": "old-blob", "storage": "2", "id": 100},
     ])
-    mock_req.side_effect = [upload_resp, list_resp]
+    mock_req.side_effect = [_mock_response([]), upload_resp, list_resp]
     result = client.upload_file("items", 1, str(img))
     assert result["id"] == 101
     assert "new-blob" in result["url"]
@@ -116,7 +116,7 @@ def test_upload_file_without_location_picks_matching_hash(mock_req, client, tmp_
         {"real_name": "img.png", "long_name": "new-blob", "storage": "2", "id": 101, "hash": hashlib.sha256(b"new").hexdigest()},
         {"real_name": "img.png", "long_name": "old-blob", "storage": "2", "id": 100, "hash": hashlib.sha256(b"old").hexdigest()},
     ])
-    mock_req.side_effect = [_mock_response(), list_resp]
+    mock_req.side_effect = [_mock_response([]), _mock_response(), list_resp]
     assert client.upload_file("items", 1, str(img))["id"] == 101
 
 
@@ -129,7 +129,7 @@ def test_upload_file_without_location_rejects_hash_mismatch(mock_req, client, tm
     list_resp = _mock_response([
         {"real_name": "img.png", "long_name": "old-blob", "storage": "2", "id": 100, "hash": hashlib.sha256(b"old").hexdigest()},
     ])
-    mock_req.side_effect = [_mock_response(), list_resp]
+    mock_req.side_effect = [_mock_response([]), _mock_response(), list_resp]
     assert client.upload_file("items", 1, str(img))["url"] is None
 
 
@@ -142,7 +142,7 @@ def test_upload_file_without_location_or_hash_picks_highest_id(mock_req, client,
         {"real_name": "img.png", "long_name": "new-blob", "storage": "2", "id": 101},
         {"real_name": "img.png", "long_name": "old-blob", "storage": "2", "id": 100},
     ])
-    mock_req.side_effect = [_mock_response(), list_resp]
+    mock_req.side_effect = [_mock_response([]), _mock_response(), list_resp]
     assert client.upload_file("items", 1, str(img))["id"] == 101
 
 
@@ -151,7 +151,7 @@ def test_upload_file_without_location_or_hash_picks_highest_id(mock_req, client,
 def test_upload_file_no_url(mock_req, client, tmp_path):
     img = tmp_path / "img.png"
     img.write_bytes(b"\x89PNG")
-    mock_req.side_effect = [_mock_response(), _mock_response([])]
+    mock_req.side_effect = [_mock_response([]), _mock_response(), _mock_response([])]
     result = client.upload_file("items", 1, str(img))
     assert result["url"] is None
 
@@ -460,68 +460,50 @@ def test_resolve_category_id_not_found_suggests_numeric_id(mock_req, client):
         client.resolve_category_id("items", "SPECIFICATION", current={"category": 65, "category_title": "OTHER"})
 
 
-# ── Phase 2: upload リトライテスト ──────────────────────────
-
-
-# CL-33: Timeout → 1回リトライして成功
+@pytest.mark.parametrize("outcome", ["timeout", "disconnect", "server_error", "cut_response", "redirect"])
+@pytest.mark.parametrize("new_count", [0, 1, 2])
 @patch("elab_doc_sync.client.requests.request")
-def test_upload_file_retries_on_timeout(mock_req, client, tmp_path):
-    from requests.exceptions import Timeout
-    img = tmp_path / "retry.png"
-    img.write_bytes(b"\x89PNG")
-    # First call: POST → Timeout, Second call: POST → success, Third: GET list
-    post_success = _mock_response()
-    list_resp = _mock_response([{"real_name": "retry.png", "long_name": "abc", "storage": "1", "id": 50}])
-    mock_req.side_effect = [Timeout("timeout"), post_success, list_resp]
-    result = client.upload_file("items", 1, str(img))
-    assert result["url"] is not None
-    assert mock_req.call_count == 3  # POST(fail) + POST(success) + GET
+def test_upload_unknown_response_is_never_reposted(mock_req, client, tmp_path, outcome, new_count):
+    import hashlib
+    import requests
+    img = tmp_path / "upload.png"
+    img.write_bytes(b"image")
+    entry = {"real_name": img.name, "long_name": "old", "storage": "1", "id": 10,
+             "sha256": hashlib.sha256(b"image").hexdigest()}
+    entries = [entry] + [dict(entry, id=11 + i, long_name=f"new{i}") for i in range(new_count)]
+    failure = requests.Timeout() if outcome == "timeout" else requests.ConnectionError()
+    if outcome == "server_error":
+        failure = _mock_response()
+        failure.status_code = 503
+        failure.raise_for_status.side_effect = requests.HTTPError(response=failure)
+    if outcome == "cut_response":
+        failure = requests.exceptions.ChunkedEncodingError()
+    if outcome == "redirect":
+        failure = _mock_response(status_code=307, headers={"location": "/elsewhere"})
+    mock_req.side_effect = [_mock_response([entry]), failure, _mock_response(entries)]
+    if new_count == 1:
+        assert client.upload_file("items", 1, str(img))["id"] == 11
+    else:
+        with pytest.raises(RuntimeError, match="添付一覧"):
+            client.upload_file("items", 1, str(img))
+    assert [c.args[0] for c in mock_req.call_args_list] == ["GET", "POST", "GET"]
+    assert mock_req.call_args_list[1].kwargs["allow_redirects"] is False
 
 
-# CL-34: 5xx → 1回リトライして成功
-@patch("elab_doc_sync.client.requests.request")
-def test_upload_file_retries_on_5xx(mock_req, client, tmp_path):
-    from requests.exceptions import HTTPError
-    img = tmp_path / "retry5xx.png"
-    img.write_bytes(b"\x89PNG")
-    resp_500 = MagicMock()
-    resp_500.status_code = 500
-    resp_500.raise_for_status.side_effect = HTTPError(response=resp_500)
-    post_success = _mock_response()
-    list_resp = _mock_response([{"real_name": "retry5xx.png", "long_name": "def", "storage": "1", "id": 51}])
-    mock_req.side_effect = [resp_500, post_success, list_resp]
-    result = client.upload_file("items", 1, str(img))
-    assert result["url"] is not None
-
-
-# CL-35: 4xx は即失敗（リトライしない）
 @patch("elab_doc_sync.client.requests.request")
 def test_upload_file_no_retry_on_4xx(mock_req, client, tmp_path):
     from requests.exceptions import HTTPError
-    img = tmp_path / "fail4xx.png"
-    img.write_bytes(b"\x89PNG")
-    resp_403 = MagicMock()
-    resp_403.status_code = 403
-    resp_403.raise_for_status.side_effect = HTTPError(response=resp_403)
-    mock_req.side_effect = [resp_403]
+    img = tmp_path / "fail.png"
+    img.write_bytes(b"image")
+    denied = _mock_response()
+    denied.status_code = 403
+    denied.raise_for_status.side_effect = HTTPError(response=denied)
+    mock_req.side_effect = [_mock_response([]), denied]
     with pytest.raises(HTTPError):
         client.upload_file("items", 1, str(img))
-    assert mock_req.call_count == 1  # No retry
+    assert [c.args[0] for c in mock_req.call_args_list] == ["GET", "POST"]
 
 
-# CL-36: 2回目も失敗 → 例外伝播
-@patch("elab_doc_sync.client.requests.request")
-def test_upload_file_raises_after_second_timeout(mock_req, client, tmp_path):
-    from requests.exceptions import Timeout
-    img = tmp_path / "fail2.png"
-    img.write_bytes(b"\x89PNG")
-    mock_req.side_effect = [Timeout("t1"), Timeout("t2")]
-    with pytest.raises(Timeout):
-        client.upload_file("items", 1, str(img))
-    assert mock_req.call_count == 2
-
-
-# ─────────────────────────────────────────────────────────────
 # User Info / Team 関連テスト
 # ─────────────────────────────────────────────────────────────
 
@@ -612,3 +594,39 @@ def test_list_links_null_is_empty(mock_req, client):
     mock_req.return_value = _mock_response()
     mock_req.return_value.json.return_value = None
     assert client.list_links("items", 1, "experiments") == []
+
+
+def test_upload_digest_reads_text_attachment_in_chunks(client):
+    import hashlib
+    with patch.object(client, "_req") as request:
+        response = request.return_value.__enter__.return_value
+        response.headers = {"Content-Type": "text/plain"}
+        response.iter_content.return_value = [b"protocol", b" notes"]
+        digest = client.upload_digest(entity_type="items", entity_id=1, upload_id=44)
+    assert digest == hashlib.sha256(b"protocol notes").hexdigest()
+    assert request.call_args.kwargs["stream"]
+    response.iter_content.assert_called_once_with(chunk_size=1024 * 1024)
+
+@patch("elab_doc_sync.client.requests.request")
+def test_preserve_upload_receipt_after_listing_failure(mock_req, client, tmp_path):
+    import hashlib
+    from requests import Timeout
+    from elab_doc_sync.client import UploadConfirmationError
+
+    path = tmp_path / "data.csv"
+    path.write_bytes(b"values")
+    mock_req.side_effect = [_mock_response([]), _mock_response(headers={"location": "/uploads/8"}), Timeout()]
+    with pytest.raises(UploadConfirmationError) as error:
+        client.upload_file("items", 1, str(path))
+    assert error.value.receipt == {"id": 8, "name": "data.csv", "size": 6,
+                                   "sha256": hashlib.sha256(b"values").hexdigest()}
+
+
+@patch("elab_doc_sync.client.requests.request")
+def test_acknowledged_id_missing_from_listing_returns_receipt(mock_req, client, tmp_path):
+    path = tmp_path / "table.csv"
+    path.write_bytes(b"test")
+    mock_req.side_effect = [_mock_response([]), _mock_response(headers={"location": "/uploads/8"}),
+                            _mock_response([{"id": 9, "real_name": path.name, "long_name": "other", "storage": 1}])]
+    result = client.upload_file("items", 1, str(path))
+    assert result["url"] is None and result["receipt"]["id"] == 8
