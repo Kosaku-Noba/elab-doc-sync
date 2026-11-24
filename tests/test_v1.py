@@ -2370,3 +2370,29 @@ def test_previous_image_first_asset_digest_is_retained(project):
         (root / "docs" / filename).write_bytes(filename.encode())
     parts = [f"{n}:{hashlib.sha256(n.encode()).hexdigest()}" for n in ("plot.png", "data.csv")]
     assert syncer._compute_assets_hash(body, "a.md") == hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
+
+
+def test_prune_keeps_link_with_whitespace_in_title(project):
+    root, client, remote, syncer, _ = project
+    uploads = _stateful_uploads(client)
+    (root / "attachments").mkdir()
+    syncer.target.attachments_dir = "attachments"
+    note = root / "docs/a.md"
+    (root / "docs/data.csv").write_bytes(b"data")
+    note.write_text('[report](data.csv "conditions")')
+    assert syncer.sync() == 1
+    original_id = uploads[1][0]["id"]
+    note.write_text('[report](data.csv " conditions ")')
+    preview = syncer.dry_run(prune_attachments=True)[0]
+    assert preview["file_links"] == 1 and preview["prune_candidates"] == []
+    assert syncer.sync(prune_attachments=True) == 1
+    assert [u["id"] for u in uploads[1]] == [original_id]
+    assert remote[1]["body"].endswith(' " conditions ")')
+    client.delete_upload.assert_not_called()
+
+
+def test_prune_keeps_rendered_reference_style_attachment():
+    from elab_doc_sync.sync import _prune_candidates
+    uploads = [{"id": 10, "real_name": "data.csv"}]
+    assert _prune_candidates(uploads, set(), "*", "[report][data]\n\n[data]: data.csv",
+                             "https://example.test") == []

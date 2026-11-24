@@ -278,7 +278,7 @@ def _destination_span(body, closing, url, title):
             break
         end = space.match(body, pos+1).end()
         value = _html.unescape(_MD_ESCAPE.sub(r"\1", raw))
-        if body[end:end+1] == ")" and re.sub(r"\s", " ", value) == title:
+        if body[end:end+1] == ")" and re.sub(r"\s", " ", value.strip()) == title.strip():
             return start, target_end, end + 1
     return None
 
@@ -311,12 +311,15 @@ def _body_links(body):
         if not url:
             continue
         span = _destination_span(body, closing, url, parser.titles[closing])
-        if span:
-            target_start, target_end, end = span
-            image = tag == "img"
-            start = opening - 1 if image else opening
-            links.append(_BodyLink(start, end, body[opening+1:closing], url, body[start:end],
-                                   image, target_start-start, target_end-start))
+        if span is None:
+            if not url.startswith(("http://", "https://", "//", "#", "mailto:", "data:")):
+                raise ConflictError("本文のローカルリンクの範囲を確認できません。リンク記法を確認してください")
+            continue
+        target_start, target_end, end = span
+        image = tag == "img"
+        start = opening - 1 if image else opening
+        links.append(_BodyLink(start, end, body[opening+1:closing], url, body[start:end],
+                               image, target_start-start, target_end-start))
     return tuple(links)
 
 
@@ -1185,16 +1188,17 @@ def _referenced_upload_ids(uploads, body, base_url):
 def _prune_candidates(uploads, local_names, pattern, body, base_url):
     from fnmatch import fnmatch
     referenced_names = set(local_names)
-    for link in _body_links(body):
-        src = link.url
-        if src.startswith(("http://", "https://", "//", "#", "mailto:", "data:")):
+    # Deletion also protects references that the local URL rewriter cannot edit.
+    for tag, src in _attachment_links(body, 2, with_tags=True):
+        if not src or src.startswith(("//", "#")):
             continue
-        name = Path(src).name
-        if link.image and not _is_video(src):
-            name = _parse_image_local_name(name) or name
-        elif not link.image and (_is_image(src) or src.split("#", 1)[0].endswith(".md")):
+        parsed = urlsplit(src)
+        if parsed.scheme or parsed.netloc:
             continue
-        referenced_names.add(name)
+        path_name = Path(unquote(parsed.path)).name
+        referenced_names.update((Path(src).name, path_name))
+        if tag == "img":
+            referenced_names.add(_parse_image_local_name(path_name) or path_name)
     candidates = [u for u in uploads if u.get("id") is not None and u.get("real_name")
         and u["real_name"] not in referenced_names and not _is_image(u["real_name"])
         and fnmatch(u["real_name"], pattern)]
@@ -1688,6 +1692,7 @@ class EachDocsSyncer:
     def _compute_assets_hash(self, raw_body, filename=None, *, body_evidence=None, directory_evidence=None):
         parts = []
         document_dir = self.file_path(filename).parent if filename else self.docs_dir
+        # Preserve the image-first order used by existing asset hashes.
         for link in sorted(_body_links(raw_body), key=lambda entry: not entry.image):
             src = link.url
             if (src.startswith(("http://", "https://", "#", "mailto:", "data:")) or src.split("#")[0].endswith(".md")
