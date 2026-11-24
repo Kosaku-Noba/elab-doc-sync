@@ -157,18 +157,20 @@ def _parse_image_local_name(filename: str) -> str | None:
 class _AttachmentLinks(HTMLParser):
     """実際にリンクとして保存された添付 URL の出現数。"""
 
-    def __init__(self):
+    def __init__(self, with_tags=False):
         super().__init__()
+        self.with_tags = with_tags
         self.urls = Counter()
 
     def handle_starttag(self, tag, attrs):
         key = {"a": "href", "img": "src", "video": "src", "source": "src"}.get(tag)
         if key:
-            self.urls[dict(attrs).get(key)] += 1
+            url = dict(attrs).get(key)
+            self.urls[(tag, url) if self.with_tags else url] += 1
 
 
-def _attachment_links(body, content_type):
-    parser = _AttachmentLinks()
+def _attachment_links(body, content_type, *, with_tags=False):
+    parser = _AttachmentLinks(with_tags)
     parser.feed(_md_to_html(body) if str(content_type) == "2" else body)
     parser.close()
     return parser.urls
@@ -177,20 +179,24 @@ def _attachment_links(body, content_type):
 class _MarkdownLinkPositions(HTMLParser):
     """Read labeled source positions from the links produced by Python-Markdown."""
 
-    def __init__(self, prefix):
+    def __init__(self, prefix, destinations):
         super().__init__()
         self.marker = re.compile(re.escape(prefix) + r"(\d+)-end")
+        self.destinations = destinations
         self.starts = {}
         self.ends = set()
+        self.url_brackets = set()
         self.anchor = None
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         if tag not in ("a", "img"):
             return
-        target = self.marker.match(attrs.get("href" if tag == "a" else "src") or "")
-        if target:
+        url = attrs.get("href" if tag == "a" else "src") or ""
+        target = self.marker.match(url)
+        if target and (tag, self.marker.sub("", url)) == self.destinations.get(int(target[1])):
             end = int(target[1])
+            self.url_brackets.update(int(m[1]) for m in self.marker.finditer(url[target.end():]))
             if tag == "a":
                 self.anchor = end
             else:
@@ -213,28 +219,34 @@ class _MarkdownLinkPositions(HTMLParser):
 
 
 def _protect_literal_links(body):
-    """Keep only the Markdown link delimiters recognized in rendered href/src attributes."""
+    """Pair label text or image alt with the destination so code examples cannot start an attachment."""
     if "](" not in body:
         return body, {}
     prefix = "elabsync" + uuid.uuid4().hex + "-"
-    delimiters = re.compile(r"\[|\]\([ \t]*<?")
+    token = re.compile(re.escape(prefix) + r"(\d+)-end")
     def mark(match):
-        return match.group() + f"{prefix}{match.start()}-end"
-    parser = _MarkdownLinkPositions(prefix)
-    parser.feed(_md_to_html(delimiters.sub(mark, body)))
+        marker = f"{prefix}{match.start()}-end"
+        if match.group() == "]":
+            return marker + "]"
+        return match.group() + marker
+
+    # Keep reference names/definitions intact when deciding which destinations exist.
+    raw_urls = _attachment_links(body, 2, with_tags=True)
+    destinations = {}
+    for tag, url in _attachment_links(re.sub(r"\]\([ \t]*<?", mark, body), 2, with_tags=True):
+        if isinstance(url, str) and (marker := token.match(url)):
+            original = token.sub("", url)
+            if (tag, original) in raw_urls:
+                destinations[int(marker[1])] = (tag, original)
+    parser = _MarkdownLinkPositions(prefix, destinations)
+    parser.feed(_md_to_html(re.sub(r"\[|\]\([ \t]*<?|\]", mark, body)))
     parser.close()
 
-    # Leave the destination itself intact, including square brackets in file names.
-    in_destination = set()
-    for end in parser.ends:
-        stop = body.find(")", end + 2)
-        if stop != -1:
-            in_destination.update(range(end + 2, stop))
     literals = {}
     def protect(match):
         pos = match.start()
         char = match.group()
-        if pos in in_destination:
+        if pos in parser.url_brackets:
             return char
         if (char == "[" and pos in parser.starts) or (char == "]" and pos in parser.ends):
             return char
@@ -247,9 +259,10 @@ def _protect_literal_links(body):
 
 
 def _restore_literal_links(body, literals):
-    for marker, literal in literals.items():
-        body = body.replace(marker, literal)
-    return body
+    if not literals:
+        return body
+    prefix = next(iter(literals)).split("-", 1)[0]
+    return re.sub(re.escape(prefix) + r"-\d+-end", lambda match: literals[match.group()], body)
 
 
 def _download_long_name(src):

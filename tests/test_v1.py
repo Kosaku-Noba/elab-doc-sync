@@ -2285,3 +2285,18 @@ def test_attachment_with_bracket_in_code_label_is_uploaded(project, image):
     assert syncer.sync() == 1
     client.upload_file.assert_called_once()
     assert label in remote[1]["body"] and "blob100" in remote[1]["body"]
+
+
+@pytest.mark.parametrize(("body", "filename"), [
+    ("[material][ref](data.csv)\n\n[ref]: https://example.org", "data.csv"),
+    ('[help](https://example.org "example: ![plot](plot.png)")', "plot.png"),
+])
+def test_only_rendered_attachment_destinations_can_send_a_file(project, body, filename):
+    root, client, remote, syncer, _ = project
+    (root / "docs" / filename).write_bytes(b"file")
+    (root / "docs/a.md").write_text(body)
+    preview = syncer.dry_run()[0]
+    assert preview["images"] == preview["file_links"] == 0
+    assert syncer.sync() == 1
+    assert remote[1]["body"] == body
+    client.upload_file.assert_not_called()
