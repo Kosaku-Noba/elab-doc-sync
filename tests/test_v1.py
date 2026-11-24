@@ -2140,7 +2140,8 @@ def test_attachment_changed_after_patch_keeps_older_version(project, drop):
 
 
 @pytest.mark.parametrize("example", ["`![plot](plot.png)`", "```md\n![plot](plot.png)\n```", "```md\n![plot\ncaption](plot.png)\n```",
-                                     "`[label](`\n\n```md\n![plot](plot.png)\n```"])
+                                     "`[label](`\n\n```md\n![plot](plot.png)\n```",
+                                     "```\nexample\n```\n    ![plot](plot.png)"])
 def test_push_leaves_literal_attachment_examples_untouched(project, example):
     root, client, remote, syncer, _ = project
     path = root / "docs/plot.png"
@@ -2250,3 +2251,13 @@ def test_escaped_example_does_not_replace_missing_saved_link(project):
     assert syncer.sync() == 0
     assert len(uploads[1]) == 2
     client.delete_upload.assert_not_called()
+
+def test_unmatched_backticks_in_separate_paragraphs_leave_image_active(project):
+    root, client, remote, syncer, _ = project
+    _stateful_uploads(client)
+    (root / "docs/plot.png").write_bytes(b"plot")
+    note = root / "docs/a.md"
+    note.write_text("lone `\n\n![plot](plot.png)\n\nlast `")
+    assert syncer.dry_run()[0]["images"] == 1
+    assert syncer.sync() == 1
+    assert "blob100" in remote[1]["body"]

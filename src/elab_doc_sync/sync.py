@@ -16,8 +16,6 @@ import shutil
 import tempfile
 import uuid
 import markdown
-from markdown.extensions.fenced_code import FencedBlockPreprocessor
-from markdown.inlinepatterns import BACKTICK_RE
 from markdownify import markdownify as html_to_md
 import html as _html
 from pathlib import Path
@@ -180,38 +178,37 @@ def _protect_literal_links(body):
     """Markdown が表示例として扱うリンク記法を、添付の置換・探索から外す。"""
     if "](" not in body:
         return body, {}
-    pattern = re.compile(r"!?\[([^]]*)\]\(([^)]+)\)")
-    prefix = "elabsync" + uuid.uuid4().hex
+    prefix = "elabsync" + uuid.uuid4().hex + "-"
+    positions = list(re.finditer(r"\]\([ \t]*<?", body))
+    parts = []
+    start = 0
+    for match in positions:
+        parts.extend((body[start:match.end()], f"{prefix}{match.start()}-end"))
+        start = match.end()
+    # Render the original block structure: only a genuine href/src contains its marker.
+    urls = _attachment_links("".join(parts) + body[start:], 2)
+    active = set()
+    for url in urls:
+        if isinstance(url, str) and url.startswith(prefix):
+            marker, separator, _ = url[len(prefix):].partition("-end")
+            if separator and marker.isdecimal():
+                active.add(int(marker))
+    parts = []
     literals = {}
-
-    def stash(text):
-        marker = f"{prefix}-literal-{len(literals)}-end"
-        literals[marker] = text
-        return marker
-
-    # Protect complete code ranges first, including incomplete examples of link syntax.
-    body = FencedBlockPreprocessor.FENCED_BLOCK_RE.sub(lambda m: stash(m.group()), body)
-    body = re.sub(BACKTICK_RE, lambda m: stash(m.group()) if m.group(3) else m.group(), body, flags=re.DOTALL)
-    matches = list(pattern.finditer(body))
-    parts = []
     start = 0
-    for index, match in enumerate(matches):
-        parts.extend((body[start:match.start(2)], f"{prefix}-{index}"))
-        start = match.end(2)
-    links = _attachment_links("".join(parts) + body[start:], 2)
-    parts = []
-    start = 0
-    for index, match in enumerate(matches):
-        marker = f"{prefix}-{index}"
-        if marker not in links:
-            parts.extend((body[start:match.start()], marker + "-end"))
-            literals[marker + "-end"] = match.group()
-            start = match.end()
+    for match in positions:
+        if match.start() in active:
+            continue
+        marker = f"{prefix}{match.start()}-end"
+        # Keep the closing bracket to delimit the preceding label during regex matching.
+        parts.extend((body[start:match.start()+1], marker))
+        literals[marker] = "("
+        start = match.start() + 2
     return "".join(parts) + body[start:], literals
 
 
 def _restore_literal_links(body, literals):
-    for marker, literal in reversed(literals.items()):
+    for marker, literal in literals.items():
         body = body.replace(marker, literal)
     return body
 
