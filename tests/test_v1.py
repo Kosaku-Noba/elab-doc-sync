@@ -540,6 +540,27 @@ def test_pull_uses_downloaded_digests_after_another_file_is_edited(project):
     assert syncer.inspect("note.md", 1)["state"] == "送信待ち"
 
 
+def test_merge_refuses_to_guess_previous_image_id_from_duplicate_names(project):
+    from hashlib import sha256
+    root, client, remote, syncer, args = project
+    uploads = _stateful_uploads(client)
+    (root / "docs/image.png").write_bytes(b"first")
+    note = root / "docs/a.md"
+    note.write_text("![figure](image.png)")
+    assert syncer.sync() == 1
+    second = dict(uploads[1][0], id=101, long_name="blob101", hash=sha256(b"second").hexdigest(), filesize=6)
+    uploads[1].append(second)
+    client.download_upload.return_value = b"first"
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
+        assert cmd_pull(args(force=True)) == 0
+        image = root / "docs/images/items_1_image.png"
+        image.write_bytes(b"local edit")
+        remote[1]["body"] = remote[1]["body"].replace("blob100", "blob101")
+        assert cmd_pull(args()) == 1
+    assert image.read_bytes() == b"local edit" and not (root / RECOVERY).exists()
+    client.delete_upload.assert_not_called()
+
+
 def test_local_asset_edit_is_not_overwritten_by_remote_change(project):
     root, client, remote, syncer, args = project
     images = root / "docs/images"

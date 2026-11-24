@@ -22,7 +22,7 @@ from .config import TargetConfig
 from .client import ELabFTWClient, upload_sha256
 from .config import read_config as load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, append_target_to_yaml, profile_connection, _parse_api_key_env
 from .merge import merge_text
-from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _compute_file_hash, _is_image, _normalize_remote_image_urls, _download_attachments, _localize_attachment_links, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
+from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _compute_file_hash, _is_image, _normalize_remote_image_urls, _download_attachments, _localize_attachment_links, _referenced_upload_ids, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
 from . import sync_log
 from .result import CommandResult, cli_echo, progress, error_text, returns_partial_result
 from . import update_check
@@ -929,15 +929,19 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
     expected_files = {}
     keep_paths = set()
     # Compare each file with its own baseline, even when only the article text needs a merge.
-    state = syncer._state(old_name) if old_name else None
-    previous = {u["real_name"]: u for u in state["remote"]["uploads"]} if state else {}
+    state = syncer._state(old_name) if old_name and destinations and not force else None
+    previous = {}
+    for entry in (state or {}).get("remote", {}).get("uploads", []):
+        previous.setdefault(entry["real_name"], []).append(entry)
     for dest, upload in destinations.items():
         name = upload.get("real_name")
         digest = _compute_file_hash(dest) if dest.is_file() else None
         expected_files[dest] = digest
         if force or digest is None:
             continue
-        old = previous.get(name, {})
+        history = previous.get(name, [])
+        # A flat local name cannot establish which of several previous upload IDs it represented.
+        old = history[0] if len(history) == 1 else {}
         old_hash = upload_sha256(old)
         if old_hash == digest:
             continue
@@ -946,7 +950,9 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
         old_digest = old.get("hash")
         same_legacy_hash = (isinstance(old_digest, str) and re.fullmatch(r"[a-fA-F0-9]{32}", old_digest)
                             and old_digest == upload.get("hash") and old.get("id") == upload.get("id"))
-        if digest == remote_hash or (dest in previous_paths and (old_hash == remote_hash or same_legacy_hash)):
+        unchanged_remote = old_hash == remote_hash or same_legacy_hash
+        if digest == remote_hash or (merge and unchanged_remote and
+                (dest in previous_paths or not _referenced_upload_ids([upload], body_md, client.base_url))):
             keep_paths.add(dest)
             continue
         raise ConflictError(f"ローカルの添付を上書きできません: {dest}。内容を確認し、必要なら別名で保存してください")

@@ -348,7 +348,8 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
     """Markdown 内の eLabFTW 画像 URL をローカルにダウンロードし相対パスに書き換える。
 
     preview=True は保存予定パスの検査のみ行い、画像の取得・ディレクトリの作成をしない。
-    keep_existing=True では既存の画像ファイルを上書きしない（マージ時にローカルの編集を守る）。
+    pull は keep_paths の各画像を保持し、置換する画像は expected_files のハッシュを照合する。
+    keep_existing=True は既存の呼び出し用で、既存の画像をすべて保持する。
     """
     try:
         if uploads is None:
@@ -1663,7 +1664,8 @@ class EachDocsSyncer:
         parent = self.file_path(filename).parent
         paths = set()
         for link in _body_links(self.load_base(filename) or ""):
-            if link.url.startswith(("http://", "https://", "//", "/", "#", "mailto:", "data:")):
+            if (link.url.startswith(("http://", "https://", "//", "/", "#", "mailto:", "data:"))
+                    or link.url.split("#", 1)[0].endswith(".md")):
                 continue
             paths.add(_resolve_asset_path(parent, self.project_root, link.url, strict=True))
         return paths
@@ -1671,7 +1673,7 @@ class EachDocsSyncer:
     def check_merge_asset_sources(self, filename, uploads, destinations):
         """Refuse to adopt a changed remote upload while a merge can retain an older local source."""
         state = self._state(filename)
-        previous = state["remote"]["uploads"] if state else []
+        previous = state.get("remote", {}).get("uploads", []) if state else []
         current = self._remote_signature({}, uploads)["uploads"]
         if previous == current:
             return
