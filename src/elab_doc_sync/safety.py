@@ -256,6 +256,22 @@ def _held_documents(paths):
     return held
 
 
+@contextmanager
+def _pin_windows_directory(directory):
+    import _winapi
+
+    # FILE_LIST_DIRECTORY participates in read/write/delete sharing checks.
+    # FILE_SHARE_READ excludes renames and reparse-point writes while the handle is open.
+    # OPEN_REPARSE_POINT | BACKUP_SEMANTICS opens the directory entry itself.
+    handle = _winapi.CreateFile(str(directory), 1, 1, 0, 3, 0x00200000 | 0x02000000, 0)
+    try:
+        if directory.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+            raise ValueError(f"再解析ポイントは復元対象外です: {directory}")
+        yield
+    finally:
+        _winapi.CloseHandle(handle)
+
+
 def _clear_for_restore(root, path, held, directories):
     """退避本文と復元後も使うディレクトリを残して、現在の内容を消去する。"""
     keep = directories | {parent for item in held for parent in item.parents}
@@ -295,20 +311,6 @@ def _clear_for_restore(root, path, held, directories):
             clear(parent_fd, path)
         return
 
-    import _winapi
-
-    @contextmanager
-    def pin_directory(directory):
-        # FILE_SHARE_READ excludes renames and reparse-point writes until the handle closes.
-        # OPEN_REPARSE_POINT | BACKUP_SEMANTICS opens the directory entry itself.
-        handle = _winapi.CreateFile(str(directory), 0, 1, 0, 3, 0x00200000 | 0x02000000, 0)
-        try:
-            if directory.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
-                raise ValueError(f"再解析ポイントは復元対象外です: {directory}")
-            yield
-        finally:
-            _winapi.CloseHandle(handle)
-
     def clear_path(target):
         if target in held:
             return
@@ -319,7 +321,7 @@ def _clear_for_restore(root, path, held, directories):
         if info.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
             raise ValueError(f"再解析ポイントは復元対象外です: {target}")
         if stat.S_ISDIR(info.st_mode):
-            with pin_directory(target):
+            with _pin_windows_directory(target):
                 for child in target.iterdir():
                     clear_path(child)
             if target not in keep:
@@ -329,11 +331,11 @@ def _clear_for_restore(root, path, held, directories):
 
     with ExitStack() as stack:
         parent = root
-        stack.enter_context(pin_directory(parent))
+        stack.enter_context(_pin_windows_directory(parent))
         for part in path.parent.relative_to(root).parts:
             parent = parent / part
             try:
-                stack.enter_context(pin_directory(parent))
+                stack.enter_context(_pin_windows_directory(parent))
             except FileNotFoundError:
                 return
         clear_path(path)

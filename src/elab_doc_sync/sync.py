@@ -16,6 +16,8 @@ import shutil
 import tempfile
 import uuid
 import markdown
+from markdown.extensions.fenced_code import FencedBlockPreprocessor
+from markdown.inlinepatterns import BACKTICK_RE
 from markdownify import markdownify as html_to_md
 import html as _html
 from pathlib import Path
@@ -180,6 +182,16 @@ def _protect_literal_links(body):
         return body, {}
     pattern = re.compile(r"!?\[([^]]*)\]\(([^)]+)\)")
     prefix = "elabsync" + uuid.uuid4().hex
+    literals = {}
+
+    def stash(text):
+        marker = f"{prefix}-literal-{len(literals)}-end"
+        literals[marker] = text
+        return marker
+
+    # Protect complete code ranges first, including incomplete examples of link syntax.
+    body = FencedBlockPreprocessor.FENCED_BLOCK_RE.sub(lambda m: stash(m.group()), body)
+    body = re.sub(BACKTICK_RE, lambda m: stash(m.group()) if m.group(3) else m.group(), body, flags=re.DOTALL)
     matches = list(pattern.finditer(body))
     parts = []
     start = 0
@@ -187,7 +199,6 @@ def _protect_literal_links(body):
         parts.extend((body[start:match.start(2)], f"{prefix}-{index}"))
         start = match.end(2)
     links = _attachment_links("".join(parts) + body[start:], 2)
-    literals = {}
     parts = []
     start = 0
     for index, match in enumerate(matches):
@@ -200,7 +211,7 @@ def _protect_literal_links(body):
 
 
 def _restore_literal_links(body, literals):
-    for marker, literal in literals.items():
+    for marker, literal in reversed(literals.items()):
         body = body.replace(marker, literal)
     return body
 

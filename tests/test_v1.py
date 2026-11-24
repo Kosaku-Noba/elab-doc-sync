@@ -2139,7 +2139,8 @@ def test_attachment_changed_after_patch_keeps_older_version(project, drop):
     assert syncer._pending()["a.md"]
 
 
-@pytest.mark.parametrize("example", ["`![plot](plot.png)`", "```md\n![plot](plot.png)\n```", "```md\n![plot\ncaption](plot.png)\n```"])
+@pytest.mark.parametrize("example", ["`![plot](plot.png)`", "```md\n![plot](plot.png)\n```", "```md\n![plot\ncaption](plot.png)\n```",
+                                     "`[label](`\n\n```md\n![plot](plot.png)\n```"])
 def test_push_leaves_literal_attachment_examples_untouched(project, example):
     root, client, remote, syncer, _ = project
     path = root / "docs/plot.png"
@@ -2151,7 +2152,9 @@ def test_push_leaves_literal_attachment_examples_untouched(project, example):
     original = copy.deepcopy(uploads[1])
     path.write_bytes(b"new")
     note.write_text(example)
+    assert syncer.dry_run()[0]["images"] == 0
     assert syncer.sync() == 1
+    assert client.upload_file.call_count == 1
     assert uploads[1] == original
     assert remote[1]["body"] == example
 

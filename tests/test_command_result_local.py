@@ -1,6 +1,7 @@
 """ローカル操作の構造化結果、逐次出力、ロックの回帰テスト。"""
 
 import json
+import os
 from argparse import Namespace
 from pathlib import Path
 from unittest.mock import patch
@@ -797,3 +798,17 @@ def test_restore_tightens_existing_recovery_directory(tmp_path):
     restore(tmp_path, backup)
     assert stash.stat().st_mode & 0o077 == 0
     assert body.read_bytes() == b"original"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory sharing")
+def test_windows_pinned_directory_cannot_be_renamed(tmp_path):
+    from elab_doc_sync.safety import _pin_windows_directory
+
+    directory = tmp_path / "docs"
+    directory.mkdir()
+    renamed = tmp_path / "renamed"
+    with _pin_windows_directory(directory):
+        with pytest.raises(PermissionError):
+            directory.rename(renamed)
+    directory.rename(renamed)
+    assert renamed.is_dir()
