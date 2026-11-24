@@ -4,6 +4,8 @@ CLI tool — not intended for use as a library.
 """
 
 from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass
+from functools import lru_cache
 from fnmatch import fnmatch
 import hashlib
 import ipaddress
@@ -16,6 +18,7 @@ import shutil
 import tempfile
 import uuid
 import markdown
+from markdown.inlinepatterns import LinkInlineProcessor
 from markdownify import markdownify as html_to_md
 import html as _html
 from pathlib import Path
@@ -30,7 +33,6 @@ from .config import TargetConfig
 from . import sync_log
 from .merge import has_conflict_markers
 
-IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 # eLabFTW の画像 URL から upload_id を抽出する正規表現。
 # /uploads/{数字} の後に区切り文字（? # / 行末）が続くパターンにマッチ。
 # ホスト名やパス前半は検証しない（外部 URL がマッチしても、id_map に
@@ -102,7 +104,7 @@ def _compute_meta_hash(title: str, category, tags: list[str]) -> str:
 
 
 def _count_local_images(body: str) -> int:
-    return sum(1 for m in IMAGE_RE.finditer(body) if not m.group(2).startswith(("http://", "https://")))
+    return sum(1 for link in _body_links(body) if link.image and not link.url.startswith(("http://", "https://")))
 
 
 def _md_to_html(text: str) -> str:
@@ -183,9 +185,7 @@ class _MarkdownLinkPositions(HTMLParser):
         super().__init__()
         self.marker = re.compile(re.escape(prefix) + r"(\d+)-end")
         self.destinations = destinations
-        self.starts = {}
-        self.ends = set()
-        self.url_brackets = set()
+        self.pairs = {}
         self.anchor = None
 
     def handle_starttag(self, tag, attrs):
@@ -196,7 +196,6 @@ class _MarkdownLinkPositions(HTMLParser):
         target = self.marker.match(url)
         if target and (tag, self.marker.sub("", url)) == self.destinations.get(int(target[1])):
             end = int(target[1])
-            self.url_brackets.update(int(m[1]) for m in self.marker.finditer(url[target.end():]))
             if tag == "a":
                 self.anchor = end
             else:
@@ -205,8 +204,7 @@ class _MarkdownLinkPositions(HTMLParser):
     def _label(self, label, end, tag):
         start = self.marker.match(label)
         if start:
-            self.starts[int(start[1])] = tag
-            self.ends.add(end)
+            self.pairs[int(start[1])] = (end, tag, self.destinations[end][1])
 
     def handle_data(self, data):
         if self.anchor is not None:
@@ -218,51 +216,69 @@ class _MarkdownLinkPositions(HTMLParser):
             self.anchor = None
 
 
-def _protect_literal_links(body):
-    """Pair label text or image alt with the destination so code examples cannot start an attachment."""
+@dataclass(frozen=True)
+class _BodyLink:
+    start: int
+    end: int
+    label: str
+    url: str
+    original: str
+    image: bool
+
+
+class _LinkExtent(LinkInlineProcessor):
+    # Only the end offset is needed here. The rendered element provides the URL.
+    def unescape(self, text):
+        return text
+
+
+@lru_cache(maxsize=8)
+def _body_links(body):
+    """Locate rendered inline links and keep each renderer-confirmed URL with its source span."""
     if "](" not in body:
-        return body, {}
+        return ()
     prefix = "elabsync" + uuid.uuid4().hex + "-"
     token = re.compile(re.escape(prefix) + r"(\d+)-end")
-    def mark(match):
-        marker = f"{prefix}{match.start()}-end"
-        if match.group() == "]":
-            return marker + "]"
-        return match.group() + marker
 
-    # Keep reference names/definitions intact when deciding which destinations exist.
-    raw_urls = _attachment_links(body, 2, with_tags=True)
+    def mark(match):
+        return match.group() + f"{prefix}{match.start()}-end"
+
+    # Preserve reference names when checking which destinations the original Markdown uses.
+    urls = _attachment_links(body, 2, with_tags=True)
     destinations = {}
     for tag, url in _attachment_links(re.sub(r"\]\([ \t]*<?", mark, body), 2, with_tags=True):
         if isinstance(url, str) and (marker := token.match(url)):
-            original = token.sub("", url)
-            if (tag, original) in raw_urls:
-                destinations[int(marker[1])] = (tag, original)
+            key = (tag, token.sub("", url))
+            if key in urls:
+                destinations[int(marker[1])] = key
     parser = _MarkdownLinkPositions(prefix, destinations)
-    parser.feed(_md_to_html(re.sub(r"\[|\]\([ \t]*<?|\]", mark, body)))
+    parser.feed(_md_to_html(re.sub(r"\[|\]\([ \t]*<?", mark, body)))
     parser.close()
 
-    literals = {}
-    def protect(match):
-        pos = match.start()
-        char = match.group()
-        if pos in parser.url_brackets:
-            return char
-        if (char == "[" and pos in parser.starts) or (char == "]" and pos in parser.ends):
-            return char
-        if char == "!" and parser.starts.get(pos + 1) != "a":
-            return char
-        marker = f"{prefix}{pos}-end"
-        literals[marker] = char
-        return marker
-    return re.sub(r"[\[\]]|!(?=\[)", protect, body), literals
+    # Escaped punctuation is already opaque when Python-Markdown parses a destination.
+    # Mask each escape at equal width to retain offsets into the source document.
+    syntax = re.sub(r"""\\[\\()'"<>]""", "xx", body)
+    extent = _LinkExtent("")
+    links = []
+    for opening, (closing, tag, url) in sorted(parser.pairs.items()):
+        _, _, end, valid = extent.getLink(syntax, closing + 1)
+        if valid:
+            image = tag == "img"
+            start = opening - 1 if image else opening
+            links.append(_BodyLink(start, end, body[opening+1:closing], url, body[start:end], image))
+    return tuple(links)
 
 
-def _restore_literal_links(body, literals):
-    if not literals:
-        return body
-    prefix = next(iter(literals)).split("-", 1)[0]
-    return re.sub(re.escape(prefix) + r"-\d+-end", lambda match: literals[match.group()], body)
+def _replace_body_links(body, replace, *, images):
+    parts = []
+    cursor = 0
+    for link in _body_links(body):
+        if link.image == images and link.start >= cursor:
+            replacement = replace(link)
+            if replacement != link.original:
+                parts.extend((body[cursor:link.start], replacement))
+                cursor = link.end
+    return "".join(parts) + body[cursor:]
 
 
 def _download_long_name(src):
@@ -297,10 +313,10 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
         if uid is not None:
             id_map[str(uid)] = u
 
-    def replace_match(m):
-        alt, src = m.group(1), m.group(2)
+    def replace_match(link):
+        alt, src = link.label, link.url
         if "app/download.php" not in src and "/uploads/" not in src:
-            return m.group(0)
+            return link.original
         # long_name でマッチ（download.php 形式）
         matched_upload = upload_map.get(_download_long_name(src))
         # upload_id でマッチ（/api/v2/.../uploads/{id} 形式）
@@ -315,7 +331,7 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
                 if not preview:
                     progress(f"    画像を絶対 URL に変換: {Path(src).name[:40]}")
                 return f"![{alt}]({abs_url})"
-            return m.group(0)
+            return link.original
         real_name = matched_upload.get("real_name", f"upload_{matched_upload['id']}")
         local_name = _image_local_name(entity, entity_id, real_name)
         img_dir = docs_dir / "images"
@@ -327,7 +343,7 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
         if check_path:
             check_path(dest, asset=True, upload_id=matched_upload["id"])
         if preview:
-            return m.group(0)
+            return link.original
         img_dir.mkdir(parents=True, exist_ok=True)
         if not dest.exists() or (strict and not keep_existing):
             data = client.download_upload(
@@ -340,8 +356,7 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
         saved.add(image)
         return reference
 
-    body, literals = _protect_literal_links(body)
-    return _restore_literal_links(IMAGE_RE.sub(replace_match, body), literals)
+    return _replace_body_links(body, replace_match, images=True)
 
 
 # html_to_md 共通オプション: エスケープを抑制してラウンドトリップを安定させる
@@ -397,10 +412,10 @@ def _normalize_remote_image_urls(body: str, entity: str, entity_id: int, client:
         if uid is not None:
             id_map[str(uid)] = u
 
-    def replace_match(m):
-        alt, src = m.group(1), m.group(2)
+    def replace_match(link):
+        alt, src = link.label, link.url
         if "app/download.php" not in src and "/uploads/" not in src:
-            return m.group(0)
+            return link.original
         matched = upload_map.get(_download_long_name(src))
         if not matched:
             uid_match = UPLOAD_ID_RE.search(src)
@@ -409,10 +424,9 @@ def _normalize_remote_image_urls(body: str, entity: str, entity_id: int, client:
         if matched:
             real_name = matched.get("real_name", f"upload_{matched['id']}")
             return f"![{alt}](images/{_image_local_name(entity, entity_id, real_name)})"
-        return m.group(0)
+        return link.original
 
-    body, literals = _protect_literal_links(body)
-    return _restore_literal_links(IMAGE_RE.sub(replace_match, body), literals)
+    return _replace_body_links(body, replace_match, images=True)
 
 
 def _compute_file_hash(filepath: Path) -> str:
@@ -561,19 +575,19 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
 
     stale_ids: list[int] = []
 
-    def replace_match(m):
-        alt, src = m.group(1), m.group(2)
+    def replace_match(link):
+        alt, src = link.label, link.url
         if src.startswith(("http://", "https://")):
-            return m.group(0)
+            return link.original
         # 動画ファイルは _rewrite_videos で処理するためスキップ
         if _is_video(src):
-            return m.group(0)
+            return link.original
         img_path = _resolve_asset_path(docs_dir, project_root, src, strict)
         if not img_path.exists():
             if strict:
                 raise FileNotFoundError(f"画像が見つかりません: {src}")
             progress(f"    ⚠ 画像が見つかりません: {src}", warning=True)
-            return m.group(0)
+            return link.original
         real_name = _parse_image_local_name(img_path.name) or img_path.name
         entries = existing.get(real_name, [])
         local_size = img_path.stat().st_size
@@ -610,9 +624,9 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
         if strict:
             raise RuntimeError(f"アップロード失敗: {real_name}")
         progress(f"    ✗ アップロード失敗: {real_name}", warning=True)
-        return m.group(0)
+        return link.original
 
-    result = IMAGE_RE.sub(replace_match, body)
+    result = _replace_body_links(body, replace_match, images=True)
     # アップロード成功後に古い添付を削除（失敗しても本文は壊さない）
     # strict では削除せず、呼び出し元が同期成功後に削除できるよう返す
     if strict and stale_out is not None:
@@ -629,7 +643,6 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
 # ── ローカルファイルリンク ↔ eLabFTW URL 変換 ───────────────
 
 # Markdown リンク（画像以外）: [text](path)
-_LINK_RE = re.compile(r"(?<!!)\[([^\]]*)\]\(([^)]+)\)")
 
 # eLabFTW の記事 URL パターン:
 #   items → {base_url}/database.php?mode=view&id={id}
@@ -719,15 +732,15 @@ def _rewrite_local_links(body: str, entity: str, base_url: str,
                （明示パスはそのまま照合する。ファイル名だけで指定され、その場所にファイルがない場合には、同種記事を優先して一意な同名文書を探す）。
                解決できないリンクはそのまま残す
     """
-    def replace_link(m):
-        text, href = m.group(1), m.group(2)
+    def replace_link(link):
+        text, href = link.label, link.url
 
         # 外部 URL、アンカーリンク、非 .md ファイルはスキップ
         if href.startswith(("http://", "https://", "#", "mailto:")):
-            return m.group(0)
+            return link.original
         link_path, sep, fragment = href.partition("#")
         if not link_path.endswith(".md"):
-            return m.group(0)
+            return link.original
         fragment_suffix = sep + fragment
         # エディタが日本語ファイル名を %E6... とエンコードしたリンクも解決する
         link_path = unquote(link_path)
@@ -740,8 +753,8 @@ def _rewrite_local_links(body: str, entity: str, base_url: str,
                 if url is None and Path(link_path).name == link_path and not named_path.exists():
                     url = links.url_for_name(link_path, entity)
             except (OSError, ValueError, RuntimeError):
-                return m.group(0)
-            return f"[{text}]({url}{fragment_suffix})" if url is not None else m.group(0)
+                return link.original
+            return f"[{text}]({url}{fragment_suffix})" if url is not None else link.original
 
         # パスからファイル名を抽出
         target_filename = Path(link_path).name
@@ -764,10 +777,9 @@ def _rewrite_local_links(body: str, entity: str, base_url: str,
                     return f"[{text}]({url})"
 
         # 解決できないリンクはそのまま残す
-        return m.group(0)
+        return link.original
 
-    body, literals = _protect_literal_links(body)
-    return _restore_literal_links(_LINK_RE.sub(replace_link, body), literals)
+    return _replace_body_links(body, replace_link, images=False)
 
 
 def _rewrite_elab_links_to_local(body: str, base_url: str,
@@ -803,12 +815,12 @@ def _rewrite_elab_links_to_local(body: str, base_url: str,
         for docs_dir, other_entity, other_mapping in all_mappings:
             all_reverse.append((docs_dir, other_entity, {v: k for k, v in other_mapping.items()}))
 
-    def replace_link(m):
-        text, href = m.group(1), m.group(2)
+    def replace_link(link):
+        text, href = link.label, link.url
 
         match = _ELAB_URL_RE.match(href)
         if not match:
-            return m.group(0)
+            return link.original
 
         link_base = match.group("base")
         link_page = match.group("page")  # "database" or "experiments"
@@ -818,13 +830,13 @@ def _rewrite_elab_links_to_local(body: str, base_url: str,
 
         # ホスト完全一致でなければスキップ（外部 eLabFTW リンク）
         if not _hosts_match(base_url, link_base):
-            return m.group(0)
+            return link.original
 
         # 0. 全ターゲットの対応があれば、それだけで解決する（接続先の異なる紐付けは除外済み）
         if links is not None and source is not None:
             path = links.path_for(link_entity, link_id)
             if path is None:
-                return m.group(0)
+                return link.original
             return f"[{text}]({_relative_link(path, Path(source).resolve().parent)}{fragment})"
 
         # 1. 同じターゲット内で解決
@@ -847,10 +859,9 @@ def _rewrite_elab_links_to_local(body: str, base_url: str,
                     return f"[{text}](./{filename}{fragment})"
 
         # 解決できない eLabFTW リンクはそのまま残す
-        return m.group(0)
+        return link.original
 
-    body, literals = _protect_literal_links(body)
-    return _restore_literal_links(_LINK_RE.sub(replace_link, body), literals)
+    return _replace_body_links(body, replace_link, images=False)
 
 
 def _is_image(filename: str) -> bool:
@@ -940,14 +951,11 @@ def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClien
         progress(f"    ✗ アップロード失敗: {real_name}", warning=True)
         return full_match
 
-    # IMAGE_RE と _LINK_RE の両方から動画を検出。重複排除して後ろから置換。
+    # 画像と通常のリンクから動画を検出。重複排除して後ろから置換。
     matches: list[tuple[int, int, str, str, str]] = []
-    for m in IMAGE_RE.finditer(body):
-        if _is_video(m.group(2)):
-            matches.append((m.start(), m.end(), m.group(1), m.group(2), m.group(0)))
-    for m in _LINK_RE.finditer(body):
-        if _is_video(m.group(2)):
-            matches.append((m.start(), m.end(), m.group(1), m.group(2), m.group(0)))
+    for link in _body_links(body):
+        if _is_video(link.url):
+            matches.append((link.start, link.end, link.label, link.url, link.original))
 
     matches.sort(key=lambda x: x[0])
     unique_matches: list[tuple[int, int, str, str, str]] = []
@@ -975,12 +983,8 @@ def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClien
 def _count_local_videos(body: str) -> int:
     """本文中のローカル動画リンク数をカウントする。"""
     count = 0
-    for m in IMAGE_RE.finditer(body):
-        src = m.group(2)
-        if not src.startswith(("http://", "https://")) and _is_video(src):
-            count += 1
-    for m in _LINK_RE.finditer(body):
-        src = m.group(2)
+    for link in _body_links(body):
+        src = link.url
         if not src.startswith(("http://", "https://")) and _is_video(src):
             count += 1
     return count
@@ -1070,16 +1074,12 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
         progress(f"    ✗ アップロード失敗: {real_name}", warning=True)
         return full_match
 
-    # IMAGE_RE と _LINK_RE の両方から非画像・非動画ファイルを検出
+    # 画像と通常のリンクから非画像・非動画ファイルを検出
     matches: list[tuple[int, int, str, str, str]] = []
-    for m in IMAGE_RE.finditer(body):
-        src = m.group(2)
+    for link in _body_links(body):
+        src = link.url
         if not src.startswith(("http://", "https://", "#", "mailto:", "data:")) and not _is_image(src) and not _is_video(src) and not src.split("#", 1)[0].endswith(".md"):
-            matches.append((m.start(), m.end(), m.group(1), src, m.group(0)))
-    for m in _LINK_RE.finditer(body):
-        src = m.group(2)
-        if not src.startswith(("http://", "https://", "#", "mailto:", "data:")) and not _is_image(src) and not _is_video(src) and not src.split("#", 1)[0].endswith(".md"):
-            matches.append((m.start(), m.end(), m.group(1), src, m.group(0)))
+            matches.append((link.start, link.end, link.label, src, link.original))
 
     matches.sort(key=lambda x: x[0])
     unique_matches: list[tuple[int, int, str, str, str]] = []
@@ -1107,12 +1107,8 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
 def _count_local_file_links(body: str) -> int:
     """本文中の非画像・非動画ローカルファイルリンク数をカウントする。"""
     count = 0
-    for m in IMAGE_RE.finditer(body):
-        src = m.group(2)
-        if not src.startswith(("http://", "https://", "#", "mailto:", "data:")) and not _is_image(src) and not _is_video(src) and not src.split("#", 1)[0].endswith(".md"):
-            count += 1
-    for m in _LINK_RE.finditer(body):
-        src = m.group(2)
+    for link in _body_links(body):
+        src = link.url
         if not src.startswith(("http://", "https://", "#", "mailto:", "data:")) and not _is_image(src) and not _is_video(src) and not src.split("#", 1)[0].endswith(".md"):
             count += 1
     return count
@@ -1155,20 +1151,19 @@ def _referenced_upload_ids(uploads, body, base_url):
 def _prune_candidates(uploads, local_names, pattern, body, base_url):
     from fnmatch import fnmatch
     referenced_names = set(local_names)
-    for regex in (IMAGE_RE, _LINK_RE):
-        for match in regex.finditer(body):
-            src = match.group(2)
-            if src.startswith(("http://", "https://", "//", "#", "mailto:", "data:")):
-                continue
-            name = Path(src).name
-            if regex is IMAGE_RE and not _is_video(src):
-                name = _parse_image_local_name(name) or name
-            elif regex is _LINK_RE and (_is_image(src) or src.split("#", 1)[0].endswith(".md")):
-                continue
-            referenced_names.add(name)
+    for link in _body_links(body):
+        src = link.url
+        if src.startswith(("http://", "https://", "//", "#", "mailto:", "data:")):
+            continue
+        name = Path(src).name
+        if link.image and not _is_video(src):
+            name = _parse_image_local_name(name) or name
+        elif not link.image and (_is_image(src) or src.split("#", 1)[0].endswith(".md")):
+            continue
+        referenced_names.add(name)
     candidates = [u for u in uploads if u.get("id") is not None and u.get("real_name")
-            and u["real_name"] not in referenced_names and not _is_image(u["real_name"])
-            and fnmatch(u["real_name"], pattern)]
+        and u["real_name"] not in referenced_names and not _is_image(u["real_name"])
+        and fnmatch(u["real_name"], pattern)]
     if not candidates:
         return []
     referenced_ids = _referenced_upload_ids(candidates, body, base_url)
@@ -1658,12 +1653,11 @@ class EachDocsSyncer:
 
     def _compute_assets_hash(self, raw_body, filename=None, *, body_evidence=None, directory_evidence=None):
         parts = []
-        raw_body, _ = _protect_literal_links(raw_body)
         document_dir = self.file_path(filename).parent if filename else self.docs_dir
-        for m in [*IMAGE_RE.finditer(raw_body), *_LINK_RE.finditer(raw_body)]:
-            src = m.group(2)
+        for link in _body_links(raw_body):
+            src = link.url
             if (src.startswith(("http://", "https://", "#", "mailto:", "data:")) or src.split("#")[0].endswith(".md")
-                    or (m.re is _LINK_RE and _is_image(src))):
+                    or (not link.image and _is_image(src))):
                 continue
             if body_evidence is not None:
                 parts.append(f"{src}:{body_evidence.get(src, 'missing')}")
@@ -2112,12 +2106,11 @@ class EachDocsSyncer:
                 if item.get("eid") and name not in mapping:
                     mapping[name] = item["eid"]
             mapping = self._detect_renames(mapping, files, self.entity, dry_run=True)
-        results = [{"filename": f.name, "title": f.stem, "images": _count_local_images(visible),
-                 "videos": _count_local_videos(visible), "file_links": _count_local_file_links(visible),
+        results = [{"filename": f.name, "title": f.stem, "images": _count_local_images(body),
+                 "videos": _count_local_videos(body), "file_links": _count_local_file_links(body),
                  "changed": self._has_changed(f.name, body), "entity_id": mapping.get(f.name)}
                 for f in files if only is None or f.name in only
-                for body in [f.read_text(encoding="utf-8").strip()]
-                for visible, _ in [_protect_literal_links(body)]]
+                for body in [f.read_text(encoding="utf-8").strip()]]
         if prune_attachments and self.target.attachments_dir:
             directory = self.project_root / self.target.attachments_dir
             local_names = {p.name for p in directory.iterdir() if p.is_file()} if directory.is_dir() else set()
@@ -2341,12 +2334,10 @@ class EachDocsSyncer:
                         raise ConflictError("本文に使う添付 URL が変わりました。eLabFTW の添付一覧を確認してください")
 
                 preferred = result.get("confirmed_upload_ids", set())
-                body, literals = _protect_literal_links(raw_body)
-                body = _rewrite_images(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded, verified=verified_body, record=record_body_upload, preferred=preferred, used_urls=used_urls)
+                body = _rewrite_images(raw_body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded, verified=verified_body, record=record_body_upload, preferred=preferred, used_urls=used_urls)
                 body = _rewrite_videos(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded, verified=verified_body, record=record_body_upload, preferred=preferred, used_urls=used_urls)
                 body = _rewrite_file_links(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded, verified=verified_body, record=record_body_upload, preferred=preferred, used_urls=used_urls)
                 body = _rewrite_local_links(body, self.entity, self.client.base_url, mapping, source=f, links=links)
-                body = _restore_literal_links(body, literals)
                 body = body if self.target.body_format == "md" else _md_to_html(body)
                 expected = {"body": body, "title": f.stem, "content_type": 2 if self.target.body_format == "md" else 1}
                 expected_links = _attachment_links(body, expected["content_type"]) if used_urls else {}

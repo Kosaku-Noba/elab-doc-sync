@@ -2300,3 +2300,34 @@ def test_only_rendered_attachment_destinations_can_send_a_file(project, body, fi
     assert syncer.sync() == 1
     assert remote[1]["body"] == body
     client.upload_file.assert_not_called()
+
+
+def test_parenthesized_attachment_sends_only_the_rendered_filename(project):
+    root, client, remote, syncer, _ = project
+    uploads = _stateful_uploads(client)
+    upload = client.upload_file.side_effect
+    from elab_doc_sync.client import upload_url
+    def send(entity, eid, path):
+        result = upload(entity, eid, path)
+        result["url"] = upload_url(client.base_url, uploads[eid][-1])
+        return result
+    client.upload_file.side_effect = send
+    (root / "docs/run(1).csv").write_bytes(b"right file")
+    (root / "docs/run(1").write_bytes(b"wrong file")
+    (root / "docs/a.md").write_text("[result](run(1).csv)")
+    assert syncer.sync() == 1
+    assert [u["real_name"] for u in uploads[1]] == ["run(1).csv"]
+    assert "blob100" in remote[1]["body"]
+
+
+@pytest.mark.parametrize("image", [False, True])
+def test_escaped_square_brackets_in_attachment_label(project, image):
+    root, client, remote, syncer, _ = project
+    _stateful_uploads(client)
+    filename = "plot.png" if image else "result.csv"
+    label = ("!" if image else "") + r"[value \[A\]]"
+    (root / ("docs/" + filename)).write_bytes(b"value")
+    (root / "docs/a.md").write_text(f"{label}({filename})")
+    assert syncer.sync() == 1
+    client.upload_file.assert_called_once()
+    assert label in remote[1]["body"] and "blob100" in remote[1]["body"]
