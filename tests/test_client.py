@@ -411,7 +411,7 @@ def test_download_images_passes_upload_fields(tmp_path):
     """list_uploads → _download_images → download_upload の結合契約テスト。
     list_uploads の long_name/real_name/storage が download_upload に正しく渡されることを検証。"""
     from elab_doc_sync.sync import _download_images
-    client = MagicMock()
+    client = MagicMock(base_url="https://elab.example.com")
     client.list_uploads.return_value = [
         {"id": 10, "long_name": "hash123.png", "real_name": "photo.png", "storage": 2, "filesize": 500},
     ]
@@ -660,8 +660,9 @@ def test_successful_upload_without_location_verifies_legacy_digest(mock_req, cli
 def test_upload_url_encodes_query_values():
     from urllib.parse import parse_qs, urlsplit
     from elab_doc_sync.client import upload_url
-    from elab_doc_sync.sync import _download_long_name
+    from elab_doc_sync.sync import _article_upload
 
     url = upload_url("https://elab.example", {"long_name": "a/b#1", "real_name": "測定&A+(1).pdf", "storage": 0})
     assert parse_qs(urlsplit(url).query) == {"f": ["a/b#1"], "name": ["測定&A+(1).pdf"], "storage": ["0"]}
-    assert not urlsplit(url).fragment and _download_long_name(url) == "a/b#1"
+    assert not urlsplit(url).fragment
+    assert _article_upload(url, {"a/b#1": {"id": 7}}, {}, "https://elab.example", "items", 1) == {"id": 7}

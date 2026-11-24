@@ -561,6 +561,23 @@ def test_merge_refuses_to_guess_previous_image_id_from_duplicate_names(project):
     client.delete_upload.assert_not_called()
 
 
+def test_push_does_not_delete_an_unreferenced_same_name_upload(project):
+    from hashlib import sha256
+    root, client, remote, syncer, _ = project
+    uploads = _stateful_uploads(client)
+    asset = root / "docs/data.csv"
+    asset.write_bytes(b"old")
+    (root / "docs/a.md").write_text("[data](data.csv)")
+    assert syncer.sync() == 1
+    other = dict(uploads[1][0], id=777, long_name="independent", hash=sha256(b"unrelated").hexdigest())
+    uploads[1].append(other)
+    asset.write_bytes(b"new")
+    assert syncer.sync(force=True) == 1
+    assert other in uploads[1]
+    assert len(uploads[1]) == 2
+    client.delete_upload.assert_called_once_with("items", 1, 100)
+
+
 def test_local_asset_edit_is_not_overwritten_by_remote_change(project):
     root, client, remote, syncer, args = project
     images = root / "docs/images"

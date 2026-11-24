@@ -22,7 +22,7 @@ from .config import TargetConfig
 from .client import ELabFTWClient, upload_sha256
 from .config import read_config as load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, append_target_to_yaml, profile_connection, _parse_api_key_env
 from .merge import merge_text
-from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _compute_file_hash, _is_image, _normalize_remote_image_urls, _download_attachments, _localize_attachment_links, _referenced_upload_ids, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
+from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _compute_file_hash, _is_image, _normalize_remote_image_urls, _download_attachments, _localize_attachment_links, _linked_article_upload_ids, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
 from . import sync_log
 from .result import CommandResult, cli_echo, progress, error_text, returns_partial_result
 from . import update_check
@@ -925,6 +925,7 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
     if merge:
         syncer.check_merge_asset_sources(old_name, uploads, destinations)
     previous_paths = syncer.previous_asset_paths(old_name) if merge and destinations else set()
+    linked_ids = _linked_article_upload_ids(uploads, body_md, 2, client.base_url, entity_type, eid) if merge and destinations else set()
     downloaded = {}
     expected_files = {}
     keep_paths = set()
@@ -952,7 +953,7 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
                             and old_digest == upload.get("hash") and old.get("id") == upload.get("id"))
         unchanged_remote = old_hash == remote_hash or same_legacy_hash
         if digest == remote_hash or (merge and unchanged_remote and
-                (dest in previous_paths or not _referenced_upload_ids([upload], body_md, client.base_url))):
+                (dest in previous_paths or upload.get("id") not in linked_ids)):
             keep_paths.add(dest)
             continue
         raise ConflictError(f"ローカルの添付を上書きできません: {dest}。内容を確認し、必要なら別名で保存してください")

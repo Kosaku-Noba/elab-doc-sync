@@ -1090,6 +1090,7 @@ def test_entity_status_shows_resource_label(MockClient, tmp_path, capsys):
 def test_pull_each_downloads_images(MockClient, tmp_path):
     cfg, docs = _write_config(tmp_path, mode="each")
     client = MockClient.return_value
+    client.base_url = "https://elab.example.com"
     client.get_item.return_value = {
         "id": 1, "title": "Doc1",
         "body": '<p><img src="https://elab.example.com/app/download.php?f=abc123.png&name=photo.png&storage=1" alt="pic"></p>',
@@ -1121,6 +1122,7 @@ def test_diff_no_false_positive_with_images(MockClient, tmp_path, capsys):
     import json as _json
     (ids_dir / "mapping.json").write_text(_json.dumps({"a.md": 1}))
     client = MockClient.return_value
+    client.base_url = "https://elab.example.com"
     client.get_item.return_value = {
         "id": 1,
         "body": '<p><img src="https://elab.example.com/app/download.php?f=abc123.png&name=photo.png&storage=1" alt="pic"></p>',

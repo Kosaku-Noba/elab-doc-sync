@@ -193,7 +193,7 @@ def test_sync_tags_best_effort(capsys):
 
 # S-45
 def test_download_images_replaces_url(tmp_path):
-    client = MagicMock()
+    client = MagicMock(base_url="https://elab.example.com")
     client.list_uploads.return_value = [
         {"id": 10, "long_name": "abc123.png", "real_name": "photo.png", "storage": "1"},
     ]
@@ -222,7 +222,7 @@ def test_download_images_no_duplicate_download(tmp_path):
     img_dir = tmp_path / "images"
     img_dir.mkdir()
     (img_dir / "items_42_photo.png").write_bytes(b"\x89PNG")
-    client = MagicMock()
+    client = MagicMock(base_url="https://elab.example.com")
     client.list_uploads.return_value = [
         {"id": 10, "long_name": "abc123.png", "real_name": "photo.png", "storage": "1"},
     ]
@@ -233,7 +233,7 @@ def test_download_images_no_duplicate_download(tmp_path):
 
 # S-48: 異なるエンティティの同名画像が衝突しない
 def test_download_images_entity_id_namespace(tmp_path):
-    client = MagicMock()
+    client = MagicMock(base_url="https://elab.example.com")
     client.list_uploads.return_value = [
         {"id": 10, "long_name": "abc.png", "real_name": "photo.png", "storage": "1"},
     ]
@@ -256,7 +256,7 @@ def test_download_images_entity_id_namespace(tmp_path):
 
 # S-49
 def test_normalize_remote_image_urls():
-    client = MagicMock()
+    client = MagicMock(base_url="https://elab.example.com")
     client.list_uploads.return_value = [
         {"id": 10, "long_name": "abc123.png", "real_name": "photo.png", "storage": "1"},
     ]
@@ -574,23 +574,17 @@ def test_upload_id_re_boundaries():
     assert UPLOAD_ID_RE.search("/uploads/abc") is None
 
 
-# S-69: external URL with /uploads/ — id が一致しても download は自サーバー API 経由
+# S-69: 他サーバーの添付は、同じ数値 ID が存在してもローカル化しない。
 def test_download_images_external_url_with_matching_id(tmp_path):
-    """外部 URL の upload_id が偶然一致しても、download_upload は自サーバーの
-    API に対して実行される（URL のホストは無関係）。これは仕様として許容する。
-    理由: eLabFTW の body HTML 内の画像 URL は相対パスか自サーバー URL のみ。"""
-    client = MagicMock()
+    client = MagicMock(base_url="https://elab.example.com")
     client.list_uploads.return_value = [
         {"id": 100, "long_name": "xx/xx.png", "real_name": "img.png", "storage": 1},
     ]
     client.download_upload.return_value = b"\x89PNG"
     body = "![](https://evil.example/uploads/100)"
     result = _download_images(body, "items", 1, client, tmp_path)
-    # id=100 が一致するので download_upload が呼ばれる（自サーバー API 経由）
-    assert "img.png" in result
-    client.download_upload.assert_called_once_with(
-        entity_type="items", entity_id=1, upload_id=100,
-    )
+    assert result == body
+    client.download_upload.assert_not_called()
 
 
 # S-70: external URL with /uploads/ — id が不一致なら無視

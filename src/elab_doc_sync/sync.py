@@ -22,7 +22,7 @@ import markdown
 from markdownify import markdownify as html_to_md
 import html as _html
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urljoin, urlsplit
 from html.parser import HTMLParser
 from collections import Counter
 
@@ -35,11 +35,7 @@ from .merge import has_conflict_markers
 
 # eLabFTW の画像 URL から upload_id を抽出する正規表現。
 # /uploads/{数字} の後に区切り文字（? # / 行末）が続くパターンにマッチ。
-# ホスト名やパス前半は検証しない（外部 URL がマッチしても、id_map に
-# 存在しない upload_id は無視されるため安全）。
-# id が一致した場合は自サーバーの API 経由でダウンロードされる。
-# eLabFTW の body HTML 内の画像 URL は相対パスか自サーバー URL のみのため、
-# 外部 URL が /uploads/ を含むことは実運用上ありえない。
+# pull で画像を取得する際は、接続先・記事・添付の一覧を _article_upload で照合する。
 # 許容例: /uploads/100  /uploads/100/  /uploads/100?x=1  /uploads/100#frag
 # 拒否例: /uploads/100/extra（サブパス付き）
 UPLOAD_ID_RE = re.compile(r"/uploads/(\d+)(?:[?#]|/?$)")
@@ -104,7 +100,7 @@ def _compute_meta_hash(title: str, category, tags: list[str]) -> str:
 
 
 def _count_local_images(body: str) -> int:
-    return sum(1 for link in _body_links(body) if link.image and not link.url.startswith(("http://", "https://")))
+    return sum(1 for link in _body_links(body) if link.image and not link.url.startswith(("http://", "https://", "//")))
 
 
 def _md_to_html(text: str) -> str:
@@ -336,10 +332,30 @@ def _replace_body_links(body, replace, *, images):
     return "".join(parts) + body[cursor:]
 
 
-def _download_long_name(src):
-    if "app/download.php" in src:
-        return parse_qs(urlsplit(_html.unescape(src)).query).get("f", [None])[0]
-    return None
+def _article_upload(src, by_name, by_id, base_url, entity, eid):
+    """Resolve actual download endpoints on this installation and article."""
+    try:
+        parsed = urlsplit(src)
+        server = _url_origin(str(base_url), "https")
+        if (parsed.scheme or parsed.netloc) and _url_origin(src, server[0]) != server:
+            return None
+    except (ValueError, UnicodeError):
+        return None
+    prefix = urlsplit(str(base_url)).path.rstrip("/")
+    path = parsed.path.lstrip("/")
+    if prefix and parsed.path.startswith(prefix + "/"):
+        path = parsed.path[len(prefix) + 1:]
+    if path == "app/download.php":
+        return by_name.get(parse_qs(parsed.query).get("f", [None])[0])
+    match = re.fullmatch(r"(?:api/v2/" + re.escape(f"{entity}/{eid}") + r"/)?uploads/(\d+)/?", path)
+    return by_id.get(match[1]) if match else None
+
+
+def _linked_article_upload_ids(uploads, body, content_type, base_url, entity, eid):
+    by_name = {u["long_name"]: u for u in uploads if u.get("long_name")}
+    by_id = {str(u["id"]): u for u in uploads if u.get("id") is not None}
+    return {matched["id"] for src in _attachment_links(body or "", content_type) if src
+            if (matched := _article_upload(src, by_name, by_id, base_url, entity, eid))}
 
 
 def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, strict: bool = False,
@@ -374,17 +390,11 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
         alt, src = link.label, link.url
         if "app/download.php" not in src and "/uploads/" not in src:
             return link.original
-        # long_name でマッチ（download.php 形式）
-        matched_upload = upload_map.get(_download_long_name(src))
-        # upload_id でマッチ（/api/v2/.../uploads/{id} 形式）
-        if not matched_upload:
-            uid_match = UPLOAD_ID_RE.search(src)
-            if uid_match:
-                matched_upload = id_map.get(uid_match.group(1))
+        matched_upload = _article_upload(src, upload_map, id_map, client.base_url, entity, entity_id)
         if not matched_upload:
             # list_uploads にない画像: 絶対 URL に変換して保持
-            if "app/download.php" in src and not src.startswith(("http://", "https://")):
-                abs_url = f"{client.base_url}/{src.lstrip('/')}"
+            if not src.startswith(("http://", "https://", "//")) and ("app/download.php" in src or "/uploads/" in src):
+                abs_url = urljoin(str(client.base_url).rstrip("/") + "/", src)
                 if not preview:
                     progress(f"    画像を絶対 URL に変換: {Path(src).name[:40]}")
                 return link.with_url(abs_url)
@@ -481,11 +491,7 @@ def _normalize_remote_image_urls(body: str, entity: str, entity_id: int, client:
         alt, src = link.label, link.url
         if "app/download.php" not in src and "/uploads/" not in src:
             return link.original
-        matched = upload_map.get(_download_long_name(src))
-        if not matched:
-            uid_match = UPLOAD_ID_RE.search(src)
-            if uid_match:
-                matched = id_map.get(uid_match.group(1))
+        matched = _article_upload(src, upload_map, id_map, client.base_url, entity, entity_id)
         if matched:
             real_name = matched.get("real_name", f"upload_{matched['id']}")
             return link.with_url(f"images/{_image_local_name(entity, entity_id, real_name)}")
@@ -637,7 +643,7 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
 
     def replace_match(link):
         alt, src = link.label, link.url
-        if src.startswith(("http://", "https://")):
+        if src.startswith(("http://", "https://", "//")):
             return link.original
         # 動画ファイルは _rewrite_videos で処理するためスキップ
         if _is_video(src):
@@ -796,7 +802,7 @@ def _rewrite_local_links(body: str, entity: str, base_url: str,
         text, href = link.label, link.url
 
         # 外部 URL、アンカーリンク、非 .md ファイルはスキップ
-        if href.startswith(("http://", "https://", "#", "mailto:")):
+        if href.startswith(("http://", "https://", "//", "#", "mailto:")):
             return link.original
         link_path, sep, fragment = href.partition("#")
         if not link_path.endswith(".md"):
@@ -962,7 +968,7 @@ def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClien
     stale_ids: list[int] = []
 
     def _process_video_match(alt: str, src: str, full_match: str) -> str:
-        if src.startswith(("http://", "https://")):
+        if src.startswith(("http://", "https://", "//")):
             return full_match
         if not _is_video(src):
             return full_match
@@ -1045,7 +1051,7 @@ def _count_local_videos(body: str) -> int:
     count = 0
     for link in _body_links(body):
         src = link.url
-        if not src.startswith(("http://", "https://")) and _is_video(src):
+        if not src.startswith(("http://", "https://", "//")) and _is_video(src):
             count += 1
     return count
 
@@ -1083,7 +1089,7 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
 
     def _process_file_match(link):
         src, full_match = link.url, link.original
-        if src.startswith(("http://", "https://", "#", "mailto:", "data:")):
+        if src.startswith(("http://", "https://", "//", "#", "mailto:", "data:")):
             return full_match
         if _is_image(src) or _is_video(src):
             return full_match
@@ -1152,30 +1158,31 @@ def _count_local_file_links(body: str) -> int:
     count = 0
     for link in _body_links(body):
         src = link.url
-        if not src.startswith(("http://", "https://", "#", "mailto:", "data:")) and not _is_image(src) and not _is_video(src) and not src.split("#", 1)[0].endswith(".md"):
+        if not src.startswith(("http://", "https://", "//", "#", "mailto:", "data:")) and not _is_image(src) and not _is_video(src) and not src.split("#", 1)[0].endswith(".md"):
             count += 1
     return count
 
 
-def _referenced_upload_ids(uploads, body, base_url):
-    def origin(url, default_scheme):
-        parsed = urlsplit(url)
-        scheme = parsed.scheme.lower() or default_scheme
-        host = unquote(parsed.hostname or "").rstrip(".")
-        if ":" in host:
-            host = str(ipaddress.IPv6Address(host))
-        elif host:
-            # WHATWG のドメイン区切りと既定ポートに合わせる。ASCII の "_" はブラウザーでも有効。
-            host = idna.uts46_remap(host, std3_rules=False).rstrip(".").lower()
-            if not host.isascii():
-                host = idna.encode(host, uts46=True).decode("ascii").lower()
-        port = parsed.port if parsed.port is not None else {"http": 80, "https": 443}.get(scheme)
-        return scheme, host, port
+def _url_origin(url, default_scheme):
+    parsed = urlsplit(url)
+    scheme = parsed.scheme.lower() or default_scheme
+    host = unquote(parsed.hostname or "").rstrip(".")
+    if ":" in host:
+        host = str(ipaddress.IPv6Address(host))
+    elif host:
+        # WHATWG のドメイン区切りと既定ポートに合わせる。ASCII の "_" はブラウザーでも有効。
+        host = idna.uts46_remap(host, std3_rules=False).rstrip(".").lower()
+        if not host.isascii():
+            host = idna.encode(host, uts46=True).decode("ascii").lower()
+    port = parsed.port if parsed.port is not None else {"http": 80, "https": 443}.get(scheme)
+    return scheme, host, port
 
-    server = origin(str(base_url), "https")
+
+def _referenced_upload_ids(uploads, body, base_url):
+    server = _url_origin(str(base_url), "https")
 
     def retain_local_url(match):
-        return match.group() if origin(match.group(), server[0]) == server else ""
+        return match.group() if _url_origin(match.group(), server[0]) == server else ""
 
     # %20 などの復号前に URL 全体を切り出し、別サーバーのパスを除外する。
     text = re.sub(r"""(?:https?:)?//[^\s<>"')]+""", retain_local_url, _html.unescape(body).replace("\\", "/"), flags=re.I)
@@ -1187,7 +1194,7 @@ def _referenced_upload_ids(uploads, body, base_url):
             continue
         url = src.strip(" \t\r\n\f").replace("\\", "/")
         parsed = urlsplit(url)
-        if (parsed.scheme or parsed.netloc) and origin(url, server[0]) != server:
+        if (parsed.scheme or parsed.netloc) and _url_origin(url, server[0]) != server:
             continue
         path = unquote(posixpath.normpath("/" + re.sub(r"%2e", ".", parsed.path, flags=re.I).lstrip("/")))
         ids.update(re.findall(r"/uploads/(\d+)(?!\d)", path))
@@ -1647,7 +1654,7 @@ class EachDocsSyncer:
         # Preserve the image-first order used by existing asset hashes.
         for link in sorted(_body_links(raw_body), key=lambda entry: not entry.image):
             src = link.url
-            if (src.startswith(("http://", "https://", "#", "mailto:", "data:")) or src.split("#")[0].endswith(".md")
+            if (src.startswith(("http://", "https://", "//", "#", "mailto:", "data:")) or src.split("#")[0].endswith(".md")
                     or (not link.image and _is_image(src))):
                 continue
             if body_evidence is not None:
@@ -1675,8 +1682,6 @@ class EachDocsSyncer:
         state = self._state(filename)
         previous = state.get("remote", {}).get("uploads", []) if state else []
         current = self._remote_signature({}, uploads)["uploads"]
-        if previous == current:
-            return
         source = self.file_path(filename)
         for link in _body_links(source.read_text(encoding="utf-8")):
             src = link.url
@@ -1688,6 +1693,8 @@ class EachDocsSyncer:
             name = (_parse_image_local_name(path.name) if link.image else None) or path.name
             old = [u for u in previous if u["real_name"] == name]
             new = [u for u in current if u["real_name"] == name]
+            if len(old) > 1 or len(new) > 1:
+                raise ConflictError(f"{name}: 同名の添付 ID が複数あります。参照する版を確認してからマージしてください")
             if new == old:
                 continue
             # Planned downloads perform a separate three-way check at the actual destination.
@@ -2407,7 +2414,12 @@ class EachDocsSyncer:
                         stored_hash = self.client.upload_digest(entity_type=self.entity, entity_id=eid, upload_id=uid)
                     if stored_hash != digest:
                         raise ConflictError("送信した本文用添付の内容が一致しません")
-                stale_uploads = [uid for uid in stale_uploads if uid not in uploaded]
+                if stale_uploads:
+                    previously_linked = _linked_article_upload_ids(result.get("uploads", []), previous.get("body"),
+                                                                   previous.get("content_type"), self.client.base_url,
+                                                                   self.entity, eid)
+                    owned_ids = previously_linked.union(result.get("confirmed_upload_ids", {}))
+                    stale_uploads = [uid for uid in stale_uploads if uid not in uploaded and uid in owned_ids]
                 if current_originals != initial_uploads or set(current) != initial_ids | set(uploaded) or not set(stale_uploads) <= initial_ids:
                     raise ConflictError("本文の添付を準備している間にリモート添付が変更されました。diffで確認してください")
                 meta_changed = needs_meta(f, result, resuming)
