@@ -825,7 +825,11 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
     if initially_absent:
         exclusive_paths.add(filepath)
 
+    destinations = {}
+
     def validate_output(path, *, asset=False, upload_id=None, upload=None):
+        if asset and upload is not None:
+            destinations[path] = upload
         safe_path(project_root, path.relative_to(project_root).as_posix())
         if any(p.exists() and not p.is_dir() for p in path.parents):
             raise ConflictError(f"保存先の親がディレクトリではありません: {path}")
@@ -919,36 +923,33 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
     elif filepath.exists() and filepath not in outputs.released and not force:
         raise ConflictError(f"{filename}: 既にローカルに存在、基準情報なし。--force の前に差分を確認してください")
     if merge:
-        syncer.check_merge_asset_sources(old_name, uploads)
+        syncer.check_merge_asset_sources(old_name, uploads, destinations)
+    previous_paths = syncer.previous_asset_paths(old_name) if merge and destinations else set()
     downloaded = {}
     expected_files = {}
     keep_paths = set()
-    if target.attachments_dir:
-        # Compare each file with its own baseline, even when only the article text needs a merge.
-        state = syncer._state(old_name) if old_name else None
-        previous = {u["real_name"]: u for u in state["remote"]["uploads"]} if state else {}
-        for upload in uploads:
-            name = upload.get("real_name")
-            if not name or _is_image(name) or Path(name).name in ("", ".", ".."):
-                continue
-            dest = safe_path(project_root / target.attachments_dir, Path(name).name)
-            digest = _compute_file_hash(dest) if dest.is_file() else None
-            expected_files[dest] = digest
-            if force or digest is None:
-                continue
-            old = previous.get(name, {})
-            old_hash = upload_sha256(old)
-            if old_hash == digest:
-                continue
-            remote_hash = upload_sha256(upload) or client.upload_digest(entity_type=entity_type, entity_id=eid,
-                                                                      upload_id=upload["id"])
-            old_digest = old.get("hash")
-            same_legacy_hash = (isinstance(old_digest, str) and re.fullmatch(r"[a-fA-F0-9]{32}", old_digest)
-                                and old_digest == upload.get("hash") and old.get("id") == upload.get("id"))
-            if digest == remote_hash or (merge and (old_hash == remote_hash or same_legacy_hash)):
-                keep_paths.add(dest)
-                continue
-            raise ConflictError(f"ローカルの添付を上書きできません: {dest}。内容を確認し、必要なら別名で保存してください")
+    # Compare each file with its own baseline, even when only the article text needs a merge.
+    state = syncer._state(old_name) if old_name else None
+    previous = {u["real_name"]: u for u in state["remote"]["uploads"]} if state else {}
+    for dest, upload in destinations.items():
+        name = upload.get("real_name")
+        digest = _compute_file_hash(dest) if dest.is_file() else None
+        expected_files[dest] = digest
+        if force or digest is None:
+            continue
+        old = previous.get(name, {})
+        old_hash = upload_sha256(old)
+        if old_hash == digest:
+            continue
+        remote_hash = upload_sha256(upload) or client.upload_digest(entity_type=entity_type, entity_id=eid,
+                                                                  upload_id=upload["id"])
+        old_digest = old.get("hash")
+        same_legacy_hash = (isinstance(old_digest, str) and re.fullmatch(r"[a-fA-F0-9]{32}", old_digest)
+                            and old_digest == upload.get("hash") and old.get("id") == upload.get("id"))
+        if digest == remote_hash or (dest in previous_paths and (old_hash == remote_hash or same_legacy_hash)):
+            keep_paths.add(dest)
+            continue
+        raise ConflictError(f"ローカルの添付を上書きできません: {dest}。内容を確認し、必要なら別名で保存してください")
     if old_path and old_path != filepath:
         article.released.add(old_path)
     if dry_run:
@@ -960,8 +961,9 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
         paths.append(project_root / target.attachments_dir)
     with local_transaction(project_root, paths, f"pull:{entity_type}/{eid}") as backup_id:
         docs_dir.mkdir(parents=True, exist_ok=True)
-        body_md = _download_images(body_md, entity_type, eid, client, parent, strict=True, keep_existing=merge,
-                                   uploads=uploads, check_path=validate_output, exclusive_paths=exclusive_paths, digests=downloaded)
+        body_md = _download_images(body_md, entity_type, eid, client, parent, strict=True, uploads=uploads,
+                                   check_path=validate_output, exclusive_paths=exclusive_paths, digests=downloaded,
+                                   backup=project_root / BACKUPS / backup_id, expected_files=expected_files, keep_paths=keep_paths)
         new_mapping = dict(mapping)
         if old_name:
             new_mapping.pop(old_name, None)

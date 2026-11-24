@@ -460,7 +460,8 @@ def test_pull_merge_handles_each_linked_file_separately(project, local_content, 
         assert syncer.sync() == 1 and client.upload_file.call_count == 1
 
 
-def test_pull_retains_edit_made_while_downloading_attachment(project):
+@pytest.mark.parametrize("image", [False, True])
+def test_pull_retains_edit_made_while_downloading_attachment(project, image):
     root, client, remote, syncer, args = project
     cfg = root / ".elab-sync.yaml"
     config = yaml.safe_load(cfg.read_text())
@@ -469,10 +470,14 @@ def test_pull_retains_edit_made_while_downloading_attachment(project):
     syncer.target.attachments_dir = "assets"
     uploads = _stateful_uploads(client)
     (root / "assets").mkdir()
-    path = root / "assets/data.csv"
+    path = root / ("docs/data.png" if image else "assets/data.csv")
     path.write_bytes(b"initial")
-    (root / "docs/a.md").write_text("[data](../assets/data.csv)")
+    (root / "docs/a.md").write_text("![data](data.png)" if image else "[data](../assets/data.csv)")
     assert syncer.sync() == 1
+    if image:
+        path = root / "docs/images/items_1_data.png"
+        path.parent.mkdir()
+        path.write_bytes(b"initial")
     uploads[1][0].update(hash="a" * 64, filesize=9)
     def download(**kwargs):
         path.write_bytes(b"just edited")

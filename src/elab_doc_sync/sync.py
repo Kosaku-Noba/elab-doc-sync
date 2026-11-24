@@ -343,7 +343,8 @@ def _download_long_name(src):
 
 
 def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClient, docs_dir: Path, strict: bool = False,
-                     keep_existing: bool = False, uploads=None, check_path=None, preview=False, exclusive_paths=(), digests=None) -> str:
+                     keep_existing: bool = False, uploads=None, check_path=None, preview=False, exclusive_paths=(), digests=None,
+                     expected_files=None, backup=None, keep_paths=()) -> str:
     """Markdown 内の eLabFTW 画像 URL をローカルにダウンロードし相対パスに書き換える。
 
     preview=True は保存予定パスの検査のみ行い、画像の取得・ディレクトリの作成をしない。
@@ -396,11 +397,14 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
         if image in saved:
             return reference
         if check_path:
-            check_path(dest, asset=True, upload_id=matched_upload["id"])
+            check_path(dest, asset=True, upload_id=matched_upload["id"], upload=matched_upload)
         if preview:
             return link.original
         img_dir.mkdir(parents=True, exist_ok=True)
-        if not dest.exists() or (strict and not keep_existing):
+        if dest in keep_paths:
+            if digests is not None:
+                digests[dest] = expected_files[dest]
+        elif not dest.exists() or (strict and not keep_existing):
             data = client.download_upload(
                 entity_type=entity,
                 entity_id=entity_id,
@@ -408,7 +412,10 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
             )
             if digests is not None:
                 digests[dest] = hashlib.sha256(data).hexdigest()
-            atomic_write(dest, data, exclusive=dest in exclusive_paths)
+            if expected_files is None:
+                atomic_write(dest, data, exclusive=dest in exclusive_paths)
+            else:
+                _publish_download(dest, data, backup, expected_files[dest], 0o600)
             progress(f"    画像をダウンロード: {real_name}")
         saved.add(image)
         return reference
@@ -1235,7 +1242,8 @@ def _localize_attachment_links(body, uploads, directory, source, base_url, entit
     def replace(link):
         local = paths.get(link.url)
         if local is None:
-            if link.url.startswith(("/app/download.php?", "/api/v2/")):
+            base_path = urlsplit(base_url).path.rstrip("/")
+            if link.url.startswith(("/app/download.php?", "/api/v2/", base_path + "/app/download.php?", base_path + "/api/v2/")):
                 site = urlsplit(base_url)
                 return link.with_url(f"{site.scheme}://{site.netloc}{link.url}")
             return link.original
@@ -1245,6 +1253,12 @@ def _localize_attachment_links(body, uploads, directory, source, base_url, entit
         return link.with_url(destination)
 
     return _replace_body_links(body, replace, images=False)
+
+
+def _publish_download(dest, data, backup, expected, default_mode):
+    with hold_document(dest, backup, expected, asset=True) as held:
+        mode = held.stat().st_mode & 0o777 if held else default_mode
+        atomic_write(dest, data, mode=mode, exclusive=True)
 
 
 def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, attachments_dir: Path, strict: bool = False,
@@ -1302,10 +1316,7 @@ def _download_attachments(entity: str, entity_id: int, client: ELabFTWClient, at
             if digests is not None:
                 digests[dest] = hashlib.sha256(data).hexdigest()
             if expected_files is not None:
-                expected = expected_files[dest]
-                with hold_document(dest, backup, expected, asset=True) as held:
-                    mode = held.stat().st_mode & 0o777 if held else 0o666 & ~_UMASK
-                    atomic_write(dest, data, mode=mode, exclusive=True)
+                _publish_download(dest, data, backup, expected_files[dest], 0o666 & ~_UMASK)
                 progress(f"    添付ファイルをダウンロード: {safe_name}")
                 continue
             # テンポラリファイルに書いてからリネーム（既存ファイル保護）
@@ -1648,14 +1659,23 @@ class EachDocsSyncer:
                 parts.append(f"{src}:{_compute_file_hash(path) if path.is_file() else 'missing'}")
         return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
 
-    def check_merge_asset_sources(self, filename, uploads):
+    def previous_asset_paths(self, filename):
+        parent = self.file_path(filename).parent
+        paths = set()
+        for link in _body_links(self.load_base(filename) or ""):
+            if link.url.startswith(("http://", "https://", "//", "/", "#", "mailto:", "data:")):
+                continue
+            paths.add(_resolve_asset_path(parent, self.project_root, link.url, strict=True))
+        return paths
+
+    def check_merge_asset_sources(self, filename, uploads, destinations):
         """Refuse to adopt a changed remote upload while a merge can retain an older local source."""
-        previous = self._state(filename)["remote"]["uploads"]
+        state = self._state(filename)
+        previous = state["remote"]["uploads"] if state else []
         current = self._remote_signature({}, uploads)["uploads"]
         if previous == current:
             return
         source = self.file_path(filename)
-        directory = self.project_root / self.target.attachments_dir if self.target.attachments_dir else None
         for link in _body_links(source.read_text(encoding="utf-8")):
             src = link.url
             if src.startswith(("http://", "https://", "//", "#", "mailto:", "data:")) or src.split("#")[0].endswith(".md"):
@@ -1668,8 +1688,8 @@ class EachDocsSyncer:
             new = [u for u in current if u["real_name"] == name]
             if new == old:
                 continue
-            # Normal non-image downloads perform a separate three-way check at this exact destination.
-            if directory and not _is_image(name) and new and path == directory / name:
+            # Planned downloads perform a separate three-way check at the actual destination.
+            if new and path in destinations:
                 continue
             digest = _compute_file_hash(path)
             if len(new) == 1 and upload_sha256(new[0]) == digest:
