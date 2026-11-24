@@ -712,8 +712,7 @@ def test_cmd_tag_entity_without_id_exits(tmp_path, capsys):
     cfg, _ = _write_config(tmp_path)
     args = Namespace(config=str(cfg), target=None, force=False, tag_action="list",
                      id=None, entity="items")
-    with pytest.raises(SystemExit):
-        cmd_tag(args)
+    assert cmd_tag(args) == 1  # main() が終了コード 1 にする
     assert "--id" in capsys.readouterr().err
 
 
@@ -722,8 +721,7 @@ def test_cmd_tag_id_without_entity_exits(tmp_path, capsys):
     cfg, _ = _write_config(tmp_path)
     args = Namespace(config=str(cfg), target=None, force=False, tag_action="add",
                      tag_name="x", id=42, entity=None)
-    with pytest.raises(SystemExit):
-        cmd_tag(args)
+    assert cmd_tag(args) == 1
     assert "--entity" in capsys.readouterr().err
 
 
@@ -890,8 +888,8 @@ def test_cmd_new_existing_file_error(MockClient, tmp_path):
         json=MagicMock(return_value={"id": 1, "title": "Existing", "body": ""})
     )
     args = Namespace(config=str(cfg), target=None, force=False, list_templates=False, template_id=1, title=None, output=None)
-    with pytest.raises(SystemExit):
-        cmd_new(args)
+    assert cmd_new(args) == 1
+    assert (docs / "Existing.md").read_text(encoding="utf-8") == "old"
 
 
 # CLI-65: new --output で出力先指定
@@ -1092,6 +1090,7 @@ def test_entity_status_shows_resource_label(MockClient, tmp_path, capsys):
 def test_pull_each_downloads_images(MockClient, tmp_path):
     cfg, docs = _write_config(tmp_path, mode="each")
     client = MockClient.return_value
+    client.base_url = "https://elab.example.com"
     client.get_item.return_value = {
         "id": 1, "title": "Doc1",
         "body": '<p><img src="https://elab.example.com/app/download.php?f=abc123.png&name=photo.png&storage=1" alt="pic"></p>',
@@ -1123,6 +1122,7 @@ def test_diff_no_false_positive_with_images(MockClient, tmp_path, capsys):
     import json as _json
     (ids_dir / "mapping.json").write_text(_json.dumps({"a.md": 1}))
     client = MockClient.return_value
+    client.base_url = "https://elab.example.com"
     client.get_item.return_value = {
         "id": 1,
         "body": '<p><img src="https://elab.example.com/app/download.php?f=abc123.png&name=photo.png&storage=1" alt="pic"></p>',

@@ -3,13 +3,40 @@
 import hashlib
 import json
 import logging
+import re
 import requests
 import urllib3
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlencode
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logger = logging.getLogger(__name__)
+
+
+def upload_sha256(entry):
+    """一覧の SHA-256 だけを採用する。旧添付の MD5 などは実体の照合が必要。"""
+    for field in ("sha256", "hash"):
+        value = entry.get(field)
+        if isinstance(value, str) and re.fullmatch(r"[A-Fa-f0-9]{64}", value):
+            return value.lower()
+    return None
+
+
+def upload_url(base_url, upload):
+    """eLabFTW の一覧から、取得可能な添付の URL を組み立てる。"""
+    if not upload.get("long_name") or not upload.get("real_name") or upload.get("storage") in (None, ""):
+        return None
+    query = urlencode({"f": upload["long_name"], "name": upload["real_name"], "storage": upload["storage"]}, quote_via=quote)
+    return f"{base_url}/app/download.php?{query}"
+
+
+class UploadConfirmationError(RuntimeError):
+    """一覧で確認できなかった添付と、サーバーから受領した ID の記録。"""
+
+    def __init__(self, message, receipt):
+        super().__init__(message)
+        self.receipt = receipt
 
 
 class ELabFTWClient:
@@ -23,11 +50,14 @@ class ELabFTWClient:
     # ── helpers ──────────────────────────────────────────────
 
     def _req(self, method: str, path: str, **kwargs) -> requests.Response:
-        resp = requests.request(
-            method, f"{self.base_url}{path}",
-            headers=kwargs.pop("headers", self._json_headers),
-            verify=self.verify_ssl, timeout=kwargs.pop("timeout", 30), **kwargs,
-        )
+        try:
+            resp = requests.request(
+                method, f"{self.base_url}{path}",
+                headers=kwargs.pop("headers", self._json_headers),
+                verify=self.verify_ssl, timeout=kwargs.pop("timeout", 30), **kwargs,
+            )
+        except requests.exceptions.InvalidHeader:
+            raise ValueError("HTTP ヘッダーの形式が不正です。API キーの改行などを確認してください") from None
         resp.raise_for_status()
         return resp
 
@@ -140,56 +170,75 @@ class ELabFTWClient:
     # ── uploads ──────────────────────────────────────────────
 
     def upload_file(self, entity_type: str, entity_id: int, filepath: str, comment: str = "") -> dict:
-        """ファイルをアップロードする（Timeout/ConnectionError/5xx で1回リトライ）。
+        """成功時は Location を優先し、候補がなければ url=None を返す。
 
-        filepath の basename が eLabFTW 上の real_name として保存される。
-        entity_type は 'items' または 'experiments'。
-
-        リトライ対象: requests.exceptions.Timeout, ConnectionError, HTTPError(5xx)
-        4xx は即失敗。POST が非冪等なため、リトライで重複が生じた場合は
-        同名ファイルの最新を採用し、古い重複は呼び出し元で掃除される前提。
-
-        アップロードした添付は、POST 応答の Location の ID で特定する。取れない
-        場合は同名・同ハッシュのうち ID が最大のものを使う。同ハッシュがなければ、
-        ハッシュを持たない同名添付のうち ID が最大のもの（内容は未検証）を使う。
-        どれもなければ特定できないとして url=None を返す。一覧の並び順は
-        サーバーにより異なる（eLabFTW 5.5 は新しい順）ため頼らない。
+        応答不明時は再送せず、新しい添付の名前と SHA-256 を照合する。
+        特定できない場合は UploadConfirmationError に確認手順を含める。
+        URL を返す場合は receipt に id・name・size・sha256 を含める。
         """
         url = f"/api/v2/{entity_type}/{entity_id}/uploads"
-        response = None
-        for attempt in range(2):
-            try:
-                with open(filepath, "rb") as f:
-                    response = self._req("POST", url, headers=self._auth_headers,
-                                         files={"file": f}, data={"comment": comment}, timeout=60)
-                break
-            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
-                if attempt == 0:
-                    continue
-                raise
-            except requests.exceptions.HTTPError as e:
-                if e.response is not None and e.response.status_code >= 500 and attempt == 0:
-                    continue
-                raise
-        uploads = self._req("GET", url).json()
         filename = Path(filepath).name
-        candidates = [u for u in uploads if u.get("real_name") == filename and u.get("long_name") and u.get("storage")]
-        location = str(getattr(response, "headers", {}).get("location", "") or "").rstrip("/").split("/")[-1]
-        new_id = int(location) if location.isdigit() else None
-        upload = next((u for u in candidates if u.get("id") == new_id), None)
-        if upload is None and candidates:
-            with open(filepath, "rb") as f:
-                local_hash = hashlib.sha256(f.read()).hexdigest()
-            same = [u for u in candidates if (u.get("hash") or u.get("sha256")) == local_hash]
-            # ハッシュを返さないサーバーでは内容を確かめられないため、最大 ID を使う
-            unknown = [u for u in candidates if not (u.get("hash") or u.get("sha256"))]
-            if same or unknown:
-                upload = max(same or unknown, key=lambda u: u.get("id") or 0)
+        previous_ids = {u["id"] for u in self.list_uploads(entity_type, entity_id)}
+        payload = Path(filepath).read_bytes()
+        digest = hashlib.sha256(payload).hexdigest()
+        unknown = (f"{entity_type} #{entity_id} の添付 {filename!r} の送信結果を確認できません。"
+                   "自動再送を停止しました。esync diff と eLabFTW の添付一覧で ID・名前・内容を確認してください")
+        response = None
+        receipt = None
+        try:
+            response = self._req("POST", url, headers=self._auth_headers,
+                                 files={"file": (filename, payload)}, data={"comment": comment}, timeout=60,
+                                 allow_redirects=False)
+            if 300 <= response.status_code < 400:
+                response = None
+            else:
+                location = response.headers.get("location", "").rstrip("/").split("/")[-1]
+                if location.isdecimal() and int(location) not in previous_ids:
+                    receipt = {"id": int(location), "name": filename, "size": len(payload), "sha256": digest}
+        except requests.HTTPError as exc:
+            if exc.response is None or exc.response.status_code < 500:
+                raise
+        except (requests.Timeout, requests.ConnectionError, requests.exceptions.ChunkedEncodingError,
+                requests.exceptions.ContentDecodingError):
+            pass
+        try:
+            candidates = [u for u in self.list_uploads(entity_type, entity_id)
+                          if u["id"] not in previous_ids and u.get("real_name") == filename
+                          and upload_url(self.base_url, u)]
+            if response is None:
+                matches = []
+                for candidate in candidates:
+                    remote_digest = upload_sha256(candidate)
+                    if not remote_digest:
+                        remote_digest = self.upload_digest(entity_type=entity_type, entity_id=entity_id,
+                                                           upload_id=candidate["id"])
+                    if remote_digest == digest:
+                        matches.append(candidate)
+                if len(matches) != 1:
+                    raise ValueError("一致する新規添付を一意に特定できません")
+                upload = matches[0]
+            else:
+                location = response.headers.get("location", "").rstrip("/").split("/")[-1]
+                upload = next((u for u in candidates if str(u["id"]) == location), None)
+                if upload is None and receipt is None and candidates:
+                    same = []
+                    for candidate in candidates:
+                        known = upload_sha256(candidate)
+                        if not known and (candidate.get("hash") or candidate.get("sha256")):
+                            known = self.upload_digest(entity_type=entity_type, entity_id=entity_id, upload_id=candidate["id"])
+                        if known == digest:
+                            same.append(candidate)
+                    unverified = [u for u in candidates if not (u.get("sha256") or u.get("hash"))]
+                    upload = max(same or unverified, key=lambda u: u["id"], default=None)
+        except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
+            raise UploadConfirmationError(unknown, receipt) from exc
         if upload is None:
-            return {"filename": filename, "url": None}
+            return {"filename": filename, "url": None, **({"receipt": receipt, "created": True} if receipt else {})}
         return {
             "id": upload.get("id"), "filename": filename,
-            "url": f"{self.base_url}/app/download.php?f={upload['long_name']}&name={filename}&storage={upload['storage']}",
+            "created": receipt is not None and receipt["id"] == upload["id"],
+            "receipt": {"id": upload["id"], "name": filename, "size": len(payload), "sha256": digest},
+            "url": upload_url(self.base_url, upload),
         }
 
     def delete_upload(self, entity_type: str, entity_id: int, upload_id: int) -> None:
@@ -199,6 +248,16 @@ class ELabFTWClient:
     def list_uploads(self, entity_type: str, entity_id: int) -> list[dict]:
         """エンティティの添付ファイル一覧を返す。"""
         return self._req("GET", f"/api/v2/{entity_type}/{entity_id}/uploads").json()
+
+    def upload_digest(self, *, entity_type: str, entity_id: int, upload_id: int) -> str:
+        """照合用に添付の実体を分割して読み、MIME にかかわらず SHA-256 を返す。"""
+        digest = hashlib.sha256()
+        with self._req("GET", f"/api/v2/{entity_type}/{entity_id}/uploads/{upload_id}",
+                       headers={**self._auth_headers, "Accept": "application/octet-stream"},
+                       params={"format": "binary"}, stream=True) as response:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     def download_upload(self, *, entity_type: str, entity_id: int, upload_id: int) -> bytes:
         """添付ファイル（画像含む全種別）のバイナリを返す。

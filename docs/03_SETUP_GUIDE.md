@@ -64,6 +64,7 @@ elabftw:
 .elab-sync.yaml
 .elab-sync-ids/
 .elab-sync-backups/
+.elab-displaced-*/
 .elab-sync-operations/
 .elab-sync-recovery.json
 ```

@@ -4,6 +4,9 @@ ELABFTW_TEST_CONFIG=/path/to/test-config.yaml uv run pytest tests/test_integrati
 Creates one item per test and always registers cleanup before updating it.
 """
 import os
+from html import unescape
+from urllib.parse import parse_qs, urlsplit
+from unittest.mock import patch
 from pathlib import Path
 
 import pytest
@@ -13,7 +16,7 @@ from elab_doc_sync.client import ELabFTWClient
 from elab_doc_sync.cli import _pull_each_entity
 from elab_doc_sync.config import TargetConfig
 from elab_doc_sync.safety import BACKUPS, restore
-from elab_doc_sync.sync import EachDocsSyncer
+from elab_doc_sync.sync import EachDocsSyncer, _tag_names
 
 CONFIG_PATH = os.environ.get('ELABFTW_TEST_CONFIG')
 pytestmark = [pytest.mark.integration, pytest.mark.skipif(not CONFIG_PATH, reason='ELABFTW_TEST_CONFIG not set')]
@@ -73,7 +76,6 @@ def test_untagged_cli_pull_and_first_tag_push(server, tmp_path, monkeypatch):
     import yaml
     from elab_doc_sync.cli import main
     from elab_doc_sync.config import load_config
-    from elab_doc_sync.sync import _tag_names
 
     client, eid = server
     assert _tag_names(client.get_item(eid).get('tags')) == []
@@ -108,27 +110,27 @@ def _png(width, height, color):
             + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b''))
 
 
-def test_real_resume_after_server_rewrites_body(server, tmp_path):
-    """eLabFTW が保存時に本文を書き換えても、本文更新後に止まった同期を再開できる。"""
+def test_real_resume_after_body_is_saved(server, tmp_path):
+    """実機が保存した本文を基準に、本文更新後に止まった同期を再開できる。"""
     client, eid = server
     docs = tmp_path / 'docs'
     docs.mkdir()
     filename = '[test] elab-doc-sync v1.md'
     note = docs / filename
-    note.write_text('# Test\n\n> **注意:** quoted line\n\nplain <span>tag</span> text', encoding='utf-8')
+    note.write_text('# Test\n\n> **注意:** quoted line\n\nplain text', encoding='utf-8')
     target = TargetConfig(title='T', docs_dir='docs', id_file='.ids/default.id', body_format='md')
     syncer = EachDocsSyncer(client, target, tmp_path)
     syncer._save_mapping({filename: eid})
-    # 存在しないカテゴリ名で、本文更新後に失敗させる
-    target.category = 'elab-doc-sync-test-no-such-category'
-    assert syncer.sync(force=True) == 0
+    # 本文を実機に保存した直後の通信中断を模擬し、リトライ時は実機へ送る。
+    target.tags = ['elab-doc-sync-test']
+    with patch.object(client, 'add_tag', side_effect=ConnectionError('test interruption')):
+        assert syncer.sync(force=True) == 0
     owned = syncer._pending()[filename]
     assert owned['stored']['body'] == client.get_item(eid)['body']
-    # eLabFTW 5.5 は保存時に本文を書き換える（送った本文のままでは再開判定が一致しない）
-    assert owned['stored']['body'] != owned['expected']['body']
-    target.category = None
+    assert owned['expected']['body'] == note.read_text(encoding='utf-8')
     assert syncer.sync() == 1
     assert not syncer._pending()
+    assert 'elab-doc-sync-test' in _tag_names(client.get_tags('items', eid))
     assert syncer.inspect(filename, eid)['state'] == '最新'
 
 
@@ -149,5 +151,9 @@ def test_real_replaced_image_old_version_is_deleted(server, tmp_path):
     assert syncer.sync() == 1
     current = [u for u in client.list_uploads('items', eid) if u.get('real_name') == 'picture.png']
     assert len(current) == 1 and current[0]['id'] != first[0]
-    assert current[0]['long_name'] in client.get_item(eid)['body']
+    body = unescape(client.get_item(eid)['body'])
+    assert body.startswith('![image](') and body.endswith(')')
+    query = parse_qs(urlsplit(body[len('![image]('):-1]).query)
+    assert query['f'] == [current[0]['long_name']]
+    assert query['storage'] == [str(current[0]['storage'])]
     assert syncer.inspect(filename, eid)['state'] == '最新'

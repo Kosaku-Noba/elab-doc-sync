@@ -1,21 +1,26 @@
 """Atomic local storage, process locking, and recoverable local snapshots."""
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from functools import wraps
+import errno
 import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import tempfile
 import uuid
 
+from .result import progress
+
 BACKUPS = ".elab-sync-backups"
 RECOVERY = ".elab-sync-recovery.json"
+DISPLACED_PREFIX = ".elab-displaced-"
 
 
-def atomic_write(path: Path, data: str | bytes, mode: int | None = None) -> None:
+def atomic_write(path: Path, data: str | bytes, mode: int | None = None, *, exclusive=False) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_symlink():
@@ -29,9 +34,65 @@ def atomic_write(path: Path, data: str | bytes, mode: int | None = None) -> None
             stream.flush()
             os.fsync(stream.fileno())
         os.chmod(name, mode)
-        os.replace(name, path)
+        if exclusive:
+            os.link(name, path)
+        else:
+            os.replace(name, path)
     finally:
         Path(name).unlink(missing_ok=True)
+
+
+@contextmanager
+def hold_document(path: Path, backup: Path, expected_digest: str | None, *, asset=False):
+    """対象のディレクトリ項目を先に移し、置換の瞬間にあった実ファイルを残す。"""
+    if expected_digest is None:
+        yield None
+        return
+    # 公開に必要な操作を本文を動かす前に、同じマウントで試す。
+    with tempfile.TemporaryDirectory(prefix=".elab-publish-", dir=path.parent) as probe_dir:
+        probe = Path(probe_dir) / "source"
+        probe.touch()
+        os.link(probe, probe.with_name("link"))
+    slot = "displaced"
+    if asset:
+        slot = "displaced-asset-" + hashlib.sha256(str(path).encode()).hexdigest()
+    location = backup / f"{slot}-location.json"
+    archive = backup / slot / path.name
+    archive.parent.mkdir(mode=0o700)
+    held = archive
+    try:
+        path.rename(archive)
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+        held = Path(tempfile.mkdtemp(prefix=DISPLACED_PREFIX, dir=path.parent)) / "body"
+        try:
+            write_json(location, {"path": held.relative_to(backup.parent.parent).as_posix()})
+            path.rename(held)
+        except BaseException:
+            if not held.exists():
+                held.parent.rmdir()
+                location.unlink(missing_ok=True)
+            raise
+    try:
+        if held.is_symlink() or not held.is_file():
+            raise ValueError(f"保存先が通常の本文ファイルではなくなりました: {held}")
+        data = held.read_bytes()
+        if held != archive:
+            atomic_write(archive, data)
+            progress(f"  別マウントの置換直前の実ファイル: {held}（場所の記録: {location}）")
+        if hashlib.sha256(data).hexdigest() != expected_digest:
+            raise ValueError(f"取得中に本文が変更されました。退避した編集版: {archive}")
+        yield held
+    except BaseException:
+        # 作業用のコピーを返す。退避した inode とその後の作業用の編集を分ける。
+        if held.is_file() and not held.is_symlink():
+            try:
+                atomic_write(path, held.read_bytes(), mode=held.stat().st_mode & 0o777, exclusive=True)
+            except OSError:
+                pass
+        progress(f"  置換直前の版: {held}。restore 前に必要な編集を復元対象の外にコピーしてください", warning=True)
+        raise
 
 
 def write_json(path: Path, data) -> None:
@@ -89,16 +150,16 @@ def project_lock(root: Path):
 
 def project_command(fn):
     @wraps(fn)
-    def wrapped(args):
+    def wrapped(args, **kwargs):
         if getattr(args, "dry_run", False):
-            return fn(args)
-        root = (Path(args.dir or f"elab-clone-{args.id[0]}").resolve() if fn.__name__ == "cmd_clone"
+            return fn(args, **kwargs)
+        root = (Path(args.dir or f"elab-clone-{args.id[0]}").resolve() if fn.__name__ == "run_clone"
                 else Path(args.config).resolve().parent)
         with project_lock(root):
-            if fn.__name__ != "cmd_restore" and (root / RECOVERY).exists():
+            if fn.__name__ != "run_restore" and (root / RECOVERY).exists():
                 pending = json.loads((root / RECOVERY).read_text(encoding="utf-8"))
                 raise RuntimeError(f"前回のローカル変更が未完了です。esync restore {pending['backup']} を実行してください")
-            return fn(args)
+            return fn(args, **kwargs)
     return wrapped
 
 
@@ -173,17 +234,118 @@ def local_transaction(root: Path, paths: list[Path], reason: str, *, recovering=
         raise RuntimeError("未完了のローカル変更をrestoreしてから再実行してください")
     backup_id = snapshot(root, paths, reason)
     write_json(root / RECOVERY, {"backup": backup_id})
-    print(f"  バックアップ: {backup_id}")
+    progress(f"  バックアップ: {backup_id}")
     try:
         yield backup_id
     except BaseException:
-        print(f"  未完了の変更があります。esync restore {backup_id} で復旧してください")
+        progress(f"  未完了の変更があります。esync restore {backup_id} で復旧してください")
         raise
     else:
         (root / RECOVERY).unlink()
 
 
-def restore(root: Path, backup_id: str, dry_run: bool = False) -> None:
+def _held_documents(paths):
+    """復元対象に実在する管理用の退避ファイルだけを保護する。"""
+    held = set()
+    for path in paths:
+        if path.is_symlink():
+            continue
+        if path.name == "body" and path.parent.name.lower().startswith(DISPLACED_PREFIX) and path.is_file():
+            held.add(path)
+        elif path.is_dir():
+            if path.name.lower().startswith(DISPLACED_PREFIX) and (path / "body").is_file() and not (path / "body").is_symlink():
+                held.add(path / "body")
+            held.update(p for p in path.rglob("body") if p.parent.name.lower().startswith(DISPLACED_PREFIX)
+                        and p.is_file() and not p.is_symlink())
+    return held
+
+
+@contextmanager
+def _pin_windows_directory(directory):
+    import _winapi
+
+    # FILE_LIST_DIRECTORY participates in read/write/delete sharing checks.
+    # FILE_SHARE_READ excludes renames and reparse-point writes while the handle is open.
+    # OPEN_REPARSE_POINT | BACKUP_SEMANTICS opens the directory entry itself.
+    handle = _winapi.CreateFile(str(directory), 1, 1, 0, 3, 0x00200000 | 0x02000000, 0)
+    try:
+        if directory.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+            raise ValueError(f"再解析ポイントは復元対象外です: {directory}")
+        yield
+    finally:
+        _winapi.CloseHandle(handle)
+
+
+def _clear_for_restore(root, path, held, directories):
+    """退避本文と復元後も使うディレクトリを残して、現在の内容を消去する。"""
+    keep = directories | {parent for item in held for parent in item.parents}
+    if os.name == "posix":
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+        def clear(parent_fd, target):
+            if target in held:
+                return
+            try:
+                mode = os.stat(target.name, dir_fd=parent_fd, follow_symlinks=False).st_mode
+            except FileNotFoundError:
+                return
+            if not stat.S_ISDIR(mode):
+                if stat.S_ISLNK(mode):
+                    raise ValueError(f"シンボリックリンクは復元対象外です: {target}")
+                os.unlink(target.name, dir_fd=parent_fd)
+                return
+            child_fd = os.open(target.name, flags, dir_fd=parent_fd)
+            try:
+                for name in os.listdir(child_fd):
+                    clear(child_fd, target / name)
+            finally:
+                os.close(child_fd)
+            if target not in keep:
+                os.rmdir(target.name, dir_fd=parent_fd)
+
+        with ExitStack() as stack:
+            parent_fd = os.open(root, flags)
+            stack.callback(os.close, parent_fd)
+            for part in path.parent.relative_to(root).parts:
+                try:
+                    parent_fd = os.open(part, flags, dir_fd=parent_fd)
+                except FileNotFoundError:
+                    return
+                stack.callback(os.close, parent_fd)
+            clear(parent_fd, path)
+        return
+
+    def clear_path(target):
+        if target in held:
+            return
+        try:
+            info = target.lstat()
+        except FileNotFoundError:
+            return
+        if info.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+            raise ValueError(f"再解析ポイントは復元対象外です: {target}")
+        if stat.S_ISDIR(info.st_mode):
+            with _pin_windows_directory(target):
+                for child in target.iterdir():
+                    clear_path(child)
+            if target not in keep:
+                target.rmdir()
+        else:
+            target.unlink()
+
+    with ExitStack() as stack:
+        parent = root
+        stack.enter_context(_pin_windows_directory(parent))
+        for part in path.parent.relative_to(root).parts:
+            parent = parent / part
+            try:
+                stack.enter_context(_pin_windows_directory(parent))
+            except FileNotFoundError:
+                return
+        clear_path(path)
+
+
+def restore(root: Path, backup_id: str, dry_run: bool = False) -> list[dict]:
     root = root.resolve()
     pending_path = root / RECOVERY
     if pending_path.exists() and json.loads(pending_path.read_text(encoding="utf-8"))["backup"] != backup_id:
@@ -192,22 +354,39 @@ def restore(root: Path, backup_id: str, dry_run: bool = False) -> None:
     paths = [safe_path(root, entry["path"]) for entry in manifest["roots"]]
     export_path = root / BACKUPS / f"{backup_id}-remote.json"
     for entry in manifest["roots"]:
-        print(f"  復元対象: {entry['path']} ({entry['kind']})")
+        progress(f"  復元対象: {entry['path']} ({entry['kind']})")
     if manifest.get("remote") is not None:
-        print(f"  リモート退避データの取り出し: {export_path}")
+        progress(f"  リモート退避データの取り出し: {export_path}")
+    directories = {root / name for name in manifest["directories"]}
+    held = _held_documents(paths)
+    for name in manifest["files"]:
+        destination = root / name
+        if any(p != destination and p.is_relative_to(destination) for p in held):
+            raise ValueError(f"別マウントの退避場所と復元するファイルが重なっています: {name}")
     if dry_run:
-        return
+        return manifest["roots"]
     # Preserve everything currently present before restoring an earlier state.
-    with local_transaction(root, paths, f"restore:{backup_id}", recovering=True):
+    with local_transaction(root, paths, f"restore:{backup_id}", recovering=True) as saved:
+        progress(f"  復元直前のファイル一覧: {root / BACKUPS / saved / 'manifest.json'}")
+        progress("  個別に取り出すには、files にある元のパスの sha256 と同名のファイルを、"
+                 "この一覧と同じディレクトリから別の場所にコピーしてください。")
         for path in paths:
-            if path.is_dir():
-                shutil.rmtree(path)
-            else:
-                path.unlink(missing_ok=True)
+            _clear_for_restore(root, path, held, directories)
         for name in manifest["directories"]:
-            safe_path(root, name).mkdir(parents=True, exist_ok=True)
+            directory = safe_path(root, name)
+            mode = 0o700 if directory.name.lower().startswith(DISPLACED_PREFIX) else 0o777
+            directory.mkdir(mode=mode, parents=True, exist_ok=True)
+            if mode == 0o700 and os.name == "posix":
+                fd = os.open(directory, os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    os.fchmod(fd, mode)
+                finally:
+                    os.close(fd)
         base = root / BACKUPS / backup_id
         for name, item in manifest["files"].items():
-            atomic_write(safe_path(root, name), (base / item["sha256"]).read_bytes(), item["mode"])
+            destination = safe_path(root, name)
+            if destination not in held:
+                atomic_write(destination, (base / item["sha256"]).read_bytes(), item["mode"])
         if manifest.get("remote") is not None:
             write_json(export_path, manifest["remote"])
+    return manifest["roots"]

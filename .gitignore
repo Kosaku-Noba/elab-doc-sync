@@ -44,5 +44,6 @@ AI_discussions.md
 
 # 同期のバックアップ・復旧記録
 .elab-sync-backups/
+.elab-displaced-*/
 .elab-sync-operations/
 .elab-sync-recovery.json

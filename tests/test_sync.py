@@ -193,7 +193,7 @@ def test_sync_tags_best_effort(capsys):
 
 # S-45
 def test_download_images_replaces_url(tmp_path):
-    client = MagicMock()
+    client = MagicMock(base_url="https://elab.example.com")
     client.list_uploads.return_value = [
         {"id": 10, "long_name": "abc123.png", "real_name": "photo.png", "storage": "1"},
     ]
@@ -222,7 +222,7 @@ def test_download_images_no_duplicate_download(tmp_path):
     img_dir = tmp_path / "images"
     img_dir.mkdir()
     (img_dir / "items_42_photo.png").write_bytes(b"\x89PNG")
-    client = MagicMock()
+    client = MagicMock(base_url="https://elab.example.com")
     client.list_uploads.return_value = [
         {"id": 10, "long_name": "abc123.png", "real_name": "photo.png", "storage": "1"},
     ]
@@ -233,7 +233,7 @@ def test_download_images_no_duplicate_download(tmp_path):
 
 # S-48: 異なるエンティティの同名画像が衝突しない
 def test_download_images_entity_id_namespace(tmp_path):
-    client = MagicMock()
+    client = MagicMock(base_url="https://elab.example.com")
     client.list_uploads.return_value = [
         {"id": 10, "long_name": "abc.png", "real_name": "photo.png", "storage": "1"},
     ]
@@ -256,7 +256,7 @@ def test_download_images_entity_id_namespace(tmp_path):
 
 # S-49
 def test_normalize_remote_image_urls():
-    client = MagicMock()
+    client = MagicMock(base_url="https://elab.example.com")
     client.list_uploads.return_value = [
         {"id": 10, "long_name": "abc123.png", "real_name": "photo.png", "storage": "1"},
     ]
@@ -482,7 +482,7 @@ def test_rewrite_images_upload_strips_prefix(tmp_path):
 
 # S-62: _download_images handles /api/v2/.../uploads/{id} format (HTML editor images)
 def test_download_images_api_v2_url(tmp_path):
-    client = MagicMock()
+    client = MagicMock(base_url="https://elab.example.com")
     client.list_uploads.return_value = [
         {"id": 15579, "long_name": "9a/9ac3cd.png", "real_name": "photo.png", "storage": 2},
     ]
@@ -498,7 +498,7 @@ def test_download_images_api_v2_url(tmp_path):
 
 # S-63: _normalize_remote_image_urls handles /api/v2/.../uploads/{id} format
 def test_normalize_api_v2_url():
-    client = MagicMock()
+    client = MagicMock(base_url="https://elab.example.com")
     client.list_uploads.return_value = [
         {"id": 15579, "long_name": "9a/9ac3cd.png", "real_name": "photo.png", "storage": 2},
     ]
@@ -509,7 +509,7 @@ def test_normalize_api_v2_url():
 
 # S-64: upload_id prefix mismatch prevention (15 vs 15579)
 def test_download_images_no_prefix_mismatch(tmp_path):
-    client = MagicMock()
+    client = MagicMock(base_url="https://elab.example.com")
     client.list_uploads.return_value = [
         {"id": 15, "long_name": "aa/aa.png", "real_name": "wrong.png", "storage": 1},
         {"id": 15579, "long_name": "bb/bb.png", "real_name": "correct.png", "storage": 2},
@@ -523,7 +523,7 @@ def test_download_images_no_prefix_mismatch(tmp_path):
 
 # S-65: _normalize_remote_image_urls no prefix mismatch (15 vs 15579)
 def test_normalize_no_prefix_mismatch():
-    client = MagicMock()
+    client = MagicMock(base_url="https://elab.example.com")
     client.list_uploads.return_value = [
         {"id": 15, "long_name": "aa/aa.png", "real_name": "wrong.png", "storage": 1},
         {"id": 15579, "long_name": "bb/bb.png", "real_name": "correct.png", "storage": 2},
@@ -536,7 +536,7 @@ def test_normalize_no_prefix_mismatch():
 
 # S-66: trailing slash in upload URL is handled
 def test_download_images_trailing_slash(tmp_path):
-    client = MagicMock()
+    client = MagicMock(base_url="https://elab.example.com")
     client.list_uploads.return_value = [
         {"id": 100, "long_name": "xx/xx.png", "real_name": "img.png", "storage": 1},
     ]
@@ -574,23 +574,17 @@ def test_upload_id_re_boundaries():
     assert UPLOAD_ID_RE.search("/uploads/abc") is None
 
 
-# S-69: external URL with /uploads/ — id が一致しても download は自サーバー API 経由
+# S-69: 他サーバーの添付は、同じ数値 ID が存在してもローカル化しない。
 def test_download_images_external_url_with_matching_id(tmp_path):
-    """外部 URL の upload_id が偶然一致しても、download_upload は自サーバーの
-    API に対して実行される（URL のホストは無関係）。これは仕様として許容する。
-    理由: eLabFTW の body HTML 内の画像 URL は相対パスか自サーバー URL のみ。"""
-    client = MagicMock()
+    client = MagicMock(base_url="https://elab.example.com")
     client.list_uploads.return_value = [
         {"id": 100, "long_name": "xx/xx.png", "real_name": "img.png", "storage": 1},
     ]
     client.download_upload.return_value = b"\x89PNG"
     body = "![](https://evil.example/uploads/100)"
     result = _download_images(body, "items", 1, client, tmp_path)
-    # id=100 が一致するので download_upload が呼ばれる（自サーバー API 経由）
-    assert "img.png" in result
-    client.download_upload.assert_called_once_with(
-        entity_type="items", entity_id=1, upload_id=100,
-    )
+    assert result == body
+    client.download_upload.assert_not_called()
 
 
 # S-70: external URL with /uploads/ — id が不一致なら無視
@@ -698,7 +692,7 @@ def test_md_to_html_underscore_in_math():
 # ── Attachment tests ─────────────────────────────────────
 
 from elab_doc_sync.sync import (
-    _is_image, _count_local_attachments, _sync_attachments, _download_attachments,
+    _is_image, _download_attachments,
 )
 
 
@@ -710,67 +704,6 @@ def test_is_image():
     assert _is_image("report.pdf") is False
     assert _is_image("data.csv") is False
     assert _is_image("archive.zip") is False
-
-
-# S-92: _count_local_attachments が非画像ファイルのみカウントする
-def test_count_local_attachments(tmp_path):
-    att_dir = tmp_path / "attachments"
-    att_dir.mkdir()
-    (att_dir / "report.pdf").write_bytes(b"pdf")
-    (att_dir / "data.csv").write_bytes(b"csv")
-    (att_dir / "photo.png").write_bytes(b"png")
-    assert _count_local_attachments(att_dir) == 2
-    assert _count_local_attachments(None) == 0
-    assert _count_local_attachments(tmp_path / "nonexistent") == 0
-
-
-# S-93: _sync_attachments がサイズ一致で再利用し、不一致で再アップロードする
-def test_sync_attachments_reuse_and_upload(tmp_path):
-    att_dir = tmp_path / "attachments"
-    att_dir.mkdir()
-    (att_dir / "report.pdf").write_bytes(b"x" * 100)
-    (att_dir / "new.csv").write_bytes(b"y" * 50)
-    (att_dir / "photo.png").write_bytes(b"img")  # 画像は除外
-
-    client = MagicMock()
-    client.list_uploads.return_value = [
-        {"real_name": "report.pdf", "filesize": 100, "id": 1},  # サイズ一致 → 再利用
-    ]
-    client.upload_file.return_value = {"url": "http://example.com/new.csv"}
-
-    _sync_attachments(att_dir, "items", 42, client)
-
-    # new.csv のみアップロードされる
-    client.upload_file.assert_called_once()
-    assert "new.csv" in client.upload_file.call_args[0][2]
-    # photo.png はアップロードされない
-    for call in client.upload_file.call_args_list:
-        assert "photo.png" not in call[0][2]
-
-
-# S-94: _sync_attachments が attachments_dir=None のとき何もしない
-def test_sync_attachments_none_dir():
-    client = MagicMock()
-    _sync_attachments(None, "items", 42, client)
-    client.list_uploads.assert_not_called()
-
-
-# S-95b: _sync_attachments force=True でサイズ一致でも再アップロードする
-def test_sync_attachments_force_reuploads(tmp_path):
-    att_dir = tmp_path / "attachments"
-    att_dir.mkdir()
-    (att_dir / "report.pdf").write_bytes(b"x" * 100)
-
-    client = MagicMock()
-    client.list_uploads.return_value = [
-        {"real_name": "report.pdf", "filesize": 100, "id": 1},
-    ]
-    client.upload_file.return_value = {"url": "http://example.com/report.pdf"}
-
-    _sync_attachments(att_dir, "items", 42, client, force=True)
-
-    client.upload_file.assert_called_once()
-    assert "report.pdf" in client.upload_file.call_args[0][2]
 
 
 # S-95: _download_attachments がパストラバーサルを防止する
@@ -1087,27 +1020,6 @@ def test_compute_file_hash(tmp_path):
     h2 = _compute_file_hash(f)
     assert h1 == h2
     assert len(h1) == 64  # SHA-256 hex
-
-
-# S-48: _sync_attachments with hash mismatch triggers re-upload
-def test_sync_attachments_hash_mismatch(tmp_path):
-    from elab_doc_sync.sync import _sync_attachments, _compute_file_hash
-    att_dir = tmp_path / "att"
-    att_dir.mkdir()
-    data = b"csv,data\n1,2\n"
-    (att_dir / "data.csv").write_bytes(data)
-
-    client = MagicMock()
-    client.list_uploads.return_value = [{
-        "real_name": "data.csv",
-        "filesize": len(data),
-        "id": 10,
-        "hash": "old_hash_different",
-    }]
-    client.upload_file.return_value = {"url": "https://elab/dl/data.csv", "id": 11}
-
-    _sync_attachments(att_dir, "items", 1, client, force=False)
-    client.upload_file.assert_called_once()
 
 
 # ── リンク変換テスト ─────────────────────────────────────────

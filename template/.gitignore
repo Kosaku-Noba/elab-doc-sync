@@ -1,5 +1,6 @@
 .elab-sync-ids/
 .elab-sync.yaml
 .elab-sync-backups/
+.elab-displaced-*/
 .elab-sync-operations/
 .elab-sync-recovery.json

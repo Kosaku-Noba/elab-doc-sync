@@ -97,15 +97,11 @@ push 時の YAML `tags` 設定は **追記のみ** で動作する。リモー�
 
 ### 5.1 設計方針
 
-`attachments_dir` に置いたファイルを push 時に eLabFTW にアップロードする。画像（Markdown 中の `![](...)` 参照）とは別枠。
-
-**理由:**
-- PDF・CSV・Excel 等を Markdown 本文とは独立して管理したいケースへの対応
-- `attachments_pattern` で不要ファイルを除外可能
+push は各文書の Markdown にインラインリンクで指定したファイルを添付する。pull は非画像添付を `attachments_dir` に保存する。
 
 ### 5.2 prune-attachments
 
-`--prune-attachments` でローカルに存在しないリモート添付を削除する。デフォルトは削除しない（安全側）。
+`--prune-attachments` で設定した添付ディレクトリに同名ファイルがなく、本文が参照せず、対象パターンに一致する非画像添付を削除する。削除予定 ID を復旧記録に保存し、各削除リクエストの直前に保存済み本文と添付一覧を読み直す。途中で別の利用者が本文や添付を変更した場合は停止する。参照 URL は接続先のスキーム・正規化したホスト名・実効ポートで照合し、対象サーバーの URL と相対パスを復号して添付 ID を判定する。たとえば HTTPS 接続先の `example.test` では `https://EXAMPLE.test:443/uploads/100` と `https://%65xample.test/uploads/100` が同じ ID 100 を参照する。`http://example.test:443/uploads/100` はスキームが異なる。本文用の画像・動画・ファイルを準備する前後でも既存添付の情報を照合し、別の編集で名前や内容が変わったら本文の更新前に停止する。リモートの読み取りと削除は別々の API リクエストのため、最後の照合から削除までを単一の操作として実行する保証はない。デフォルトは削除しない（安全側）。
 
 ## 6. FR-25 body_format
 
@@ -215,3 +211,38 @@ eLabFTW は Markdown 本文の保存時に `>` を `&gt;`、`&` を `&amp;` に�
 
 `relate` のリンク元（`--from`）・リンク先は、ID の代わりに同期済みの文書のパスで指定できる。push 前の文書、種別の合わない文書、別サーバーの文書、同期後に接続先や種別を変えた文書（保存済みの ID が別の記事を指すおそれがある）は、何も送信せずにエラーにする。`--from` は後続の複数のパスを受け取るため、シェルが展開した glob も使える（v1.1.2）。
 
+
+## 13. MCP 対応に向けたコマンド結果の分離（v1.3.0 より後）
+
+### 13.1 CommandResult
+
+コマンドの処理を `run_*`（`CommandResult(exit_code, data, messages)` を返す）と `cmd_*`（CLI 用の表示）に分ける。MCP サーバーは `data` を JSON で返し、CLI は従来どおりの表示を保つ。コマンドごとに専用の型を作らず 1 つの型に統一し、`data` の中身はコマンドごとに API リファレンスに記載する。
+
+**理由:**
+- CLI の表示文字列を解析せずに AI エージェントが結果を扱える
+- 表示とデータを同じ処理で作るため、両者の食い違いが起きにくい
+
+### 13.2 逐次表示
+
+`CommandResult.say` / `warn` は `echo` に渡した関数（CLI では `cli_echo`。`warn` は `stderr=True` で呼ばれ、標準エラー出力に出す）でその場で表示する。結果をまとめて最後に表示すると、`status`・`verify` など件数の多いコマンドで表示が遅れ、途中で例外になったときにそれまでの表示が失われるため。
+
+### 13.3 警告・エラーと対話
+
+`CommandResult.warn` の行は `messages` と分けて `warnings` に入れ、CLI では標準エラー出力に出す。引数の誤りで `sys.exit(1)` していた箇所は、`fail` で `warnings` に理由を入れて終了コード 1 を返す（CLI の終了コードは変わらない）。
+
+`entity-status set` の複数件確認は `input()` を直接呼ばず、呼び出し元が `confirm` を渡す。`confirm` がない（MCP など対話できない）ときは推測で変更せずエラーにする。
+
+### 13.4 接続先の識別と途中失敗
+
+書き換え系の各件には接続先のベース URL（`server`。API キーは含めない）を入れる。ターゲットごとに接続プロファイルが違うと、別サーバーに同じ種別・ID の記事があり得るため。
+
+`run_*` は `returns_partial_result` で包み、途中で例外になったら、それまでの `CommandResult` を例外の `partial_result` に付ける。書き換え系は各件を送信前に記録し、完了したら `result` を入れる。
+
+- `result` のある件: 変更済み（`added`・`removed`・`changed`・`set`・`updated`）、dry-run の予定（`would_*`）、変更不要（`exists`・`already`・`not_found`・`self`）のいずれか
+- `result` のない件: 完了未確認。送信前に失敗したか、eLabFTW 側で変更された後に応答を受け取れなかったかを区別できないため、再試行の前に `tag list`・`relate list`・`entity-status show` などで実際の状態を確認する
+- まだ処理していない件は含まれない（失敗した時点までに記録した件だけが残る）
+- `category set` と `new` は 1 件だけを扱う。例外の `partial_result` で `category set` の `result` がなければ eLabFTW の `category show` で、`new` の `created` が false ならローカルの `path` のファイルで実際の状態を確認する（正常に返った結果の `created: false` は dry-run か作成の拒否で、完了未確認ではない）
+
+### 13.5 段階的な移行
+
+参照系（`status`・`log`・`list`・`search`・`whoami`・`verify`・`backup list`・`profile list`）から移行し、eLabFTW を書き換えるコマンド、ローカルを変更するコマンドの順に移す。読み書き両方を持つ `tag`・`relate`・`metadata`・`category`・`entity-status`・`new` は書き換え系と一緒に移す。

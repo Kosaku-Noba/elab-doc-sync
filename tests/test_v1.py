@@ -12,7 +12,7 @@ import pytest
 import requests
 import yaml
 
-from elab_doc_sync.cli import cmd_pull, cmd_link, cmd_mv, cmd_status, main
+from elab_doc_sync.cli import cmd_pull, cmd_link, cmd_mv, cmd_status, main, run_push
 from elab_doc_sync.config import TargetConfig, load_config
 from elab_doc_sync.safety import snapshot, restore, atomic_write, project_lock, local_transaction, RECOVERY, BACKUPS
 from elab_doc_sync.sync import EachDocsSyncer, ConflictError
@@ -310,7 +310,8 @@ def test_merge_rejected_before_network(project):
     assert client.mock_calls == []
 
 
-def test_image_attachment_and_document_link_roundtrip(project):
+@pytest.mark.parametrize("csv_name", ["report.csv", "report (1).csv"])
+def test_image_attachment_and_document_link_roundtrip(project, csv_name):
     import hashlib
     root, client, remote, syncer, args = project
     uploads = {}
@@ -323,19 +324,20 @@ def test_image_attachment_and_document_link_roundtrip(project):
         record = {'id': uid, 'real_name': source.name, 'long_name': f'blob{uid}',
                   'storage': '1', 'filesize': len(content), 'hash': hashlib.sha256(content).hexdigest()}
         uploads.setdefault(eid, []).append(record)
-        return {'id': uid, 'url': f'https://example.test/app/download.php?f=blob{uid}&name={source.name}&storage=1'}
+        from elab_doc_sync.client import upload_url
+        return {'id': uid, 'url': upload_url(client.base_url, record)}
     client.upload_file.side_effect = upload
     client.list_uploads.side_effect = lambda entity, eid: copy.deepcopy(uploads.get(eid, []))
     client.download_upload.side_effect = lambda **kw: data_by_upload[kw['upload_id']]
     (root / 'docs/picture.png').write_bytes(b'old image')
     (root / 'attachments').mkdir()
-    (root / 'attachments/report.csv').write_bytes(b'old csv')
+    (root / 'attachments' / csv_name).write_bytes(b'old csv')
     syncer.target.attachments_dir = 'attachments'
     config_path = root / '.elab-sync.yaml'
     cfg = yaml.safe_load(config_path.read_text(encoding='utf-8'))
     cfg['targets'][0]['attachments_dir'] = 'attachments'
     config_path.write_text(yaml.safe_dump(cfg))
-    (root / 'docs/a.md').write_text('![image](picture.png)\n\n[other](./b.md#section)')
+    (root / 'docs/a.md').write_text(f'![image](picture.png)\n\n[other](./b.md#section)\n\n[CSV](<../attachments/{csv_name}>)')
     (root / 'docs/b.md').write_text('# section')
     assert syncer.sync() == 2
     assert 'id=2#section' in remote[1]['body']
@@ -347,22 +349,252 @@ def test_image_attachment_and_document_link_roundtrip(project):
     with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
         assert cmd_pull(args(id=[1], entity='items')) == 0
     assert (root / 'docs/images/items_1_picture.png').read_bytes() == b'new image'
-    assert (root / 'attachments/report.csv').read_bytes() == b'old csv'
+    assert (root / 'attachments' / csv_name).read_bytes() == b'old csv'
     assert '[other](./b.md#section)' in (root / 'docs/a.md').read_text(encoding='utf-8')
     assert syncer.sync() == 0
+    assert f"../attachments/{csv_name}" in (root / "docs/a.md").read_text()
+    (root / 'attachments' / csv_name).write_bytes(b"edited csv")
+    assert syncer.inspect("a.md", 1)["state"] == "送信待ち"
+    client.delete_upload.side_effect = lambda entity, eid, uid: uploads[eid].remove(next(u for u in uploads[eid] if u["id"] == uid))
+    assert syncer.sync() == 1
+    assert data_by_upload[uploads[1][-1]["id"]] == b"edited csv"
+
+
+def test_push_selected_target_with_no_links_leaves_shared_attachments_alone(project, capsys, monkeypatch):
+    root, client, remote, syncer, args = project
+    monkeypatch.chdir(root)
+    config = root / ".elab-sync.yaml"
+    cfg = yaml.safe_load(config.read_text())
+    first = cfg["targets"][0]
+    first["attachments_dir"] = "attachments"
+    cfg["targets"].append({**first, "title": "B", "docs_dir": "other", "id_file": ".other/b.id"})
+    config.write_text(yaml.safe_dump(cfg))
+    (root / "attachments").mkdir()
+    (root / "attachments/results.csv").write_bytes(b"data")
+    (root / "attachments/private.7z").write_bytes(b"archive")
+    (root / "docs/a.md").write_text("[data](../attachments/results.csv)")
+    (root / "other").mkdir()
+    (root / "other/b.md").write_text("No attachments.")
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
+        options = dict(files=["other/b.md"], force=True, prune_attachments=False)
+        assert run_push(args(**options, dry_run=True)).exit_code == 0
+        assert "添付: 2件" not in capsys.readouterr().out
+        assert run_push(args(**options)).exit_code == 0
+    assert list(remote) == [1] and remote[1]["title"] == "b"
+    client.upload_file.assert_not_called()
+    client.delete_upload.assert_not_called()
+
+
+@pytest.mark.parametrize("content", [b"result", b""])
+def test_force_only_uploads_the_linked_attachment(project, content):
+    root, client, remote, syncer, _ = project
+    uploads = _stateful_uploads(client)
+    syncer.target.attachments_dir = "assets"
+    (root / "assets").mkdir()
+    csv = root / "assets/result.csv"
+    csv.write_bytes(content)
+    archive = root / "assets/private.7z"
+    archive.write_bytes(b"private")
+    (root / "docs/a.md").write_text("[data](../assets/result.csv)")
+    (root / "docs/b.md").write_text("Example: `[archive](../assets/private.7z)`")
+    assert syncer.sync(force=True) == 2
+    assert [(eid, u["real_name"]) for eid, entries in uploads.items() for u in entries] == [(1, "result.csv")]
+    assert syncer.sync(force=True) == 2
+    assert client.upload_file.call_count == 1
+    client.delete_upload.assert_not_called()
+    archive.write_bytes(b"unrelated edit")
+    assert syncer.inspect("a.md", 1)["state"] == syncer.inspect("b.md", 2)["state"] == "最新"
+    csv.write_bytes(b"edited")
+    assert [(r["file_links"], r["changed"]) for r in syncer.dry_run()] == [(1, True), (0, False)]
+
+
+def test_pull_preserves_an_unlinked_attachment_edited_since_last_sync(project):
+    from hashlib import sha256
+    root, client, remote, syncer, args = project
+    cfg = root / ".elab-sync.yaml"
+    data = yaml.safe_load(cfg.read_text())
+    data["targets"][0]["attachments_dir"] = "assets"
+    cfg.write_text(yaml.safe_dump(data))
+    syncer.target.attachments_dir = "assets"
+    uploads = _stateful_uploads(client)
+    (root / "assets").mkdir()
+    path = root / "assets/results.csv"
+    path.write_bytes(b"remote")
+    (root / "docs/a.md").write_text("body")
+    assert syncer.sync() == 1
+    uploads[1] = [{"id": 100, "real_name": path.name, "filesize": 6, "hash": sha256(b"remote").hexdigest()}]
+    syncer._save_baseline("a.md", "body", remote[1], uploads[1])
+    path.write_bytes(b"edited")
+    remote[1]["body"] = "another edit"
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
+        assert cmd_pull(args()) == 1
+    assert path.read_bytes() == b"edited"
+    client.download_upload.assert_not_called()
+
+
+@pytest.mark.parametrize("local_content,success", [(b"old", True), (b"locally changed", False)])
+def test_pull_merge_handles_each_linked_file_separately(project, local_content, success):
+    from hashlib import sha256
+    root, client, remote, syncer, args = project
+    cfg = root / ".elab-sync.yaml"
+    config = yaml.safe_load(cfg.read_text())
+    config["targets"][0]["attachments_dir"] = "assets"
+    cfg.write_text(yaml.safe_dump(config))
+    syncer.target.attachments_dir = "assets"
+    uploads = _stateful_uploads(client)
+    (root / "assets").mkdir()
+    pdf = root / "assets/protocol.pdf"
+    pdf.write_bytes(b"old")
+    note = root / "docs/a.md"
+    note.write_text("[file](../assets/protocol.pdf)")
+    assert syncer.sync() == 1
+    note.write_text(note.read_text() + "\nlocal note")
+    pdf.write_bytes(local_content)
+    uploads[1][0].update(hash=sha256(b"new").hexdigest(), long_name="newblob")
+    remote[1]["body"] = remote[1]["body"].replace("blob100", "newblob")
+    client.download_upload.return_value = b"new"
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
+        assert cmd_pull(args()) == (0 if success else 1)
+    assert pdf.read_bytes() == (b"new" if success else local_content)
+    if success:
+        assert syncer.sync() == 1 and client.upload_file.call_count == 1
+
+
+@pytest.mark.parametrize("image", [False, True])
+def test_pull_retains_edit_made_while_downloading_attachment(project, image):
+    root, client, remote, syncer, args = project
+    cfg = root / ".elab-sync.yaml"
+    config = yaml.safe_load(cfg.read_text())
+    config["targets"][0]["attachments_dir"] = "assets"
+    cfg.write_text(yaml.safe_dump(config))
+    syncer.target.attachments_dir = "assets"
+    uploads = _stateful_uploads(client)
+    (root / "assets").mkdir()
+    path = root / ("docs/data.png" if image else "assets/data.csv")
+    path.write_bytes(b"initial")
+    (root / "docs/a.md").write_text("![data](data.png)" if image else "[data](../assets/data.csv)")
+    assert syncer.sync() == 1
+    if image:
+        path = root / "docs/images/items_1_data.png"
+        path.parent.mkdir()
+        path.write_bytes(b"initial")
+    uploads[1][0].update(hash="a" * 64, filesize=9)
+    def download(**kwargs):
+        path.write_bytes(b"just edited")
+        return b"new bytes"
+    client.download_upload.side_effect = download
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
+        assert cmd_pull(args()) == 1
+    assert path.read_bytes() == b"just edited"
+    assert (root / RECOVERY).exists()
+
+
+@pytest.mark.parametrize("name,syntax", [("protocol.pdf", "[file]"), ("plot.png", "![plot]")])
+def test_merge_stops_if_the_document_can_resend_an_old_asset(project, name, syntax):
+    from hashlib import sha256
+    root, client, remote, syncer, args = project
+    cfg = root / ".elab-sync.yaml"
+    config = yaml.safe_load(cfg.read_text())
+    config["targets"][0]["attachments_dir"] = "assets"
+    cfg.write_text(yaml.safe_dump(config))
+    syncer.target.attachments_dir = "assets"
+    uploads = _stateful_uploads(client)
+    (root / "docs" / name).write_bytes(b"old")
+    note = root / "docs/a.md"
+    note.write_text(f"{syntax}({name})")
+    assert syncer.sync() == 1
+    note.write_text(note.read_text() + "\nlocal edit")
+    uploads[1][0].update(hash=sha256(b"new").hexdigest(), long_name="newblob")
+    remote[1]["body"] = remote[1]["body"].replace("blob100", "newblob")
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
+        assert cmd_pull(args()) == 1
+    assert syncer.inspect("a.md", 1)["state"] == "競合"
+    assert (root / "docs" / name).read_bytes() == b"old"
+    assert not (root / RECOVERY).exists()
+
+
+def test_pull_uses_downloaded_digests_after_another_file_is_edited(project):
+    from hashlib import sha256
+    root, client, remote, syncer, args = project
+    cfg = root / ".elab-sync.yaml"
+    config = yaml.safe_load(cfg.read_text())
+    config["targets"][0]["attachments_dir"] = "assets"
+    cfg.write_text(yaml.safe_dump(config))
+    syncer.target.attachments_dir = "assets"
+    uploads = _stateful_uploads(client)
+    (root / "assets").mkdir()
+    a, b = (root / "assets" / name for name in ("a.csv", "b.csv"))
+    a.write_bytes(b"a")
+    b.write_bytes(b"b")
+    (root / "docs/note.md").write_text("[a](../assets/a.csv) [b](../assets/b.csv)")
+    assert syncer.sync() == 1
+    b_record = next(u for u in uploads[1] if u["real_name"] == b.name)
+    b_record.update(hash=sha256(b"new").hexdigest(), filesize=3)
+    def download(**kwargs):
+        a.write_bytes(b"local edit")
+        return b"new"
+    client.download_upload.side_effect = download
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
+        assert cmd_pull(args()) == 0
+    assert a.read_bytes() == b"local edit" and b.read_bytes() == b"new"
+    assert syncer.inspect("note.md", 1)["state"] == "送信待ち"
+
+
+def test_merge_refuses_to_guess_previous_image_id_from_duplicate_names(project):
+    from hashlib import sha256
+    root, client, remote, syncer, args = project
+    uploads = _stateful_uploads(client)
+    (root / "docs/image.png").write_bytes(b"first")
+    note = root / "docs/a.md"
+    note.write_text("![figure](image.png)")
+    assert syncer.sync() == 1
+    second = dict(uploads[1][0], id=101, long_name="blob101", hash=sha256(b"second").hexdigest(), filesize=6)
+    uploads[1].append(second)
+    client.download_upload.return_value = b"first"
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
+        assert cmd_pull(args(force=True)) == 0
+        image = root / "docs/images/items_1_image.png"
+        image.write_bytes(b"local edit")
+        remote[1]["body"] = remote[1]["body"].replace("blob100", "blob101")
+        assert cmd_pull(args()) == 1
+    assert image.read_bytes() == b"local edit" and not (root / RECOVERY).exists()
+    client.delete_upload.assert_not_called()
+
+
+def test_push_does_not_delete_an_unreferenced_same_name_upload(project):
+    from hashlib import sha256
+    root, client, remote, syncer, _ = project
+    uploads = _stateful_uploads(client)
+    asset = root / "docs/data.csv"
+    asset.write_bytes(b"old")
+    (root / "docs/a.md").write_text("[data](data.csv)")
+    assert syncer.sync() == 1
+    other = dict(uploads[1][0], id=777, long_name="independent", hash=sha256(b"unrelated").hexdigest())
+    uploads[1].append(other)
+    asset.write_bytes(b"new")
+    assert syncer.sync(force=True) == 1
+    assert other in uploads[1]
+    assert len(uploads[1]) == 2
+    client.delete_upload.assert_called_once_with("items", 1, 100)
 
 
 def test_local_asset_edit_is_not_overwritten_by_remote_change(project):
     root, client, remote, syncer, args = project
-    (root / 'docs/picture.png').write_bytes(b'original image')
-    (root / 'docs/a.md').write_text('![image](picture.png)')
-    client.upload_file.return_value = {'url': 'https://example.test/app/download.php?f=blob'}
+    images = root / "docs/images"
+    images.mkdir()
+    image = images / "items_1_picture.png"
+    image.write_bytes(b"original image")
+    doc = root / "docs/a.md"
+    doc.write_text("base\n\n![image](images/items_1_picture.png)")
+    _stateful_uploads(client)
     assert syncer.sync() == 1
-    (root / 'docs/picture.png').write_bytes(b'local image')
-    remote[1]['body'] += '\nremote edit'
-    assert syncer.inspect('a.md', 1)['state'] == '競合'
-    with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
+    image.write_bytes(b"local image")
+    doc.write_text(doc.read_text().replace("base", "local"))
+    remote[1]["body"] = remote[1]["body"].replace("base", "remote")
+    assert syncer.inspect("a.md", 1)["state"] == "競合"
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
         assert cmd_pull(args()) == 1
+    assert image.read_bytes() == b"local image"
     client.download_upload.assert_not_called()
 
 
@@ -500,7 +732,7 @@ def test_nested_document_asset_change_is_detected(project):
     (root / 'docs/sub').mkdir()
     (root / 'docs/sub/a.md').write_text('![picture](photo.png)')
     (root / 'docs/sub/photo.png').write_bytes(b'original')
-    client.upload_file.return_value = {'url': 'https://example.test/app/download.php?f=image'}
+    _stateful_uploads(client)
     assert syncer.sync() == 1
     (root / 'docs/sub/photo.png').write_bytes(b'edited')
     assert syncer.inspect('a.md', 1)['state'] == '送信待ち'
@@ -897,8 +1129,10 @@ def test_push_reports_angle_brackets_dropped_by_elabftw(project, capsys):
     client.update_item.side_effect = update
     (root / 'docs/a.md').write_text('| ids | array<string> |\n\nA --> B\n\npip install /wheels/<pkg>.whl',
                                     encoding='utf-8')
-    assert syncer.sync() == 1
-    assert syncer.failures == 1
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
+        result = run_push(args(prune_attachments=False), echo=print)
+    assert result.data["updated"] == result.data["failed"] == 1
+    assert any("本文の <…> を削除" in line for line in result.warnings)
     out = capsys.readouterr().out
     assert 'eLabFTW が本文の <…> を削除しました: <string>, <pkg>' in out
     assert '-->' not in out.split('削除しました')[1]
@@ -1020,7 +1254,7 @@ def _stateful_uploads(client):
         uid = sum(len(v) for v in uploads.values()) + 100
         uploads.setdefault(eid, []).append({'id': uid, 'real_name': source.name, 'long_name': f'blob{uid}', 'storage': '1',
                                             'filesize': len(content), 'hash': hashlib.sha256(content).hexdigest()})
-        return {'id': uid, 'url': f'https://example.test/app/download.php?f=blob{uid}&name={source.name}&storage=1'}
+        return {'id': uid, 'created': True, 'url': f'https://example.test/app/download.php?f=blob{uid}&name={source.name}&storage=1'}
     def delete(entity, eid, uid):
         uploads[eid] = [u for u in uploads[eid] if u['id'] != uid]
     client.upload_file.side_effect = upload
@@ -1739,3 +1973,805 @@ def test_links_only_change_does_not_reapply_tags_or_category(project, fail_first
     client.add_tag.assert_not_called()
     client.patch_entity.assert_not_called()
     assert remote[1]['category'] == 9 and remote[1]['tags'] == []
+
+
+def test_run_push_hides_key_in_document_warning(project):
+    root, client, remote, syncer, args = project
+    client.api_key = "private-test-key"
+    client.update_item.side_effect = ValueError("header contains private-test-key")
+    (root / "docs/a.md").write_text("body", encoding="utf-8")
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
+        result = run_push(args(prune_attachments=False))
+    assert result.exit_code == 1 and any("***" in line for line in result.warnings)
+    assert "private-test-key" not in json.dumps(result.to_dict())
+
+
+@pytest.mark.parametrize("keep_previous", [True, False])
+def test_prune_preserves_body_uploads_on_create_and_update(project, keep_previous):
+    root, client, remote, syncer, args = project
+    uploads = _stateful_uploads(client)
+    client.download_upload.return_value = b"pdf"
+    (root / "assets").mkdir()
+    cfg = root / ".elab-sync.yaml"
+    data = yaml.safe_load(cfg.read_text())
+    data["targets"][0]["attachments_dir"] = "assets"
+    cfg.write_text(yaml.safe_dump(data))
+    (root / "docs/a.md").write_text("[file](protocol.pdf)")
+    (root / "docs/protocol.pdf").write_bytes(b"pdf")
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
+        assert run_push(args(prune_attachments=True)).exit_code == 0
+        [pdf] = uploads[1]
+        assert pdf["long_name"] in remote[1]["body"]
+        uploads[1].append({"id": 200, "real_name": "remove.csv", "long_name": "old-data"})
+        (root / "docs/items_1_protocol.pdf").write_bytes(b"new PDF")
+        body = "![file](items_1_protocol.pdf) [external](https://other.test/remove.csv) [csv](https://other.test/some%20path/uploads/200)"
+        if keep_previous:
+            body += " [previous](https://%45XAMPLE.test:443/uploads/%31%30%30)"
+        (root / "docs/a.md").write_text(body)
+        preview = run_push(args(prune_attachments=True, dry_run=True, force=True))
+        doc = preview.data["targets"][0]["documents"][0]
+        assert doc["prune_candidates"] == [{"id": 200, "name": "remove.csv"}]
+        assert run_push(args(prune_attachments=True, force=True)).exit_code == 0
+    assert {u["real_name"] for u in uploads[1]} == {"protocol.pdf"}
+    assert (pdf in uploads[1]) == keep_previous
+    assert uploads[1][-1]["long_name"] in remote[1]["body"]
+
+
+@pytest.mark.parametrize("invalid_link", [True, False])
+def test_prune_preview_keeps_results_across_errors(project, invalid_link):
+    root, client, remote, syncer, args = project
+    cfg = root / ".elab-sync.yaml"
+    data = yaml.safe_load(cfg.read_text())
+    data["targets"][0]["attachments_dir"] = "assets"
+    cfg.write_text(yaml.safe_dump(data))
+    (root / "assets").mkdir()
+    (root / ".ids").mkdir()
+    names = {"a.md": 1, "b.md": 2, "c.md": 3}
+    (root / ".ids/mapping.json").write_text(json.dumps(names))
+    for name in names:
+        (root / "docs" / name).write_text("body")
+    broken = ValueError("unavailable")
+    if invalid_link:
+        (root / "docs/b.md").write_text("example: https://[hostname]/")
+        broken = [{"id": 12, "real_name": "b.csv"}]
+    client.list_uploads.side_effect = [[{"id": 11, "real_name": "x.csv"}], broken, []]
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
+        result = run_push(args(prune_attachments=True, dry_run=True))
+    assert result.exit_code == 1
+    a, b, c = result.data["targets"][0]["documents"]
+    assert a["prune_candidates"][0]["id"] == 11
+    assert "error" in b and "prune_candidates" not in b and c["prune_candidates"] == []
+    client.delete_upload.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["delete", "remote_edit", "rename", "rename_before_delete"])
+def test_prune_records_progress_and_protects_concurrent_edits(project, failure):
+    root, client, remote, syncer, args = push_note(project)
+    uploads = _stateful_uploads(client)
+    cfg = root / ".elab-sync.yaml"
+    config = yaml.safe_load(cfg.read_text())
+    config["targets"][0]["attachments_dir"] = "assets"
+    cfg.write_text(yaml.safe_dump(config))
+    assets = root / "assets"
+    assets.mkdir()
+    uploads[1] = [{"id": i, "real_name": f"old{i}.csv", "long_name": f"stored{i}"} for i in (201, 202)]
+    if failure in {"delete", "rename_before_delete"}:
+        delete = client.delete_upload.side_effect
+        def fail_second(entity, eid, uid):
+            if uid == 202 and failure == "delete":
+                raise RuntimeError("temporary failure")
+            delete(entity, eid, uid)
+            if failure == "rename_before_delete" and uid == 201:
+                uploads[eid][0]["real_name"] = "retained.pdf"
+        client.delete_upload.side_effect = fail_second
+    else:
+        (assets / "new.txt").write_bytes(b"payload")
+        (root / "docs/a.md").write_text("[payload](../assets/new.txt)")
+        upload = client.upload_file.side_effect
+        def concurrent_change(entity, eid, path):
+            result = upload(entity, eid, path)
+            if failure == "rename":
+                uploads[eid][-1]["real_name"] = "renamed.txt"
+            else:
+                remote[eid]["body"] = "[file](https://example.test/uploads/201)"
+            return result
+        client.upload_file.side_effect = concurrent_change
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
+        assert run_push(args(prune_attachments=True, force=True)).exit_code == 1
+        if failure == "delete":
+            assert [u["id"] for u in uploads[1]] == [202]
+            client.delete_upload.side_effect = delete
+            assert run_push(args(prune_attachments=True)).exit_code == 0
+            assert uploads[1] == []
+        elif failure == "rename_before_delete":
+            assert [(u["id"], u["real_name"]) for u in uploads[1]] == [(202, "retained.pdf")]
+        else:
+            client.delete_upload.assert_not_called()
+            assert {201, 202} <= {u["id"] for u in uploads[1]}
+
+@pytest.mark.parametrize("concurrent_edit", ["rename_old", "delete_new"])
+def test_preserve_stale_upload_while_replacement_is_uploaded(project, concurrent_edit):
+    root, client, remote, syncer, args = project
+    uploads = _stateful_uploads(client)
+    (root / "docs/a.md").write_text("![file](picture.png)")
+    image = root / "docs/picture.png"
+    image.write_bytes(b"old")
+    assert syncer.sync() == 1
+    image.write_bytes(b"replacement")
+    upload = client.upload_file.side_effect
+    def concurrent_rename(entity, eid, path):
+        result = upload(entity, eid, path)
+        if concurrent_edit == "rename_old":
+            uploads[eid][0]["real_name"] = "retained.png"
+        else:
+            uploads[eid].pop()
+        return result
+    client.upload_file.side_effect = concurrent_rename
+    assert syncer.sync() == 0 and syncer.failures == 1
+    assert uploads[1][0]["id"] == 100 and "blob100" in remote[1]["body"]
+    client.delete_upload.assert_not_called()
+
+def test_prune_protects_idna2008_origin():
+    from elab_doc_sync.sync import _prune_candidates
+    records = [{"id": 201, "real_name": "old.csv"}]
+    assert not _prune_candidates(records, set(), "*", "[old](https://fa%C3%9F.test/uploads/201)",
+                                 "https://xn--fa-hia.test")
+
+
+def test_repeated_basename_keeps_both_new_uploads(project):
+    root, client, remote, syncer, args = project
+    uploads = _stateful_uploads(client)
+    for folder, body in [("before", b"first"), ("after", b"second")]:
+        path = root / "docs" / folder
+        path.mkdir()
+        (path / "plot.png").write_bytes(body)
+    (root / "docs/a.md").write_text("![a](before/plot.png) ![b](after/plot.png) ![a](before/plot.png)")
+    assert syncer.sync() == 1
+    assert [u["id"] for u in uploads[1]] == [100, 101]
+    assert remote[1]["body"].count("blob100") == 2 and "blob101" in remote[1]["body"]
+
+
+def test_body_edit_during_upload_hash_check_survives(project):
+    from hashlib import sha256
+    root, client, remote, syncer, args = project
+    uploads = _stateful_uploads(client)
+    (root / "docs/a.md").write_text("![image](photo.png)")
+    photo = root / "docs/photo.png"
+    photo.write_bytes(b"first")
+    assert syncer.sync() == 1
+    photo.write_bytes(b"replacement")
+    upload = client.upload_file.side_effect
+    def upload_without_hash(entity, eid, path):
+        result = upload(entity, eid, path)
+        uploads[eid][-1].pop("hash")
+        return result
+    def check_digest(**kwargs):
+        remote[1]["body"] = "concurrent edit"
+        return sha256(b"replacement").hexdigest()
+    client.upload_file.side_effect = upload_without_hash
+    client.upload_digest.side_effect = check_digest
+    assert syncer.sync() == 0 and syncer.failures == 1
+    assert remote[1]["body"] == "concurrent edit"
+    assert uploads[1][0]["id"] == 100
+    client.delete_upload.assert_not_called()
+
+
+@pytest.mark.parametrize("url,protected", [
+    ("https://example.test。/uploads/201", True),
+    (r"https://example.test\api/v2/items/1/uploads/201", True),
+    ("https://my_server.example/uploads/201", False),
+])
+def test_prune_understands_equivalent_and_external_origins(url, protected):
+    from elab_doc_sync.sync import _prune_candidates
+    entries = [{"id": 201, "real_name": "old.csv"}]
+    candidates = _prune_candidates(entries, set(), "*", f"[note]({url})", "https://example.test")
+    assert candidates == ([] if protected else entries)
+
+def test_new_article_edit_during_upload_survives(project):
+    root, client, remote, syncer, args = project
+    _stateful_uploads(client)
+    (root / "docs/note.md").write_text("![img](photo.png)")
+    (root / "docs/photo.png").write_bytes(b"photo")
+    upload = client.upload_file.side_effect
+    def edited_upload(entity, eid, path):
+        remote[eid]["body"] = "new remote edit"
+        return upload(entity, eid, path)
+    client.upload_file.side_effect = edited_upload
+    assert syncer.sync() == 0 and syncer.failures == 1
+    assert remote[1]["body"] == "new remote edit"
+
+
+def test_prune_without_candidates_allows_invalid_url_example(project):
+    root, client, remote, syncer, args = project
+    (root / "docs/note.md").write_text("example: https://[hostname]/")
+    assert syncer.sync(prune_attachments=True) == 1
+    assert "[hostname]" in remote[1]["body"]
+
+
+@pytest.mark.parametrize("rollback", [False, True])
+def test_directory_upload_verification_resumes_after_read_error(project, rollback):
+    from hashlib import sha256
+    root, client, remote, syncer, args = project
+    syncer.target.attachments_dir = "assets"
+    folder = root / "assets"
+    folder.mkdir()
+    (folder / "notes.txt").write_bytes(b"notes")
+    (root / "docs/a.md").write_text("document")
+    uploads = _stateful_uploads(client)
+    assert syncer.sync() == 1
+    state = syncer._state("a.md")
+    guard = {key: state["remote"][key] for key in ("category", "tags", "uploads")}
+    fields = {key: remote[1][key] for key in ("body", "title", "content_type")}
+    result = client.upload_file("items", 1, str(folder / "notes.txt"))
+    uploads[1][-1].pop("hash")
+    receipt = {"id": result["id"], "name": "notes.txt", "size": 5, "sha256": sha256(b"notes").hexdigest()}
+    syncer._save_pending({"a.md": {"eid": 1, "expected": fields, "stored": fields,
+                                   "before": {"body": ""}, "guard": guard, "verifying_upload": receipt}})
+    client.upload_digest.side_effect = RuntimeError("connection lost")
+    assert syncer.sync() == 0 and syncer.failures == 1
+    client.upload_digest.side_effect = None
+    client.upload_digest.return_value = sha256(b"notes").hexdigest()
+    if rollback:
+        remote[1]["body"] = syncer._pending()["a.md"]["before"]["body"]
+        assert syncer.sync() == 0 and syncer._pending()
+        assert remote[1]["body"] != "document"
+    else:
+        assert syncer.sync() == 1 and syncer._pending() == {}
+    assert client.upload_file.call_count == 1
+
+
+def test_push_keeps_local_attachment_edit_pending(project):
+    root, client, remote, syncer, args = project
+    syncer.target.attachments_dir = "assets"
+    path = root / "assets/file.csv"
+    path.parent.mkdir()
+    path.write_bytes(b"one")
+    (root / "docs/note.md").write_text("[file](../assets/file.csv)")
+    _stateful_uploads(client)
+    upload = client.upload_file.side_effect
+
+    def edit_after_upload(*args):
+        receipt = upload(*args)
+        path.write_bytes(b"two")
+        return receipt
+
+    client.upload_file.side_effect = edit_after_upload
+    assert syncer.sync() == 1
+    assert syncer.inspect("note.md", 1)["state"] == "送信待ち"
+    client.upload_file.side_effect = upload
+    assert syncer.sync() == 1
+    assert syncer.inspect("note.md", 1)["state"] == "最新"
+
+
+def test_asset_baseline_matches_version_uploaded_after_preflight(project):
+    root, client, remote, syncer, args = project
+    syncer.target.attachments_dir = "assets"
+    path = root / "assets/data.csv"
+    path.parent.mkdir()
+    path.write_bytes(b"one")
+    (root / "docs/a.md").write_text("[data](../assets/data.csv)")
+    _stateful_uploads(client)
+    update = client.update_item.side_effect
+
+    def edit_before_upload(*args, **kwargs):
+        update(*args, **kwargs)
+        path.write_bytes(b"two")
+
+    client.update_item.side_effect = edit_before_upload
+    assert syncer.sync() == 1
+    assert syncer.inspect("a.md", 1)["state"] == "送信待ち"
+    path.write_bytes(b"one")
+    assert syncer.inspect("a.md", 1)["state"] == "最新"
+
+
+def test_delayed_body_upload_listing_resumes_without_repost(project):
+    from hashlib import sha256
+    root, client, remote, syncer, args = project
+    path = root / "docs/plot.png"
+    path.write_bytes(b"image")
+    (root / "docs/a.md").write_text("![plot](plot.png)")
+    _stateful_uploads(client)
+    upload = client.upload_file.side_effect
+
+    def delayed(entity, eid, filename):
+        result = upload(entity, eid, filename)
+        return {"url": None, "receipt": {"id": result["id"], "name": path.name, "size": 5,
+                                         "sha256": sha256(b"image").hexdigest()}}
+
+    client.upload_file.side_effect = delayed
+    assert syncer.sync() == 0
+    assert syncer._pending()["a.md"]["body_receipts"][0]["id"] == 100
+    assert not remote[1]["body"]
+    assert syncer.sync() == 1
+    assert "blob100" in remote[1]["body"]
+    assert client.upload_file.call_count == 1
+
+
+@pytest.mark.parametrize("replacement", [b"new", b""])
+def test_resume_prefers_confirmed_linked_csv(project, replacement):
+    from hashlib import sha256
+    root, client, remote, syncer, args = project
+    path = root / "docs/data.csv"
+    path.write_bytes(b"old")
+    (root / "docs/a.md").write_text("[data](data.csv)")
+    uploads = _stateful_uploads(client)
+    assert syncer.sync() == 1
+    path.write_bytes(replacement)
+    upload = client.upload_file.side_effect
+
+    def delayed(entity, eid, filename):
+        result = upload(entity, eid, filename)
+        return {"url": None, "receipt": {"id": result["id"], "name": path.name,
+                                         "size": len(replacement), "sha256": sha256(replacement).hexdigest()}}
+
+    client.upload_file.side_effect = delayed
+    assert syncer.sync() == 0
+    received = uploads[1][-1]
+    blob = received.pop("long_name")
+    assert syncer.sync() == 0 and client.upload_file.call_count == 2
+    assert syncer._pending()["a.md"]["body_receipts"][0]["id"] == 101
+    received["long_name"] = blob
+    received["storage"] = 0
+    from hashlib import md5
+    received["hash"] = md5(replacement).hexdigest()
+    client.upload_digest.return_value = sha256(replacement).hexdigest()
+    assert syncer.sync() == 1
+    assert "blob101" in remote[1]["body"]
+    assert client.upload_file.call_count == 2
+
+
+def test_missing_storage_before_patch_preserves_receipt_on_retry(project):
+    root, client, remote, syncer, args = project
+    (root / "docs/data.csv").write_bytes(b"new")
+    (root / "docs/a.md").write_text("[data](data.csv)")
+    uploads = _stateful_uploads(client)
+    read_list = client.list_uploads.side_effect
+
+    def lose_url(entity, eid):
+        pending = syncer._pending().get("a.md", {})
+        if pending.get("expected") and uploads.get(eid):
+            uploads[eid][0].pop("storage", None)
+        return read_list(entity, eid)
+
+    client.list_uploads.side_effect = lose_url
+    assert syncer.sync() == 0
+    assert not remote[1]["body"]
+    assert syncer.sync() == 0
+    client.list_uploads.side_effect = read_list
+    uploads[1][0]["storage"] = "1"
+    assert syncer.sync() == 1
+    assert client.upload_file.call_count == 1
+
+
+@pytest.mark.parametrize("drop", ["stored_link", "storage"])
+def test_attachment_changed_after_patch_keeps_older_version(project, drop):
+    root, client, remote, syncer, args = project
+    path = root / "docs/plot.png"
+    path.write_bytes(b"old")
+    (root / "docs/a.md").write_text("![plot](plot.png)")
+    uploads = _stateful_uploads(client)
+    assert syncer.sync() == 1
+    path.write_bytes(b"new")
+    update = client.update_item.side_effect
+
+    def altered(*args, **kwargs):
+        result = update(*args, **kwargs)
+        if drop == "stored_link":
+            remote[1]["body"] = "link removed"
+        else:
+            uploads[1][-1].pop("storage")
+        return result
+
+    client.update_item.side_effect = altered
+    assert syncer.sync() == 0
+    client.delete_upload.assert_not_called()
+    assert syncer._pending()["a.md"]
+
+
+@pytest.mark.parametrize("example", ["`![plot](plot.png)`", "```md\n![plot](plot.png)\n```", "```md\n![plot\ncaption](plot.png)\n```",
+                                     "`[label](`\n\n```md\n![plot](plot.png)\n```",
+                                     "```\nexample\n```\n    ![plot](plot.png)"])
+def test_push_leaves_literal_attachment_examples_untouched(project, example):
+    root, client, remote, syncer, _ = project
+    path = root / "docs/plot.png"
+    path.write_bytes(b"old")
+    note = root / "docs/a.md"
+    note.write_text("![plot](plot.png)")
+    uploads = _stateful_uploads(client)
+    assert syncer.sync() == 1
+    original = copy.deepcopy(uploads[1])
+    path.write_bytes(b"new")
+    note.write_text(example)
+    assert syncer.dry_run()[0]["images"] == 0
+    assert syncer.sync() == 1
+    assert client.upload_file.call_count == 1
+    assert uploads[1] == original
+    assert remote[1]["body"] == example
+
+
+def test_escaped_video_markup_can_be_verified_after_save(project):
+    root, client, remote, syncer, _ = project
+    _stateful_uploads(client)
+    (root / "docs/clip.mp4").write_bytes(b"video")
+    (root / "docs/a.md").write_text("[clip](clip.mp4)")
+    def save_escaped(eid, **fields):
+        fields["body"] = _html.escape(fields["body"])
+        remote[eid].update(fields)
+
+    client.update_item.side_effect = save_escaped
+    assert syncer.sync() == 1
+    assert "&lt;video" in remote[1]["body"]
+    assert "blob100" in remote[1]["body"]
+
+
+def test_retry_keeps_upload_receipts_per_document(project):
+    root, client, remote, syncer, _ = project
+    uploads = _stateful_uploads(client)
+    for name in ("a", "b"):
+        (root / f"docs/{name}.png").write_bytes(name.encode())
+        (root / f"docs/{name}.md").write_text(f"![{name}]({name}.png)")
+    update = client.update_item.side_effect
+    client.update_item.side_effect = RuntimeError("PATCH interrupted")
+    for _ in range(2):
+        assert syncer.sync() == 0
+        for name, pending in syncer._pending().items():
+            ids = {r["id"] for r in pending["body_receipts"]}
+            assert ids == {u["id"] for u in uploads[pending["eid"]]}
+    client.update_item.side_effect = update
+    assert syncer.sync() == 2
+    assert client.upload_file.call_count == 2
+
+
+def test_retry_preserves_independently_uploaded_file_after_reuse(project):
+    root, client, remote, syncer, _ = project
+    uploads = _stateful_uploads(client)
+    note = root / "docs/a.md"
+    note.write_text("initial")
+    assert syncer.sync() == 1
+    path = root / "docs/plot.png"
+    path.write_bytes(b"manual attachment")
+    client.upload_file("items", 1, str(path))
+    note.write_text("![plot](plot.png)")
+    update = client.update_item.side_effect
+    client.update_item.side_effect = RuntimeError("PATCH interrupted")
+    assert syncer.sync(force=True) == 0
+    assert syncer._pending()["a.md"]["body_receipts"][0]["id"] == 100
+    client.update_item.side_effect = update
+    path.write_bytes(b"new content")
+    assert syncer.sync() == 1
+    assert [u["id"] for u in uploads[1]] == [100, 101]
+    client.delete_upload.assert_not_called()
+
+
+def test_resume_after_body_was_saved_still_cleans_up_replaced_upload(project):
+    root, client, remote, syncer, _ = project
+    uploads = _stateful_uploads(client)
+    (root / "docs/a.md").write_text("![plot](plot.png)")
+    path = root / "docs/plot.png"
+    path.write_bytes(b"old")
+    assert syncer.sync() == 1
+    path.write_bytes(b"new")
+    update = client.update_item.side_effect
+
+    def lose_response(eid, **fields):
+        update(eid, **fields)
+        raise ConnectionError("lost PATCH response")
+
+    client.update_item.side_effect = lose_response
+    assert syncer.sync() == 0
+    client.update_item.side_effect = update
+    assert syncer.sync() == 1
+    assert [u["id"] for u in uploads[1]] == [101]
+
+
+def test_resume_after_old_receipt_has_been_deleted(project):
+    root, client, remote, syncer, _ = project
+    uploads = _stateful_uploads(client)
+    (root / "docs/a.md").write_text("![plot](plot.png)")
+    path = root / "docs/plot.png"
+    path.write_bytes(b"old")
+    update = client.update_item.side_effect
+    client.update_item.side_effect = RuntimeError("PATCH interrupted")
+    assert syncer.sync() == 0
+    client.update_item.side_effect = update
+    path.write_bytes(b"new")
+    read_list = client.list_uploads.side_effect
+
+    def interrupted(entity, eid):
+        if [u["id"] for u in uploads.get(eid, [])] == [101]:
+            raise ConnectionError("lost after delete")
+        return read_list(entity, eid)
+
+    client.list_uploads.side_effect = interrupted
+    assert syncer.sync() == 0
+    client.list_uploads.side_effect = read_list
+    assert syncer.sync() == 1
+    assert client.upload_file.call_count == 2
+    assert [u["id"] for u in uploads[1]] == [101]
+
+def test_literal_remote_image_is_preserved_when_pulled(project):
+    root, client, remote, syncer, args = project
+    _stateful_uploads(client)
+    (root / "docs/plot.png").write_bytes(b"old")
+    note = root / "docs/a.md"
+    note.write_text("![plot](plot.png)")
+    assert syncer.sync() == 1
+    example = "`" + remote[1]["body"] + "`"
+    note.write_text(example)
+    assert syncer.sync() == 1
+    remote[1]["body"] += "\n\nremote edit"
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
+        assert cmd_pull(args()) == 0
+    assert note.read_text().strip() == example + "\n\nremote edit"
+    client.download_upload.assert_not_called()
+
+
+def test_escaped_example_does_not_replace_missing_saved_link(project):
+    root, client, remote, syncer, _ = project
+    uploads = _stateful_uploads(client)
+    path = root / "docs/plot.png"
+    path.write_bytes(b"old")
+    note = root / "docs/a.md"
+    note.write_text("![plot](plot.png)")
+    assert syncer.sync() == 1
+    path.write_bytes(b"new")
+    url = "https://example.test/app/download.php?f=blob101&name=plot.png&storage=1"
+    example = _html.escape(f'<img src="{url}">')
+    note.write_text("![plot](plot.png)\n\n" + example)
+    client.update_item.side_effect = lambda eid, **fields: remote[eid].update({**fields, "body": example})
+    assert syncer.sync() == 0
+    assert len(uploads[1]) == 2
+    client.delete_upload.assert_not_called()
+
+def test_unmatched_backticks_in_separate_paragraphs_leave_image_active(project):
+    root, client, remote, syncer, _ = project
+    _stateful_uploads(client)
+    (root / "docs/plot.png").write_bytes(b"plot")
+    note = root / "docs/a.md"
+    note.write_text("lone `\n\n![plot](plot.png)\n\nlast `")
+    assert syncer.dry_run()[0]["images"] == 1
+    assert syncer.sync() == 1
+    assert "blob100" in remote[1]["body"]
+
+
+def test_article_link_after_incomplete_image_example_never_uploads_markdown(project):
+    root, client, remote, syncer, _ = project
+    (root / "docs/other.md").write_text("linked note")
+    (root / "docs/a.md").write_text("`![`\n\n[related](other.md)")
+    assert syncer.dry_run()[0]["images"] == 0
+    assert syncer.sync() == 2
+    mapping = syncer._load_mapping()
+    assert remote[mapping["a.md"]]["body"].endswith(f"database.php?mode=view&id={mapping['other.md']})")
+    client.upload_file.assert_not_called()
+
+
+@pytest.mark.parametrize("image", [False, True])
+def test_attachment_with_bracket_in_code_label_is_uploaded(project, image):
+    root, client, remote, syncer, _ = project
+    _stateful_uploads(client)
+    filename = "plot.png" if image else "result.csv"
+    (root / f"docs/{filename}").write_bytes(b"content")
+    label = ("!" if image else "") + "[result `x[i]`]"
+    (root / "docs/a.md").write_text(f"{label}({filename})")
+    assert syncer.sync() == 1
+    client.upload_file.assert_called_once()
+    assert label in remote[1]["body"] and "blob100" in remote[1]["body"]
+
+
+@pytest.mark.parametrize(("body", "filename"), [
+    ("[material][ref](data.csv)\n\n[ref]: https://example.org", "data.csv"),
+    ('[help](https://example.org "example: ![plot](plot.png)")', "plot.png"),
+])
+def test_only_rendered_attachment_destinations_can_send_a_file(project, body, filename):
+    root, client, remote, syncer, _ = project
+    (root / "docs" / filename).write_bytes(b"file")
+    (root / "docs/a.md").write_text(body)
+    preview = syncer.dry_run()[0]
+    assert preview["images"] == preview["file_links"] == 0
+    assert syncer.sync() == 1
+    assert remote[1]["body"] == body
+    client.upload_file.assert_not_called()
+
+
+def test_parenthesized_attachment_sends_only_the_rendered_filename(project):
+    root, client, remote, syncer, _ = project
+    uploads = _stateful_uploads(client)
+    upload = client.upload_file.side_effect
+    from elab_doc_sync.client import upload_url
+    def send(entity, eid, path):
+        result = upload(entity, eid, path)
+        result["url"] = upload_url(client.base_url, uploads[eid][-1])
+        return result
+    client.upload_file.side_effect = send
+    (root / "docs/run(1).csv").write_bytes(b"right file")
+    (root / "docs/run(1").write_bytes(b"wrong file")
+    (root / "docs/a.md").write_text("[result](run(1).csv)")
+    assert syncer.sync() == 1
+    assert [u["real_name"] for u in uploads[1]] == ["run(1).csv"]
+    assert "blob100" in remote[1]["body"]
+
+
+@pytest.mark.parametrize("image", [False, True])
+def test_escaped_square_brackets_in_attachment_label(project, image):
+    root, client, remote, syncer, _ = project
+    _stateful_uploads(client)
+    filename = "plot.png" if image else "result.csv"
+    label = ("!" if image else "") + r"[value \[A\]]"
+    (root / ("docs/" + filename)).write_bytes(b"value")
+    (root / "docs/a.md").write_text(f"{label}({filename})")
+    assert syncer.sync() == 1
+    client.upload_file.assert_called_once()
+    assert label in remote[1]["body"] and "blob100" in remote[1]["body"]
+
+
+@pytest.mark.parametrize("title", ["", ' "measurement conditions"'])
+def test_rewrite_changes_only_the_file_destination(project, title):
+    from elab_doc_sync.client import upload_url
+    root, client, remote, syncer, _ = project
+    uploads = _stateful_uploads(client)
+    upload = client.upload_file.side_effect
+    def send(entity, eid, path):
+        result = upload(entity, eid, path)
+        result["url"] = upload_url(client.base_url, uploads[eid][-1])
+        return result
+    client.upload_file.side_effect = send
+    filename = "O'Brien.csv"
+    (root / "docs" / filename).write_bytes(b"values")
+    original = f"[report]({filename}{title})\n\nSupplement ('keep this')"
+    (root / "docs/a.md").write_text(original)
+    assert syncer.sync() == 1
+    assert remote[1]["body"] == original.replace(filename, upload_url(client.base_url, uploads[1][0]))
+
+
+def test_empty_destination_is_not_an_attachment(project):
+    root, client, remote, syncer, _ = project
+    body = "empty [link]() and ![image]()"
+    (root / "docs/a.md").write_text(body)
+    preview = syncer.dry_run()[0]
+    assert preview["images"] == preview["file_links"] == 0
+    assert syncer.sync() == 1 and remote[1]["body"] == body
+    client.upload_file.assert_not_called()
+
+
+def test_previous_image_first_asset_digest_is_retained(project):
+    import hashlib
+    root, _, _, syncer, _ = project
+    body = "[values](data.csv)\n\n![plot](plot.png)"
+    for filename in ("data.csv", "plot.png"):
+        (root / "docs" / filename).write_bytes(filename.encode())
+    parts = [f"{n}:{hashlib.sha256(n.encode()).hexdigest()}" for n in ("plot.png", "data.csv")]
+    assert syncer._compute_assets_hash(body, "a.md") == hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
+
+
+def test_prune_keeps_link_with_whitespace_in_title(project):
+    root, client, remote, syncer, _ = project
+    uploads = _stateful_uploads(client)
+    (root / "attachments").mkdir()
+    syncer.target.attachments_dir = "attachments"
+    note = root / "docs/a.md"
+    (root / "docs/data.csv").write_bytes(b"data")
+    note.write_text('[report](data.csv "conditions")')
+    assert syncer.sync() == 1
+    original_id = uploads[1][0]["id"]
+    note.write_text('[report](data.csv " conditions ")')
+    preview = syncer.dry_run(prune_attachments=True)[0]
+    assert preview["file_links"] == 1 and preview["prune_candidates"] == []
+    assert syncer.sync(prune_attachments=True) == 1
+    assert [u["id"] for u in uploads[1]] == [original_id]
+    assert remote[1]["body"].endswith(' " conditions ")')
+    client.delete_upload.assert_not_called()
+
+
+def test_prune_keeps_rendered_reference_style_attachment():
+    from elab_doc_sync.sync import _prune_candidates
+    uploads = [{"id": 10, "real_name": "data.csv"}]
+    assert _prune_candidates(uploads, set(), "*", "[report][data]\n\n[data]: data.csv",
+                             "https://example.test") == []
+
+
+@pytest.mark.parametrize("body", [
+    r"[doc](https://example.test/app/download.php?f=blob\-100&name=data.csv&storage=1)",
+    '<a href="data.csv ">document</a>',
+])
+def test_prune_keeps_the_attachment_referenced_by_the_rendered_url(project, body):
+    root, client, remote, syncer, _ = project
+    uploads = _stateful_uploads(client)
+    syncer.target.attachments_dir = "assets"
+    (root / "assets").mkdir()
+    asset = root / "assets/data.csv"
+    asset.write_bytes(b"data")
+    note = root / "docs/a.md"
+    note.write_text("document")
+    assert syncer.sync() == 1
+    client.upload_file("items", 1, str(asset))
+    syncer._save_baseline(note.name, note.read_text(), remote[1], uploads[1])
+    asset.unlink()
+    uploads[1][0]["long_name"] = "blob-100"
+    note.write_text(body)
+    assert syncer.dry_run(prune_attachments=True)[0]["prune_candidates"] == []
+    assert syncer.sync(force=True, prune_attachments=True) == 1
+    assert [u["id"] for u in uploads[1]] == [100]
+    client.delete_upload.assert_not_called()
+
+
+def test_preview_keeps_other_documents_when_one_link_cannot_be_mapped(project):
+    root, client, remote, syncer, _ = project
+    (root / "docs/a.md").write_text('> [x](data.csv\n> "conditions")')
+    (root / "docs/b.md").write_text("plain note")
+    first, second = syncer.dry_run(prune_attachments=True)
+    assert "error" in first and second["filename"] == "b.md" and "error" not in second
+
+
+def test_new_article_id_does_not_expand_prune_preview(project):
+    root, client, remote, syncer, _ = project
+    uploads = _stateful_uploads(client)
+    syncer.target.attachments_dir = "assets"
+    (root / "assets").mkdir()
+    asset = root / "assets/b.md"
+    asset.write_text("previous attachment")
+    note = root / "docs/a.md"
+    note.write_text("article")
+    assert syncer.sync() == 1
+    client.upload_file("items", 1, str(asset))
+    syncer._save_baseline(note.name, note.read_text(), remote[1], uploads[1])
+    previous = uploads[1][0]["id"]
+    asset.unlink()
+    (root / "docs/b.md").write_text("new article")
+    note.write_text("[article](b.md)")
+    assert syncer.dry_run(prune_attachments=True)[0]["prune_candidates"] == []
+    assert syncer.sync(prune_attachments=True) == 2
+    assert [u["id"] for u in uploads[1]] == [previous]
+
+
+@pytest.mark.parametrize("body", [
+    "[download](https://example.test/api/v2/items/1/uploads/./100)",
+    "[download](https://example.test/api/v2/items/1/uploads/dir%2Fsub/%2e%2e/100)",
+    r'<a href="folder\data.csv">document</a>',
+])
+def test_prune_resolves_browser_path_segments(body):
+    from elab_doc_sync.sync import _prune_candidates
+    uploads = [{"id": 100, "long_name": "blob100", "real_name": "data.csv"}]
+    assert not _prune_candidates(uploads, set(), "*", body, "https://example.test")
+
+
+def test_earlier_target_cannot_expand_later_targets_prune_preview(project):
+    root, client, remote, syncer, args = project
+    uploads = _stateful_uploads(client)
+    syncer.target.attachments_dir = "assets"
+    (root / "assets").mkdir()
+    asset = root / "assets/b.md"
+    asset.write_text("attachment")
+    note = root / "docs/a.md"
+    note.write_text("article")
+    assert syncer.sync() == 1
+    client.upload_file("items", 1, str(asset))
+    syncer._save_baseline(note.name, note.read_text(), remote[1], uploads[1])
+    previous = uploads[1][0]["id"]
+    asset.unlink()
+    cfg = root / ".elab-sync.yaml"
+    data = yaml.safe_load(cfg.read_text())
+    data["targets"][0]["attachments_dir"] = "assets"
+    data["targets"].insert(0, dict(docs_dir="other", id_file=".other/default.id", title="Other", body_format="md"))
+    cfg.write_text(yaml.safe_dump(data))
+    (root / "other").mkdir()
+    (root / "other/b.md").write_text("new article")
+    note.write_text("[article](../other/b.md)")
+    with patch("elab_doc_sync.cli.ELabFTWClient", return_value=client):
+        preview = run_push(args(prune_attachments=True, dry_run=True))
+        assert preview.data["targets"][1]["documents"][0]["prune_candidates"] == []
+        result = run_push(args(prune_attachments=True))
+    assert result.exit_code == 0 and result.data["updated"] == 2
+    assert [u["id"] for u in uploads[1]] == [previous]
+
+
+def test_prune_error_does_not_block_other_documents(project):
+    root, client, remote, syncer, args = push_note(project)
+    (root / "assets").mkdir()
+    syncer.target.attachments_dir = "assets"
+    uploads = _stateful_uploads(client)
+    uploads[1] = [{"id": 100, "real_name": "old.csv"}]
+    (root / "docs/a.md").write_text("example: https://[hostname]/")
+    (root / "docs/b.md").write_text("healthy")
+    assert syncer.sync(force=True, prune_attachments=True) == 1
+    assert syncer.failures == 1 and remote[2]["body"] == "healthy"
+    client.delete_upload.assert_not_called()

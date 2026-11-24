@@ -73,7 +73,7 @@ targets:
 |---|---|---|---|
 | `docs_dir` | ✅ | — | Markdown ファイルディレクトリ |
 | `title` | — | 空文字 | `--target` / `-t` で指定するターゲット名。記事タイトルはファイル名から決まる |
-| `pattern` | — | `*.md` | Glob パターン |
+| `pattern` | — | `*.md` | Glob パターン。本文を退避するための予約ディレクトリ `.elab-displaced-*/`（接頭辞の大小文字は全 OS で区別しない）以下は同期対象から除外する |
 | `mode` | — | `each` | `each` のみ有効（`merge` はエラー） |
 | `entity` | — | `items` | `items` / `experiments`（`resources` は `items` と同じ） |
 | `profile` | — | `default` | 使用する接続プロファイル |
@@ -83,8 +83,8 @@ targets:
 | `links` | — | — | push 時に追加するリンク。キーは `experiments` / `items`（`resources` は `items` と同じ）、値は正の整数 ID のリスト。追加のみで削除はしない |
 | `title_pattern` | — | — | pull 振り分け用タイトル glob |
 | `body_format` | — | `html` | `md` / `html`（`esync init` で作る場合の既定は `md`） |
-| `attachments_dir` | — | — | 添付ファイルディレクトリ |
-| `attachments_pattern` | — | `*` | 添付ファイル glob フィルタ |
+| `attachments_dir` | — | — | pull で非画像添付を保存するディレクトリ。送信するファイルは各文書のリンクで指定 |
+| `attachments_pattern` | — | `*` | `--prune-attachments` の削除対象名を絞る glob |
 | `id_file` | — | `.elab-sync-ids/{docs_dir_name}/default.id` | 状態ディレクトリの指定（このパスの親ディレクトリを使う） |
 
 ### 接続先の選び方
