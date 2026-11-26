@@ -3,7 +3,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { createHash } = require('node:crypto');
-const { StatusProvider } = require('./status');
+const { StatusProvider, CurrentDocumentProvider } = require('./status');
 
 const configName = '.elab-sync.yaml';
 const previewScheme = 'esync-preview';
@@ -67,13 +67,27 @@ function targetLabel(doc) {
 
 async function activate(context) {
     const events = new vscode.EventEmitter();
+    const currentEvents = new vscode.EventEmitter();
     const previews = new Map();
     const pushing = new Set();
     let projects = [];
     let scan = 0;
     let sequence = 0;
     const status = new StatusProvider(() => projects, run, events);
+    const currentDocument = new CurrentDocumentProvider(status, () => {
+        const doc = vscode.window.activeTextEditor?.document;
+        if (!doc) return;
+        const entry = previews.get(doc.uri.toString());
+        if (entry) return { file: entry.file, folder: entry.folder };
+        if (doc.uri.scheme === 'file' && doc.languageId === 'markdown') return { file: doc.uri };
+    }, currentEvents);
     const output = vscode.window.createOutputChannel('esync');
+
+    function refresh() {
+        status.invalidate();
+        events.fire();
+        currentEvents.fire();
+    }
 
     async function discover() {
         const current = ++scan;
@@ -88,16 +102,18 @@ async function activate(context) {
         if (current !== scan) return;
         projects = found.filter(Boolean);
         await vscode.commands.executeCommand('setContext', 'esync.hasProjects', projects.length > 0);
-        events.fire();
+        refresh();
     }
 
-    async function preview(uri) {
+    async function preview(uri, row) {
         const file = uri || vscode.window.activeTextEditor?.document.uri;
         if (file?.scheme !== 'file' || !projects.length) {
             throw new Error('.elab-sync.yaml のあるフォルダーを開き、同期対象の Markdown を選んでください。');
         }
         const owner = vscode.workspace.getWorkspaceFolder(file);
-        let folder = projects.find(p => p.uri.toString() === owner?.uri.toString());
+        const projectUri = row ? row.folder.uri : owner?.uri;
+        let folder = projects.find(p => p.uri.toString() === projectUri?.toString());
+        if (row && !folder) throw new Error('同期設定が変わりました。一覧を更新してください。');
         if (!folder) {
             // docs_dir はワークスペース外のディレクトリも指定できる。
             if (projects.length === 1) folder = projects[0];
@@ -119,7 +135,11 @@ async function activate(context) {
         const hash = await fingerprint(file);
         const config = vscode.Uri.joinPath(folder.uri, configName);
         const configHash = await fingerprint(config);
-        const { documents, warnings } = await loadDiff(folder, file, []);
+        const diffResult = await loadDiff(folder, file, []);
+        const warnings = diffResult.warnings;
+        const documents = row ? diffResult.documents.filter(doc =>
+            doc.target === row.doc.target && doc.entity === row.doc.entity) : diffResult.documents;
+        if (row && !documents.length) throw new Error('送信先が変わりました。一覧を更新してください。');
         let selected = documents[0];
         if (documents.length > 1) {
             const choice = await vscode.window.showQuickPick(documents.map(doc => ({
@@ -127,10 +147,10 @@ async function activate(context) {
             })), { placeHolder: '差分を確認して push するターゲットを選択' });
             if (!choice) return;
             selected = choice.doc;
-            if (!selected.selector) throw new Error('送信先を区別できるよう設定でターゲットに一意の title を付けてください。');
         }
         if (!selected) throw new Error('同期対象の文書がありません。');
         if (selected.error) throw new Error(selected.error);
+        if (diffResult.documents.length > 1 && !selected.selector) throw new Error('送信先を区別できるよう設定でターゲットに一意の title を付けてください。');
         if (!selected.preview_token) throw new Error('push --expect-preview に対応した esync CLI に更新してください。');
         const options = selected.selector ? ['--target=' + selected.selector] : [];
         const previewUri = vscode.Uri.from({
@@ -174,7 +194,7 @@ async function activate(context) {
             vscode.window.showInformationMessage(path.basename(file.fsPath) + ' — ' + (result.stdout.trim().split('\n').pop() || 'push 完了'));
         } finally {
             pushing.delete(project);
-            events.fire();
+            refresh();
         }
     }
 
@@ -190,15 +210,24 @@ async function activate(context) {
 
     const watcher = vscode.workspace.createFileSystemWatcher('**/' + configName);
     context.subscriptions.push(
-        events, output, watcher,
+        events, currentEvents, output, watcher,
         vscode.window.registerTreeDataProvider('esync.status', status),
+        vscode.window.registerTreeDataProvider('esync.current', currentDocument),
+        vscode.window.onDidChangeActiveTextEditor(() => currentEvents.fire()),
+        vscode.workspace.onDidSaveTextDocument(doc => {
+            if (doc.languageId === 'markdown') refresh();
+        }),
+        vscode.workspace.onDidChangeConfiguration(event => {
+            if (event.affectsConfiguration('esync.executable')) refresh();
+        }),
         vscode.workspace.registerTextDocumentContentProvider(previewScheme, {
             provideTextDocumentContent: uri => previews.get(uri.toString())?.text,
         }),
         vscode.workspace.onDidCloseTextDocument(doc => previews.delete(doc.uri.toString())),
         vscode.workspace.onDidChangeWorkspaceFolders(discover),
         watcher.onDidCreate(discover), watcher.onDidDelete(discover), watcher.onDidChange(discover),
-        vscode.commands.registerCommand('esync.refresh', () => events.fire()),
+        vscode.commands.registerCommand('esync.refresh', refresh),
+        command('esync.previewFromPanel', 'esync 差分を取得中', row => preview(row.resourceUri, row)),
         command('esync.preview', 'esync 差分を取得中', preview),
         command('esync.push', 'esync 送信中', push),
     );

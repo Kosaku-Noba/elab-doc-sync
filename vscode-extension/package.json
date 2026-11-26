@@ -2,7 +2,7 @@
   "name": "esync",
   "displayName": "esync for eLabFTW",
   "description": "Markdown の差分確認、文書単位の push、eLabFTW との同期状態の表示",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "elab-doc-sync",
   "repository": { "type": "git", "url": "https://github.com/Kosaku-Noba/elab-doc-sync.git", "directory": "vscode-extension" },
   "engines": { "vscode": "^1.85.0" },
@@ -14,15 +14,22 @@
     "virtualWorkspaces": { "supported": false }
   },
   "activationEvents": ["onStartupFinished"],
-  "files": ["extension.js", "status.js", "README.md"],
+  "files": ["extension.js", "status.js", "media/esync.svg", "README.md"],
   "contributes": {
     "commands": [
       { "command": "esync.preview", "category": "esync", "title": "この文書の差分を確認", "icon": "$(diff)" },
+      { "command": "esync.previewFromPanel", "category": "esync", "title": "この文書の差分を確認", "icon": "$(diff)" },
       { "command": "esync.push", "category": "esync", "title": "この差分の文書を push", "icon": "$(cloud-upload)", "enablement": "resourceScheme == esync-preview" },
       { "command": "esync.refresh", "category": "esync", "title": "同期状態を更新", "icon": "$(refresh)" }
     ],
+    "viewsContainers": {
+      "activitybar": [{ "id": "esync", "title": "esync", "icon": "media/esync.svg" }]
+    },
     "views": {
-      "explorer": [{ "id": "esync.status", "name": "esync 同期状態", "when": "esync.hasProjects", "visibility": "collapsed" }]
+      "esync": [
+        { "id": "esync.current", "name": "開いている文書", "when": "esync.hasProjects" },
+        { "id": "esync.status", "name": "プロジェクト全体の同期一覧", "when": "esync.hasProjects" }
+      ]
     },
     "menus": {
       "editor/title": [
@@ -30,11 +37,13 @@
         { "command": "esync.push", "when": "resourceScheme == esync-preview", "group": "navigation" }
       ],
       "commandPalette": [
+        { "command": "esync.previewFromPanel", "when": "false" },
         { "command": "esync.preview", "when": "esync.hasProjects && resourceLangId == markdown" },
         { "command": "esync.push", "when": "resourceScheme == esync-preview" },
         { "command": "esync.refresh", "when": "esync.hasProjects" }
       ],
-      "view/title": [{ "command": "esync.refresh", "when": "view == esync.status", "group": "navigation" }]
+      "view/title": [{ "command": "esync.refresh", "when": "view == esync.status || view == esync.current", "group": "navigation" }],
+      "view/item/context": [{ "command": "esync.previewFromPanel", "when": "view == esync.status && viewItem == esync.document", "group": "inline" }]
     },
     "configuration": {
       "title": "esync",

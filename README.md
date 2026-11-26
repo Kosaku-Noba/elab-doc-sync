@@ -113,7 +113,7 @@ export ELABFTW_API_KEY="your_key"
 
 ## VS Code から使う
 
-「esync 同期状態」で送信待ち・取得待ち・競合などの文書を確認できます。Markdown エディタ右上の「この文書の差分を確認」を選ぶと、差分タブからその文書だけを push できます。[VS Code 拡張のセットアップ](vscode-extension/README.md)
+左端の esync アイコンを押すと、上に開いている文書の送信先・記事 ID・同期状態、下にプロジェクト全体の同期一覧が表示されます。文書の差分を開き、差分タブからその文書だけを push できます。[VS Code 拡張のセットアップ](vscode-extension/README.md)
 
 ## MCP クライアントから使う
 
