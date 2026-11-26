@@ -69,7 +69,7 @@ def test_preview_keeps_rename_read_only_and_identifies_existing_article(project,
     assert doc['renamed_from'] == 'a.md' and doc['entity_id'] == eid
     assert doc['state'] == 'リネーム予定'
     assert json.loads((root / '.ids/mapping.json').read_text()) == {'a.md': eid}
-    assert push('--target', doc['selector'], 'docs/moved.md') in (0, None)
+    assert push('--target', doc['selector'], '--expect-preview', doc['preview_token'], 'docs/moved.md') in (0, None)
     assert titles(remote) == ['moved'] and remote[eid]['title'] == 'moved'
 
 
@@ -87,11 +87,25 @@ def test_preview_separates_overlapping_targets_and_identifies_asset_changes(proj
     assert [first['selector'], second['selector']] == ['T', 'N']
     assert '+![plot](plot.png)' in second['local_diff']
     asset.write_bytes(b'second')
-    assert preview(file, capsys)[1]['assets_hash'] != second['assets_hash']
+    assert preview(file, capsys)[1]['preview_token'] != second['preview_token']
+    assert push('--target', second['selector'], '--expect-preview', second['preview_token'], file) == 1
+    assert not remote
     (root / file).write_text('# final')
     assert push('--target', second['selector'], file) in (0, None)
     assert len(remote) == 1
     assert not (root / '.ids/mapping.json').exists()
+
+
+def test_guarded_push_checks_link_destination_and_hides_url_credentials(project, capsys):
+    from elab_doc_sync.cli import ELabFTWClient
+    root, remote = project
+    ELabFTWClient.return_value.base_url = 'https://user:password@example.test/elab'
+    (root / 'docs/a.md').write_text('[B](b.md)')
+    [doc] = preview('docs/a.md', capsys)
+    assert doc['server'] == 'https://example.test/elab'
+    assert push('docs/b.md') in (0, None)
+    assert push('--expect-preview', doc['preview_token'], 'docs/a.md') == 1
+    assert titles(remote) == ['b']
 
 
 @pytest.mark.parametrize('args,expected', [

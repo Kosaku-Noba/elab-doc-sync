@@ -45,7 +45,7 @@ async function loadDiff(folder, file, options) {
 
 function diffText(doc, warnings) {
     const destination = doc.entity_id == null ? '新規作成' : '#' + doc.entity_id;
-    const lines = [doc.target + ' — ' + doc.server + ' / ' + doc.entity + ' ' + destination,
+    const lines = [targetLabel(doc) + ' — ' + doc.server + ' / ' + doc.entity + ' ' + destination,
         doc.path + ' — ' + doc.state];
     if (doc.renamed_from) lines.push('改名前の文書: ' + doc.renamed_from);
     if (warnings) lines.push(warnings);
@@ -59,6 +59,10 @@ function diffText(doc, warnings) {
     }
     if (doc.local_changed) lines.push('画像・添付ファイルまたは設定に変更があります。');
     return lines.join('\n') + '\n';
+}
+
+function targetLabel(doc) {
+    return doc.selector && doc.selector !== doc.target ? doc.target + ' (' + doc.selector + ')' : doc.target;
 }
 
 async function activate(context) {
@@ -119,7 +123,7 @@ async function activate(context) {
         let selected = documents[0];
         if (documents.length > 1) {
             const choice = await vscode.window.showQuickPick(documents.map(doc => ({
-                label: doc.target, description: doc.server + ' / ' + doc.entity, doc,
+                label: targetLabel(doc), description: doc.server + ' / ' + doc.entity, doc,
             })), { placeHolder: '差分を確認して push するターゲットを選択' });
             if (!choice) return;
             selected = choice.doc;
@@ -159,7 +163,7 @@ async function activate(context) {
                     || await fingerprint(config) !== configHash || doc.isDirty || await fingerprint(file) !== hash) {
                 throw new Error('同期対象の内容、設定または eLabFTW の状態が変わりました。差分を開き直してください。');
             }
-            const result = await run(folder, ['push', ...options, '--', file.fsPath]);
+            const result = await run(folder, ['push', '--expect-preview', selected.preview_token, ...options, '--', file.fsPath]);
             const report = (result.stdout + '\n' + result.stderr).trim();
             output.appendLine(report);
             if (result.code !== 0) {

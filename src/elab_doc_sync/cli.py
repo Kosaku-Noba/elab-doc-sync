@@ -12,6 +12,7 @@ from dataclasses import asdict, replace
 from fnmatch import fnmatch
 from functools import lru_cache
 from unicodedata import normalize
+from urllib.parse import urlsplit
 from pathlib import Path
 
 import yaml
@@ -267,6 +268,10 @@ def run_push(args, echo=None) -> CommandResult:
         except ValueError as e:
             return res.fail(f"エラー: {e}", 2)
     prune_previews = {}
+    expected_preview = getattr(args, "expect_preview", None)
+    if expected_preview is not None and (not selected or sum(map(len, selected.values())) != 1
+                                         or args.dry_run or args.force or args.prune_attachments):
+        return res.fail("--expect-preview は 1 つのターゲットの 1 文書に対する通常の push で指定してください", 2)
     if not args.dry_run and getattr(args, "prune_attachments", False):
         # Freeze every selected target before the first write can change cross-target links.
         for index, (target, syncer) in enumerate(pairs):
@@ -310,6 +315,8 @@ def run_push(args, echo=None) -> CommandResult:
 
         try:
             options = {"prune_preview": prune_previews[index]} if index in prune_previews else {}
+            if expected_preview is not None:
+                options["expected_preview"] = expected_preview
             count = syncer.sync(force=args.force, prune_attachments=args.prune_attachments, only=only, **options)
         except Exception as exc:
             count = syncer.updated
@@ -1112,12 +1119,21 @@ def run_diff(args, echo=None) -> CommandResult:
         preview = getattr(args, "json", False)
         planned = mapping.copy()
         old_names = {}
+        preview_error = None
         if preview:
+            selector = next((value for value in (target.title, target.docs_dir) if value and
+                             sum(_matches_target(t, value) for t in config.targets) == 1), None)
+            url = urlsplit(syncer.client.base_url)
+            server = url._replace(netloc=url.netloc.rsplit("@", 1)[-1], query="", fragment="").geturl()
             for name, pending in syncer._pending().items():
                 if pending.get("eid"):
                     planned.setdefault(name, pending["eid"])
             original = planned.copy()
-            planned = syncer._detect_renames(planned, syncer.collect_files(), target.entity, dry_run=True)
+            try:
+                planned = syncer._detect_renames(planned, syncer.collect_files(), target.entity, dry_run=True)
+            except ConflictError as exc:
+                preview_error = str(exc)
+                failed = True
             old_names = {eid: name for name, eid in original.items() if name not in planned}
         links = syncer.link_targets(mapping)
         for filename in sorted(planned if only is None else only):
@@ -1131,13 +1147,15 @@ def run_diff(args, echo=None) -> CommandResult:
             res.data["documents"].append(doc)
             baseline = old_names.get(eid, filename)
             if preview:
-                selector = next((value for value in (target.title, target.docs_dir) if value and
-                                 sum(_matches_target(t, value) for t in config.targets) == 1), None)
                 doc.update(target=target.title or target.docs_dir, selector=selector,
-                           server=syncer.client.base_url, renamed_from=old_names.get(eid))
+                           server=server, renamed_from=old_names.get(eid))
+                if preview_error:
+                    doc["error"] = preview_error
+                    continue
                 if local_path.is_file():
                     raw = local_path.read_text(encoding="utf-8")
-                    doc["assets_hash"] = syncer._compute_assets_hash(raw, filename)
+                    assets_hash = syncer._compute_assets_hash(raw.strip(), filename)
+                    doc["preview_token"] = syncer.preview_token(local_path, eid, raw.strip(), assets_hash, planned)
                     if eid is None:
                         doc["local_diff"] = _show_diff("", raw, "/dev/null", label)
             if eid is None:
@@ -1162,6 +1180,13 @@ def run_diff(args, echo=None) -> CommandResult:
                 continue
             result = syncer.inspect(filename, eid, data, uploads)
             doc["state"] = "リネーム予定" if filename != baseline else result["state"]
+            if filename != baseline:
+                previous = syncer.inspect(baseline, eid, data, uploads)
+                if previous.get("remote_changed"):
+                    doc["state"] = "競合"
+                if previous.get("error"):
+                    doc["error"] = previous["error"]
+                    failed = True
             res.say(f"  状態: {result['state']}")
             syncer._print_next_actions(result["state"], filename, eid)
             if _show_document_diff(syncer, target, baseline, eid, data, uploads, local_path, mapping, links, doc):
@@ -2785,6 +2810,7 @@ def build_parser():
     push_parser = sub.add_parser("push", help="ローカル → eLabFTW に同期（esync と同じ）", parents=[sub_common])
     push_parser.add_argument("files", nargs="*", help="同期するファイル・ディレクトリ・glob（カレントディレクトリ基準、複数指定可。省略時は全文書）")
     push_parser.add_argument("--regex", action="append", help="同期するファイル名に部分一致する正規表現（複数指定可）")
+    push_parser.add_argument("--expect-preview", metavar="TOKEN", help="diff --json で確認した 1 文書だけを送信")
     sub.add_parser("init", help="対話的に設定ファイルを作成", parents=[sub_common])
     diff_parser = sub.add_parser("diff", help="前回の同期からのローカルと eLabFTW の変更を表示", parents=[sub_common])
     diff_parser.add_argument("--json", action="store_true", help="送信先、改名予定、差分を JSON で出力")

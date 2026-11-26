@@ -4,7 +4,7 @@ CLI tool — not intended for use as a library.
 """
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from functools import lru_cache
 from fnmatch import fnmatch
 import hashlib
@@ -2180,7 +2180,15 @@ class EachDocsSyncer:
         current = next((e for e in entities if len(ids) == 1 and e.get("category_title") == category), None)
         return self.client.resolve_category_id(self.entity, category, current=current)
 
-    def sync(self, force=False, prune_attachments=False, only=None, *, prune_preview=None):
+    def preview_token(self, path, eid, body, assets_hash, mapping):
+        """Identify the selected article and local inputs in a single-document preview."""
+        linked = _rewrite_local_links(body, self.entity, self.client.base_url, mapping,
+                                      source=path, links=self.link_targets(mapping))
+        inputs = [str(path.resolve()), eid, asdict(self.target), self.client.base_url,
+                  str(self.client.api_key), body, linked, assets_hash]
+        return hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()
+
+    def sync(self, force=False, prune_attachments=False, only=None, *, prune_preview=None, expected_preview=None):
         """Push the target's documents, or only the file names in `only`.
 
         Rename detection still looks at every document, so unselected files
@@ -2224,7 +2232,9 @@ class EachDocsSyncer:
                 progress(f"  [{f.stem}] 添付削除の事前確認に失敗: {preview['error']}", warning=True)
                 continue
             result = self.inspect(f.name, eid)
-            self._compute_assets_hash(result["body"], f.name)  # 送信前に参照パスの範囲を検証
+            assets_hash = self._compute_assets_hash(result["body"], f.name)  # 送信前に参照パスの範囲を検証
+            if expected_preview is not None and self.preview_token(f, eid, result["body"], assets_hash, mapping) != expected_preview:
+                raise ConflictError("送信先または文書の内容が変わりました。差分を開き直してください")
             result["preview_prune_ids"] = {u["id"] for u in preview.get("prune_candidates", [])
                                            if eid is not None and eid == preview.get("entity_id")}
             state = result["state"]
