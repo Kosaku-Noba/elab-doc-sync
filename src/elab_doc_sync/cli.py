@@ -349,7 +349,8 @@ def run_status(args, echo=None) -> CommandResult:
         if not _matches_target(target, args.target):
             continue
         mapping = syncer._load_mapping(migrate=False)
-        names = (set(mapping) | set(syncer._pending()) | {f.name for f in syncer.collect_files()}) - syncer._load_excluded()
+        files = {f.name: f for f in syncer.collect_files()}
+        names = (set(mapping) | set(syncer._pending()) | set(files)) - syncer._load_excluded()
         for name in sorted(names):
             result = syncer.inspect(name, mapping.get(name))
             pending = syncer._pending().get(name)
@@ -357,6 +358,10 @@ def run_status(args, echo=None) -> CommandResult:
             doc = {"target": target.title or target.docs_dir, "file": name, "entity": target.entity,
                    "entity_id": mapping.get(name), "state": state, "remote_changes": [], "error": None,
                    "next_actions": []}
+            path = files.get(name)
+            if path is not None and path.is_relative_to(config_path.parent):
+                path = path.relative_to(config_path.parent)
+            doc["path"] = path.as_posix() if path is not None else None
             res.say(f"  [{name}] {state}（#{mapping.get(name, '未作成')}）")
             if state in ("競合", "取得待ち") and result.get("data") is not None and hasattr(syncer, "remote_changes"):
                 changes = syncer.remote_changes(name, result["data"], result.get("uploads", []))
@@ -380,6 +385,10 @@ def run_status(args, echo=None) -> CommandResult:
 
 
 def cmd_status(args):
+    if getattr(args, "json", False):
+        result = run_status(args)
+        print(json.dumps(result.data, ensure_ascii=False))
+        return result.exit_code
     return run_status(args, echo=cli_echo).exit_code
 
 
@@ -2741,7 +2750,8 @@ def build_parser():
     parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {_installed_version()}")
 
     sub = parser.add_subparsers(dest="command")
-    sub.add_parser("status", help="同期状態を確認", parents=[sub_common])
+    status_parser = sub.add_parser("status", help="同期状態を確認", parents=[sub_common])
+    status_parser.add_argument("--json", action="store_true", help="文書の状態とローカルパスを JSON で出力")
     push_parser = sub.add_parser("push", help="ローカル → eLabFTW に同期（esync と同じ）", parents=[sub_common])
     push_parser.add_argument("files", nargs="*", help="同期するファイル・ディレクトリ・glob（カレントディレクトリ基準、複数指定可。省略時は全文書）")
     push_parser.add_argument("--regex", action="append", help="同期するファイル名に部分一致する正規表現（複数指定可）")

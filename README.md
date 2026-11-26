@@ -111,6 +111,10 @@ export ELABFTW_API_KEY="your_key"
 
 ---
 
+## VS Code から使う
+
+「esync 同期状態」で送信待ち・取得待ち・競合などの文書を確認できます。Markdown エディタ右上の「この文書の差分を確認」を選ぶと、差分タブからその文書だけを push できます。[VS Code 拡張のセットアップ](vscode-extension/README.md)
+
 ## MCP クライアントから使う
 
 MCP（Model Context Protocol）対応アプリは、標準入出力（stdio）を通じて esync のツールを呼び出せます。サーバーの起動コマンドは `elab-doc-sync-mcp` です。チェックアウトしたリポジトリで `uv sync --extra mcp` を実行し、MCP クライアントに次のサーバーを登録します。2 つの絶対パスはそれぞれアプリのチェックアウトと、操作する同期プロジェクトに合わせてください。

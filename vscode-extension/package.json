@@ -1,0 +1,51 @@
+{
+  "name": "esync",
+  "displayName": "esync for eLabFTW",
+  "description": "Markdown の差分確認、文書単位の push、eLabFTW との同期状態の表示",
+  "version": "0.1.0",
+  "publisher": "elab-doc-sync",
+  "repository": { "type": "git", "url": "https://github.com/Kosaku-Noba/elab-doc-sync.git", "directory": "vscode-extension" },
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Other"],
+  "main": "./extension.js",
+  "extensionKind": ["workspace"],
+  "capabilities": {
+    "untrustedWorkspaces": { "supported": false },
+    "virtualWorkspaces": { "supported": false }
+  },
+  "activationEvents": ["onStartupFinished"],
+  "files": ["extension.js", "status.js", "README.md"],
+  "contributes": {
+    "commands": [
+      { "command": "esync.preview", "category": "esync", "title": "この文書の差分を確認", "icon": "$(diff)" },
+      { "command": "esync.push", "category": "esync", "title": "この差分の文書を push", "icon": "$(cloud-upload)", "enablement": "resourceScheme == esync-preview" },
+      { "command": "esync.refresh", "category": "esync", "title": "同期状態を更新", "icon": "$(refresh)" }
+    ],
+    "views": {
+      "explorer": [{ "id": "esync.status", "name": "esync 同期状態", "when": "esync.hasProjects", "visibility": "collapsed" }]
+    },
+    "menus": {
+      "editor/title": [
+        { "command": "esync.preview", "when": "esync.hasProjects && resourceLangId == markdown && (resourceScheme == file || resourceScheme == vscode-remote)", "group": "navigation" },
+        { "command": "esync.push", "when": "resourceScheme == esync-preview", "group": "navigation" }
+      ],
+      "commandPalette": [
+        { "command": "esync.preview", "when": "esync.hasProjects && resourceLangId == markdown" },
+        { "command": "esync.push", "when": "resourceScheme == esync-preview" },
+        { "command": "esync.refresh", "when": "esync.hasProjects" }
+      ],
+      "view/title": [{ "command": "esync.refresh", "when": "view == esync.status", "group": "navigation" }]
+    },
+    "configuration": {
+      "title": "esync",
+      "properties": {
+        "esync.executable": {
+          "type": "string",
+          "default": "esync",
+          "scope": "machine",
+          "description": "esync CLI の実行ファイル名または絶対パス。"
+        }
+      }
+    }
+  }
+}

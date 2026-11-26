@@ -54,6 +54,25 @@ def test_run_status_returns_documents_without_printing(MockClient, tmp_path, cap
 
 
 @patch("elab_doc_sync.cli.ELabFTWClient")
+def test_status_json_preserves_paths_and_reports_problem_states(MockClient, tmp_path, capsys):
+    cfg = _project(tmp_path, mapping={"missing.md": 7})
+    config = yaml.safe_load(cfg.read_text())
+    config["targets"][0]["pattern"] = "**/*.md"
+    cfg.write_text(yaml.safe_dump(config))
+    (tmp_path / "docs/missing.md").unlink()
+    (tmp_path / "docs/sub").mkdir()
+    (tmp_path / "docs/sub/ノート.md").write_text("# 内容")
+    (tmp_path / cli.RECOVERY).touch()
+    args = cli.build_parser().parse_args(["status", "--json", "--config", str(cfg)])
+    assert cli.cmd_status(args) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["recovery_pending"]
+    assert {d["file"]: d["path"] for d in result["documents"]} == {
+        "ノート.md": "docs/sub/ノート.md", "missing.md": None,
+    }
+
+
+@patch("elab_doc_sync.cli.ELabFTWClient")
 def test_cmd_status_streams_before_error(MockClient, tmp_path, capsys, monkeypatch):
     """CLI は 1 行ずつ表示するため、途中で例外になってもそれまでの表示が残る。"""
     cfg = _project(tmp_path)
