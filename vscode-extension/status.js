@@ -21,7 +21,7 @@ async function readStatus(folder, run) {
     const notices = [];
     if (recovery_pending) notices.push('復旧待ちのローカル変更があります。esync backup list で確認してください。');
     if (result.stderr.trim()) notices.push(result.stderr.trim());
-    return { documents, notices };
+    return { documents, notices, root: await fs.realpath(folder.uri.fsPath) };
 }
 
 function documentItem(folder, doc) {
@@ -54,7 +54,7 @@ function detailItems(folder, doc) {
     action.command = { command: 'esync.previewFromPanel', title: '差分を確認', arguments: [source] };
     const rows = [
         field('同期状態（保存時点）', doc.state), field('送信先', doc.target + ' / ' + entity),
-        field('記事 ID', doc.entity_id == null ? '未割り当て' : '#' + doc.entity_id),
+        field('記事 ID', doc.checkingId ? '確認中…' : (doc.entity_id == null ? '未割り当て' : '#' + doc.entity_id)),
     ];
     if (doc.error) rows.push(messageItem(doc.error));
     rows.push(action);
@@ -62,45 +62,74 @@ function detailItems(folder, doc) {
 }
 
 class StatusProvider {
-    constructor(projects, run, events) {
+    constructor(projects, run, events, currentEvents) {
         this.projects = projects;
         this.run = run;
+        this.events = events;
+        this.currentEvents = currentEvents;
         this.onDidChangeTreeData = events.event;
         this.cache = new Map();
     }
 
-    // 二つのビューで同じ取得結果を使い、文書を切り替えても全件を再照会しない。
+    // 取得中も直近の結果を表示する。連続した更新は同じ再取得にまとめる。
     status(folder) {
         const key = folder.uri.toString();
-        if (!this.cache.has(key)) {
-            const entry = { loading: true };
-            entry.promise = this.readLatest(folder, entry);
-            this.cache.set(key, entry);
-        }
-        return this.cache.get(key).promise;
-    }
-
-    async readLatest(folder, entry) {
-        try {
-            do {
-                entry.stale = false;
-                try {
-                    const result = await readStatus(folder, this.run);
-                    if (!entry.stale) return result;
-                } catch (error) {
-                    if (!entry.stale) throw error;
+        if (!this.cache.has(key)) this.cache.set(key, { dirty: true });
+        const entry = this.cache.get(key);
+        if (entry.dirty && !entry.loading) {
+            entry.dirty = false;
+            entry.loading = true;
+            readStatus(folder, this.run).then(value => {
+                entry.value = value;
+                entry.error = undefined;
+                entry.details = new Map();
+            }, error => {
+                entry.error = error.message;
+            }).finally(() => {
+                entry.loading = false;
+                if (this.cache.get(key) === entry) {
+                    this.events.fire();
+                    this.currentEvents.fire();
                 }
-            } while (entry.stale);
-        } finally {
-            entry.loading = false;
+            });
         }
+        return entry;
     }
 
     invalidate() {
+        const projects = new Set(this.projects().map(folder => folder.uri.toString()));
         for (const [key, entry] of this.cache) {
-            if (entry.loading) entry.stale = true;
+            if (projects.has(key)) entry.dirty = true;
             else this.cache.delete(key);
         }
+    }
+
+    // 旧名の追跡記録や未完了の作成がある場合、実際の送信先は diff の判定に従う。
+    effectiveDocument(entry, folder, file, doc, loadDiff) {
+        if (doc.entity_id != null) return doc;
+        const missing = entry.value.documents.some(other => !other.path && other.entity_id != null
+            && other.target === doc.target && other.entity === doc.entity);
+        if (!missing && doc.state !== '同期未完了') return doc;
+        const key = file.toString();
+        const details = entry.details;
+        if (!details.has(key)) {
+            details.set(key, {});
+            loadDiff(folder, file, []).then(result => {
+                details.set(key, result);
+            }, error => {
+                details.set(key, { error: error.message });
+            }).finally(() => {
+                if (entry.details === details) this.currentEvents.fire();
+            });
+        }
+        const detail = details.get(key);
+        if (detail.error) return { ...doc, error: detail.error };
+        if (!detail.documents) return { ...doc, checkingId: true };
+        const matches = detail.documents.filter(d => d.target === doc.target && d.entity === doc.entity);
+        if (matches.length !== 1) return { ...doc, error: '送信先ごとの記事 ID は差分で確認してください。' };
+        const [match] = matches;
+        return { ...doc, entity_id: match.entity_id, state: match.renamed_from ? match.state : doc.state,
+            error: match.error || doc.error };
     }
 
     getTreeItem(item) { return item; }
@@ -118,32 +147,32 @@ class StatusProvider {
         }
         const folder = item ? item.projectRoot : folders[0];
         if (!folder) return [];
-        try {
-            const { documents, notices } = await this.status(folder);
-            const rows = notices.map(notice => messageItem(notice));
-            const groups = new Map();
-            for (const doc of documents) {
-                if (!groups.has(doc.state)) {
-                    const group = new vscode.TreeItem(doc.state, vscode.TreeItemCollapsibleState.Expanded);
-                    group.children = [];
-                    groups.set(doc.state, group);
-                    rows.push(group);
-                }
-                const group = groups.get(doc.state);
-                group.children.push(documentItem(folder, doc));
-                group.description = String(group.children.length);
+        const entry = this.status(folder);
+        const rows = entry.error ? [messageItem(entry.error)] : [];
+        if (!entry.value) return rows.length ? rows : [messageItem('同期状態を取得中…')];
+        const { documents, notices } = entry.value;
+        rows.push(...notices.map(notice => messageItem(notice)));
+        const groups = new Map();
+        for (const doc of documents) {
+            if (!groups.has(doc.state)) {
+                const group = new vscode.TreeItem(doc.state, vscode.TreeItemCollapsibleState.Expanded);
+                group.children = [];
+                groups.set(doc.state, group);
+                rows.push(group);
             }
-            return rows.length ? rows : [messageItem('同期対象の文書はありません')];
-        } catch (error) {
-            return [messageItem(error.message)];
+            const group = groups.get(doc.state);
+            group.children.push(documentItem(folder, doc));
+            group.description = String(group.children.length);
         }
+        return rows.length ? rows : [messageItem('同期対象の文書はありません')];
     }
 }
 
 class CurrentDocumentProvider {
-    constructor(status, activeFile, events) {
+    constructor(status, activeFile, events, loadDiff) {
         this.status = status;
         this.activeFile = activeFile;
+        this.loadDiff = loadDiff;
         this.onDidChangeTreeData = events.event;
     }
 
@@ -160,17 +189,24 @@ class CurrentDocumentProvider {
         const notices = [];
         // docs_dir が他のワークスペースフォルダーを指す場合も、その設定の送信先を表示する。
         const relevant = previewFolder ? folders.filter(f => f.uri.toString() === previewFolder.uri.toString()) : folders;
-        const results = await Promise.allSettled(relevant.map(folder => this.status.status(folder)));
-        for (const [index, result] of results.entries()) {
-            const folder = relevant[index];
-            if (result.status === 'rejected') {
-                notices.push(messageItem(folder.name + ' — ' + result.reason.message));
+        let waiting = false;
+        let failed = false;
+        for (const folder of relevant) {
+            const entry = this.status.status(folder);
+            if (entry.error) {
+                notices.push(messageItem(folder.name + ' — ' + entry.error));
+                failed = true;
+            }
+            if (!entry.value) {
+                waiting ||= entry.loading;
                 continue;
             }
-            notices.push(...result.value.notices.map(notice => messageItem(notice)));
-            for (const doc of result.value.documents) {
-                if (doc.path && path.relative(realPath, path.resolve(folder.uri.fsPath, doc.path)) === '') {
-                    matches.push({ folder, doc });
+            const { root, notices: warnings, documents } = entry.value;
+            notices.push(...warnings.map(notice => messageItem(notice)));
+            for (const doc of documents) {
+                if (doc.path && path.relative(realPath, path.resolve(root, doc.path)) === '') {
+                    const effective = this.status.effectiveDocument(entry, folder, file, doc, this.loadDiff);
+                    matches.push({ folder, doc: effective });
                 }
             }
         }
@@ -179,7 +215,8 @@ class CurrentDocumentProvider {
         name.tooltip = file.fsPath;
         name.command = { command: 'vscode.open', title: '文書を開く', arguments: [file] };
         const rows = [name, ...notices];
-        if (!matches.length && results.every(r => r.status === 'fulfilled')) {
+        if (waiting) rows.push(messageItem('同期状態を取得中…'));
+        if (!matches.length && !waiting && !failed) {
             rows.push(messageItem('この文書は同期対象に含まれていません。'));
         }
         for (const { folder, doc } of matches) {

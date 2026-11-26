@@ -73,14 +73,14 @@ async function activate(context) {
     let projects = [];
     let scan = 0;
     let sequence = 0;
-    const status = new StatusProvider(() => projects, run, events);
+    const status = new StatusProvider(() => projects, run, events, currentEvents);
     const currentDocument = new CurrentDocumentProvider(status, () => {
         const doc = vscode.window.activeTextEditor?.document;
         if (!doc) return;
         const entry = previews.get(doc.uri.toString());
         if (entry) return { file: entry.file, folder: entry.folder };
         if (doc.uri.scheme === 'file' && doc.languageId === 'markdown') return { file: doc.uri };
-    }, currentEvents);
+    }, currentEvents, loadDiff);
     const output = vscode.window.createOutputChannel('esync');
 
     function refresh() {
