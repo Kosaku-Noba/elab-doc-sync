@@ -26,9 +26,12 @@ exports.run = async function () {
         }, events, currentEvents);
         const doc = { file: 'new.md', path: 'new.md', entity: 'items', entity_id: null, target: 'Lab',
             state: '未追跡', remote_changes: [], next_actions: [] };
-        const current = new CurrentDocumentProvider(status, () => ({ file }), currentEvents, async () => ({
-            documents: [{ ...doc, entity_id: 17, renamed_from: 'old.md', state: 'リネーム予定' }],
-        }));
+        let lookups = 0;
+        let rejectLookup;
+        const current = new CurrentDocumentProvider(status, () => ({ file }), currentEvents, async () => {
+            if (++lookups === 1) return { documents: [{ ...doc, entity_id: 17, renamed_from: 'old.md', state: 'リネーム予定' }] };
+            return new Promise((resolve, reject) => { rejectLookup = reject; });
+        });
         const waitForUpdate = () => new Promise(resolve => {
             const sub = currentEvents.event(() => { sub.dispose(); resolve(); });
         });
@@ -39,7 +42,8 @@ exports.run = async function () {
         const published = waitForUpdate();
         const respond = (request, documents) => request.resolve({ code: 0, stderr: '',
             stdout: JSON.stringify({ documents, recovery_pending: false }) });
-        respond(requests[0], [doc, { ...doc, file: 'old.md', path: null, entity_id: 17 }]);
+        const renamed = [doc, { ...doc, file: 'old.md', path: null, entity_id: 17 }];
+        respond(requests[0], renamed);
         await published;
         const rows = await current.getChildren();
         assert.ok(rows.find(r => r.label === '差分を確認'), 'show the ready project while other requests are pending');
@@ -51,7 +55,23 @@ exports.run = async function () {
         const group = (await status.getChildren({ projectRoot: folder })).find(r => r.label === '未追跡');
         assert.equal(group.children[0].contextValue, 'esync.document');
         assert.equal(group.children[1].command, undefined);
-        console.log('PASS: symlink, partial refresh, coalesced saves, rename ID, row actions');
+        const refresh = waitForUpdate();
+        respond(requests[2], renamed);
+        await refresh;
+        const previous = await current.getChildren();
+        assert.equal(previous.find(r => r.label === '記事 ID').description, '#17');
+        status.invalidate();
+        await current.getChildren();
+        const refreshedAgain = waitForUpdate();
+        respond(requests[3], renamed);
+        await refreshedAgain;
+        await current.getChildren();
+        assert.equal(lookups, 2, 'keep one detail lookup in flight for each file');
+        const lookupFailed = waitForUpdate();
+        rejectLookup(new Error('照会に失敗'));
+        await lookupFailed;
+        assert.equal((await current.getChildren()).find(r => r.label === '記事 ID').description, '確認できません');
+        console.log('PASS: symlink, partial refresh, coalesced saves, rename ID, failed lookup, row actions');
         const completed = waitForUpdate();
         for (const request of requests.slice(1)) respond(request, []);
         await completed;

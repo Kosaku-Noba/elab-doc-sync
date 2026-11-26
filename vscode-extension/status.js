@@ -52,9 +52,10 @@ function detailItems(folder, doc) {
     const action = new vscode.TreeItem('差分を確認');
     action.iconPath = new vscode.ThemeIcon('diff');
     action.command = { command: 'esync.previewFromPanel', title: '差分を確認', arguments: [source] };
+    const id = doc.entity_id == null ? '未割り当て' : '#' + doc.entity_id;
     const rows = [
         field('同期状態（保存時点）', doc.state), field('送信先', doc.target + ' / ' + entity),
-        field('記事 ID', doc.checkingId ? '確認中…' : (doc.entity_id == null ? '未割り当て' : '#' + doc.entity_id)),
+        field('記事 ID', doc.idMessage || id),
     ];
     if (doc.error) rows.push(messageItem(doc.error));
     rows.push(action);
@@ -74,7 +75,7 @@ class StatusProvider {
     // 取得中も直近の結果を表示する。連続した更新は同じ再取得にまとめる。
     status(folder) {
         const key = folder.uri.toString();
-        if (!this.cache.has(key)) this.cache.set(key, { dirty: true });
+        if (!this.cache.has(key)) this.cache.set(key, { dirty: true, details: new Map() });
         const entry = this.cache.get(key);
         if (entry.dirty && !entry.loading) {
             entry.dirty = false;
@@ -82,7 +83,12 @@ class StatusProvider {
             readStatus(folder, this.run).then(value => {
                 entry.value = value;
                 entry.error = undefined;
-                entry.details = new Map();
+                const unassigned = new Set(value.documents.filter(doc => doc.path && doc.entity_id == null)
+                    .map(doc => path.resolve(value.root, doc.path)));
+                for (const [name, detail] of entry.details) {
+                    if (unassigned.has(name)) detail.dirty = true;
+                    else entry.details.delete(name);
+                }
             }, error => {
                 entry.error = error.message;
             }).finally(() => {
@@ -110,26 +116,32 @@ class StatusProvider {
         const missing = entry.value.documents.some(other => !other.path && other.entity_id != null
             && other.target === doc.target && other.entity === doc.entity);
         if (!missing && doc.state !== '同期未完了') return doc;
-        const key = file.toString();
+        const key = path.resolve(entry.value.root, doc.path);
         const details = entry.details;
-        if (!details.has(key)) {
-            details.set(key, {});
+        if (!details.has(key)) details.set(key, { dirty: true });
+        const detail = details.get(key);
+        if (detail.dirty && !detail.loading) {
+            detail.dirty = false;
+            detail.loading = true;
             loadDiff(folder, file, []).then(result => {
-                details.set(key, result);
+                detail.documents = result.documents.map(({ target, entity, entity_id, renamed_from, state, error }) =>
+                    ({ target, entity, entity_id, renamed_from, state, error }));
+                detail.error = undefined;
             }, error => {
-                details.set(key, { error: error.message });
+                detail.error = error.message;
             }).finally(() => {
-                if (entry.details === details) this.currentEvents.fire();
+                detail.loading = false;
+                if (details.get(key) === detail && this.cache.get(folder.uri.toString()) === entry) this.currentEvents.fire();
             });
         }
-        const detail = details.get(key);
-        if (detail.error) return { ...doc, error: detail.error };
-        if (!detail.documents) return { ...doc, checkingId: true };
+        if (detail.error) return { ...doc, idMessage: '確認できません', error: detail.error };
+        if (!detail.documents) return { ...doc, idMessage: '確認中…' };
         const matches = detail.documents.filter(d => d.target === doc.target && d.entity === doc.entity);
-        if (matches.length !== 1) return { ...doc, error: '送信先ごとの記事 ID は差分で確認してください。' };
+        if (matches.length !== 1) return { ...doc, idMessage: '確認できません', error: '送信先ごとの記事 ID は差分で確認してください。' };
         const [match] = matches;
+        if (match.error) return { ...doc, idMessage: '確認できません', error: match.error };
         return { ...doc, entity_id: match.entity_id, state: match.renamed_from ? match.state : doc.state,
-            error: match.error || doc.error };
+            error: doc.error };
     }
 
     getTreeItem(item) { return item; }
