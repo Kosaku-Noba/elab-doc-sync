@@ -131,6 +131,7 @@ async function activate(context) {
         }
         if (!selected) throw new Error('同期対象の文書がありません。');
         if (selected.error) throw new Error(selected.error);
+        if (!selected.preview_token) throw new Error('push --expect-preview に対応した esync CLI に更新してください。');
         const options = selected.selector ? ['--target=' + selected.selector] : [];
         const previewUri = vscode.Uri.from({
             scheme: previewScheme, path: file.path + '.diff', query: String(++sequence),

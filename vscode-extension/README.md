@@ -4,7 +4,7 @@ VS Code のエクスプローラーで eLabFTW との同期状態を確認し、
 
 ## セットアップ
 
-1. elab-doc-sync のリポジトリ直下で `uv tool install --force .` を実行します。`esync status --help` と `esync diff --help` の両方に `--json` が表示されれば対応版です。
+1. elab-doc-sync のリポジトリ直下で `uv tool install --force .` を実行します。`esync push --help` に `--expect-preview` があり、`esync status --help` と `esync diff --help` に `--json` がある版を使います。
 2. VS Code 1.85 以降のコマンドパレットで「Extensions: Install from VSIX...」を選び、`esync-0.1.0.vsix` を開きます。ソースから使う場合は、先に下の「VSIX の作成」を実行し、`dist/` にできたファイルを選びます。
 3. `.elab-sync.yaml` があるディレクトリをワークスペースフォルダーとして開きます。接続先や API キーは CLI と共通です。環境変数を使う場合は、VS Code の拡張ホストからも参照できるようにしてください。
 

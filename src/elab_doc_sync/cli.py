@@ -12,7 +12,6 @@ from dataclasses import asdict, replace
 from fnmatch import fnmatch
 from functools import lru_cache
 from unicodedata import normalize
-from urllib.parse import urlsplit
 from pathlib import Path
 
 import yaml
@@ -20,7 +19,7 @@ from markdownify import markdownify as html_to_md
 
 from .safety import hold_document, atomic_write, write_json, safe_path, snapshot, local_transaction, project_command, restore, BACKUPS, RECOVERY
 from .config import TargetConfig
-from .client import ELabFTWClient, upload_sha256
+from .client import ELabFTWClient, public_url, upload_sha256
 from .config import read_config as load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, append_target_to_yaml, profile_connection, _parse_api_key_env
 from .merge import merge_text
 from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _compute_file_hash, _is_image, _normalize_remote_image_urls, _download_attachments, _localize_attachment_links, _linked_article_upload_ids, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
@@ -1057,13 +1056,14 @@ def _show_diff(old_text, new_text, old_label, new_label):
     return diff
 
 
-def _show_document_diff(syncer, target, filename, eid, data, uploads, local_path, mapping, links, doc):
+def _show_document_diff(syncer, target, filename, eid, data, uploads, local_path, mapping, links, doc, local_md=None):
     """1文書の差分を「ローカルの変更」と「eLabFTW 側の変更」に分けて表示する。差分があれば True。
 
     どちらも前回の同期時点と比べるため、eLabFTW が保存時に本文を書き換えた分
     （箇条書きの記号など）は差分に出ない。
     """
-    local_md = local_path.read_text(encoding="utf-8").strip()
+    if local_md is None:
+        local_md = local_path.read_text(encoding="utf-8").strip()
     synced_local = syncer.load_synced_local(filename)
     shown = False
     if synced_local is None:
@@ -1123,19 +1123,13 @@ def run_diff(args, echo=None) -> CommandResult:
         if preview:
             selector = next((value for value in (target.title, target.docs_dir) if value and
                              sum(_matches_target(t, value) for t in config.targets) == 1), None)
-            url = urlsplit(syncer.client.base_url)
-            server = url._replace(netloc=url.netloc.rsplit("@", 1)[-1], query="", fragment="").geturl()
-            for name, pending in syncer._pending().items():
-                if pending.get("eid"):
-                    planned.setdefault(name, pending["eid"])
-            original = planned.copy()
+            server = public_url(syncer.client.base_url)
             try:
-                planned = syncer._detect_renames(planned, syncer.collect_files(), target.entity, dry_run=True)
+                planned, old_names = syncer.preview_mapping(mapping, syncer.collect_files())
             except ConflictError as exc:
                 preview_error = str(exc)
                 failed = True
-            old_names = {eid: name for name, eid in original.items() if name not in planned}
-        links = syncer.link_targets(mapping)
+        links = syncer.link_targets(planned)
         for filename in sorted(planned if only is None else only):
             eid = planned.get(filename)
             local_path = syncer.file_path(filename)
@@ -1146,6 +1140,7 @@ def run_diff(args, echo=None) -> CommandResult:
             doc = {"path": label, "entity": target.entity, "entity_id": eid}
             res.data["documents"].append(doc)
             baseline = old_names.get(eid, filename)
+            local_md = None
             if preview:
                 doc.update(target=target.title or target.docs_dir, selector=selector,
                            server=server, renamed_from=old_names.get(eid))
@@ -1154,8 +1149,9 @@ def run_diff(args, echo=None) -> CommandResult:
                     continue
                 if local_path.is_file():
                     raw = local_path.read_text(encoding="utf-8")
-                    assets_hash = syncer._compute_assets_hash(raw.strip(), filename)
-                    doc["preview_token"] = syncer.preview_token(local_path, eid, raw.strip(), assets_hash, planned)
+                    local_md = raw.strip()
+                    assets_hash = syncer._compute_assets_hash(local_md, filename)
+                    doc["preview_token"] = syncer.preview_token(local_path, eid, local_md, assets_hash, planned, links)
                     if eid is None:
                         doc["local_diff"] = _show_diff("", raw, "/dev/null", label)
             if eid is None:
@@ -1189,7 +1185,7 @@ def run_diff(args, echo=None) -> CommandResult:
                     failed = True
             res.say(f"  状態: {result['state']}")
             syncer._print_next_actions(result["state"], filename, eid)
-            if _show_document_diff(syncer, target, baseline, eid, data, uploads, local_path, mapping, links, doc):
+            if _show_document_diff(syncer, target, baseline, eid, data, uploads, local_path, mapping, links, doc, local_md):
                 has_diff = True
             elif result.get("local_changed"):
                 doc["local_changed"] = True
