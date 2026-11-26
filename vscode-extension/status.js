@@ -18,6 +18,7 @@ async function projectItems(folder, run) {
     }
     const { documents, recovery_pending } = JSON.parse(result.stdout);
     const rows = [];
+    if (result.stderr.trim()) rows.push(messageItem(result.stderr.trim()));
     const groups = new Map();
     for (const doc of documents) {
         if (!groups.has(doc.state)) {

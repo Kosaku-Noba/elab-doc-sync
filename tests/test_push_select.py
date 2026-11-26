@@ -53,6 +53,47 @@ def titles(remote):
     return sorted(e['title'] for e in remote.values())
 
 
+def preview(file, capsys):
+    capsys.readouterr()
+    with patch.object(sys, 'argv', ['esync', 'diff', '--json', '--', file]):
+        main()
+    return json.loads(capsys.readouterr().out)['documents']
+
+
+def test_preview_keeps_rename_read_only_and_identifies_existing_article(project, capsys):
+    root, remote = project
+    assert push('docs/a.md') in (0, None)
+    eid = next(iter(remote))
+    (root / 'docs/a.md').rename(root / 'docs/moved.md')
+    [doc] = preview('docs/moved.md', capsys)
+    assert doc['renamed_from'] == 'a.md' and doc['entity_id'] == eid
+    assert doc['state'] == 'リネーム予定'
+    assert json.loads((root / '.ids/mapping.json').read_text()) == {'a.md': eid}
+    assert push('--target', doc['selector'], 'docs/moved.md') in (0, None)
+    assert titles(remote) == ['moved'] and remote[eid]['title'] == 'moved'
+
+
+def test_preview_separates_overlapping_targets_and_identifies_asset_changes(project, capsys):
+    root, remote = project
+    cfg = root / '.elab-sync.yaml'
+    data = yaml.safe_load(cfg.read_text())
+    data['targets'][1]['docs_dir'] = 'docs/sub'
+    cfg.write_text(yaml.safe_dump(data))
+    file = 'docs/sub/c.md'
+    (root / file).write_text('![plot](plot.png)')
+    asset = root / 'docs/sub/plot.png'
+    asset.write_bytes(b'first')
+    first, second = preview(file, capsys)
+    assert [first['selector'], second['selector']] == ['T', 'N']
+    assert '+![plot](plot.png)' in second['local_diff']
+    asset.write_bytes(b'second')
+    assert preview(file, capsys)[1]['assets_hash'] != second['assets_hash']
+    (root / file).write_text('# final')
+    assert push('--target', second['selector'], file) in (0, None)
+    assert len(remote) == 1
+    assert not (root / '.ids/mapping.json').exists()
+
+
 @pytest.mark.parametrize('args,expected', [
     (['docs/a.md'], ['a']),
     (['docs/a.md', 'notes/n.md'], ['a', 'n']),

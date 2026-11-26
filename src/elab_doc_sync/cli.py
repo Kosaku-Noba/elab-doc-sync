@@ -359,6 +359,8 @@ def run_status(args, echo=None) -> CommandResult:
                    "entity_id": mapping.get(name), "state": state, "remote_changes": [], "error": None,
                    "next_actions": []}
             path = files.get(name)
+            if path is not None:
+                path = path.resolve()
             if path is not None and path.is_relative_to(config_path.parent):
                 path = path.relative_to(config_path.parent)
             doc["path"] = path.as_posix() if path is not None else None
@@ -1107,9 +1109,19 @@ def run_diff(args, echo=None) -> CommandResult:
         if selected is not None and not only:
             continue
         mapping = syncer._load_mapping(migrate=False)
+        preview = getattr(args, "json", False)
+        planned = mapping.copy()
+        old_names = {}
+        if preview:
+            for name, pending in syncer._pending().items():
+                if pending.get("eid"):
+                    planned.setdefault(name, pending["eid"])
+            original = planned.copy()
+            planned = syncer._detect_renames(planned, syncer.collect_files(), target.entity, dry_run=True)
+            old_names = {eid: name for name, eid in original.items() if name not in planned}
         links = syncer.link_targets(mapping)
-        for filename in sorted(mapping if only is None else only):
-            eid = mapping.get(filename)
+        for filename in sorted(planned if only is None else only):
+            eid = planned.get(filename)
             local_path = syncer.file_path(filename)
             try:
                 label = local_path.resolve().relative_to(project_root).as_posix()
@@ -1117,6 +1129,17 @@ def run_diff(args, echo=None) -> CommandResult:
                 label = str(local_path)
             doc = {"path": label, "entity": target.entity, "entity_id": eid}
             res.data["documents"].append(doc)
+            baseline = old_names.get(eid, filename)
+            if preview:
+                selector = next((value for value in (target.title, target.docs_dir) if value and
+                                 sum(_matches_target(t, value) for t in config.targets) == 1), None)
+                doc.update(target=target.title or target.docs_dir, selector=selector,
+                           server=syncer.client.base_url, renamed_from=old_names.get(eid))
+                if local_path.is_file():
+                    raw = local_path.read_text(encoding="utf-8")
+                    doc["assets_hash"] = syncer._compute_assets_hash(raw, filename)
+                    if eid is None:
+                        doc["local_diff"] = _show_diff("", raw, "/dev/null", label)
             if eid is None:
                 doc["state"] = "未追跡"
                 res.say(f"━━ {label}（未追跡）━━\n  push で eLabFTW に新規作成されます\n")
@@ -1138,12 +1161,13 @@ def run_diff(args, echo=None) -> CommandResult:
                 res.warn(f"  eLabFTW #{eid} の取得に失敗: {reason}\n")
                 continue
             result = syncer.inspect(filename, eid, data, uploads)
-            doc["state"] = result["state"]
+            doc["state"] = "リネーム予定" if filename != baseline else result["state"]
             res.say(f"  状態: {result['state']}")
             syncer._print_next_actions(result["state"], filename, eid)
-            if _show_document_diff(syncer, target, filename, eid, data, uploads, local_path, mapping, links, doc):
+            if _show_document_diff(syncer, target, baseline, eid, data, uploads, local_path, mapping, links, doc):
                 has_diff = True
             elif result.get("local_changed"):
+                doc["local_changed"] = True
                 # Body unchanged, but images, attachments or settings (tags, category, format) changed.
                 res.say("  本文の差分なし（画像・添付ファイル、または設定のタグ・カテゴリ・本文形式が変わっています。push で送信されます）")
                 has_diff = True
@@ -1162,6 +1186,12 @@ def run_diff(args, echo=None) -> CommandResult:
 
 
 def cmd_diff(args):
+    if getattr(args, "json", False):
+        result = run_diff(args)
+        for warning in result.warnings:
+            cli_echo(warning, stderr=True)
+        print(json.dumps(result.data, ensure_ascii=False))
+        return result.exit_code
     return run_diff(args, echo=cli_echo).exit_code
 
 
@@ -2757,6 +2787,7 @@ def build_parser():
     push_parser.add_argument("--regex", action="append", help="同期するファイル名に部分一致する正規表現（複数指定可）")
     sub.add_parser("init", help="対話的に設定ファイルを作成", parents=[sub_common])
     diff_parser = sub.add_parser("diff", help="前回の同期からのローカルと eLabFTW の変更を表示", parents=[sub_common])
+    diff_parser.add_argument("--json", action="store_true", help="送信先、改名予定、差分を JSON で出力")
     diff_parser.add_argument("files", nargs="*", help="表示するファイル・ディレクトリ・glob（push と同じ指定。省略時は全文書）")
     diff_parser.add_argument("--regex", action="append", help="表示するファイル名に部分一致する正規表現（複数指定可）")
     sub.add_parser("update", help="ツールを最新版に更新")
