@@ -200,7 +200,7 @@ def _scrub(value, secrets):
     if isinstance(value, list):
         return [_scrub(item, secrets) for item in value]
     if isinstance(value, dict):
-        return {redact(key, *secrets) if key in secrets else key: _scrub(item, secrets)
+        return {_scrub(key, secrets) if isinstance(key, str) else key: _scrub(item, secrets)
                 for key, item in value.items()}
     return value
 

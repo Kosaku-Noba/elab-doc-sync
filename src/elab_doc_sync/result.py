@@ -111,10 +111,10 @@ def redact(text: str, *secrets: str | None) -> str:
     return text
 
 
-# URL に埋め込まれたユーザー名・パスワード（scheme://user:pass@host）。
-# パスワードには引用符や空白も入りうるので、scheme:// から、次の / より前にある最後の @ までを認証情報とみなす
-# （伏せすぎても、認証情報を出すよりよい）。
-_URL_CREDENTIALS = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/]*@")
+# URL に埋め込まれたユーザー名・パスワード（scheme://user:pass@host）。引用符は含みうる。
+# 設定の読み込みで空白を含む URL は拒否するので、空白や改行の先までは伏せない（本文中のメールアドレスなどを守る）。
+# 日本語の直後に続く URL も対象にするため、単語境界は使わない。
+_URL_CREDENTIALS = re.compile(r"(?i)([a-z][a-z0-9+.-]*://)[^/\s@]+@")
 
 
 def redact_url_credentials(text: str) -> str:

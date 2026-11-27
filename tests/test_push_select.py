@@ -398,7 +398,7 @@ def test_pull_error_hides_credentials_in_urls(project, capsys):
     root, remote = project
     assert push('docs/a.md') in (0, None)
     CLIENTS[0].get_item.side_effect = ConnectionError(
-        "Max retries exceeded with url: https://us'er:se'c\" ret@example.test:9/api/v2/items/1")
+        "Max retries exceeded with url: https://us'er:se'c\"ret@example.test:9/api/v2/items/1")
     capsys.readouterr()
     with patch.object(sys, 'argv', ['esync', 'pull', '--json', '--dry-run', '--', 'docs/a.md']):
         try:
@@ -407,7 +407,7 @@ def test_pull_error_hides_credentials_in_urls(project, capsys):
             pass
     out, err = capsys.readouterr()
     for text in (out, err):
-        assert 'se\'c' not in text and 'us\'er' not in text and ' ret@' not in text, 'hide credentials with quotes and spaces'
+        assert 'se\'c' not in text and 'us\'er' not in text, 'hide credentials containing quotes'
     assert 'https://***@example.test:9' in json.loads(out)['documents'][0]['error']
     assert 'https://***@example.test:9' in err
 
@@ -644,5 +644,27 @@ def test_url_helpers_ignore_credentials():
     assert _hosts_match('https://u:p@Elab.Example.test', 'https://elab.example.test')
     assert entity_url('https://u:p@h.test/', 'items', 3) == 'https://h.test/database.php?mode=view&id=3'
     assert _server_key('https://u:p@H.test/x/') == _server_key('https://h.test/x')
-    assert _scrub({'server': 'https://u:p@h.test', 'messages': ['see https://a:b c@h.test/x']}, []) == \
-        {'server': 'https://***@h.test', 'messages': ['see https://***@h.test/x']}
+    assert _scrub({'server': 'https://u:p@h.test', 'messages': ['接続先はhttps://a:b"c@h.test/x']}, []) == \
+        {'server': 'https://***@h.test', 'messages': ['接続先はhttps://***@h.test/x']}
+    assert _scrub({'https://k:v@h.test': 1}, []) == {'https://***@h.test': 1}, 'mask URLs in dictionary keys too'
+    text = '資料 https://example.test を参照。\n担当者 admin@example.test'
+    assert _scrub(text, []) == text, 'do not mask past the URL'
+    assert not _hosts_match('https://h.test/a', 'https://h.test/b'), 'another installation on the same host'
+    assert _hosts_match('https://u:p@h.test/a/', 'https://h.test/a')
+
+
+def test_merging_pull_rewrites_an_old_state_server_without_credentials(project, capsys):
+    root, remote = project
+    CLIENTS[0].base_url = 'https://user:secret@example.test'
+    (root / 'docs/a.md').write_text('# a\n\nline1\n\nline2', encoding='utf-8')
+    assert push('docs/a.md') in (0, None)
+    [eid] = remote
+    [state] = list(root.glob('.ids/**/a.md.state.json'))
+    data = json.loads(state.read_text(encoding='utf-8'))
+    data['server'] = 'https://user:secret@example.test'  # 以前の版が記録した形
+    state.write_text(json.dumps(data), encoding='utf-8')
+    (root / 'docs/a.md').write_text('# a\n\nline1 local\n\nline2', encoding='utf-8')
+    remote[eid]['body'] = remote[eid]['body'].replace('line2', 'line2 remote')
+    code, result = pull_json('--', 'docs/a.md', capsys=capsys)
+    assert result['documents'][0]['result'] == 'pulled'
+    assert 'secret' not in state.read_text(encoding='utf-8')

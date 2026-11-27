@@ -220,7 +220,7 @@ YAML 設定読み込み・バリデーション。
 - `run_clone` は次の順に確かめる。(1) 本実行のときだけ、作成先のロックと未完了の復旧記録を確かめ、問題があれば例外になる（例外の種類と CLI の終了コードは原因による。`dry_run=True` では確かめない）。(2) `--url` が [設定ファイル](04_CONFIGURATION.md) の `url` の条件を満たさなければ、作成先にプロジェクトのファイルを作らずに `exit_code` 2 の `CommandResult` を返す。(3) `ELABFTW_API_KEY` が未設定または空白だけなら `exit_code` 1 を返す。(2)・(3) では理由を `warnings` に入れ、`data` は `dry_run` と空の `documents` だけで `server` を含まない。それ以降の結果では、`data["server"]` は認証情報を除いた URL
 - 設定の誤り・通信の失敗など、上記以外のエラーは `CommandResult` にならず例外として呼び出し元に伝わる（CLI は終了コード 2 / 1 にする）。呼び出し側で例外を処理する。結果を作った後の例外には `partial_result` が付く。リモート書き換え系の各件は送信前に記録され、`result` のない件は完了未確認（応答を受け取れなかった場合を含む）なので、再試行の前に実際の状態を確認する（[設計判断 13.4](12_DESIGN_DECISIONS.md)）
 - `run_*` が使う `read_config` は設定の検証失敗を `ConfigError`（`ValueError` の派生型）で通知する。互換 API の `config.load_config` は従来どおり理由を表示して `SystemExit(2)` を送出する
-- 書き換え系（`tag`・`relate`・`metadata`・`category`・`entity-status`）の各件と `run_category` の `data` には、接続先のベース URL `server` が入る
+- 書き換え系（`tag`・`relate`・`metadata`・`category`・`entity-status`）の各件と `run_category` の `data` には、接続先のベース URL `server` が入る。`server`、`run_whoami` の `profiles[].url` など、結果に含まれる接続先 URL からはユーザー名・パスワードを除く（設定が `https://user:pass@elab.example.com` なら `https://elab.example.com`）。MCP サーバーは応答中の文字列と辞書のキーにある URL の認証情報も伏せる
 
 | 関数 | `data` |
 |---|---|

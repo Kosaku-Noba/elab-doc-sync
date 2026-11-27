@@ -733,8 +733,13 @@ def _hosts_match(base_url: str, link_base: str) -> bool:
     elab.example.com と elab.example.co の誤マッチを防ぐ。
     """
     from urllib.parse import urlparse
-    # 接続先の認証情報は比較に含めない（本文のリンクには通常付いていない）。
-    return urlparse(public_url(base_url)).netloc.lower() == urlparse(public_url(link_base)).netloc.lower()
+
+    # 接続先の認証情報は比較に含めない（本文のリンクには通常付いていない）。同じホストの別のパスに
+    # 設置された eLabFTW は別のサーバーなので、ベースパスまで比べる。
+    def key(url):
+        parsed = urlparse(public_url(url))
+        return parsed.netloc.lower(), parsed.path.rstrip("/")
+    return key(base_url) == key(link_base)
 
 
 class LinkTargets:
@@ -2001,7 +2006,9 @@ class EachDocsSyncer:
         state = self._state(filename)
         if state:
             write_json(self.hash_dir / f"{filename}.state.json", {
-                **state, "remote": self._remote_signature(data, uploads),
+                # 以前の版が記録した接続先（認証情報付きのことがある）は、書き直すときに除く。
+                **state, "server": server_id(state.get("server") or self.client.base_url),
+                "remote": self._remote_signature(data, uploads),
                 **({} if metadata_pending else {"meta_hash": meta_hash}),
             })
 

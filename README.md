@@ -333,7 +333,7 @@ export ELABFTW_API_KEY="your_key"
 esync clone --url https://elab.example.com --entity items --id 42 --id 43
 ```
 
-`elab-clone-42/` にプロジェクトディレクトリ一式（`.elab-sync.yaml`・`.gitignore`・取得した文書）が生成されます。`--dir` で名前を変えられます。
+`elab-clone-42/` にプロジェクトディレクトリ一式（`.elab-sync.yaml`・`.gitignore`・取得した文書）が生成されます。`--dir` で名前を変えられます。`--url` にユーザー名・パスワードを含めた場合（`https://user:pass@host`）、生成した `.elab-sync.yaml` にはそれもそのまま保存されます（`.gitignore` で除外されます）。プロジェクトを共有するときは `.elab-sync.yaml` を含めないでください。
 
 ### 別の PC や共同編集者と同じ文書を扱いたい
 
