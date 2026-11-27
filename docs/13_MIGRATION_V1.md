@@ -88,8 +88,9 @@ esync restore <バックアップID>
 記事の新規作成要求で応答が失われた場合は、自動再作成しません。
 
 ```bash
-esync list --limit 100
-# 作成された記事がある場合
+# ターゲットの接続先と種別で探す（実験ノートは --entity experiments、既定はリソース）
+esync list --limit 100 --target docs --entity experiments
+# 作成された記事がある場合（--file は docs_dir からの相対パス）
 esync link <ID> --file note.md --target docs
 # サーバー側にも対応記事が存在しないと確認できた場合だけ
 esync link --new --file note.md --target docs
