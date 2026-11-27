@@ -689,3 +689,13 @@ def test_url_masking_edges_and_subpath_links():
     body = '[b](https://example.test/a/database.php?mode=view&id=7) [c](https://example.test/b/database.php?mode=view&id=7)'
     result = _rewrite_elab_links_to_local(body, 'https://user:pw@example.test/a', {'b.md': 7}, 'items')
     assert result == '[b](./b.md) [c](https://example.test/b/database.php?mode=view&id=7)'
+
+
+def test_masking_diff_lines_and_old_style_userinfo_and_query_links():
+    from elab_doc_sync.mcp_server import _scrub
+    from elab_doc_sync.sync import _rewrite_elab_links_to_local
+    lines = ['+https://u:secret@h.test/x', '-https://u:secret@h.test/y', ' see https://a@b:secret@h.test/z']
+    assert _scrub(lines, []) == ['+https://***@h.test/x', '-https://***@h.test/y', ' see https://***@h.test/z']
+    body = '[b](https://example.test/a/database.php?mode=view&id=7&lang=ja#section)'
+    assert _rewrite_elab_links_to_local(body, 'https://example.test/a', {'b.md': 7}, 'items') == body, \
+        'keep links whose extra query a local link cannot express'

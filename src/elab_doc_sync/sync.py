@@ -721,7 +721,8 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
 # フラグメント部分もキャプチャして逆変換時に保持する
 _ELAB_URL_RE = re.compile(
     # base はサブパスに設置した eLabFTW（https://host/elab）も含む。
-    r"(?P<base>https?://[^/?#\s]+(?:/[^?#\s]*?)?)/(?P<page>database|experiments)\.php\?mode=view&id=(?P<id>\d+)"
+    # id の後に別のクエリが続くリンクは、ローカルリンクで表せないので対象にしない（元の URL を残す）。
+    r"(?P<base>https?://[^/?#\s]+(?:/[^?#\s]*?)?)/(?P<page>database|experiments)\.php\?mode=view&id=(?P<id>\d+)(?![\d&;])"
     r"(?P<fragment>#[^\s)]*)?")
 
 # eLabFTW の entity タイプと URL ページ名の対応
@@ -729,7 +730,7 @@ _ENTITY_TO_PAGE = {"items": "database", "experiments": "experiments"}
 _PAGE_TO_ENTITY = {"database": "items", "experiments": "experiments"}
 
 def _hosts_match(base_url: str, link_base: str) -> bool:
-    """base_url と link_base のホスト部分が完全一致するか判定する。
+    """base_url と link_base のホスト・ポートと設置パスが一致するか判定する（認証情報は比べない）。
 
     前方一致ではなくホスト完全一致を使い、
     elab.example.com と elab.example.co の誤マッチを防ぐ。

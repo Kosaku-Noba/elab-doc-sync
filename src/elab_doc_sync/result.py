@@ -112,9 +112,9 @@ def redact(text: str, *secrets: str | None) -> str:
 
 
 # URL に埋め込まれたユーザー名・パスワード（scheme://user:pass@host）の、:// の後ろの部分。引用符は含みうる。
-# 設定の読み込みで空白や @ を含む認証情報は拒否するので、空白・改行・/・?・#・@ の先までは伏せない
-# （URL の後ろのメールアドレスや、クエリ内のアドレスを守る）。
-_URL_USERINFO = re.compile(r"[^/\s@?#]+@")
+# ホストとの区切りは、空白・改行・/・?・# より前の最後の @（記事本文などには生の @ を含む旧い形式もありうる）。
+# 空白や ?・# の先までは伏せないので、URL の後ろのメールアドレスやクエリ内のアドレスは残る。
+_URL_USERINFO = re.compile(r"[^/\s?#]+@")
 _SCHEME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+.-")
 
 
@@ -130,6 +130,9 @@ def redact_url_credentials(text: str) -> str:
         scheme = start
         while scheme > 0 and text[scheme - 1] in _SCHEME_CHARS:
             scheme -= 1
+        # スキームは英字で始まる。差分の行頭の + や - などはスキームに含めない。
+        while scheme < start and not text[scheme].isalpha():
+            scheme += 1
         rest = start + 3
         found = _URL_USERINFO.match(text, rest)
         if scheme < start and text[scheme].isalpha() and found:
