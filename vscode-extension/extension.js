@@ -146,8 +146,9 @@ async function activate(context) {
             const items = documents.map(doc => ({
                 label: targetLabel(doc), description: doc.server + ' / ' + doc.entity, doc,
             }));
-            const choice = await vscode.window.showQuickPick(items, { placeHolder: '差分を確認して push するターゲットを選択' });
-            if (!choice) return;
+            const choice = await vscode.window.showQuickPick(items,
+                { placeHolder: '差分を確認して push するターゲットを選択' }, token);
+            if (!choice || token?.isCancellationRequested) return;
             selected = choice.doc;
         }
         if (!selected) throw new Error('同期対象の文書がありません。');
@@ -155,6 +156,7 @@ async function activate(context) {
         if (diffResult.documents.length > 1 && !selected.selector) throw new Error('送信先を区別できるよう設定でターゲットに一意の title を付けてください。');
         if (!selected.preview_token) throw new Error('push --expect-preview に対応した esync CLI に更新してください。');
         const options = selected.selector ? ['--target=' + selected.selector] : [];
+        if (token?.isCancellationRequested) return;
         const previewUri = vscode.Uri.from({
             scheme: previewScheme, path: file.path + '.diff', query: String(++sequence),
         });

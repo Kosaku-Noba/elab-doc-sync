@@ -25,14 +25,22 @@ exports.run = async function () {
         assert.deepEqual(await run(folder, ['status', '--json']), { code: 1, stdout: 'out\n', stderr: 'warn\n' });
         assert.deepEqual(logs, ['esync status --json\nwarn'], 'record stderr in the output channel');
 
+        // sleep はシェルの子として動き、パイプを持ち続ける。呼び出しはその終了を待たずに戻る。
+        await write('sleep 3; echo done');
+        let started = Date.now();
+        await assert.rejects(run(folder, ['diff']), (/** @type {any} */ error) => error.timedOut
+            && /esync diff が 1 秒以内に終わらなかった/.test(error.message), 'stop a command that runs too long');
+        assert.ok(Date.now() - started < 2500, 'return on timeout without waiting for child processes');
         await write('sleep 2');
-        await assert.rejects(run(folder, ['diff']), /esync diff が 1 秒以内に終わらなかった/, 'stop a command that runs too long');
         assert.equal((await run(folder, ['push'], { timeout: 0 })).code, 0, 'timeout 0 waits for the command');
 
+        await write('sleep 3; echo done');
         const source = new vscode.CancellationTokenSource();
+        started = Date.now();
         const cancelled = run(folder, ['diff'], { token: source.token, timeout: 0 });
-        source.cancel();
+        setTimeout(() => source.cancel(), 200);
         await assert.rejects(cancelled, error => error instanceof vscode.CancellationError);
+        assert.ok(Date.now() - started < 1500, 'return on cancel without waiting for child processes');
         await assert.rejects(run(folder, ['diff'], { token: source.token }), error => error instanceof vscode.CancellationError,
             'do not start when already cancelled');
 
@@ -45,10 +53,14 @@ exports.run = async function () {
         assert.match(await checkVersion(versionRun, folder), /1\.4\.0 は古い.*1\.5\.0 以降/);
         version = 'dev';
         assert.match(await checkVersion(versionRun, folder), /版を確認できませんでした/);
+        const slow = () => Promise.reject(Object.assign(new Error('timeout'), { timedOut: true }));
+        const slowMessage = await checkVersion(slow, folder);
+        assert.match(slowMessage, /30 秒以内に応答しませんでした.*esync\.executable/);
+        assert.doesNotMatch(slowMessage, /timeoutSeconds/, 'the version check ignores esync.timeoutSeconds');
 
         const missing = createRunner(() => path.join(root, 'missing'), () => {}, () => 0);
         await assert.rejects(missing(folder, ['--version']), /esync\.executable/);
-        console.log('PASS: stderr log, timeout, cancellation, version check, missing executable');
+        console.log('PASS: stderr log, timeout and cancel without waiting for children, version check, missing executable');
     } finally {
         await fs.rm(root, { recursive: true, force: true });
     }
