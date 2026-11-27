@@ -43,11 +43,12 @@ esac
     return root;
 }
 
+const extensionPath = process.env.ESYNC_TEST_EXTENSION_PATH || path.resolve(__dirname, '..');
 const root = process.platform === 'win32' ? undefined : fixture();
 runTests({
     vscodeExecutablePath: process.env.VSCODE_EXECUTABLE || undefined,
-    extensionDevelopmentPath: path.resolve(__dirname, '..'),
-    extensionTestsPath: path.resolve(__dirname, 'index.cjs'),
+    extensionDevelopmentPath: extensionPath,
+    extensionTestsPath: path.join(extensionPath, 'test', 'index.cjs'),
     extensionTestsEnv: root ? { ESYNC_FIXTURE: root } : {},
     launchArgs: [
         ...(root ? [path.join(root, 'ws.code-workspace'), '--user-data-dir', path.join(root, 'user')] : []),
