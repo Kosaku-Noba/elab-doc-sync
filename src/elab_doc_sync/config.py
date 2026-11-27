@@ -150,11 +150,18 @@ def profile_connection(profile: "ProfileConfig") -> tuple[str, str, bool]:
 
 
 def _valid_server_url(url) -> bool:
-    """http(s) のスキームとホストを持つ URL か。"""
+    """http(s) のスキームとホストを持つ URL か。
+
+    検証した文字列をそのまま接続・表示に使えるよう、前後を含めて空白（全角空白などを含む）や制御文字を
+    一切含まない URL だけを有効とする。
+    """
     from urllib.parse import urlsplit
+    text = str(url)
+    if not text or any(c.isspace() or not c.isprintable() for c in text):
+        return False
     try:
-        parts = urlsplit(str(url).strip())
-        parts.port  # 数字でないポート（区切りの誤記でパスワードがポート扱いになった場合など）は ValueError
+        parts = urlsplit(text)
+        parts.port  # 数字でないポートや 0〜65535 の範囲外（区切りの誤記でパスワードがポート扱いになった場合など）は ValueError
         return parts.scheme in ("http", "https") and bool(parts.hostname)
     except ValueError:
         return False

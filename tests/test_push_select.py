@@ -533,11 +533,20 @@ def test_profile_list_hides_url_credentials_and_add_rejects_bad_urls(project, ca
     cfg = root / '.elab-sync.yaml'
     data = yaml.safe_load(cfg.read_text(encoding='utf-8'))
     data['profiles'] = {'good': {'url': 'https://user:secret@elab.example.test', 'api_key': 'k'},
-                        'bad': {'url': 'https:/user:pa ss@elab.example.test', 'api_key': 'k'}}
-    cfg.write_text(yaml.safe_dump(data), encoding='utf-8')
+                        'bad': {'url': 'https:/user:pa ss@elab.example.test', 'api_key': 'k'},
+                        'wide': {'url': '\u3000https://wuser:wpass@elab.example.test', 'api_key': 'k'}}
+    cfg.write_text(yaml.safe_dump(data, allow_unicode=True), encoding='utf-8')
     code, text = _run(['profile', 'list'], capsys)
-    assert 'secret' not in text and 'pa ss' not in text
+    for secret in ('secret', 'pa ss', 'wpass', 'wuser'):
+        assert secret not in text
     assert 'https://elab.example.test' in text and '（不正な URL）' in text
+    # MCP などに返す構造化結果も同じ値にする。
+    from elab_doc_sync.cli import run_profile_list
+    from types import SimpleNamespace
+    urls = {p['name']: p['url'] for p in run_profile_list(SimpleNamespace(config=str(cfg))).data['profiles']}
+    assert urls == {'default': 'https://example.test', 'good': 'https://elab.example.test',
+                    'bad': '（不正な URL）', 'wide': '（不正な URL）'}
     before = cfg.read_text(encoding='utf-8')
-    code, text = _run(['profile', 'add', 'other', '--url', 'https:/x:y z@host'], capsys)
-    assert code == 2 and 'y z' not in text and cfg.read_text(encoding='utf-8') == before
+    for url in ('https:/x:y z@host', 'https://example .test', 'https://elab.example.test:65536', '\u3000https://e.test'):
+        code, text = _run(['profile', 'add', 'other', '--url', url], capsys)
+        assert code == 2 and 'y z' not in text and cfg.read_text(encoding='utf-8') == before, url

@@ -427,7 +427,7 @@ esync profile add team-c --url https://elab.example.com --api-key-env ENV_NAME [
 esync profile remove team-b
 ```
 
-`.elab-sync.yaml` の `profiles` セクションを編集します。`--api-key-env` は、キーを設定ファイルに書かず、環境変数の名前を `api_key_env` として登録します（`--api-key` とは同時に指定できません）。`list` は URL・API キーの有無（✓/✗。`api_key_env` のときは環境変数の名前と設定の有無）・SSL 検証の有無を表示し、キー自体は表示しません。`elabftw` セクションは `default` として表示します。
+`.elab-sync.yaml` の `profiles` セクションを編集します。`--api-key-env` は、キーを設定ファイルに書かず、環境変数の名前を `api_key_env` として登録します（`--api-key` とは同時に指定できません）。`list` は URL・API キーの有無（✓/✗。`api_key_env` のときは環境変数の名前と設定の有無）・SSL 検証の有無を表示し、キー自体は表示しません。`elabftw` セクションは `default` として表示します。URL に含まれるユーザー名・パスワードは伏せ、形が不正な URL は「（不正な URL）」と表示します（設定を直すプロファイルを特定できます。URL の条件は [設定ファイル](04_CONFIGURATION.md) の `url` を参照）。`add` は不正な `--url` を保存せず、終了コード 2 にします。
 
 ## whoami — ユーザー情報
 

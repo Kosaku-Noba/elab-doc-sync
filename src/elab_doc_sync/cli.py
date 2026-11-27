@@ -2694,7 +2694,7 @@ def cmd_profile(args):
         name = args.profile_name
         url = args.url
         if not _valid_server_url(url):
-            # 不正な URL を保存すると、設定の読み込みで全コマンドが止まる。値は表示しない。
+            # 不正な URL を保存すると、設定を検証するコマンド（push・pull など）が失敗する。値は表示しない。
             print("エラー: --url が不正です。https://elab.example.com のように、http:// または https:// から始まる URL を指定してください",
                   file=sys.stderr)
             sys.exit(2)
