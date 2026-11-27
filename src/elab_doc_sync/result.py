@@ -4,6 +4,7 @@
 表示し、exit_code を終了コードにする。MCP サーバーは echo を渡さず、data を JSON で返す。
 """
 
+import re
 import sys
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -110,10 +111,14 @@ def redact(text: str, *secrets: str | None) -> str:
     return text
 
 
+# URL に埋め込まれたユーザー名・パスワード（scheme://user:pass@host）。
+_URL_CREDENTIALS = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@'\"]+@")
+
+
 def error_text(exc: Exception, api_key: str | None = None) -> str:
-    """HTTP エラーは URL を省き、それ以外の例外文では接続先の API キーを伏せる。"""
+    """HTTP エラーは URL を省き、それ以外の例外文では接続先の API キーと URL の認証情報を伏せる。"""
     status = getattr(getattr(exc, "response", None), "status_code", None)
     if status is not None:
         reason = {401: "認証エラー", 403: "権限がありません", 404: "見つかりません"}.get(status)
         return f"HTTP {status}" + (f"（{reason}）" if reason else "")
-    return redact(str(exc), api_key)
+    return _URL_CREDENTIALS.sub(r"\1***@", redact(str(exc), api_key))

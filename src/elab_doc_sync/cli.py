@@ -253,6 +253,18 @@ def _find_target_by_mapping(config, project_root: Path, entity_type: str, entity
     return None
 
 
+def _expected_id_error(pairs, selected, expected):
+    """--expect-id: 指定した1文書が、確認した記事 ID に紐付いたままかを書き込み前に照合する。問題があれば理由を返す。"""
+    if not selected or sum(map(len, selected.values())) != 1:
+        return "--expect-id は 1 つのターゲットの 1 文書に対して指定してください"
+    [(index, names)] = selected.items()
+    [name] = names
+    current = pairs[index][1]._load_mapping(migrate=False).get(name)
+    if current != expected:
+        now = "未追跡" if current is None else f"#{current}"
+        return f"{name} の紐付けが確認時と異なります（確認時 #{expected}、現在 {now}）。差分を開き直してください"
+
+
 @project_command
 @returns_partial_result
 def run_push(args, echo=None) -> CommandResult:
@@ -270,6 +282,11 @@ def run_push(args, echo=None) -> CommandResult:
             selected = _select_documents(pairs, files, _compile_regexes(regex_expressions))
         except ValueError as e:
             return res.fail(f"エラー: {e}", 2)
+    expected_id = getattr(args, "expect_id", None)
+    if expected_id is not None:
+        problem = _expected_id_error(pairs, selected, expected_id)
+        if problem:
+            return res.fail(f"エラー: {problem}", 2)
     prune_previews = {}
     expected_preview = getattr(args, "expect_preview", None)
     if expected_preview is not None and (not selected or sum(map(len, selected.values())) != 1
@@ -488,6 +505,8 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
     files, regex_expressions = getattr(args, "files", None) or [], getattr(args, "regex", None)
     if (files or regex_expressions) and (args.id or getattr(args, "dir", None)):
         return res.fail("エラー: 文書の指定は --id・--dir と併用できません", 2)
+    if getattr(args, "expect_id", None) is not None and not (files or regex_expressions):
+        return res.fail("エラー: --expect-id は文書を1つ指定して使ってください", 2)
     config_path = Path(args.config).resolve()
     root = config_path.parent
     config = load_config(config_path)
@@ -583,11 +602,15 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
         # push・diff と同じ指定で、取り込む文書を追跡中の文書から選ぶ。
         selected = None
         if files or regex_expressions:
+            pairs = [(t, EachDocsSyncer(None, t, root)) for t in targets]
             try:
-                selected = _select_documents([(t, EachDocsSyncer(None, t, root)) for t in targets], files,
-                                             _compile_regexes(regex_expressions))
+                selected = _select_documents(pairs, files, _compile_regexes(regex_expressions))
             except ValueError as e:
                 return res.fail(f"エラー: {e}", 2)
+            if getattr(args, "expect_id", None) is not None:
+                problem = _expected_id_error(pairs, selected, args.expect_id)
+                if problem:
+                    return res.fail(f"エラー: {problem}", 2)
         for index, target in enumerate(targets):
             only = None if selected is None else selected.get(index, set())
             if only is not None and not only:
@@ -630,7 +653,8 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
             doc["conflict"] = len(conflict_files) > conflicts_before
             if "path" in report:
                 doc["path"] = _project_relative(report["path"], root)
-                pulled_docs.append((target, Path(report["path"]).name))
+                if result and not dry_run:
+                    pulled_docs.append((target, Path(report["path"]).name))
             pulled += result
             skipped += int(result == 0)
         except Exception as exc:
@@ -993,6 +1017,8 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
             metadata_pending = merge and syncer._has_meta_changed(old_name, Path(old_name).stem, target.category, target.tags)
             if state == "送信待ち":
                 progress(f"  [{title}] ローカル編集を保持（送信待ち）")
+                if report is not None:
+                    report["path"] = old_path  # 取得しないので、本文は今の場所に残る
                 return 0
             if state == "最新" and old_path == filepath:
                 progress(f"  [{title}] 最新（スキップ）")
@@ -2879,6 +2905,8 @@ def build_parser():
     push_parser.add_argument("files", nargs="*", help="同期するファイル・ディレクトリ・glob（カレントディレクトリ基準、複数指定可。省略時は全文書）")
     push_parser.add_argument("--regex", action="append", help="同期するファイル名に部分一致する正規表現（複数指定可）")
     push_parser.add_argument("--expect-preview", metavar="TOKEN", help="diff --json で確認した 1 文書だけを送信")
+    push_parser.add_argument("--expect-id", type=int, metavar="ID",
+                             help="指定した1文書がこの記事 ID に紐付いている場合だけ送信する（--force と併用できる）")
     sub.add_parser("init", help="対話的に設定ファイルを作成", parents=[sub_common])
     diff_parser = sub.add_parser("diff", help="前回の同期からのローカルと eLabFTW の変更を表示", parents=[sub_common])
     diff_parser.add_argument("--json", action="store_true", help="送信先、改名予定、差分を JSON で出力")
@@ -2898,6 +2926,8 @@ def build_parser():
                              help="取り込む追跡中の文書・ディレクトリ・glob（push と同じ指定。省略時は全文書。--id・--dir とは併用不可）")
     pull_parser.add_argument("--regex", action="append", help="取り込むファイル名に部分一致する正規表現（複数指定可）")
     pull_parser.add_argument("--json", action="store_true", help="取り込んだ文書のパス・結果・競合の有無を JSON で出力")
+    pull_parser.add_argument("--expect-id", type=int, metavar="ID",
+                             help="指定した1文書がこの記事 ID に紐付いている場合だけ取り込む（確認後の紐付けの変更を防ぐ）")
 
     log_parser = sub.add_parser("log", help="同期ログを表示", parents=[sub_common])
     log_parser.add_argument("--limit", "-l", type=int, default=20, help="表示件数（デフォルト: 20）")

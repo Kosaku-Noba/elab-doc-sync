@@ -259,12 +259,13 @@ async function activate(context) {
      * 書き換えの前に、差分と同じ判定で送信先を1つに決める。表示名の target は複数のターゲットに一致しうるので、
      * 差分が返す一意な selector を使う。改名した文書は、旧名の紐付けを esync mv で移してよいか確かめる。
      */
-    async function prepareWrite(arg, purpose) {
+    async function prepareWrite(arg) {
         const target = await documentTarget(arg);
         if (!target || !await ensureSaved(target.file)) return;
         const { folder, file, doc } = target;
         const name = path.basename(file.fsPath);
-        const diff = await loadDiff(folder, file, []);
+        // 選んだ行のターゲットに絞る。ほかのターゲットでの追跡解除などに妨げられないようにする。
+        const diff = await loadDiff(folder, file, doc.target ? ['--target=' + doc.target] : []);
         const matches = diff.documents.filter(d => d.target === doc.target && d.entity === doc.entity);
         if (!matches.length) throw new Error('送信先が変わりました。一覧を更新してください。');
         if (diff.documents.length > 1 && matches.some(d => !d.selector)) {
@@ -283,14 +284,16 @@ async function activate(context) {
         }
         if (current.error) throw new Error(current.error);
         if (current.entity_id == null) throw new Error(name + ' はまだ eLabFTW の記事と紐付いていません。');
-        const options = current.selector ? ['--target=' + current.selector] : [];
+        // 確認した記事 ID を CLI に渡し、書き込む直前に紐付けが変わっていないかを照合させる。
+        const options = [...(current.selector ? ['--target=' + current.selector] : []), '--expect-id=' + current.entity_id];
         if (current.renamed_from) {
-            // pull は改名を判定しないので、旧名の紐付けを先に移す。push は改名を判定するので移さない。
-            if (purpose === 'push') return { folder, file, name, options, entityId: current.entity_id };
-            if (!await dialogs.confirm(name + ' は ' + current.renamed_from + ' から改名されています。取り込む前に、記事 #'
-                    + current.entity_id + ' との紐付けを ' + name + ' に移します（esync mv）。', '紐付けを移して続ける')) return;
+            // 改名した文書は旧名で紐付いている。紐付けを先に移すと、記事 ID の照合と pull の取り込み先が改名後のファイルになる。
+            if (!await dialogs.confirm(name + ' は ' + current.renamed_from + ' から改名されています。続ける前に、記事 #'
+                    + current.entity_id + ' との紐付けを ' + name + ' に移します（esync mv）。この後の確認で取り消しても、'
+                    + '紐付けは ' + name + ' に移ったままです。', '紐付けを移して続ける')) return;
             const from = path.join(path.dirname(file.fsPath), current.renamed_from);
-            const moved = await run(folder, ['mv', ...options, '--', from, file.fsPath], { timeout: 0 });
+            const moved = await run(folder, ['mv', ...options.filter(o => o.startsWith('--target=')), '--', from, file.fsPath],
+                { timeout: 0 });
             if (moved.stdout.trim()) output.appendLine(moved.stdout.trimEnd());
             if (moved.code !== 0) throw new Error('紐付けを移せませんでした。出力「esync」を確認してください。');
             refresh();
@@ -299,7 +302,7 @@ async function activate(context) {
     }
 
     async function pull(arg) {
-        const target = await prepareWrite(arg, 'pull');
+        const target = await prepareWrite(arg);
         if (!target) return;
         const { folder, file, name, options, entityId } = target;
         const planned = await pullJson(folder, ['--dry-run', ...options], file);
@@ -336,7 +339,7 @@ async function activate(context) {
     }
 
     async function adoptLocal(arg) {
-        const target = await prepareWrite(arg, 'push');
+        const target = await prepareWrite(arg);
         if (!target) return;
         const { folder, file, name, options, entityId } = target;
         if (!await dialogs.confirm('eLabFTW の記事 #' + entityId + ' を ' + name + ' の内容で上書きします。'
@@ -356,7 +359,7 @@ async function activate(context) {
     }
 
     async function adoptRemote(arg) {
-        const target = await prepareWrite(arg, 'pull');
+        const target = await prepareWrite(arg);
         if (!target) return;
         const { folder, file, name, options, entityId } = target;
         if (!await dialogs.confirm(name + ' を eLabFTW の記事 #' + entityId + ' の内容で上書きします。ローカルの変更はファイルから失われます'

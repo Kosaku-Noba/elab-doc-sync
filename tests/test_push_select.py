@@ -372,3 +372,47 @@ def test_pull_json_path_follows_a_title_change(project, capsys):
     code, data = pull_json('--', 'docs/a.md', capsys=capsys)
     assert data['documents'][0]['path'] == 'docs/renamed.md'
     assert (root / 'docs/renamed.md').exists() and not (root / 'docs/a.md').exists()
+
+
+def test_expect_id_refuses_a_document_linked_to_another_article(project, capsys):
+    root, remote = project
+    assert push('docs/a.md', 'docs/b.md') in (0, None)
+    ids = {remote[eid]['title']: eid for eid in remote}
+    (root / 'docs/a.md').write_text('# local', encoding='utf-8')
+    before = {eid: dict(value) for eid, value in remote.items()}
+    assert push('--force', '--expect-id', str(ids['b']), 'docs/a.md') == 2, 'a.md is linked to another article'
+    assert remote == before
+    assert push('--force', '--expect-id', str(ids['a']), 'docs/a.md') in (0, None)
+    assert remote[ids['a']]['body'].startswith('# local')
+
+    remote[ids['a']]['body'] = '# remote'
+    code, _ = pull_json('--force', '--expect-id', str(ids['b']), '--', 'docs/a.md', capsys=capsys)
+    assert code == 2 and (root / 'docs/a.md').read_text(encoding='utf-8') == '# local'
+    code, data = pull_json('--force', '--expect-id', str(ids['a']), '--', 'docs/a.md', capsys=capsys)
+    assert data['documents'][0]['result'] == 'pulled'
+    code, _ = pull_json('--expect-id', str(ids['a']), capsys=capsys)
+    assert code == 2, '--expect-id needs exactly one document'
+
+
+def test_pull_error_hides_credentials_in_urls(project, capsys):
+    root, remote = project
+    assert push('docs/a.md') in (0, None)
+    CLIENTS[0].get_item.side_effect = ConnectionError(
+        "Max retries exceeded with url: https://user:secret@example.test:9/api/v2/items/1")
+    code, data = pull_json('--dry-run', '--', 'docs/a.md', capsys=capsys)
+    assert 'secret' not in json.dumps(data) + capsys.readouterr().err
+    assert 'https://***@example.test:9' in data['documents'][0]['error']
+
+
+def test_skipped_pull_reports_where_the_body_is(project, capsys):
+    root, remote = project
+    assert push('docs/a.md') in (0, None)
+    [eid] = remote
+    # ローカルだけ編集して改名する（送信待ち）。記事のタイトルは a のまま。
+    (root / 'docs/a.md').write_text('# local edit only', encoding='utf-8')
+    with patch.object(sys, 'argv', ['esync', 'mv', 'docs/a.md', 'docs/new.md']):
+        assert main() in (0, None)
+    code, data = pull_json('--', 'docs/new.md', capsys=capsys)
+    [doc] = data['documents']
+    assert doc['result'] == 'skipped' and doc['path'] == 'docs/new.md', 'a skipped document stays where it is'
+    assert (root / 'docs/new.md').exists()
