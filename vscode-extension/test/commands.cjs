@@ -34,6 +34,10 @@ function helpers() {
         'a state fetched now is not shown as stale because another project failed');
     assert.match(partial.tooltip, /最新（前回取得）[\s\S]*設定を読み込めません/);
     assert.match(statusBarView([], ['Lab — HTTP 401']).text, /取得できません$/);
+    assert.match(statusBarView([stale('競合')]).text, /sync~spin\) esync: 競合（更新中）$/,
+        'a result being refreshed is shown as updating, not as current');
+    assert.match(statusBarView([doc('送信待ち'), stale('競合')]).text, /cloud-upload\) esync: 送信待ち（送信先 2 件）$/,
+        'pick the state fetched now over a result still being refreshed');
 }
 
 exports.run = async function () {

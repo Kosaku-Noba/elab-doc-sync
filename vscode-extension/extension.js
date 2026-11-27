@@ -186,7 +186,8 @@ async function activate(context) {
         let match = matches[0];
         if (matches.length > 1) {
             const choice = await vscode.window.showQuickPick(matches.map(m => ({
-                label: m.doc.target, description: m.folder.name + ' / ' + m.doc.entity + ' — ' + m.doc.state, match: m,
+                label: m.doc.target, match: m,
+                description: m.folder.name + ' / ' + m.doc.entity + ' — ' + m.doc.state + (m.stale ? '（前回取得）' : ''),
             })), { placeHolder: '差分を確認する送信先を選択' }, token);
             if (!choice || token?.isCancellationRequested) return;
             match = choice.match;

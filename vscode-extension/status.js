@@ -93,7 +93,7 @@ function previewItem(preview) {
         const remote = treeItem('eLabFTW 側の変更');
         remote.description = (doc.remote_changes || []).join('、');
         remote.tooltip = '同期状態が「競合」「取得待ち」の文書は、通常の push では送信されません。'
-            + '先に esync pull で eLabFTW 側の変更を取り込んでください。';
+            + 'CLI で eLabFTW 側の変更を取り込むか、どちらかを採用してから差分を開き直してください（README「競合を確認・復旧する」）。';
         remote.iconPath = new vscode.ThemeIcon('warning');
         if (preview.remote) {
             remote.command = { command: 'esync.showRemoteChanges', title: 'eLabFTW 側の変更を表示', arguments: [preview.uri] };
@@ -145,8 +145,13 @@ function statusBarView(matches, errors = []) {
     const lead = leadingState(fresh.map(({ doc }) => doc.state));
     const failure = errors.length ? ['同期状態を取得できなかったプロジェクト:', ...errors] : [];
     if (!lead) {
-        if (!errors.length) return;
         const previous = leadingState(matches.map(({ doc }) => doc.state));
+        if (!errors.length) {
+            return previous && {
+                text: '$(sync~spin) esync: ' + previous.state + '（更新中）',
+                tooltip: [...matches.map(line), 'クリックで差分を確認'].join('\n'),
+            };
+        }
         return {
             text: '$(error) esync: 同期状態を取得できません' + (previous ? '（前回: ' + previous.state + '）' : ''),
             tooltip: [...failure, ...matches.map(line)].join('\n'),
@@ -324,7 +329,8 @@ class StatusProvider {
         let waiting = false;
         for (const folder of relevant) {
             const entry = this.status(folder);
-            const stale = Boolean(entry.error);
+            // 取得に失敗した、または取り直している間の結果は前回のもの。
+            const stale = Boolean(entry.error || entry.loading);
             if (stale) errors.push(folder.name + ' — ' + entry.error);
             if (!entry.value) {
                 waiting ||= entry.loading;
