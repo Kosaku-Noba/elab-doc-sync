@@ -85,7 +85,7 @@ def _link_syncers(config, project_root):
     return syncers
 
 
-def _relink_local_documents(syncers):
+def _relink_local_documents(syncers, only=None):
     """取得済みの文書に残る eLabFTW の記事 URL を、追跡中の文書へのローカルリンクに置き換える。
 
     リンク先の文書を後から pull した場合、リンク元は「最新」としてスキップされるため、
@@ -96,6 +96,9 @@ def _relink_local_documents(syncers):
     for syncer in syncers:
         links = syncer.link_targets()
         for name in syncer.readable_link_mapping():
+            # 文書を指定した pull では、取り込んだ文書だけを書き換える。
+            if only is not None and (syncer.target.docs_dir, syncer.target.id_file, name) not in only:
+                continue
             try:
                 path = syncer.file_path(name)
                 if not path.is_file() or syncer._state(name) is None:
@@ -569,7 +572,8 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
                 jobs.append((client, target, eid, data))
             except Exception as exc:
                 reason = error_text(exc, connection[1])
-                res.data["documents"].append({"entity": entity, "server": connection[0], "entity_id": eid, "error": reason})
+                res.data["documents"].append({"entity": entity, "server": public_url(connection[0]), "entity_id": eid,
+                                              "error": reason})
                 res.warn(f"  #{eid} の取得に失敗: {reason}")
                 failed += 1
     else:
@@ -606,7 +610,7 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
                     jobs.append((client, target, eid, syncer._get_entity(eid)))
                 except Exception as exc:
                     reason = error_text(exc, get_client_for_target(config, target)[1])
-                    res.data["documents"].append({"entity": target.entity, "server": client.base_url,
+                    res.data["documents"].append({"entity": target.entity, "server": public_url(client.base_url),
                                                   "target": target.docs_dir, "entity_id": eid, "error": reason})
                     res.warn(f"  #{eid} の取得に失敗: {reason}")
                     failed += 1
@@ -614,16 +618,19 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
     outputs.protect_tracked_attachments(config, root)
     pulled_docs = []
     for client, target, eid, data in jobs:
-        doc = {"target": target.docs_dir, "entity": target.entity, "entity_id": eid, "server": client.base_url}
+        doc = {"target": target.docs_dir, "entity": target.entity, "entity_id": eid, "server": public_url(client.base_url)}
         res.data["documents"].append(doc)
         try:
             conflicts_before = len(conflict_files)
+            report = {}
             result = _pull_entity_to_target(client, config, config_path, target, root, eid, data, target.entity,
-                                            args.force, export, dry_run=dry_run, conflict_files=conflict_files, outputs=outputs)
+                                            args.force, export, dry_run=dry_run, conflict_files=conflict_files, outputs=outputs,
+                                            report=report)
             doc["result"] = ("would_pull" if dry_run else "pulled") if result else "skipped"
             doc["conflict"] = len(conflict_files) > conflicts_before
-            if not export:
-                pulled_docs.append((doc, target))
+            if "path" in report:
+                doc["path"] = _project_relative(report["path"], root)
+                pulled_docs.append((target, Path(report["path"]).name))
             pulled += result
             skipped += int(result == 0)
         except Exception as exc:
@@ -634,13 +641,10 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
             if (root / RECOVERY).exists():
                 break
     if pulled and not dry_run and not export:
-        _relink_local_documents(_link_syncers(config, root))
-    # 取得後の紐付けから文書のパスを示す（タイトルの変更でファイル名が変わることがある）。
-    for doc, target in pulled_docs:
-        syncer = EachDocsSyncer(None, target, root)
-        names = [name for name, eid in syncer._load_mapping(migrate=False).items() if eid == doc["entity_id"]]
-        if len(names) == 1:
-            doc["path"] = _project_relative(syncer.file_path(names[0]), root)
+        only = None
+        if files or regex_expressions:
+            only = {(target.docs_dir, target.id_file, name) for target, name in pulled_docs}
+        _relink_local_documents(_link_syncers(config, root), only)
     res.say(f"\n{'確認' if dry_run else '完了'}: {pulled} 件取得{'予定' if dry_run else ''}、{skipped} 件スキップ、{failed} 件失敗")
     if conflict_files:
         res.say(f"競合マーカーが残っている文書: {len(conflict_files)} 件")
@@ -825,7 +829,8 @@ class _PullOutputs:
 
 
 def _pull_entity_to_target(client, config, config_path, target, project_root,
-                           eid, data, entity_type, force, pull_dir_override, dry_run=False, conflict_files=None, outputs=None):
+                           eid, data, entity_type, force, pull_dir_override, dry_run=False, conflict_files=None, outputs=None,
+                           report=None):
     docs_dir = project_root / (pull_dir_override or Path(target.docs_dir))
     is_temp_export = docs_dir.resolve() != (project_root / target.docs_dir).resolve()
     syncer = EachDocsSyncer(client, target, project_root)
@@ -868,14 +873,15 @@ def _pull_entity_to_target(client, config, config_path, target, project_root,
     result = _pull_each_entity(client, syncer, target, project_root, docs_dir, mapping,
                              {v: k for k, v in mapping.items()}, eid, data, entity_type,
                              force, is_temp_export, dry_run=dry_run, conflict_files=conflict_files, check_path=check_path,
-                             outputs=outputs, article=article)
+                             outputs=outputs, article=article, report=report)
     outputs.include(article)
     return result
 
 
 def _pull_each_entity(client, syncer, target, project_root, docs_dir,
                       mapping, reverse_mapping, eid, data, entity_type,
-                      force, is_temp_export, dry_run=False, conflict_files=None, check_path=None, outputs=None, article=None):
+                      force, is_temp_export, dry_run=False, conflict_files=None, check_path=None, outputs=None, article=None,
+                      report=None):
     title = data.get("title") or f"untitled_{eid}"
     if any(c in title for c in '/\\\x00<>:"|?*') or title in (".", ".."):
         raise ValueError(f"ファイル名にできないタイトルです: {title!r}")
@@ -885,6 +891,9 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
     # Keep a tracked document's subdirectory when the remote title changes.
     parent = old_path.parent if old_path else docs_dir
     filepath = safe_path(parent, filename)
+    if report is not None:
+        # 本文の保存先（タイトルの変更による改名後の名前）。dry-run でも同じ規則で決まる。
+        report["path"] = filepath
     outputs = outputs or _PullOutputs()
     article = article or _PullOutputs()
 

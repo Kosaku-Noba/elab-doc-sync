@@ -121,7 +121,7 @@ async function pullAndResolve(api, root, note, calls) {
     api.dialogs.confirm = async () => false;
     before = (await calls()).length;
     await vscode.commands.executeCommand('esync.adoptLocal', note);
-    assert.equal((await calls()).length, before, 'do not overwrite when the user declines');
+    assert.ok(!(await calls()).slice(before).some(line => line.startsWith('push')), 'do not overwrite when the user declines');
 
     // 改名した文書: 旧名の紐付けを esync mv で移してから取り込む。
     api.dialogs.confirm = async (message, button) => { asked.push(button); return true; };
@@ -142,7 +142,41 @@ async function pullAndResolve(api, root, note, calls) {
     run = (await calls()).slice(before);
     assert.ok(run.includes('mv --target=Lab -- ' + path.join(root, 'p1/docs/note.md') + ' ' + moved.fsPath),
         'move the mapping from the old name to the renamed file');
-    assert.ok(asked.includes('紐付けを移して取り込む'));
+    assert.ok(asked.includes('紐付けを移して続ける'));
+    assert.ok(run.some(line => line.startsWith('pull --json --dry-run --target=Lab')), 'pull after moving the mapping');
+
+    // 引数や文書の指定の誤り（終了コード 2）は「変更なし」ではなく、CLI の理由を示す。
+    await fs.writeFile(bin('pull-error'), 'エラー: 同期対象の文書が見つかりません: docs/note.md');
+    diff.documents[0] = { ...diff.documents[0], path: 'docs/note.md', renamed_from: null, state: '競合' };
+    await write('diff.json', diff);
+    const shown = [];
+    const original = vscode.window.showErrorMessage;
+    vscode.window.showErrorMessage = async message => { shown.push(message); };
+    try {
+        await vscode.commands.executeCommand('esync.pull', note);
+    } finally {
+        vscode.window.showErrorMessage = original;
+        await fs.rm(bin('pull-error'));
+    }
+    assert.deepEqual(shown, ['エラー: 同期対象の文書が見つかりません: docs/note.md']);
+
+    // 同じ表示名のターゲットが2つあれば、selector で1つ選んでから書き換える。
+    diff.documents = [{ ...diff.documents[0], selector: 'docs', entity_id: 42 },
+        { ...diff.documents[0], selector: 'notes', entity_id: 77 }];
+    await write('diff.json', diff);
+    const picks = [];
+    const quickPick = vscode.window.showQuickPick;
+    vscode.window.showQuickPick = async items => { picks.push((await items).map(i => i.label)); return (await items)[1]; };
+    before = (await calls()).length;
+    try {
+        await vscode.commands.executeCommand('esync.adoptLocal', note);
+    } finally {
+        vscode.window.showQuickPick = quickPick;
+    }
+    assert.deepEqual(picks, [['docs', 'notes']]);
+    run = (await calls()).slice(before);
+    assert.ok(run.includes('push --force --target=notes -- ' + note.fsPath), 'overwrite only the chosen article');
+    assert.ok(!run.some(line => line.includes('--target=Lab')), 'never pass the ambiguous display name');
 
     before = (await calls()).length;
     await vscode.commands.executeCommand('esync.showBackups');

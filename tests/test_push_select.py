@@ -11,6 +11,10 @@ import yaml
 from elab_doc_sync.cli import main
 
 
+# テストから接続先の URL を差し替えるため、fixture が作ったクライアントを置く。
+CLIENTS = []
+
+
 @pytest.fixture
 def project(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -37,6 +41,7 @@ def project(tmp_path, monkeypatch):
     client.update_item.side_effect = lambda eid, **kw: remote[eid].update(kw)
     client.list_uploads.return_value = []
     client.get_tags.return_value = []
+    CLIENTS[:] = [client]
     with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
         yield tmp_path, remote
 
@@ -330,3 +335,40 @@ def test_renamed_document_keeps_its_article_after_mv_then_pull(project, capsys):
     assert 'remote edit' in (root / 'docs/a.md').read_text(encoding='utf-8')
     assert not (root / 'docs/moved.md').exists()
     assert json.loads((root / '.ids/mapping.json').read_text(encoding='utf-8')) == {'a.md': eid}
+
+
+def test_pull_json_hides_credentials_in_server_url(project, capsys):
+    root, remote = project
+    CLIENTS[0].base_url = 'https://user:secret@example.test'
+    assert push('docs/a.md') in (0, None)
+    [eid] = remote
+    remote[eid]['body'] += '\n\nremote edit'
+    for args in (('--dry-run',), ()):
+        code, data = pull_json(*args, '--', 'docs/a.md', capsys=capsys)
+        assert 'secret' not in json.dumps(data)
+        assert data['documents'][0]['server'] == 'https://example.test'
+
+
+def test_pull_of_one_document_leaves_links_in_other_documents(project, capsys):
+    root, remote = project
+    assert push('docs/a.md') in (0, None)
+    [eid] = remote
+    url = f'https://example.test/database.php?mode=view&id={eid}'
+    (root / 'docs/b.md').write_text(f'[A]({url})', encoding='utf-8')
+    assert push('docs/b.md') in (0, None)
+    remote[eid]['body'] += '\n\nremote edit'
+    code, data = pull_json('--', 'docs/a.md', capsys=capsys)
+    assert [d['path'] for d in data['documents']] == ['docs/a.md']
+    assert (root / 'docs/b.md').read_text(encoding='utf-8') == f'[A]({url})', 'only the selected document is rewritten'
+
+
+def test_pull_json_path_follows_a_title_change(project, capsys):
+    root, remote = project
+    assert push('docs/a.md') in (0, None)
+    [eid] = remote
+    remote[eid]['title'] = 'renamed'
+    code, data = pull_json('--dry-run', '--', 'docs/a.md', capsys=capsys)
+    assert data['documents'][0]['path'] == 'docs/renamed.md', 'the plan names the file pull will write'
+    code, data = pull_json('--', 'docs/a.md', capsys=capsys)
+    assert data['documents'][0]['path'] == 'docs/renamed.md'
+    assert (root / 'docs/renamed.md').exists() and not (root / 'docs/a.md').exists()

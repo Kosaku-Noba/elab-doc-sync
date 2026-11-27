@@ -245,39 +245,70 @@ async function activate(context) {
 
     async function pullJson(folder, options, file, runOptions) {
         const result = await run(folder, ['pull', '--json', ...options, '--', file.fsPath], runOptions);
-        if (!result.stdout.trim()) throw new Error(result.stderr.trim() || 'pull の結果を取得できませんでした。');
+        // 終了コード 1 は競合マーカーや文書ごとの失敗（JSON に入る）。2 は引数や文書の指定の誤り。
+        if (result.code === 2 || !result.stdout.trim()) {
+            throw new Error(result.stderr.trim() || 'pull の結果を取得できませんでした。');
+        }
         const data = JSON.parse(result.stdout);
         const failed = data.documents.find(doc => doc.error);
         if (failed) throw new Error(failed.error);
         return data;
     }
 
-    async function pull(arg) {
+    /**
+     * 書き換えの前に、差分と同じ判定で送信先を1つに決める。表示名の target は複数のターゲットに一致しうるので、
+     * 差分が返す一意な selector を使う。改名した文書は、旧名の紐付けを esync mv で移してよいか確かめる。
+     */
+    async function prepareWrite(arg, purpose) {
         const target = await documentTarget(arg);
         if (!target || !await ensureSaved(target.file)) return;
         const { folder, file, doc } = target;
         const name = path.basename(file.fsPath);
-        const options = doc.target ? ['--target=' + doc.target] : [];
-        let planned = await pullJson(folder, ['--dry-run', ...options], file);
-        if (planned.documents.some(d => d.result === 'untracked')) {
-            // 改名した文書は旧名で紐付いている。pull は改名を判定しないので、先に紐付けを移す。
-            const renamed = (await loadDiff(folder, file, options)).documents.find(d => d.renamed_from && d.entity_id != null);
-            if (!renamed) throw new Error(name + ' はまだ eLabFTW の記事と紐付いていないため、取り込めません。');
-            if (!await dialogs.confirm(name + ' は ' + renamed.renamed_from + ' から改名されています。取り込む前に、記事 #'
-                    + renamed.entity_id + ' との紐付けを ' + name + ' に移します（esync mv）。', '紐付けを移して取り込む')) return;
-            const from = path.join(path.dirname(file.fsPath), renamed.renamed_from);
+        const diff = await loadDiff(folder, file, []);
+        const matches = diff.documents.filter(d => d.target === doc.target && d.entity === doc.entity);
+        if (!matches.length) throw new Error('送信先が変わりました。一覧を更新してください。');
+        if (diff.documents.length > 1 && matches.some(d => !d.selector)) {
+            throw new Error('送信先を区別できるよう、設定でターゲットに一意の title を付けてください。');
+        }
+        let current = matches[0];
+        if (matches.length > 1) {
+            // 同じ表示名のターゲットが複数ある。記事 ID と selector を示して1つ選んでもらう。
+            /** @type {(vscode.QuickPickItem & { doc: any })[]} */
+            const items = matches.map(d => ({
+                label: d.selector, description: d.server + ' / ' + d.entity + (d.entity_id == null ? '' : ' #' + d.entity_id), doc: d,
+            }));
+            const choice = await vscode.window.showQuickPick(items, { placeHolder: '操作する送信先を選択' });
+            if (!choice) return;
+            current = choice.doc;
+        }
+        if (current.error) throw new Error(current.error);
+        if (current.entity_id == null) throw new Error(name + ' はまだ eLabFTW の記事と紐付いていません。');
+        const options = current.selector ? ['--target=' + current.selector] : [];
+        if (current.renamed_from) {
+            // pull は改名を判定しないので、旧名の紐付けを先に移す。push は改名を判定するので移さない。
+            if (purpose === 'push') return { folder, file, name, options, entityId: current.entity_id };
+            if (!await dialogs.confirm(name + ' は ' + current.renamed_from + ' から改名されています。取り込む前に、記事 #'
+                    + current.entity_id + ' との紐付けを ' + name + ' に移します（esync mv）。', '紐付けを移して続ける')) return;
+            const from = path.join(path.dirname(file.fsPath), current.renamed_from);
             const moved = await run(folder, ['mv', ...options, '--', from, file.fsPath], { timeout: 0 });
             if (moved.stdout.trim()) output.appendLine(moved.stdout.trimEnd());
             if (moved.code !== 0) throw new Error('紐付けを移せませんでした。出力「esync」を確認してください。');
             refresh();
-            planned = await pullJson(folder, ['--dry-run', ...options], file);
         }
-        const incoming = planned.documents.find(d => d.result === 'would_pull');
+        return { folder, file, name, options, entityId: current.entity_id };
+    }
+
+    async function pull(arg) {
+        const target = await prepareWrite(arg, 'pull');
+        if (!target) return;
+        const { folder, file, name, options, entityId } = target;
+        const planned = await pullJson(folder, ['--dry-run', ...options], file);
+        const incoming = planned.documents.find(d => d.result === 'would_pull' && d.entity_id === entityId);
         if (!incoming) {
             vscode.window.showInformationMessage(name + ' — 取り込む eLabFTW の変更はありません。');
             return;
         }
-        if (!await dialogs.confirm(name + ' に eLabFTW #' + incoming.entity_id + ' の変更を取り込みます。ローカルでも編集している場合はマージし、'
+        if (!await dialogs.confirm(name + ' に eLabFTW #' + entityId + ' の変更を取り込みます。ローカルでも編集している場合はマージし、'
                 + '両方で変えた箇所は競合マーカーで示します。', '取り込む')) return;
         await finishPull(folder, file, await pullJson(folder, options, file, { timeout: 0 }));
     }
@@ -305,14 +336,12 @@ async function activate(context) {
     }
 
     async function adoptLocal(arg) {
-        const target = await documentTarget(arg);
-        if (!target || !await ensureSaved(target.file)) return;
-        const { folder, file, doc } = target;
-        const id = doc.entity_id == null ? '' : ' #' + doc.entity_id;
-        if (!await dialogs.confirm('eLabFTW の記事' + id + ' を ' + path.basename(file.fsPath) + ' の内容で上書きします。'
+        const target = await prepareWrite(arg, 'push');
+        if (!target) return;
+        const { folder, file, name, options, entityId } = target;
+        if (!await dialogs.confirm('eLabFTW の記事 #' + entityId + ' を ' + name + ' の内容で上書きします。'
                 + 'eLabFTW 側の変更は記事から失われます（上書き前の本文はバックアップに退避され、esync restore で取り出せます）。',
         'ローカルの内容で上書き')) return;
-        const options = doc.target ? ['--target=' + doc.target] : [];
         try {
             const result = await run(folder, ['push', '--force', ...options, '--', file.fsPath], { timeout: 0 });
             if (result.stdout.trim()) output.appendLine(result.stdout.trimEnd());
@@ -320,19 +349,18 @@ async function activate(context) {
                 output.show(true);
                 throw new Error('push --force に失敗しました。出力「esync」で結果を確認してください。');
             }
-            vscode.window.showInformationMessage(path.basename(file.fsPath) + ' — ローカルの内容で eLabFTW を上書きしました。');
+            vscode.window.showInformationMessage(name + ' — ローカルの内容で eLabFTW を上書きしました。');
         } finally {
             refresh();
         }
     }
 
     async function adoptRemote(arg) {
-        const target = await documentTarget(arg);
-        if (!target || !await ensureSaved(target.file)) return;
-        const { folder, file, doc } = target;
-        if (!await dialogs.confirm(path.basename(file.fsPath) + ' を eLabFTW の内容で上書きします。ローカルの変更はファイルから失われます'
+        const target = await prepareWrite(arg, 'pull');
+        if (!target) return;
+        const { folder, file, name, options, entityId } = target;
+        if (!await dialogs.confirm(name + ' を eLabFTW の記事 #' + entityId + ' の内容で上書きします。ローカルの変更はファイルから失われます'
                 + '（上書き前のファイルはバックアップに退避され、esync restore で戻せます）。', 'eLabFTW の内容で上書き')) return;
-        const options = doc.target ? ['--target=' + doc.target] : [];
         await finishPull(folder, file, await pullJson(folder, ['--force', ...options], file, { timeout: 0 }));
     }
 
