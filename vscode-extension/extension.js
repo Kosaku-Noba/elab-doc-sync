@@ -264,8 +264,9 @@ async function activate(context) {
         if (!target || !await ensureSaved(target.file)) return;
         const { folder, file, doc } = target;
         const name = path.basename(file.fsPath);
-        // 選んだ行のターゲットに絞る。ほかのターゲットでの追跡解除などに妨げられないようにする。
-        const diff = await loadDiff(folder, file, doc.target ? ['--target=' + doc.target] : []);
+        // 選んだ行のターゲットに絞る（一意な selector があればそれを使う）。ほかのターゲットでの追跡解除などに妨げられない。
+        const scope = doc.selector || doc.target;
+        const diff = await loadDiff(folder, file, scope ? ['--target=' + scope] : []);
         const matches = diff.documents.filter(d => d.target === doc.target && d.entity === doc.entity);
         if (!matches.length) throw new Error('送信先が変わりました。一覧を更新してください。');
         if (diff.documents.length > 1 && matches.some(d => !d.selector)) {
@@ -284,16 +285,16 @@ async function activate(context) {
         }
         if (current.error) throw new Error(current.error);
         if (current.entity_id == null) throw new Error(name + ' はまだ eLabFTW の記事と紐付いていません。');
-        // 確認した記事 ID を CLI に渡し、書き込む直前に紐付けが変わっていないかを照合させる。
-        const options = [...(current.selector ? ['--target=' + current.selector] : []), '--expect-id=' + current.entity_id];
+        // 確認した記事（接続先・種別・ID）を CLI に渡し、書き込む直前に紐付けが変わっていないかを照合させる。
+        const options = [...(current.selector ? ['--target=' + current.selector] : []), '--expect-id=' + current.entity_id,
+            '--expect-server=' + current.server, '--expect-entity=' + current.entity];
         if (current.renamed_from) {
             // 改名した文書は旧名で紐付いている。紐付けを先に移すと、記事 ID の照合と pull の取り込み先が改名後のファイルになる。
             if (!await dialogs.confirm(name + ' は ' + current.renamed_from + ' から改名されています。続ける前に、記事 #'
                     + current.entity_id + ' との紐付けを ' + name + ' に移します（esync mv）。この後の確認で取り消しても、'
                     + '紐付けは ' + name + ' に移ったままです。', '紐付けを移して続ける')) return;
             const from = path.join(path.dirname(file.fsPath), current.renamed_from);
-            const moved = await run(folder, ['mv', ...options.filter(o => o.startsWith('--target=')), '--', from, file.fsPath],
-                { timeout: 0 });
+            const moved = await run(folder, ['mv', ...options, '--', from, file.fsPath], { timeout: 0 });
             if (moved.stdout.trim()) output.appendLine(moved.stdout.trimEnd());
             if (moved.code !== 0) throw new Error('紐付けを移せませんでした。出力「esync」を確認してください。');
             refresh();

@@ -4,7 +4,7 @@ VS Code の左端にある esync アイコンから、編集中の Markdown の�
 
 ## セットアップ
 
-1. elab-doc-sync のリポジトリ直下で `uv tool install --force .` を実行します。`esync --version` が 1.5.0 以降の版を使います。古い版や版を確認できない場合は、ワークスペースを開いたときに警告が表示されます。この確認は `esync.timeoutSeconds` によらず 30 秒で打ち切ります。応答しないという警告が出た場合は、`esync.executable` に指定した実行ファイルに `--version` を付けてターミナルで実行し、応答するか確かめてください。
+1. elab-doc-sync のリポジトリ直下で `uv tool install --force .` を実行します。`esync --version` が 1.5.0 以降の版を使います。開発中の 1.5.0 には、この拡張が使うオプションがない版もあります。`esync pull --help` に `--expect-id` と `--json` が表示されない場合は、この拡張と同じソースから CLI をインストールし直してください。古い版や版を確認できない場合は、ワークスペースを開いたときに警告が表示されます。この確認は `esync.timeoutSeconds` によらず 30 秒で打ち切ります。応答しないという警告が出た場合は、`esync.executable` に指定した実行ファイルに `--version` を付けてターミナルで実行し、応答するか確かめてください。
 2. VS Code 1.85 以降のコマンドパレットで「Extensions: Install from VSIX...」を選び、`esync-0.3.0.vsix` を開きます。ソースから使う場合は、先に下の「VSIX の作成」を実行し、`dist/` にできたファイルを選びます。
 3. `.elab-sync.yaml` があるディレクトリをワークスペースフォルダーとして開きます。接続先や API キーは CLI と共通です。環境変数を使う場合は、VS Code の拡張ホストからも参照できるようにしてください。
 

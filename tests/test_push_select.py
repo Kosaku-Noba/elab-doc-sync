@@ -398,10 +398,59 @@ def test_pull_error_hides_credentials_in_urls(project, capsys):
     root, remote = project
     assert push('docs/a.md') in (0, None)
     CLIENTS[0].get_item.side_effect = ConnectionError(
-        "Max retries exceeded with url: https://user:secret@example.test:9/api/v2/items/1")
-    code, data = pull_json('--dry-run', '--', 'docs/a.md', capsys=capsys)
-    assert 'secret' not in json.dumps(data) + capsys.readouterr().err
-    assert 'https://***@example.test:9' in data['documents'][0]['error']
+        "Max retries exceeded with url: https://us'er:se'c\"ret@example.test:9/api/v2/items/1")
+    capsys.readouterr()
+    with patch.object(sys, 'argv', ['esync', 'pull', '--json', '--dry-run', '--', 'docs/a.md']):
+        try:
+            main()
+        except SystemExit:
+            pass
+    out, err = capsys.readouterr()
+    for text in (out, err):
+        assert 'se\'c' not in text and 'us\'er' not in text, 'hide credentials containing quotes'
+    assert 'https://***@example.test:9' in json.loads(out)['documents'][0]['error']
+    assert 'https://***@example.test:9' in err
+
+
+def test_expect_id_also_checks_server_and_entity(project, capsys):
+    root, remote = project
+    assert push('docs/a.md') in (0, None)
+    [eid] = remote
+    (root / 'docs/a.md').write_text('# local', encoding='utf-8')
+    before = json.dumps(remote, sort_keys=True)
+    base = ['--force', '--expect-id', str(eid)]
+    assert push(*base, '--expect-server', 'https://other.test', 'docs/a.md') == 2, 'same ID on another server'
+    assert push(*base, '--expect-entity', 'experiments', 'docs/a.md') == 2, 'same ID of another type'
+    assert json.dumps(remote, sort_keys=True) == before
+    assert push(*base, '--expect-server', 'https://example.test/', '--expect-entity', 'resources', 'docs/a.md') in (0, None)
+
+
+def test_mv_checks_the_expected_article(project, capsys):
+    root, remote = project
+    assert push('docs/a.md') in (0, None)
+    [eid] = remote
+    (root / 'docs/a.md').rename(root / 'docs/moved.md')
+    with patch.object(sys, 'argv', ['esync', 'mv', '--expect-id', str(eid + 1), 'docs/a.md', 'docs/moved.md']):
+        with pytest.raises(SystemExit) as exited:
+            main()
+    assert exited.value.code == 2
+    assert json.loads((root / '.ids/mapping.json').read_text(encoding='utf-8')) == {'a.md': eid}
+    with patch.object(sys, 'argv', ['esync', 'mv', '--expect-id', str(eid), '--expect-server', 'https://example.test',
+                                    'docs/a.md', 'docs/moved.md']):
+        assert main() in (0, None)
+    assert json.loads((root / '.ids/mapping.json').read_text(encoding='utf-8')) == {'moved.md': eid}
+
+
+def test_status_json_includes_a_unique_selector(project, capsys):
+    root, remote = project
+    capsys.readouterr()
+    with patch.object(sys, 'argv', ['esync', 'status', '--json']):
+        try:
+            main()
+        except SystemExit:
+            pass
+    selectors = {doc['file']: doc['selector'] for doc in json.loads(capsys.readouterr().out)['documents']}
+    assert selectors['a.md'] == 'T' and selectors['n.md'] == 'N'
 
 
 def test_skipped_pull_reports_where_the_body_is(project, capsys):

@@ -91,7 +91,7 @@ async function pullAndResolve(api, root, note, calls) {
     const write = (name, value) => fs.writeFile(bin(name), JSON.stringify(value));
     const asked = [];
     api.dialogs.confirm = async (message, button) => { asked.push(button); return true; };
-    const doc = { file: 'note.md', path: 'docs/note.md', entity: 'items', entity_id: 42, target: 'Lab', state: '競合',
+    const doc = { file: 'note.md', path: 'docs/note.md', entity: 'items', entity_id: 42, target: 'Lab', selector: 'Lab', state: '競合',
         remote_changes: ['本文'], next_actions: [], error: null };
     await write('status.json', { documents: [doc], recovery_pending: false });
     const pulled = { target: 'docs', entity: 'items', entity_id: 42, path: 'docs/note.md', result: 'pulled', conflict: true };
@@ -104,17 +104,17 @@ async function pullAndResolve(api, root, note, calls) {
     let before = (await calls()).length;
     await vscode.commands.executeCommand('esync.pull', note);
     let run = (await calls()).slice(before);
-    assert.ok(run.includes('pull --json --dry-run --target=Lab --expect-id=42 -- ' + note.fsPath), 'check what will be pulled first');
-    assert.ok(run.includes('pull --json --target=Lab --expect-id=42 -- ' + note.fsPath), 'pull only the selected document');
+    assert.ok(run.includes('pull --json --dry-run --target=Lab --expect-id=42 --expect-server=https://example.test --expect-entity=items -- ' + note.fsPath), 'check what will be pulled first');
+    assert.ok(run.includes('pull --json --target=Lab --expect-id=42 --expect-server=https://example.test --expect-entity=items -- ' + note.fsPath), 'pull only the selected document');
     assert.deepEqual(asked, ['取り込む']);
     assert.equal(vscode.window.activeTextEditor?.document.uri.fsPath, note.fsPath, 'open the file to resolve the markers');
 
     before = (await calls()).length;
     await vscode.commands.executeCommand('esync.adoptLocal', note);
-    assert.ok((await calls()).slice(before).includes('push --force --target=Lab --expect-id=42 -- ' + note.fsPath));
+    assert.ok((await calls()).slice(before).includes('push --force --target=Lab --expect-id=42 --expect-server=https://example.test --expect-entity=items -- ' + note.fsPath));
     before = (await calls()).length;
     await vscode.commands.executeCommand('esync.adoptRemote', note);
-    assert.ok((await calls()).slice(before).includes('pull --json --force --target=Lab --expect-id=42 -- ' + note.fsPath));
+    assert.ok((await calls()).slice(before).includes('pull --json --force --target=Lab --expect-id=42 --expect-server=https://example.test --expect-entity=items -- ' + note.fsPath));
     assert.deepEqual(asked.slice(1), ['ローカルの内容で上書き', 'eLabFTW の内容で上書き'], 'confirm before overwriting');
 
     // 拒否したら CLI を実行しない。
@@ -140,7 +140,7 @@ async function pullAndResolve(api, root, note, calls) {
     before = (await calls()).length;
     await vscode.commands.executeCommand('esync.pull', moved);
     run = (await calls()).slice(before);
-    assert.ok(run.includes('mv --target=Lab -- ' + path.join(root, 'p1/docs/note.md') + ' ' + moved.fsPath),
+    assert.ok(run.includes('mv --target=Lab --expect-id=42 --expect-server=https://example.test --expect-entity=items -- ' + path.join(root, 'p1/docs/note.md') + ' ' + moved.fsPath),
         'move the mapping from the old name to the renamed file');
     assert.ok(asked.includes('紐付けを移して続ける'));
     assert.ok(run.some(line => line.startsWith('pull --json --dry-run --target=Lab')), 'pull after moving the mapping');
@@ -175,7 +175,7 @@ async function pullAndResolve(api, root, note, calls) {
     }
     assert.deepEqual(picks, [['docs', 'notes']]);
     run = (await calls()).slice(before);
-    assert.ok(run.includes('push --force --target=notes --expect-id=77 -- ' + note.fsPath), 'overwrite only the chosen article');
+    assert.ok(run.includes('push --force --target=notes --expect-id=77 --expect-server=https://example.test --expect-entity=items -- ' + note.fsPath), 'overwrite only the chosen article');
     assert.ok(!run.some(line => line.startsWith('push') && line.includes('--target=Lab')), 'never write with the ambiguous display name');
 
     before = (await calls()).length;

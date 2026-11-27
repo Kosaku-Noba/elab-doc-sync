@@ -253,16 +253,40 @@ def _find_target_by_mapping(config, project_root: Path, entity_type: str, entity
     return None
 
 
-def _expected_id_error(pairs, selected, expected):
-    """--expect-id: 指定した1文書が、確認した記事 ID に紐付いたままかを書き込み前に照合する。問題があれば理由を返す。"""
+def _target_selector(config, target):
+    """ターゲットを一意に指定できる --target の値（title または docs_dir）。なければ None。"""
+    return next((value for value in (target.title, target.docs_dir) if value and
+                 sum(_matches_target(t, value) for t in config.targets) == 1), None)
+
+
+def _article_mismatch(config, target, eid, args):
+    """--expect-id/--expect-server/--expect-entity: 確認した記事と、これから書き換える記事が同じかを照合する。"""
+    expected_id = getattr(args, "expect_id", None)
+    if expected_id is None:
+        return None
+    now = "未追跡" if eid is None else f"#{eid}"
+    if eid != expected_id:
+        return f"紐付けが確認時と異なります（確認時 #{expected_id}、現在 {now}）。差分を開き直してください"
+    server = getattr(args, "expect_server", None)
+    current = public_url(get_client_for_target(config, target)[0]).rstrip("/")
+    if server is not None and server.rstrip("/") != current:
+        return f"接続先が確認時と異なります（確認時 {server}、現在 {current}）。差分を開き直してください"
+    entity = getattr(args, "expect_entity", None)
+    if entity is not None and _normalize_entity(entity) != target.entity:
+        return f"記事の種別が確認時と異なります（確認時 {entity}、現在 {target.entity}）。差分を開き直してください"
+    return None
+
+
+def _expected_id_error(config, pairs, selected, args):
+    """指定した1文書が、確認した記事（接続先・種別・ID）に紐付いたままかを書き込み前に照合する。問題があれば理由を返す。"""
     if not selected or sum(map(len, selected.values())) != 1:
-        return "--expect-id は 1 つのターゲットの 1 文書に対して指定してください"
+        return ("--expect-id は、選択結果が1つのターゲットの1文書になるように指定してください"
+                "（同じファイルが複数のターゲットに一致する場合は --target で絞る）")
     [(index, names)] = selected.items()
     [name] = names
-    current = pairs[index][1]._load_mapping(migrate=False).get(name)
-    if current != expected:
-        now = "未追跡" if current is None else f"#{current}"
-        return f"{name} の紐付けが確認時と異なります（確認時 #{expected}、現在 {now}）。差分を開き直してください"
+    target, syncer = pairs[index]
+    problem = _article_mismatch(config, target, syncer._load_mapping(migrate=False).get(name), args)
+    return f"{name} の{problem}" if problem else None
 
 
 @project_command
@@ -282,9 +306,8 @@ def run_push(args, echo=None) -> CommandResult:
             selected = _select_documents(pairs, files, _compile_regexes(regex_expressions))
         except ValueError as e:
             return res.fail(f"エラー: {e}", 2)
-    expected_id = getattr(args, "expect_id", None)
-    if expected_id is not None:
-        problem = _expected_id_error(pairs, selected, expected_id)
+    if getattr(args, "expect_id", None) is not None:
+        problem = _expected_id_error(config, pairs, selected, args)
         if problem:
             return res.fail(f"エラー: {problem}", 2)
     prune_previews = {}
@@ -382,7 +405,8 @@ def run_status(args, echo=None) -> CommandResult:
             result = syncer.inspect(name, mapping.get(name))
             pending = syncer._pending().get(name)
             state = ("作成結果不明" if not pending.get("eid") else "同期未完了") if pending else result["state"]
-            doc = {"target": target.title or target.docs_dir, "file": name, "entity": target.entity,
+            doc = {"target": target.title or target.docs_dir, "selector": _target_selector(config, target),
+                   "file": name, "entity": target.entity,
                    "entity_id": mapping.get(name), "state": state, "remote_changes": [], "error": None,
                    "next_actions": []}
             path = files.get(name)
@@ -608,7 +632,7 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
             except ValueError as e:
                 return res.fail(f"エラー: {e}", 2)
             if getattr(args, "expect_id", None) is not None:
-                problem = _expected_id_error(pairs, selected, args.expect_id)
+                problem = _expected_id_error(config, pairs, selected, args)
                 if problem:
                     return res.fail(f"エラー: {problem}", 2)
         for index, target in enumerate(targets):
@@ -1216,8 +1240,7 @@ def run_diff(args, echo=None) -> CommandResult:
         old_names = {}
         preview_error = None
         if preview:
-            selector = next((value for value in (target.title, target.docs_dir) if value and
-                             sum(_matches_target(t, value) for t in config.targets) == 1), None)
+            selector = _target_selector(config, target)
             server = public_url(syncer.client.base_url)
             try:
                 planned, old_names = syncer.preview_mapping(mapping, syncer.collect_files())
@@ -2303,6 +2326,9 @@ def run_mv(args, echo=None) -> CommandResult:
         raise ValueError("移動先に追跡・除外情報があります")
     if syncer._pending():
         raise ValueError("未完了の同期を解決してからmvしてください")
+    problem = _article_mismatch(config, syncer.target, mapping[old_path.name], args)
+    if problem:
+        return res.fail(f"エラー: {old_path.name} の{problem}", 2)
     res.say(f"  {old_path} → {new_path}（リモートタイトルは次回pushで更新）")
     res.data.update(old=str(old_path), new=str(new_path), entity_id=mapping[old_path.name])
     if args.dry_run:
@@ -2905,8 +2931,10 @@ def build_parser():
     push_parser.add_argument("files", nargs="*", help="同期するファイル・ディレクトリ・glob（カレントディレクトリ基準、複数指定可。省略時は全文書）")
     push_parser.add_argument("--regex", action="append", help="同期するファイル名に部分一致する正規表現（複数指定可）")
     push_parser.add_argument("--expect-preview", metavar="TOKEN", help="diff --json で確認した 1 文書だけを送信")
-    push_parser.add_argument("--expect-id", type=int, metavar="ID",
-                             help="指定した1文書がこの記事 ID に紐付いている場合だけ送信する（--force と併用できる）")
+    push_parser.add_argument("--expect-id", type=int, metavar="ID", help="指定した1文書の紐付けがこの記事 ID と異なる場合は、送信せず終了コード 2（--force と併用できる）")
+    push_parser.add_argument("--expect-server", metavar="URL", help="--expect-id と併用。確認時の接続先（認証情報を除いた URL）と照合する")
+    push_parser.add_argument("--expect-entity", choices=["items", "experiments", "resources"],
+                             help="--expect-id と併用。確認時の記事の種別と照合する")
     sub.add_parser("init", help="対話的に設定ファイルを作成", parents=[sub_common])
     diff_parser = sub.add_parser("diff", help="前回の同期からのローカルと eLabFTW の変更を表示", parents=[sub_common])
     diff_parser.add_argument("--json", action="store_true", help="送信先、改名予定、差分を JSON で出力")
@@ -2926,8 +2954,10 @@ def build_parser():
                              help="取り込む追跡中の文書・ディレクトリ・glob（push と同じ指定。省略時は全文書。--id・--dir とは併用不可）")
     pull_parser.add_argument("--regex", action="append", help="取り込むファイル名に部分一致する正規表現（複数指定可）")
     pull_parser.add_argument("--json", action="store_true", help="取り込んだ文書のパス・結果・競合の有無を JSON で出力")
-    pull_parser.add_argument("--expect-id", type=int, metavar="ID",
-                             help="指定した1文書がこの記事 ID に紐付いている場合だけ取り込む（確認後の紐付けの変更を防ぐ）")
+    pull_parser.add_argument("--expect-id", type=int, metavar="ID", help="指定した1文書の紐付けがこの記事 ID と異なる場合は、取り込まず終了コード 2")
+    pull_parser.add_argument("--expect-server", metavar="URL", help="--expect-id と併用。確認時の接続先（認証情報を除いた URL）と照合する")
+    pull_parser.add_argument("--expect-entity", choices=["items", "experiments", "resources"],
+                             help="--expect-id と併用。確認時の記事の種別と照合する")
 
     log_parser = sub.add_parser("log", help="同期ログを表示", parents=[sub_common])
     log_parser.add_argument("--limit", "-l", type=int, default=20, help="表示件数（デフォルト: 20）")
@@ -3065,6 +3095,10 @@ def build_parser():
     mv_parser = sub.add_parser("mv", help="文書と紐付けを移動", parents=[sub_common])
     mv_parser.add_argument("old")
     mv_parser.add_argument("new")
+    mv_parser.add_argument("--expect-id", type=int, metavar="ID", help="移動元の紐付けがこの記事 ID と異なる場合は、移動せず終了コード 2")
+    mv_parser.add_argument("--expect-server", metavar="URL", help="--expect-id と併用。確認時の接続先（認証情報を除いた URL）と照合する")
+    mv_parser.add_argument("--expect-entity", choices=["items", "experiments", "resources"],
+                             help="--expect-id と併用。確認時の記事の種別と照合する")
 
     return parser
 
