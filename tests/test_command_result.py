@@ -263,10 +263,22 @@ def test_article_commands_scope_to_selected_url(MockClient, tmp_path, capsys, mo
     client.get_metadata_raw.return_value = "invalid"
     assert cli.cmd_metadata(args("metadata", "set", "--", "key=value")) == 1
     assert client.update_metadata.call_count == 1
+    client.get_metadata.return_value = {"large": 9007199254740993}
+    assert cli.cmd_metadata(args("metadata", "get")) == 0
+    # パース済み数値を JS へ往復させず、CLI の表示文字列とトークンをそのまま使う。
+    entry = json.loads(capsys.readouterr().out.splitlines()[-1])["entities"][0]
+    field = entry["fields"][0]
+    assert field["text"] == "9007199254740993"
+    client.get_metadata_raw.return_value = '{"large":9007199254740993}'
+    guarded = args("metadata", "set", "--edit-stdin")
+    monkeypatch.setattr("sys.stdin", StringIO(json.dumps({"key": "large", "value": field["text"], "previous_token": field["token"]})))
+    assert cli.cmd_metadata(guarded) == 0
+    client.update_metadata.assert_called_with("items", 42, {"large": "9007199254740993"})
+    client.update_metadata.reset_mock()
     client.get_metadata_raw.return_value = '{"key":"newer","other":3}'
     guarded = args("metadata", "set", "--edit-stdin")
-    monkeypatch.setattr("sys.stdin", StringIO(json.dumps({"key": "key", "value": "edited", "previous_token": "stale"})))
-    assert cli.cmd_metadata(guarded) == 1 and client.update_metadata.call_count == 1
+    monkeypatch.setattr("sys.stdin", StringIO(json.dumps({"key": "key", "value": "edited", "previous_token": "0" * 64})))
+    assert cli.cmd_metadata(guarded) == 1 and client.update_metadata.call_count == 0
     monkeypatch.setattr("sys.stdin", StringIO(json.dumps({"key": "key", "value": "edited", "previous_token": cli._metadata_value_token("newer")})))
     assert cli.cmd_metadata(guarded) == 0
     client.update_metadata.assert_called_with("items", 42, {"key":"edited","other":3})
@@ -279,8 +291,9 @@ def test_new_targets_includes_empty_directory(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["targets"] == [{"target": "T", "docs_dir": "docs/", "selector": "T", "pattern": "*.md"}]
 
 
+@pytest.mark.parametrize("output_options", [[], ["--json"]])
 @patch("elab_doc_sync.cli.ELabFTWClient")
-def test_new_document_preserves_legacy_tracking(MockClient, tmp_path):
+def test_new_document_preserves_legacy_tracking(MockClient, tmp_path, output_options):
     cfg = _project(tmp_path)
     data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
     data["targets"][0]["id_file"] = ".target-ids/docs.id"
@@ -289,7 +302,7 @@ def test_new_document_preserves_legacy_tracking(MockClient, tmp_path):
     legacy.parent.mkdir()
     legacy.write_text('{"old.md": 42}')
     MockClient.return_value._req.return_value.json.return_value = {"title": "old", "body": ""}
-    args = cli.build_parser().parse_args(["new", "--json", "--target=T", "--config", str(cfg), "--template-id=7"])
+    args = cli.build_parser().parse_args(["new", *output_options, "--target=T", "--config", str(cfg), "--template-id=7"])
     result = cli.run_new(args)
     assert result.exit_code == 1 and "紐付け" in result.warnings[0]
     assert not (tmp_path / "docs/old.md").exists()

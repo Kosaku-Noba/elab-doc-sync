@@ -18,7 +18,7 @@ exports.run = async function () {
         calls.push({ args, options });
         const data = args.includes('remove') ? {} : args[0] === 'relate' ?
             { sources: [{ links: { items: [{ id: 7, title: '材料' }], experiments: [] } }] } :
-            { entities: [{ tags: ['-第1回'], metadata: { 担当: 'A' }, value_tokens: { 担当: 'previous-token' } }] };
+            { entities: [{ tags: ['-第1回'], fields: [{ key: '担当', text: 'A', token: 'previous-token' }] }] };
         return { code: 0, stdout: JSON.stringify(data) };
     };
     const actions = articleActions(run, () => [folder], () => { refreshed = true; }, {}, { confirm: () => confirmed });

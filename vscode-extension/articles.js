@@ -48,8 +48,9 @@ function articleActions(run, projects, refresh, output, dialogs) {
                 rows = Object.entries(data.sources[0].links).flatMap(([type, links]) => links.map(link =>
                     leaf(kindName(type) + ' #' + link.id, { type, id: link.id }, link.title)));
             } else {
-                rows = Object.entries(data.entities[0].metadata).map(([key, value]) =>
-                    Object.assign(leaf(key, key, typeof value === 'string' ? value : JSON.stringify(value)), { previousToken: data.entities[0].value_tokens[key] }));
+                if (!Array.isArray(data.entities[0].fields)) throw new Error('拡張と同じ版の CLI をインストールしてください。');
+                rows = data.entities[0].fields.map(({ key, text, token }) =>
+                    Object.assign(leaf(key, key, text), { previousToken: token }));
             }
             return rows.length ? rows : [new vscode.TreeItem(groups[kind] + 'はありません')];
         } catch (error) {

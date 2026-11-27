@@ -2019,7 +2019,11 @@ def run_metadata(args, echo=None) -> CommandResult:
             if not getattr(args, "expect_article_url", None) or args.keyvalues:
                 raise ValueError("--edit-stdin には --expect-article-url が必要です。値は標準入力で指定してください")
             edit = json.load(sys.stdin)
-            if not isinstance(edit, dict) or not isinstance(edit.get("key"), str) or not edit["key"] or not isinstance(edit.get("value"), str):
+            if not isinstance(edit, dict) or set(edit) - {"key", "value", "previous_token"}:
+                raise ValueError("標準入力には key・value と任意の previous_token を指定してください")
+            if "previous_token" in edit and (not isinstance(edit["previous_token"], str) or not re.fullmatch("[0-9a-f]{64}", edit["previous_token"])):
+                raise ValueError("previous_token の形式が不正です")
+            if not isinstance(edit.get("key"), str) or not edit["key"] or not isinstance(edit.get("value"), str):
                 raise ValueError("編集するキーと値を JSON 文字列で指定してください")
             pairs[edit["key"]] = edit["value"]
         elif not args.keyvalues:
@@ -2050,7 +2054,9 @@ def run_metadata(args, echo=None) -> CommandResult:
                 meta = client.get_metadata(etype, eid)
                 entry["metadata"] = meta
                 if getattr(args, "expect_article_url", None):
-                    entry["value_tokens"] = {key: _metadata_value_token(value) for key, value in meta.items()}
+                    entry["fields"] = [{"key": key, "token": _metadata_value_token(value),
+                                        "text": value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)}
+                                       for key, value in meta.items()]
                 res.say(f"  {label}:")
                 res.say(f"    {json.dumps(meta, ensure_ascii=False, indent=2)}")
             elif args.meta_action == "set":
@@ -2226,10 +2232,21 @@ def run_new(args, echo=None) -> CommandResult:
         if (not _matches_relative_glob(relative, selected.pattern) or syncer.is_displaced_path(syncer.docs_dir / relative)
                 or outpath.name in syncer._load_excluded()):
             return res.fail(f"{relative} は {selected.docs_dir} の同期対象外です。ファイル名・配置を {selected.pattern} に合わせてください")
-        if not outpath.exists() and (outpath.name in syncer._load_mapping(migrate=False, prospective_name=outpath.name) or outpath.name in syncer._pending()):
-            return res.fail(f"既存の記事との紐付けまたは作成記録があります: {outpath.name}")
         if any(p.name == outpath.name and p.absolute() != outpath.absolute() for p in syncer.collect_files()):
             return res.fail(f"同じターゲットに同名文書があります: {outpath.name}")
+    if not outpath.exists():
+        for owner in config.targets:
+            syncer = _make_syncer(None, owner, project_root)
+            if not outpath.absolute().is_relative_to(syncer.docs_dir):
+                continue
+            relative = outpath.absolute().relative_to(syncer.docs_dir)
+            if not _matches_relative_glob(relative, owner.pattern):
+                continue
+            # 旧共通マッピングは docs_dir 直下のファイルが現れた時点で有効になる。
+            prospective = outpath.name if len(relative.parts) == 1 else None
+            mapping = syncer._load_mapping(migrate=False, prospective_name=prospective)
+            if outpath.name in mapping or outpath.name in syncer._pending():
+                return res.fail(f"既存の記事との紐付けまたは作成記録があります: {outpath.name}")
     res.data.update(path=str(outpath), title=title, template_id=args.template_id,
                     template_title=template.get("title", ""), dry_run=dry_run, created=False)
 
@@ -3136,7 +3153,7 @@ def build_parser():
     meta_get_p = meta_sub.add_parser("get", help="メタデータを表示")
     meta_get_p.add_argument("--id", type=int, help="対象の記事 ID")
     meta_set_p = meta_sub.add_parser("set", help="メタデータを設定")
-    meta_set_p.add_argument("--edit-stdin", action="store_true", help="キー・値・編集前の値を標準入力の JSON で指定")
+    meta_set_p.add_argument("--edit-stdin", action="store_true", help="標準入力 JSON の key・value で編集。既存キーは previous_token が必須、新規キーは省略")
     meta_set_p.add_argument("keyvalues", nargs="*", help="key=value ペア")
     meta_set_p.add_argument("--id", type=int, default=None, help="エンティティ ID")
 
