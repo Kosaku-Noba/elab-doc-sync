@@ -21,7 +21,7 @@ from markdownify import markdownify as html_to_md
 from .safety import hold_document, atomic_write, write_json, safe_path, snapshot, local_transaction, project_command, restore, BACKUPS, RECOVERY
 from .config import TargetConfig
 from .client import ELabFTWClient, public_url, upload_sha256
-from .config import read_config as load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, append_target_to_yaml, profile_connection, _parse_api_key_env
+from .config import read_config as load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, append_target_to_yaml, profile_connection, _parse_api_key_env, _valid_server_url
 from .merge import merge_text
 from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _compute_file_hash, _is_image, _normalize_remote_image_urls, _download_attachments, _localize_attachment_links, _linked_article_upload_ids, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
 from . import sync_log
@@ -2662,7 +2662,9 @@ def run_profile_list(args, echo=None) -> CommandResult:
         res.say("  プロファイルがありません")
         return res
     for name, pdata in profiles.items():
-        url = pdata.get("url", "?")
+        # URL の認証情報は表示しない。形が不正な URL は値ごと伏せる（どこまでが認証情報か判断できないため）。
+        raw_url = pdata.get("url")
+        url = public_url(raw_url) if raw_url and _valid_server_url(raw_url) else ("（不正な URL）" if raw_url else "?")
         has_api_key = bool(pdata.get("api_key"))
         has_key = "✓" if has_api_key else "✗"
         try:
@@ -2674,7 +2676,7 @@ def run_profile_list(args, echo=None) -> CommandResult:
             if env_name:
                 has_api_key = bool(os.getenv(env_name, "").strip())
                 has_key = f"環境変数 {env_name} " + ("✓" if has_api_key else "✗（未設定）")
-        res.data["profiles"].append({"name": name, "url": pdata.get("url"), "has_api_key": has_api_key,
+        res.data["profiles"].append({"name": name, "url": url if raw_url else None, "has_api_key": has_api_key,
                                      "verify_ssl": pdata.get("verify_ssl", True)})
         ssl = "SSL検証あり" if pdata.get("verify_ssl", True) else "SSL検証なし"
         res.say(f"  {name}: {url} (API キー: {has_key}, {ssl})")
@@ -2691,6 +2693,11 @@ def cmd_profile(args):
     elif args.profile_action == "add":
         name = args.profile_name
         url = args.url
+        if not _valid_server_url(url):
+            # 不正な URL を保存すると、設定の読み込みで全コマンドが止まる。値は表示しない。
+            print("エラー: --url が不正です。https://elab.example.com のように、http:// または https:// から始まる URL を指定してください",
+                  file=sys.stderr)
+            sys.exit(2)
         api_key = args.api_key or ""
         raw_key_env = getattr(args, "api_key_env", None)
         if raw_key_env is not None and not raw_key_env.strip():

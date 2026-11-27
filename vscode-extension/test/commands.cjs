@@ -124,7 +124,8 @@ async function pullAndResolve(api, root, note, calls) {
     assert.ok(!(await calls()).slice(before).some(line => line.startsWith('push')), 'do not overwrite when the user declines');
 
     // 改名した文書: 旧名の紐付けを esync mv で移してから取り込む。
-    api.dialogs.confirm = async (message, button) => { asked.push(button); return true; };
+    const messages = [];
+    api.dialogs.confirm = async (message, button) => { asked.push(button); messages.push(message); return true; };
     const moved = vscode.Uri.file(path.join(root, 'p1/docs/moved.md'));
     await fs.writeFile(moved.fsPath, '# moved\n');
     await write('status.json', { documents: [doc, { ...doc, file: 'moved.md', path: 'docs/moved.md', entity_id: null,
@@ -143,6 +144,8 @@ async function pullAndResolve(api, root, note, calls) {
     assert.ok(run.includes('mv --target=Lab --expect-id=42 --expect-server=https://example.test --expect-entity=items -- ' + path.join(root, 'p1/docs/note.md') + ' ' + moved.fsPath),
         'move the mapping from the old name to the renamed file');
     assert.ok(asked.includes('紐付けを移して続ける'));
+    assert.match(messages[0], /記事 #42（https:\/\/example\.test のリソース） との紐付けを moved\.md に移します/,
+        'name the server and type before moving the link');
     assert.ok(run.some(line => line.startsWith('pull --json --dry-run --target=Lab')), 'pull after moving the mapping');
 
     // 引数や文書の指定の誤り（終了コード 2）は「変更なし」ではなく、CLI の理由を示す。

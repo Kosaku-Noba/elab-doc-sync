@@ -154,6 +154,7 @@ def _valid_server_url(url) -> bool:
     from urllib.parse import urlsplit
     try:
         parts = urlsplit(str(url).strip())
+        parts.port  # 数字でないポート（区切りの誤記でパスワードがポート扱いになった場合など）は ValueError
         return parts.scheme in ("http", "https") and bool(parts.hostname)
     except ValueError:
         return False

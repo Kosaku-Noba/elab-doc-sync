@@ -505,3 +505,39 @@ def test_malformed_server_url_is_rejected_without_showing_it(project, capsys):
     assert code not in (0, None)
     assert 'pa ss' not in out + err and 'user' not in out + err
     assert 'url が不正です' in out + err
+
+
+def _run(args, capsys):
+    capsys.readouterr()
+    with patch.object(sys, 'argv', ['esync', *args]):
+        try:
+            code = main()
+        except SystemExit as exc:
+            code = exc.code
+    out, err = capsys.readouterr()
+    return code, out + err
+
+
+def test_password_parsed_as_a_port_is_rejected(project, capsys):
+    root, remote = project
+    cfg = root / '.elab-sync.yaml'
+    data = yaml.safe_load(cfg.read_text(encoding='utf-8'))
+    data['elabftw']['url'] = 'https://user:pa55word/example.test'
+    cfg.write_text(yaml.safe_dump(data), encoding='utf-8')
+    code, text = _run(['pull', '--json', '--dry-run', '--id', '1', '--entity', 'items'], capsys)
+    assert code not in (0, None) and 'pa55word' not in text and 'url が不正です' in text
+
+
+def test_profile_list_hides_url_credentials_and_add_rejects_bad_urls(project, capsys):
+    root, remote = project
+    cfg = root / '.elab-sync.yaml'
+    data = yaml.safe_load(cfg.read_text(encoding='utf-8'))
+    data['profiles'] = {'good': {'url': 'https://user:secret@elab.example.test', 'api_key': 'k'},
+                        'bad': {'url': 'https:/user:pa ss@elab.example.test', 'api_key': 'k'}}
+    cfg.write_text(yaml.safe_dump(data), encoding='utf-8')
+    code, text = _run(['profile', 'list'], capsys)
+    assert 'secret' not in text and 'pa ss' not in text
+    assert 'https://elab.example.test' in text and '（不正な URL）' in text
+    before = cfg.read_text(encoding='utf-8')
+    code, text = _run(['profile', 'add', 'other', '--url', 'https:/x:y z@host'], capsys)
+    assert code == 2 and 'y z' not in text and cfg.read_text(encoding='utf-8') == before
