@@ -117,7 +117,7 @@ def test_guarded_push_checks_link_destination_and_hides_url_credentials(project,
 def test_guarded_push_refuses_replaced_attachment_after_article_creation(project, capsys):
     from elab_doc_sync.cli import ELabFTWClient
     root, remote = project
-    (root / 'docs/a.md').write_text('![付録](appendix.md)')
+    (root / 'docs/a.md').write_text('![付録](appendix.md)', encoding='utf-8')
     appendix = root / 'docs/appendix.md'
     appendix.write_text('original')
     [doc] = preview('docs/a.md', capsys)

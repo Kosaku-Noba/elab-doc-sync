@@ -61,7 +61,7 @@ def test_status_json_preserves_paths_and_reports_problem_states(MockClient, tmp_
     cfg.write_text(yaml.safe_dump(config))
     (tmp_path / "docs/missing.md").unlink()
     (tmp_path / "docs/sub").mkdir()
-    (tmp_path / "docs/sub/ノート.md").write_text("# 内容")
+    (tmp_path / "docs/sub/ノート.md").write_text("# 内容", encoding="utf-8")
     (tmp_path / cli.RECOVERY).touch()
     args = cli.build_parser().parse_args(["status", "--json", "--config", str(cfg)])
     assert cli.cmd_status(args) == 1
