@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from decimal import Decimal
 import logging
 import re
 import requests
@@ -389,9 +390,10 @@ class ELabFTWClient:
         except (json.JSONDecodeError, TypeError):
             return {}
 
-    def get_metadata_raw(self, entity_type: str, entity_id: int) -> str | None:
-        """メタデータの生の値を返す（パースせず）。"""
-        entity = self._req("GET", f"/api/v2/{entity_type}/{entity_id}").json()
+    def get_metadata_raw(self, entity_type: str, entity_id: int, *, exact_numbers=False):
+        """JSON 文字列、オブジェクト、または null を返す。編集時は数値の精度を保持する。"""
+        response = self._req("GET", f"/api/v2/{entity_type}/{entity_id}")
+        entity = response.json(parse_float=Decimal) if exact_numbers else response.json()
         return entity.get("metadata")
 
     def update_metadata(self, entity_type: str, entity_id: int, metadata: dict[str, Any]) -> None:

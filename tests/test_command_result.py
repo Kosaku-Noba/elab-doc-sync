@@ -312,3 +312,30 @@ def test_new_document_preserves_legacy_tracking(MockClient, tmp_path, output_opt
     assert result.exit_code == 1 and "紐付け" in result.warnings[0]
     assert not (tmp_path / "docs/old.md").exists()
     assert not (tmp_path / ".target-ids/mapping.json").exists()
+
+
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_new_with_resolved_target_directory(MockClient, tmp_path):
+    cfg = _project(tmp_path)
+    data = yaml.safe_load(cfg.read_text())
+    data["targets"][0].update(docs_dir="docs/../notes", pattern="report*.md")
+    cfg.write_text(yaml.safe_dump(data))
+    MockClient.return_value._req.return_value.json.return_value = {"title": "report", "body": ""}
+    destination = tmp_path / "notes/report.md"
+    args = cli.build_parser().parse_args(["new", "--json", "--target=T", "--config", str(cfg),
+                                          "--template-id=7", "--output", str(destination)])
+    assert cli.run_new(args).exit_code == 0
+    assert destination.is_file()
+
+
+def test_structured_metadata_preserves_precision_until_guarded_edit():
+    from requests import Response
+    from elab_doc_sync.client import ELabFTWClient
+
+    client = ELabFTWClient("https://elab.example.com", "test")
+    response = Response()
+    response._content = b'{"metadata":{"nested":[0.1234567890123456789]}}'
+    with patch.object(client, "_req", return_value=response):
+        raw = client.get_metadata_raw("items", 42, exact_numbers=True)
+    with pytest.raises(ValueError, match="精度"):
+        cli._editable_metadata(raw)

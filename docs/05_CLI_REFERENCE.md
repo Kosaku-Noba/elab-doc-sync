@@ -334,7 +334,7 @@ esync metadata -t "週報" set key1=value1 key2=value2 --id 42
 
 `--id` を省略すると、各ターゲット（`-t` で限定可）の同期済みの全文書が対象です。`--id` は `--entity` を取らず、対象の各ターゲットの `entity` の記事として扱います。`-t` を省略すると、全ターゲットそれぞれの種別の #42（items と experiments のターゲットがあれば両方）を変更するため、`-t` でターゲットを 1 つに絞ってください（`-t` は `set` などの前に書く）。`set` は既存のメタデータ（JSON）に `key=value` を追記・上書きします。既存のメタデータが読めない場合は警告を出して上書きします。各ターゲットの接続プロファイルで送信します。
 
-`--expect-article-url` を指定した更新では、既存の JSON が読めない場合、書き戻すと精度が失われる小数を含む場合、オブジェクト・配列を文字列で上書きする場合は中止します。拡張は `esync metadata --target=週報 --expect-article-url="https://elab.example.com/experiments.php?mode=view&id=42" set --id=42 --edit-stdin` に `{"key":"担当","value":"B","previous_token":"取得したトークン"}` を標準入力で渡します。`previous_token` には同じ `--target`・`--expect-article-url` を指定した `esync metadata --json … get --id=42` が返した `entities[0].fields[]` の該当キーの `token` を指定します。表示と編集欄の初期値には同じ要素の `text` を使います。入力の `key` は空でない文字列、`value` は文字列です。省略すると新しいキーを追加します。更新前に既存値を読み直し、編集開始時と異なれば中止します。メタデータ全体の再取得と更新は別の API 要求で、この2つの要求の間に他の利用者が加えた変更は検出できません。
+`--expect-article-url` を指定した更新では、既存の JSON が読めない場合、書き戻すと精度が失われる小数を含む場合、オブジェクト・配列を文字列で上書きする場合は中止します。拡張は `esync metadata --target=週報 --expect-article-url="https://elab.example.com/experiments.php?mode=view&id=42" set --id=42 --edit-stdin` に `{"key":"担当","value":"B","previous_token":"取得したトークン"}` を標準入力で渡します。`previous_token` には同じ `--target`・`--expect-article-url` を指定した `esync metadata --json … get --id=42` が返した `entities[0].fields[]` の該当キーの `token` を指定します。表示と編集欄の初期値には同じ要素の `text` を使います。入力の `key` は空でない文字列、`value` は文字列です。新しいキーを追加する場合は `previous_token` を省略します。既存の JSON が読めない場合や小数の精度を保てない場合は、拡張のメタデータ一覧の取得も中止します。更新前に既存値を読み直し、編集開始時と異なれば中止します。メタデータ全体の再取得と更新は別の API 要求で、この2つの要求の間に他の利用者が加えた変更は検出できません。
 
 ## entity-status — ステータス操作
 

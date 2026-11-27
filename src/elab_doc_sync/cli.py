@@ -23,7 +23,7 @@ from markdownify import markdownify as html_to_md
 from .safety import hold_document, atomic_write, write_json, safe_path, snapshot, local_transaction, project_command, restore, BACKUPS, RECOVERY
 from .config import TargetConfig
 from .client import ELabFTWClient, public_url, server_id, upload_sha256
-from .config import read_config as load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, append_target_to_yaml, profile_connection, _parse_api_key_env, _valid_server_url
+from .config import read_config as load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, profile_for_target, append_target_to_yaml, profile_connection, _parse_api_key_env, _valid_server_url
 from .merge import merge_text
 from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _compute_file_hash, _is_image, _normalize_remote_image_urls, _download_attachments, _localize_attachment_links, _linked_article_upload_ids, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
 from .search import entity_url
@@ -2006,7 +2006,11 @@ def _editable_metadata(raw):
 
     if raw is None or raw == "":
         return {}
-    value = json.loads(raw, parse_float=checked_float, parse_constant=checked_float) if isinstance(raw, str) else raw
+    if isinstance(raw, str):
+        value = json.loads(raw, parse_float=checked_float, parse_constant=checked_float)
+    else:
+        # API が JSON オブジェクトで返した場合、小数は Decimal のまま取得してある。
+        value = json.loads(json.dumps(raw, default=checked_float, allow_nan=False))
     if not isinstance(value, dict):
         raise ValueError("メタデータは JSON オブジェクトである必要があります")
     return value
@@ -2069,7 +2073,7 @@ def run_metadata(args, echo=None) -> CommandResult:
             if args.meta_action == "get":
                 if getattr(args, "expect_article_url", None):
                     try:
-                        meta = _editable_metadata(client.get_metadata_raw(etype, eid))
+                        meta = _editable_metadata(client.get_metadata_raw(etype, eid, exact_numbers=True))
                     except ValueError as exc:
                         return res.fail(f"既存メタデータを読み取れません: {exc}")
                     entry["fields"] = [{"key": key, "token": _metadata_value_token(value),
@@ -2081,8 +2085,9 @@ def run_metadata(args, echo=None) -> CommandResult:
                 res.say(f"  {label}:")
                 res.say(f"    {json.dumps(meta, ensure_ascii=False, indent=2)}")
             elif args.meta_action == "set":
-                raw = client.get_metadata_raw(etype, eid)
-                if getattr(args, "expect_article_url", None):
+                guarded = bool(getattr(args, "expect_article_url", None))
+                raw = client.get_metadata_raw(etype, eid, exact_numbers=True) if guarded else client.get_metadata_raw(etype, eid)
+                if guarded:
                     try:
                         existing = _editable_metadata(raw)
                     except ValueError as exc:
@@ -2246,12 +2251,16 @@ def run_new(args, echo=None) -> CommandResult:
     if getattr(args, "json", False) and args.target:
         selected = next(t for t in config.targets if _matches_target(t, args.target))
         syncer = _make_syncer(client, selected, project_root)
-        relative = outpath.absolute().relative_to(syncer.docs_dir.absolute())
-        safe_path(syncer.docs_dir, relative.as_posix())
+        # VS Code は設定の docs_dir を解決した絶対パスを渡す。入力側のリンクや .. は safe_path で検査する。
+        root = syncer.docs_dir.absolute()
+        output = outpath.absolute()
+        relative = output.relative_to(root if output.is_relative_to(root) else root.resolve())
+        safe_path(root, relative.as_posix())
         if (not _matches_relative_glob(relative, selected.pattern) or syncer.is_displaced_path(syncer.docs_dir / relative)
                 or outpath.name in syncer._load_excluded()):
             return res.fail(f"{relative} は {selected.docs_dir} の同期対象外です。ファイル名・配置を {selected.pattern} に合わせてください")
-    if not outpath.exists():
+    creating = not outpath.exists()
+    if creating or args.force:
         destination = outpath.resolve()
         for owner in config.targets:
             docs_dir = (project_root / owner.docs_dir).resolve()
@@ -2260,13 +2269,17 @@ def run_new(args, echo=None) -> CommandResult:
             relative = destination.relative_to(docs_dir)
             if not _matches_relative_glob(relative, owner.pattern):
                 continue
-            syncer = _make_syncer(_make_client_for_target(config, owner), owner, project_root)
-            if any(p.name == destination.name for p in syncer.collect_files()):
+            syncer = _make_syncer(None, owner, project_root)
+            if any(p.name == destination.name and p.resolve() != destination for p in syncer.collect_files()):
                 return res.fail(f"同じターゲットに同名文書があります: {destination.name}")
+            if not creating:
+                continue
             # 旧共通マッピングは docs_dir 直下のファイルが現れた時点で有効になる。
             prospective = outpath.name if len(relative.parts) == 1 else None
             mapping = syncer._load_mapping(migrate=False, prospective_name=prospective)
-            if outpath.name in mapping or outpath.name in syncer._pending() or syncer._receipt_path(outpath.name).exists():
+            profile = profile_for_target(config, owner)
+            base_url = (profile.url if profile else config.url).rstrip("/")
+            if outpath.name in mapping or outpath.name in syncer._pending() or syncer._receipt_path(outpath.name, base_url=base_url).exists():
                 return res.fail(f"既存の記事との紐付けまたは作成記録があります: {outpath.name}")
     res.data.update(path=str(outpath), title=title, template_id=args.template_id,
                     template_title=template.get("title", ""), dry_run=dry_run, created=False)
@@ -2278,7 +2291,7 @@ def run_new(args, echo=None) -> CommandResult:
         res.say(f"  {outpath} を作成予定（テンプレート #{args.template_id}: {template.get('title', '')}）")
         return res
     outpath.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write(outpath, f"# {title}\n\n{body_md}\n")
+    atomic_write(outpath, f"# {title}\n\n{body_md}\n", exclusive=not args.force)
     res.data["created"] = True
     res.say(f"  ✅ {outpath} を作成しました（テンプレート #{args.template_id}: {template.get('title', '')}）")
     return res

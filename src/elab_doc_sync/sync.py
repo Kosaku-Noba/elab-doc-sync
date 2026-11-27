@@ -2108,8 +2108,10 @@ class EachDocsSyncer:
             raise ValueError(f"除外情報の形式が不正です: {path}")
         return set(data)
 
-    def _receipt_path(self, filename):
-        identity = f"{self.client.base_url}|{self.entity}|{self.hash_dir}|{filename}"
+    def _receipt_path(self, filename, *, base_url=None):
+        if base_url is None:
+            base_url = self.client.base_url
+        identity = f"{base_url}|{self.entity}|{self.hash_dir}|{filename}"
         key = hashlib.sha256(identity.encode()).hexdigest()
         return self.project_root / ".elab-sync-operations" / f"{key}.json"
 
