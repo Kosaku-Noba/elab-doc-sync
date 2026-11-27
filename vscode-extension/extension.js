@@ -180,6 +180,20 @@ async function activate(context) {
         }
     }
 
+    // ステータスバーに表示した送信先から差分を開く。複数あれば選ぶ。
+    async function previewMatches({ file, matches }, token) {
+        if (!matches.length) return preview(file, undefined, token);
+        let match = matches[0];
+        if (matches.length > 1) {
+            const choice = await vscode.window.showQuickPick(matches.map(m => ({
+                label: m.doc.target, description: m.folder.name + ' / ' + m.doc.entity + ' — ' + m.doc.state, match: m,
+            })), { placeHolder: '差分を確認する送信先を選択' }, token);
+            if (!choice || token?.isCancellationRequested) return;
+            match = choice.match;
+        }
+        return preview(file, match, token);
+    }
+
     function forget(entry) {
         previews.delete(entry.uri);
         for (const uri of entry.snapshots) {
@@ -244,13 +258,13 @@ async function activate(context) {
     // 開いている Markdown の同期状態。クリックで差分を開く。
     const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
     statusBar.name = 'esync';
-    statusBar.command = 'esync.preview';
     let statusUpdate = 0;
     async function updateStatusBar() {
         const current = ++statusUpdate;
         const doc = vscode.window.activeTextEditor?.document;
-        const view = projects.length && doc?.uri.scheme === 'file' && doc.languageId === 'markdown'
-            ? statusBarView((await status.documentsFor(doc.uri, undefined)).matches) : undefined;
+        const found = projects.length && doc?.uri.scheme === 'file' && doc.languageId === 'markdown'
+            ? await status.documentsFor(doc.uri, undefined) : undefined;
+        const view = found && statusBarView(found.matches, found.errors);
         if (current !== statusUpdate) return;
         if (!view) {
             statusBar.hide();
@@ -258,6 +272,9 @@ async function activate(context) {
         }
         statusBar.text = view.text;
         statusBar.tooltip = view.tooltip;
+        // 表示した送信先の差分を開く。ファイルが属するフォルダーではなく、同期設定のあるプロジェクトを使う。
+        statusBar.command = { command: 'esync.previewFromStatusBar', title: '差分を確認',
+            arguments: [{ file: doc.uri, matches: found.matches }] };
         statusBar.show();
     }
 
@@ -301,15 +318,18 @@ async function activate(context) {
         command('esync.preview', 'esync 差分を取得中', (uri, token) => preview(uri, undefined, token), true),
         command('esync.push', 'esync 送信中', push),
         command('esync.showRemoteChanges', 'esync 差分を表示中', showRemoteChanges),
+        command('esync.previewFromStatusBar', 'esync 差分を取得中', previewMatches, true),
         statusBar,
         vscode.window.registerFileDecorationProvider(decorations),
         events.event(() => decorations.changed.fire(undefined)),
+        // 改名した文書の記事 ID が照会で分かったら、バッジも更新する。
+        currentEvents.event(() => decorations.changed.fire(undefined)),
         decorations.changed,
         currentEvents.event(updateStatusBar),
     );
     await discover();
     // テスト用。拡張ホストのテストから内部の状態を確かめる。
-    return { preview, statusBar, snapshots, previews };
+    return { preview, statusBar, snapshots, previews, decorations };
 }
 
 module.exports = { activate };

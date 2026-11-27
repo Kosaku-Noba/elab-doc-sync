@@ -48,6 +48,10 @@ async function renameCandidates(folder, file, doc, waitForUpdate, events, curren
     assert.equal(lookups.length, 2, 'look up again only after the stale request finishes');
     await finishLookup(1, renamed(42));
     assert.equal(await idOf(), '#42');
+    // ステータスバーとバッジも、照会済みの結果で改名先の記事を示す（新たに照会はしない）。
+    assert.deepEqual(status.statesOf(file), ['リネーム予定']);
+    assert.equal((await status.documentsFor(file, undefined)).matches[0].doc.entity_id, 42);
+    assert.equal(lookups.length, 2);
 
     await refreshWith([doc, candidate(42)]);
     assert.equal(await idOf(), '#42', 'keep the confirmed ID while the same candidates are re-checked');

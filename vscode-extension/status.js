@@ -92,7 +92,8 @@ function previewItem(preview) {
     if (doc.remote_changes?.length || preview.remote) {
         const remote = treeItem('eLabFTW 側の変更');
         remote.description = (doc.remote_changes || []).join('、');
-        remote.tooltip = 'push すると、eLabFTW 側の変更はローカルの内容で上書きされます。';
+        remote.tooltip = '同期状態が「競合」「取得待ち」の文書は、通常の push では送信されません。'
+            + '先に esync pull で eLabFTW 側の変更を取り込んでください。';
         remote.iconPath = new vscode.ThemeIcon('warning');
         if (preview.remote) {
             remote.command = { command: 'esync.showRemoteChanges', title: 'eLabFTW 側の変更を表示', arguments: [preview.uri] };
@@ -107,6 +108,9 @@ function previewItem(preview) {
 // 状態ごとの表示。並び順は、複数の送信先がある文書で代表として示す優先度（先頭ほど注意が必要）。
 const stateStyles = [
     ['競合', 'warning', '!', 'gitDecoration.conflictingResourceForeground'],
+    ['競合マーカーあり', 'warning', '!', 'gitDecoration.conflictingResourceForeground'],
+    ['リモート削除', 'trash', 'D', 'gitDecoration.deletedResourceForeground'],
+    ['ローカル削除', 'trash', 'D', 'gitDecoration.deletedResourceForeground'],
     ['作成結果不明', 'question', '?', 'list.warningForeground'],
     ['同期未完了', 'sync', '!', 'list.warningForeground'],
     ['確認失敗', 'error', '?', 'list.warningForeground'],
@@ -120,24 +124,32 @@ const stateStyles = [
 
 /** @param {string[]} states 最も注意が必要な状態とその表示 */
 function leadingState(states) {
-    const style = stateStyles.find(([state]) => states.includes(state));
-    if (style) return { state: style[0], icon: style[1], badge: style[2], color: style[3] };
-    return states.length ? { state: states[0], icon: 'sync' } : undefined;
+    const known = stateStyles.find(([state]) => state !== '最新' && states.includes(state));
+    // CLI が新しい状態を返しても「最新」に埋もれないよう、未知の状態は「最新」より先に示す。
+    const unknown = states.find(state => !stateStyles.some(([style]) => style === state));
+    const style = known || (unknown && [unknown, 'question', '?', 'list.warningForeground'])
+        || stateStyles.find(([state]) => states.includes(state));
+    return style && { state: style[0], icon: style[1], badge: style[2], color: style[3] };
 }
 
 /**
- * ステータスバーの表示。送信先がなければ undefined。
+ * ステータスバーの表示。送信先がなく、取得の失敗もなければ undefined。
  * @param {{ doc: any }[]} matches
+ * @param {string[]} [errors] 同期状態を取得できなかったプロジェクト
  */
-function statusBarView(matches) {
+function statusBarView(matches, errors = []) {
     const lead = leadingState(matches.map(({ doc }) => doc.state));
-    if (!lead) return;
+    if (!lead && !errors.length) return;
+    const lines = matches.map(({ doc }) => doc.target + ' ' + (doc.entity_id == null ? '未割り当て' : '#' + doc.entity_id)
+        + ' — ' + doc.state);
+    if (errors.length) {
+        return {
+            text: '$(error) esync: 同期状態を取得できません' + (lead ? '（前回: ' + lead.state + '）' : ''),
+            tooltip: [...errors, ...(lines.length ? ['前回取得した状態:', ...lines] : [])].join('\n'),
+        };
+    }
     const more = matches.length > 1 ? '（送信先 ' + matches.length + ' 件）' : '';
-    return {
-        text: '$(' + lead.icon + ') esync: ' + lead.state + more,
-        tooltip: matches.map(({ doc }) => doc.target + ' ' + (doc.entity_id == null ? '未割り当て' : '#' + doc.entity_id)
-            + ' — ' + doc.state).join('\n') + '\nクリックで差分を確認',
-    };
+    return { text: '$(' + lead.icon + ') esync: ' + lead.state + more, tooltip: lines.join('\n') + '\nクリックで差分を確認' };
 }
 
 /**
@@ -179,7 +191,7 @@ class StatusProvider {
                 for (const doc of value.documents.filter(doc => doc.path)) {
                     for (const base of new Set([value.root, folder.uri.fsPath])) {
                         const name = path.resolve(base, doc.path);
-                        entry.files.set(name, [...(entry.files.get(name) || []), doc.state]);
+                        entry.files.set(name, [...(entry.files.get(name) || []), doc]);
                     }
                 }
                 entry.error = undefined;
@@ -228,6 +240,12 @@ class StatusProvider {
         if (!missing && doc.state !== '同期未完了') return doc;
         const key = path.resolve(entry.value.root, doc.path);
         const details = entry.details;
+        // loadDiff がなければ照会せず、照会済みの結果だけを使う。未確定なら status の結果のまま返す。
+        if (!loadDiff) {
+            const detail = details.get(key);
+            const resolved = detail && this.resolveDocument(detail, doc);
+            return resolved && !resolved.idMessage ? resolved : doc;
+        }
         if (!details.has(key)) details.set(key, { dirty: true, generation: 0 });
         const detail = details.get(key);
         if (detail.dirty && !detail.loading) {
@@ -247,6 +265,11 @@ class StatusProvider {
                 if (details.get(key) === detail && this.cache.get(folder.uri.toString()) === entry) this.currentEvents.fire();
             });
         }
+        return this.resolveDocument(detail, doc);
+    }
+
+    /** 照会結果から記事 ID と状態を補う。確定できなければ idMessage を付ける。 */
+    resolveDocument(detail, doc) {
         if (detail.error) return { ...doc, idMessage: '確認できません', error: detail.error };
         if (!detail.documents) return { ...doc, idMessage: '確認中…' };
         const matches = detail.documents.filter(d => d.target === doc.target && d.entity === doc.entity);
@@ -265,7 +288,11 @@ class StatusProvider {
      */
     statesOf(uri) {
         const states = [];
-        for (const entry of this.cache.values()) states.push(...(entry.files?.get(uri.fsPath) || []));
+        for (const entry of this.cache.values()) {
+            for (const doc of entry.files?.get(uri.fsPath) || []) {
+                states.push(this.effectiveDocument(entry, undefined, uri, doc).state);
+            }
+        }
         return states;
     }
 
@@ -296,7 +323,7 @@ class StatusProvider {
             warnings.push(...notices);
             for (const doc of documents) {
                 if (doc.path && path.relative(realPath, path.resolve(root, doc.path)) === '') {
-                    matches.push({ folder, doc: loadDiff ? this.effectiveDocument(entry, folder, file, doc, loadDiff) : doc });
+                    matches.push({ folder, doc: this.effectiveDocument(entry, folder, file, doc, loadDiff) });
                 }
             }
         }

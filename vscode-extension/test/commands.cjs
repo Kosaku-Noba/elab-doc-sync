@@ -22,6 +22,13 @@ function helpers() {
     assert.equal(fileDecoration(['送信待ち']).badge, 'M');
     assert.equal(fileDecoration(['送信待ち', '競合']).badge, '!');
     assert.equal(fileDecoration(['最新']), undefined, 'no badge for documents in sync');
+    assert.equal(fileDecoration(['最新', 'リモート削除']).badge, 'D', 'a deleted article is not hidden by another target');
+    assert.match(statusBarView([doc('最新'), doc('リモート削除')]).text, /trash.*リモート削除/);
+    assert.equal(fileDecoration(['最新', '新しい状態']).badge, '?', 'an unknown state comes before 最新');
+    const failed = statusBarView([doc('最新')], ['Lab — HTTP 401']);
+    assert.match(failed.text, /error.*取得できません（前回: 最新）/, 'do not present a stale state as current');
+    assert.match(failed.tooltip, /HTTP 401[\s\S]*前回取得した状態/);
+    assert.match(statusBarView([], ['Lab — HTTP 401']).text, /取得できません$/);
 }
 
 exports.run = async function () {
@@ -33,9 +40,11 @@ exports.run = async function () {
     const note = vscode.Uri.file(path.join(root, 'p1/docs/note.md'));
     await vscode.window.showTextDocument(note);
     await until(() => api.statusBar.text.includes('送信待ち'), 'status bar shows the state of the open document');
-    assert.equal(api.statusBar.command, 'esync.preview');
-
-    await vscode.commands.executeCommand('esync.preview', note);
+    // ステータスバーから、表示した送信先の差分を開く。
+    const { command, arguments: args } = api.statusBar.command;
+    assert.equal(command, 'esync.previewFromStatusBar');
+    assert.equal(args[0].matches[0].folder.name, 'p1');
+    await vscode.commands.executeCommand(command, ...args);
     const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
     assert.ok(tab.input instanceof vscode.TabInputTextDiff, 'open a side-by-side diff');
     assert.equal(tab.input.original.scheme, 'esync-snapshot');
