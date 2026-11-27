@@ -111,6 +111,10 @@ export ELABFTW_API_KEY="your_key"
 
 ---
 
+## VS Code から使う
+
+左端の esync アイコンを押すと、上に開いている文書の送信先・記事 ID・同期状態、下にプロジェクト全体の同期一覧が表示されます。文書の差分を開き、差分タブからその文書だけを push できます。[VS Code 拡張のセットアップ](vscode-extension/README.md)
+
 ## MCP クライアントから使う
 
 MCP（Model Context Protocol）対応アプリは、標準入出力（stdio）を通じて esync のツールを呼び出せます。サーバーの起動コマンドは `elab-doc-sync-mcp` です。チェックアウトしたリポジトリで `uv sync --extra mcp` を実行し、MCP クライアントに次のサーバーを登録します。2 つの絶対パスはそれぞれアプリのチェックアウトと、操作する同期プロジェクトに合わせてください。
@@ -181,6 +185,7 @@ esync status
 ```bash
 esync diff                 # 全文書
 esync diff docs/note.md    # 指定した文書だけ（push と同じ指定方法）
+esync diff --json docs/note.md    # 差分・送信先・記事 ID を JSON で確認
 ```
 
 文書ごとに、前回の同期からの変更を次の 2 つに分けて表示します。

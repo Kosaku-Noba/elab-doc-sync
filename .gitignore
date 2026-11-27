@@ -47,3 +47,7 @@ AI_discussions.md
 .elab-displaced-*/
 .elab-sync-operations/
 .elab-sync-recovery.json
+
+# VS Code 拡張の開発用
+vscode-extension/node_modules/
+vscode-extension/.vscode-test/

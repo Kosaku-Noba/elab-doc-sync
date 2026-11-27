@@ -4,7 +4,7 @@ CLI tool — not intended for use as a library.
 """
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from functools import lru_cache
 from fnmatch import fnmatch
 import hashlib
@@ -28,7 +28,7 @@ from collections import Counter
 
 from .result import progress, error_text
 from .safety import hold_document, DISPLACED_PREFIX, atomic_write, write_json, safe_path, snapshot, local_transaction
-from .client import ELabFTWClient, UploadConfirmationError, upload_sha256, upload_url
+from .client import ELabFTWClient, UploadConfirmationError, public_url, upload_sha256, upload_url
 from .config import TargetConfig
 from . import sync_log
 from .merge import has_conflict_markers
@@ -551,10 +551,12 @@ def _remember_asset(verified, src, digest):
         raise ConflictError(f"送信中に同じ添付の内容が変わりました: {src}")
 
 
-def _upload_body_file(client, entity, eid, path, uploaded, root, name=None, record=None):
+def _upload_body_file(client, entity, eid, path, uploaded, root, name=None, record=None, expected_hash=None):
     """送信に使ったファイルと受領 ID を本文の更新前に記録する。"""
     with _staged_asset(root, path, name) as staged:
         expected = (staged.name, staged.stat().st_size, _compute_file_hash(staged))
+        if expected_hash is not None and expected[2] != expected_hash:
+            raise ConflictError(f"差分確認後に添付の内容が変わりました: {path.name}")
         try:
             result = client.upload_file(entity, eid, str(staged))
         except UploadConfirmationError as exc:
@@ -674,7 +676,8 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
             return link.with_url(reuse["url"])
         # サイズ不一致 → 新規アップロードを試み、成功時のみ旧添付を削除予約
         progress(f"    画像をアップロード中: {real_name}")
-        result = _upload_body_file(client, entity, entity_id, img_path, uploaded, project_root, real_name, record)
+        result = _upload_body_file(client, entity, entity_id, img_path, uploaded, project_root, real_name, record,
+                                   expected_hash=(verified or {}).get(src))
         if result.get("url"):
             if used_urls is not None:
                 used_urls[result["id"]] = result["url"]
@@ -740,7 +743,7 @@ class LinkTargets:
     """
 
     def __init__(self, base_url: str):
-        self.base_url = base_url
+        self.base_url = public_url(base_url)
         self._by_path: dict[Path, tuple[str, int]] = {}
         self._by_id: dict[tuple[str, int], Path] = {}
 
@@ -831,7 +834,7 @@ def _rewrite_local_links(body: str, entity: str, base_url: str,
         target_entity = entity
         if eid is not None:
             page = _ENTITY_TO_PAGE[target_entity]
-            url = f"{base_url}/{page}.php?mode=view&id={eid}{fragment_suffix}"
+            url = f"{public_url(base_url)}/{page}.php?mode=view&id={eid}{fragment_suffix}"
             return link.with_url(url)
 
         # 2. 他のターゲットの mapping を検索
@@ -840,7 +843,7 @@ def _rewrite_local_links(body: str, entity: str, base_url: str,
                 eid = other_mapping.get(target_filename)
                 if eid is not None:
                     page = _ENTITY_TO_PAGE[other_entity]
-                    url = f"{base_url}/{page}.php?mode=view&id={eid}{fragment_suffix}"
+                    url = f"{public_url(base_url)}/{page}.php?mode=view&id={eid}{fragment_suffix}"
                     return link.with_url(url)
 
         # 解決できないリンクはそのまま残す
@@ -1000,7 +1003,8 @@ def _rewrite_videos(body: str, entity: str, entity_id: int, client: ELabFTWClien
             return f'<video src="{reuse["url"]}" controls>{alt}</video>'
 
         progress(f"    動画をアップロード中: {real_name}")
-        result = _upload_body_file(client, entity, entity_id, video_path, uploaded, project_root, record=record)
+        result = _upload_body_file(client, entity, entity_id, video_path, uploaded, project_root, record=record,
+                                   expected_hash=(verified or {}).get(src))
         if result.get("url"):
             if used_urls is not None:
                 used_urls[result["id"]] = result["url"]
@@ -1124,7 +1128,8 @@ def _rewrite_file_links(body: str, entity: str, entity_id: int, client: ELabFTWC
             return link.with_url(reuse["url"], as_file=True)
 
         progress(f"    ファイルをアップロード中: {real_name}")
-        result = _upload_body_file(client, entity, entity_id, file_path, uploaded, project_root, record=record)
+        result = _upload_body_file(client, entity, entity_id, file_path, uploaded, project_root, record=record,
+                                   expected_hash=(verified or {}).get(src))
         if result.get("url"):
             if used_urls is not None:
                 used_urls[result["id"]] = result["url"]
@@ -1650,14 +1655,15 @@ class EachDocsSyncer:
         else:
             self.client.update_item(eid, **fields)
 
-    def _compute_assets_hash(self, raw_body, filename=None, *, body_evidence=None, downloaded=None):
+    def _compute_assets_hash(self, raw_body, filename=None, *, body_evidence=None, downloaded=None, observed=None):
         parts = []
         document_dir = self.file_path(filename).parent if filename else self.docs_dir
         # Preserve the image-first order used by existing asset hashes.
         for link in sorted(_body_links(raw_body), key=lambda entry: not entry.image):
             src = link.url
-            if (src.startswith(("http://", "https://", "//", "#", "mailto:", "data:")) or src.split("#")[0].endswith(".md")
-                    or (not link.image and _is_image(src))):
+            if src.startswith(("http://", "https://", "//")):
+                continue
+            if not link.image and (src.startswith(("#", "mailto:", "data:")) or src.split("#")[0].endswith(".md") or _is_image(src)):
                 continue
             if body_evidence is not None:
                 parts.append(f"{src}:{body_evidence.get(src, 'missing')}")
@@ -1666,7 +1672,10 @@ class EachDocsSyncer:
             if downloaded is not None and path in downloaded:
                 parts.append(f"{src}:{downloaded[path]}")
             else:
-                parts.append(f"{src}:{_compute_file_hash(path) if path.is_file() else 'missing'}")
+                digest = _compute_file_hash(path) if path.is_file() else 'missing'
+                parts.append(f"{src}:{digest}")
+                if observed is not None:
+                    _remember_asset(observed, src, digest)
         return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
 
     def previous_asset_paths(self, filename):
@@ -2180,7 +2189,24 @@ class EachDocsSyncer:
         current = next((e for e in entities if len(ids) == 1 and e.get("category_title") == category), None)
         return self.client.resolve_category_id(self.entity, category, current=current)
 
-    def sync(self, force=False, prune_attachments=False, only=None, *, prune_preview=None):
+    def preview_mapping(self, mapping, files):
+        planned = mapping.copy()
+        for name, pending in self._pending().items():
+            if pending.get("eid"):
+                planned.setdefault(name, pending["eid"])
+        original = planned.copy()
+        self._detect_renames(planned, files, self.entity, dry_run=True)
+        return planned, {eid: name for name, eid in original.items() if name not in planned}
+
+    def preview_token(self, path, eid, body, assets_hash, mapping, links):
+        """Identify the selected article and local inputs in a single-document preview."""
+        linked = _rewrite_local_links(body, self.entity, self.client.base_url, mapping,
+                                      source=path, links=links)
+        inputs = [str(path.resolve()), eid, asdict(self.target), self.client.base_url,
+                  str(self.client.api_key), body, linked, assets_hash]
+        return hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()
+
+    def sync(self, force=False, prune_attachments=False, only=None, *, prune_preview=None, expected_preview=None):
         """Push the target's documents, or only the file names in `only`.
 
         Rename detection still looks at every document, so unselected files
@@ -2199,6 +2225,14 @@ class EachDocsSyncer:
         if prune_attachments and self.target.attachments_dir and prune_preview is None:
             prune_preview = self.dry_run(only=only, prune_attachments=True)
         preview_by_name = {doc["filename"]: doc for doc in prune_preview or ()}
+        if expected_preview is not None:
+            planned, _ = self.preview_mapping(self._load_mapping(migrate=False), md_files)
+            [name] = only
+            source = self.file_path(name)
+            body = source.read_text(encoding="utf-8").strip()
+            assets_hash = self._compute_assets_hash(body, name)
+            if self.preview_token(source, planned.get(name), body, assets_hash, planned, self.link_targets(planned)) != expected_preview:
+                raise ConflictError("送信先または文書の内容が変わりました。差分を開き直してください")
         mapping = self._load_mapping()
         pending = self._pending()
         unknown = [name for name, item in pending.items() if not item.get("eid")]
@@ -2224,7 +2258,14 @@ class EachDocsSyncer:
                 progress(f"  [{f.stem}] 添付削除の事前確認に失敗: {preview['error']}", warning=True)
                 continue
             result = self.inspect(f.name, eid)
-            self._compute_assets_hash(result["body"], f.name)  # 送信前に参照パスの範囲を検証
+            if expected_preview is not None:
+                result["reviewed_assets"] = {}
+                assets_hash = self._compute_assets_hash(result["body"], f.name, observed=result["reviewed_assets"])
+                result["reviewed_links"] = self.link_targets(mapping)
+                if self.preview_token(f, eid, result["body"], assets_hash, mapping, result["reviewed_links"]) != expected_preview:
+                    raise ConflictError("送信先または文書の内容が変わりました。差分を開き直してください")
+            else:
+                self._compute_assets_hash(result["body"], f.name)
             result["preview_prune_ids"] = {u["id"] for u in preview.get("prune_candidates", [])
                                            if eid is not None and eid == preview.get("entity_id")}
             state = result["state"]
@@ -2370,7 +2411,7 @@ class EachDocsSyncer:
                 previous = result.get("created_data") or result.get("data") or self._get_entity(eid)
                 stale_uploads: list[int] = []
                 uploaded = {}
-                verified_body = {}
+                verified_body = result.get("reviewed_assets", {})
                 body_receipts = list(result["body_receipts"]) if resuming else []
                 def record_body_upload(receipt):
                     if not body_receipts:
@@ -2394,7 +2435,8 @@ class EachDocsSyncer:
                 body = _rewrite_images(raw_body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded, verified=verified_body, record=record_body_upload, preferred=preferred, used_urls=used_urls)
                 body = _rewrite_videos(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded, verified=verified_body, record=record_body_upload, preferred=preferred, used_urls=used_urls)
                 body = _rewrite_file_links(body, self.entity, eid, self.client, f.parent, self.project_root, strict=True, stale_out=stale_uploads, uploaded=uploaded, verified=verified_body, record=record_body_upload, preferred=preferred, used_urls=used_urls)
-                body = _rewrite_local_links(body, self.entity, self.client.base_url, mapping, source=f, links=links)
+                body = _rewrite_local_links(body, self.entity, self.client.base_url, mapping, source=f,
+                                            links=result.get("reviewed_links", links))
                 body = body if self.target.body_format == "md" else _md_to_html(body)
                 expected = {"body": body, "title": f.stem, "content_type": 2 if self.target.body_format == "md" else 1}
                 expected_links = _attachment_links(body, expected["content_type"]) if used_urls else {}

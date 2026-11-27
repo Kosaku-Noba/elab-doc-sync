@@ -53,6 +53,86 @@ def titles(remote):
     return sorted(e['title'] for e in remote.values())
 
 
+def preview(file, capsys):
+    capsys.readouterr()
+    with patch.object(sys, 'argv', ['esync', 'diff', '--json', '--', file]):
+        main()
+    return json.loads(capsys.readouterr().out)['documents']
+
+
+def test_preview_keeps_rename_read_only_and_identifies_existing_article(project, capsys):
+    root, remote = project
+    assert push('docs/a.md') in (0, None)
+    eid = next(iter(remote))
+    (root / 'docs/a.md').rename(root / 'docs/moved.md')
+    [doc] = preview('docs/moved.md', capsys)
+    assert doc['renamed_from'] == 'a.md' and doc['entity_id'] == eid
+    assert doc['state'] == 'リネーム予定'
+    assert push('--target', doc['selector'], '--expect-preview', 'stale', 'docs/moved.md') == 1
+    assert json.loads((root / '.ids/mapping.json').read_text()) == {'a.md': eid}
+    assert push('--target', doc['selector'], '--expect-preview', doc['preview_token'], 'docs/moved.md') in (0, None)
+    assert titles(remote) == ['moved'] and remote[eid]['title'] == 'moved'
+
+
+def test_preview_separates_overlapping_targets_and_identifies_asset_changes(project, capsys):
+    root, remote = project
+    cfg = root / '.elab-sync.yaml'
+    data = yaml.safe_load(cfg.read_text())
+    data['targets'][1]['docs_dir'] = 'docs/sub'
+    cfg.write_text(yaml.safe_dump(data))
+    file = 'docs/sub/c.md'
+    (root / file).write_text('![plot](plot.png)')
+    asset = root / 'docs/sub/plot.png'
+    asset.write_bytes(b'first')
+    first, second = preview(file, capsys)
+    assert [first['selector'], second['selector']] == ['T', 'N']
+    assert '+![plot](plot.png)' in second['local_diff']
+    asset.write_bytes(b'second')
+    assert preview(file, capsys)[1]['preview_token'] != second['preview_token']
+    assert push('--target', second['selector'], '--expect-preview', second['preview_token'], file) == 1
+    assert not remote
+    (root / file).write_text('# final')
+    assert push('--target', second['selector'], file) in (0, None)
+    assert len(remote) == 1
+    assert not (root / '.ids/mapping.json').exists()
+
+
+def test_guarded_push_checks_link_destination_and_hides_url_credentials(project, capsys):
+    from elab_doc_sync.cli import ELabFTWClient
+    root, remote = project
+    ELabFTWClient.return_value.base_url = 'https://user:password@example.test/elab'
+    (root / 'docs/a.md').write_text('[B](b.md)')
+    [doc] = preview('docs/a.md', capsys)
+    assert doc['server'] == 'https://example.test/elab'
+    assert push('docs/b.md') in (0, None)
+    assert push('--expect-preview', doc['preview_token'], 'docs/a.md') == 1
+    assert titles(remote) == ['b']
+    [current] = preview('docs/a.md', capsys)
+    assert push('--expect-preview', current['preview_token'], 'docs/a.md') in (0, None)
+    article = next(item for item in remote.values() if item['title'] == 'a')
+    assert 'https://example.test/elab/database.php' in article['body']
+    assert 'password' not in article['body']
+
+
+def test_guarded_push_refuses_replaced_attachment_after_article_creation(project, capsys):
+    from elab_doc_sync.cli import ELabFTWClient
+    root, remote = project
+    (root / 'docs/a.md').write_text('![付録](appendix.md)', encoding='utf-8')
+    appendix = root / 'docs/appendix.md'
+    appendix.write_text('original')
+    [doc] = preview('docs/a.md', capsys)
+    client = ELabFTWClient.return_value
+    create = client.create_item.side_effect
+
+    def create_then_edit(**kw):
+        appendix.write_text('replacement')
+        return create(**kw)
+
+    client.create_item.side_effect = create_then_edit
+    assert push('--expect-preview', doc['preview_token'], 'docs/a.md') == 1
+    client.upload_file.assert_not_called()
+
+
 @pytest.mark.parametrize('args,expected', [
     (['docs/a.md'], ['a']),
     (['docs/a.md', 'notes/n.md'], ['a', 'n']),

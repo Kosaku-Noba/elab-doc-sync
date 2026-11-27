@@ -19,7 +19,7 @@ from markdownify import markdownify as html_to_md
 
 from .safety import hold_document, atomic_write, write_json, safe_path, snapshot, local_transaction, project_command, restore, BACKUPS, RECOVERY
 from .config import TargetConfig
-from .client import ELabFTWClient, upload_sha256
+from .client import ELabFTWClient, public_url, upload_sha256
 from .config import read_config as load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, append_target_to_yaml, profile_connection, _parse_api_key_env
 from .merge import merge_text
 from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _compute_file_hash, _is_image, _normalize_remote_image_urls, _download_attachments, _localize_attachment_links, _linked_article_upload_ids, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
@@ -267,6 +267,10 @@ def run_push(args, echo=None) -> CommandResult:
         except ValueError as e:
             return res.fail(f"エラー: {e}", 2)
     prune_previews = {}
+    expected_preview = getattr(args, "expect_preview", None)
+    if expected_preview is not None and (not selected or sum(map(len, selected.values())) != 1
+                                         or args.dry_run or args.force or args.prune_attachments):
+        return res.fail("--expect-preview は 1 つのターゲットの 1 文書に対する通常の push で指定してください", 2)
     if not args.dry_run and getattr(args, "prune_attachments", False):
         # Freeze every selected target before the first write can change cross-target links.
         for index, (target, syncer) in enumerate(pairs):
@@ -310,6 +314,8 @@ def run_push(args, echo=None) -> CommandResult:
 
         try:
             options = {"prune_preview": prune_previews[index]} if index in prune_previews else {}
+            if expected_preview is not None:
+                options["expected_preview"] = expected_preview
             count = syncer.sync(force=args.force, prune_attachments=args.prune_attachments, only=only, **options)
         except Exception as exc:
             count = syncer.updated
@@ -349,7 +355,8 @@ def run_status(args, echo=None) -> CommandResult:
         if not _matches_target(target, args.target):
             continue
         mapping = syncer._load_mapping(migrate=False)
-        names = (set(mapping) | set(syncer._pending()) | {f.name for f in syncer.collect_files()}) - syncer._load_excluded()
+        files = {f.name: f for f in syncer.collect_files()}
+        names = (set(mapping) | set(syncer._pending()) | set(files)) - syncer._load_excluded()
         for name in sorted(names):
             result = syncer.inspect(name, mapping.get(name))
             pending = syncer._pending().get(name)
@@ -357,6 +364,12 @@ def run_status(args, echo=None) -> CommandResult:
             doc = {"target": target.title or target.docs_dir, "file": name, "entity": target.entity,
                    "entity_id": mapping.get(name), "state": state, "remote_changes": [], "error": None,
                    "next_actions": []}
+            path = files.get(name)
+            if path is not None:
+                path = path.resolve()
+            if path is not None and path.is_relative_to(config_path.parent):
+                path = path.relative_to(config_path.parent)
+            doc["path"] = path.as_posix() if path is not None else None
             res.say(f"  [{name}] {state}（#{mapping.get(name, '未作成')}）")
             if state in ("競合", "取得待ち") and result.get("data") is not None and hasattr(syncer, "remote_changes"):
                 changes = syncer.remote_changes(name, result["data"], result.get("uploads", []))
@@ -380,6 +393,10 @@ def run_status(args, echo=None) -> CommandResult:
 
 
 def cmd_status(args):
+    if getattr(args, "json", False):
+        result = run_status(args)
+        print(json.dumps(result.data, ensure_ascii=False))
+        return result.exit_code
     return run_status(args, echo=cli_echo).exit_code
 
 
@@ -1039,13 +1056,14 @@ def _show_diff(old_text, new_text, old_label, new_label):
     return diff
 
 
-def _show_document_diff(syncer, target, filename, eid, data, uploads, local_path, mapping, links, doc):
+def _show_document_diff(syncer, target, filename, eid, data, uploads, local_path, mapping, links, doc, local_md=None):
     """1文書の差分を「ローカルの変更」と「eLabFTW 側の変更」に分けて表示する。差分があれば True。
 
     どちらも前回の同期時点と比べるため、eLabFTW が保存時に本文を書き換えた分
     （箇条書きの記号など）は差分に出ない。
     """
-    local_md = local_path.read_text(encoding="utf-8").strip()
+    if local_md is None:
+        local_md = local_path.read_text(encoding="utf-8").strip()
     synced_local = syncer.load_synced_local(filename)
     shown = False
     if synced_local is None:
@@ -1098,9 +1116,22 @@ def run_diff(args, echo=None) -> CommandResult:
         if selected is not None and not only:
             continue
         mapping = syncer._load_mapping(migrate=False)
-        links = syncer.link_targets(mapping)
-        for filename in sorted(mapping if only is None else only):
-            eid = mapping.get(filename)
+        preview = getattr(args, "json", False)
+        planned = mapping.copy()
+        old_names = {}
+        preview_error = None
+        if preview:
+            selector = next((value for value in (target.title, target.docs_dir) if value and
+                             sum(_matches_target(t, value) for t in config.targets) == 1), None)
+            server = public_url(syncer.client.base_url)
+            try:
+                planned, old_names = syncer.preview_mapping(mapping, syncer.collect_files())
+            except ConflictError as exc:
+                preview_error = str(exc)
+                failed = True
+        links = syncer.link_targets(planned)
+        for filename in sorted(planned if only is None else only):
+            eid = planned.get(filename)
             local_path = syncer.file_path(filename)
             try:
                 label = local_path.resolve().relative_to(project_root).as_posix()
@@ -1108,6 +1139,21 @@ def run_diff(args, echo=None) -> CommandResult:
                 label = str(local_path)
             doc = {"path": label, "entity": target.entity, "entity_id": eid}
             res.data["documents"].append(doc)
+            baseline = old_names.get(eid, filename)
+            local_md = None
+            if preview:
+                doc.update(target=target.title or target.docs_dir, selector=selector,
+                           server=server, renamed_from=old_names.get(eid))
+                if preview_error:
+                    doc["error"] = preview_error
+                    continue
+                if local_path.is_file():
+                    raw = local_path.read_text(encoding="utf-8")
+                    local_md = raw.strip()
+                    assets_hash = syncer._compute_assets_hash(local_md, filename)
+                    doc["preview_token"] = syncer.preview_token(local_path, eid, local_md, assets_hash, planned, links)
+                    if eid is None:
+                        doc["local_diff"] = _show_diff("", raw, "/dev/null", label)
             if eid is None:
                 doc["state"] = "未追跡"
                 res.say(f"━━ {label}（未追跡）━━\n  push で eLabFTW に新規作成されます\n")
@@ -1129,12 +1175,20 @@ def run_diff(args, echo=None) -> CommandResult:
                 res.warn(f"  eLabFTW #{eid} の取得に失敗: {reason}\n")
                 continue
             result = syncer.inspect(filename, eid, data, uploads)
-            doc["state"] = result["state"]
+            doc["state"] = "リネーム予定" if filename != baseline else result["state"]
+            if filename != baseline:
+                previous = syncer.inspect(baseline, eid, data, uploads)
+                if previous.get("remote_changed"):
+                    doc["state"] = "競合"
+                if previous.get("error"):
+                    doc["error"] = previous["error"]
+                    failed = True
             res.say(f"  状態: {result['state']}")
             syncer._print_next_actions(result["state"], filename, eid)
-            if _show_document_diff(syncer, target, filename, eid, data, uploads, local_path, mapping, links, doc):
+            if _show_document_diff(syncer, target, baseline, eid, data, uploads, local_path, mapping, links, doc, local_md):
                 has_diff = True
             elif result.get("local_changed"):
+                doc["local_changed"] = True
                 # Body unchanged, but images, attachments or settings (tags, category, format) changed.
                 res.say("  本文の差分なし（画像・添付ファイル、または設定のタグ・カテゴリ・本文形式が変わっています。push で送信されます）")
                 has_diff = True
@@ -1153,6 +1207,12 @@ def run_diff(args, echo=None) -> CommandResult:
 
 
 def cmd_diff(args):
+    if getattr(args, "json", False):
+        result = run_diff(args)
+        for warning in result.warnings:
+            cli_echo(warning, stderr=True)
+        print(json.dumps(result.data, ensure_ascii=False))
+        return result.exit_code
     return run_diff(args, echo=cli_echo).exit_code
 
 
@@ -2741,12 +2801,15 @@ def build_parser():
     parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {_installed_version()}")
 
     sub = parser.add_subparsers(dest="command")
-    sub.add_parser("status", help="同期状態を確認", parents=[sub_common])
+    status_parser = sub.add_parser("status", help="同期状態を確認", parents=[sub_common])
+    status_parser.add_argument("--json", action="store_true", help="文書の状態とローカルパスを JSON で出力")
     push_parser = sub.add_parser("push", help="ローカル → eLabFTW に同期（esync と同じ）", parents=[sub_common])
     push_parser.add_argument("files", nargs="*", help="同期するファイル・ディレクトリ・glob（カレントディレクトリ基準、複数指定可。省略時は全文書）")
     push_parser.add_argument("--regex", action="append", help="同期するファイル名に部分一致する正規表現（複数指定可）")
+    push_parser.add_argument("--expect-preview", metavar="TOKEN", help="diff --json で確認した 1 文書だけを送信")
     sub.add_parser("init", help="対話的に設定ファイルを作成", parents=[sub_common])
     diff_parser = sub.add_parser("diff", help="前回の同期からのローカルと eLabFTW の変更を表示", parents=[sub_common])
+    diff_parser.add_argument("--json", action="store_true", help="送信先、改名予定、差分を JSON で出力")
     diff_parser.add_argument("files", nargs="*", help="表示するファイル・ディレクトリ・glob（push と同じ指定。省略時は全文書）")
     diff_parser.add_argument("--regex", action="append", help="表示するファイル名に部分一致する正規表現（複数指定可）")
     sub.add_parser("update", help="ツールを最新版に更新")
