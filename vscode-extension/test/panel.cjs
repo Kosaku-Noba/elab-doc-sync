@@ -66,7 +66,7 @@ async function renameCandidates(folder, file, doc, waitForUpdate, events, curren
     assert.equal(await idOf(), '確認中…', 'the candidates shrank from #17 and #42 to #42');
     assert.equal(lookups.length, 5);
     await refreshWith([doc]);
-    assert.equal(await idOf(), '未割り当て', 'a document without rename candidates is created as a new article');
+    assert.equal(await idOf(), '未割り当て', 'show 未割り当て as soon as the last rename candidate is gone');
     await finishLookup(4, renamed(42));
     assert.equal(await idOf(), '未割り当て', 'ignore the lookup started while a candidate existed');
     assert.equal(lookups.length, 5, 'do not look up a document without rename candidates');
