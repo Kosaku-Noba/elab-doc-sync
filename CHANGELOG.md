@@ -11,6 +11,11 @@
 - `esync diff --json --bodies` で、比較に使った本文（前回の同期時または eLabFTW の本文、ローカルの本文、eLabFTW 側の変更前後の本文）も出力するようにした。
 - `esync status --json`・`esync diff --json` で、文書の状態・送信先・差分を JSON で出力できるようにした。`esync push --expect-preview <TOKEN>` は、対象文書の本文・リンク・添付、ターゲットの設定、接続先が `diff --json` で確認したときと一致する場合だけ、その1文書を送信する。
 
+### 修正
+
+- 接続先 URL にユーザー名・パスワード（`https://user:pass@host`）を書いた場合に、認証情報が出力や保存先に残らないようにした。対象は、pull・clone で記事の本文に補う絶対 URL、`search` の記事 URL、`tag`・`relate`・`metadata`・`category`・`entity-status`・`whoami` の結果と表示、状態ファイルとバックアップに記録する接続先、エラー文、MCP の応答。以前の版が状態ファイルに記録した認証情報付きの接続先も、同じサーバーとして扱う。
+- 接続先 URL に認証情報を書いた場合に、本文中の eLabFTW の記事リンクを同じサーバーのものと判定できず、pull でローカルリンクに変換されなかった問題を修正した。
+
 ## v1.4.0 (2026-11-24)
 
 ### 追加

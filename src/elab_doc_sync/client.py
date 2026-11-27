@@ -28,6 +28,15 @@ def public_url(base_url):
     return url._replace(netloc=url.netloc.rsplit("@", 1)[-1], query="", fragment="").geturl()
 
 
+def server_id(base_url):
+    """同じ eLabFTW かを比べ、状態ファイルに残す接続先の表記。認証情報を除き、末尾の / をそろえる。
+
+    以前の状態ファイルには認証情報を含む URL がそのまま記録されていることがあるので、
+    比較では記録側にも必ずこの関数を通す。
+    """
+    return public_url(str(base_url)).rstrip("/")
+
+
 def upload_url(base_url, upload):
     """eLabFTW の一覧から、取得可能な添付の URL を組み立てる。"""
     if not upload.get("long_name") or not upload.get("real_name") or upload.get("storage") in (None, ""):

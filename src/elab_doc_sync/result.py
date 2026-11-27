@@ -117,10 +117,15 @@ def redact(text: str, *secrets: str | None) -> str:
 _URL_CREDENTIALS = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/]*@")
 
 
+def redact_url_credentials(text: str) -> str:
+    """文中の URL に含まれるユーザー名・パスワード（scheme://user:pass@）を *** にする。"""
+    return _URL_CREDENTIALS.sub(r"\1***@", text)
+
+
 def error_text(exc: Exception, api_key: str | None = None) -> str:
     """HTTP エラーは URL を省き、それ以外の例外文では接続先の API キーと URL の認証情報を伏せる。"""
     status = getattr(getattr(exc, "response", None), "status_code", None)
     if status is not None:
         reason = {401: "認証エラー", 403: "権限がありません", 404: "見つかりません"}.get(status)
         return f"HTTP {status}" + (f"（{reason}）" if reason else "")
-    return _URL_CREDENTIALS.sub(r"\1***@", redact(str(exc), api_key))
+    return redact_url_credentials(redact(str(exc), api_key))

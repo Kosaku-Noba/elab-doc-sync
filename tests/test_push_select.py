@@ -598,3 +598,51 @@ def test_clone_hides_url_credentials(tmp_path, monkeypatch, capsys):
                            echo=lambda message, stderr=False: print(message))
     assert result.data['server'] == 'https://elab.example.test'
     assert 'secret' not in json.dumps(result.data) + capsys.readouterr().out
+
+
+def test_pulled_links_and_state_files_do_not_keep_url_credentials(project, capsys):
+    root, remote = project
+    CLIENTS[0].base_url = 'https://user:secret@example.test'
+    assert push('docs/a.md') in (0, None)
+    [eid] = remote
+    state = root / '.ids' / 'a.md.state.json'
+    states = list(root.glob('.ids/**/a.md.state.json'))
+    assert states and all('secret' not in p.read_text(encoding='utf-8') for p in states)
+    # 添付一覧にない画像・添付のリンクは、接続先 URL を補った絶対 URL になる。認証情報は含めない。
+    remote[eid]['body'] = '![img](app/download.php?f=x.png&storage=1)\n\n[doc](/app/download.php?f=y.pdf&storage=1)'
+    code, data = pull_json('--', 'docs/a.md', capsys=capsys)
+    body = (root / 'docs/a.md').read_text(encoding='utf-8')
+    assert 'secret' not in body and 'user:' not in body
+    assert 'https://example.test/app/download.php?f=x.png' in body
+
+
+def test_unmatched_attachment_links_become_absolute_without_credentials(tmp_path):
+    from pathlib import Path as _Path
+    from elab_doc_sync.sync import _localize_attachment_links
+    body = '[doc](/app/download.php?f=y.pdf&storage=1)'
+    result = _localize_attachment_links(body, [], tmp_path / 'att', tmp_path / 'docs/a.md',
+                                        'https://user:secret@example.test', 'items', 1)
+    assert result == '[doc](https://example.test/app/download.php?f=y.pdf&storage=1)'
+
+
+def test_old_state_files_with_credentials_still_match_the_server(project, capsys):
+    root, remote = project
+    CLIENTS[0].base_url = 'https://user:secret@example.test'
+    assert push('docs/a.md') in (0, None)
+    [state] = list(root.glob('.ids/**/a.md.state.json'))
+    data = json.loads(state.read_text(encoding='utf-8'))
+    data['server'] = 'https://user:secret@example.test'  # 以前の版が記録した形
+    state.write_text(json.dumps(data), encoding='utf-8')
+    [doc] = preview('docs/a.md', capsys)
+    assert doc.get('error') is None and doc['entity_id'] is not None
+
+
+def test_url_helpers_ignore_credentials():
+    from elab_doc_sync.sync import _hosts_match
+    from elab_doc_sync.search import entity_url, _server_key
+    from elab_doc_sync.mcp_server import _scrub
+    assert _hosts_match('https://u:p@Elab.Example.test', 'https://elab.example.test')
+    assert entity_url('https://u:p@h.test/', 'items', 3) == 'https://h.test/database.php?mode=view&id=3'
+    assert _server_key('https://u:p@H.test/x/') == _server_key('https://h.test/x')
+    assert _scrub({'server': 'https://u:p@h.test', 'messages': ['see https://a:b c@h.test/x']}, []) == \
+        {'server': 'https://***@h.test', 'messages': ['see https://***@h.test/x']}

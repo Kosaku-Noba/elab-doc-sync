@@ -11,7 +11,7 @@ import yaml
 
 from . import cli
 from .config import _parse_api_key_env, _read_yaml_text
-from .result import CommandResult, error_text, redact
+from .result import CommandResult, error_text, redact, redact_url_credentials
 from .safety import project_command, safe_path
 
 
@@ -195,7 +195,8 @@ def _secrets(config):
 
 def _scrub(value, secrets):
     if isinstance(value, str):
-        return redact(value, *secrets)
+        # API キーに加え、URL に含まれるユーザー名・パスワードも伏せる（各コマンドで漏れがあっても応答に出さない）。
+        return redact_url_credentials(redact(value, *secrets))
     if isinstance(value, list):
         return [_scrub(item, secrets) for item in value]
     if isinstance(value, dict):
