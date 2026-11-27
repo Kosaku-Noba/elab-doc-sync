@@ -1,6 +1,7 @@
 """CLI entry point for elab-doc-sync."""
 
 import argparse
+import contextlib
 import difflib
 import glob
 import re
@@ -20,7 +21,7 @@ from markdownify import markdownify as html_to_md
 from .safety import hold_document, atomic_write, write_json, safe_path, snapshot, local_transaction, project_command, restore, BACKUPS, RECOVERY
 from .config import TargetConfig
 from .client import ELabFTWClient, public_url, upload_sha256
-from .config import read_config as load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, append_target_to_yaml, profile_connection, _parse_api_key_env
+from .config import read_config as load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, append_target_to_yaml, profile_connection, _parse_api_key_env, _valid_server_url
 from .merge import merge_text
 from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _compute_file_hash, _is_image, _normalize_remote_image_urls, _download_attachments, _localize_attachment_links, _linked_article_upload_ids, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
 from . import sync_log
@@ -84,7 +85,7 @@ def _link_syncers(config, project_root):
     return syncers
 
 
-def _relink_local_documents(syncers):
+def _relink_local_documents(syncers, only=None):
     """取得済みの文書に残る eLabFTW の記事 URL を、追跡中の文書へのローカルリンクに置き換える。
 
     リンク先の文書を後から pull した場合、リンク元は「最新」としてスキップされるため、
@@ -95,6 +96,9 @@ def _relink_local_documents(syncers):
     for syncer in syncers:
         links = syncer.link_targets()
         for name in syncer.readable_link_mapping():
+            # 文書を指定した pull では、取り込んだ文書だけを書き換える。
+            if only is not None and (syncer.target.docs_dir, syncer.target.id_file, name) not in only:
+                continue
             try:
                 path = syncer.file_path(name)
                 if not path.is_file() or syncer._state(name) is None:
@@ -249,6 +253,52 @@ def _find_target_by_mapping(config, project_root: Path, entity_type: str, entity
     return None
 
 
+def _target_selector(config, target):
+    """ターゲットを一意に指定できる --target の値（title または docs_dir）。なければ None。"""
+    return next((value for value in (target.title, target.docs_dir) if value and
+                 sum(_matches_target(t, value) for t in config.targets) == 1), None)
+
+
+def _expectations(args):
+    """照合の指定があるか。--expect-server・--expect-entity は --expect-id がないと照合できないので、それだけなら誤り。"""
+    if getattr(args, "expect_id", None) is not None:
+        return True
+    if getattr(args, "expect_server", None) is not None or getattr(args, "expect_entity", None) is not None:
+        raise ValueError("--expect-server・--expect-entity は --expect-id と一緒に指定してください")
+    return False
+
+
+def _article_mismatch(config, target, eid, args):
+    """--expect-id/--expect-server/--expect-entity: 確認した記事と、これから書き換える記事が同じかを照合する。"""
+    expected_id = getattr(args, "expect_id", None)
+    if expected_id is None:
+        return None
+    now = "未追跡" if eid is None else f"#{eid}"
+    if eid != expected_id:
+        return f"紐付けが確認時と異なります（確認時 #{expected_id}、現在 {now}）。差分を開き直してください"
+    server = getattr(args, "expect_server", None)
+    current = public_url(get_client_for_target(config, target)[0]).rstrip("/")
+    if server is not None and server.rstrip("/") != current:
+        # 指定値には認証情報が含まれうるので表示しない。
+        return f"接続先が確認時と異なります（現在 {current}）。差分を開き直してください"
+    entity = getattr(args, "expect_entity", None)
+    if entity is not None and _normalize_entity(entity) != target.entity:
+        return f"記事の種別が確認時と異なります（確認時 {entity}、現在 {target.entity}）。差分を開き直してください"
+    return None
+
+
+def _expected_id_error(config, pairs, selected, args):
+    """指定した1文書が、確認した記事（接続先・種別・ID）に紐付いたままかを書き込み前に照合する。問題があれば理由を返す。"""
+    if not selected or sum(map(len, selected.values())) != 1:
+        return ("--expect-id は、選択結果が1つのターゲットの1文書になるように指定してください"
+                "（同じファイルが複数のターゲットに一致する場合は --target で絞る）")
+    [(index, names)] = selected.items()
+    [name] = names
+    target, syncer = pairs[index]
+    problem = _article_mismatch(config, target, syncer._load_mapping(migrate=False).get(name), args)
+    return f"{name} の{problem}" if problem else None
+
+
 @project_command
 @returns_partial_result
 def run_push(args, echo=None) -> CommandResult:
@@ -266,6 +316,14 @@ def run_push(args, echo=None) -> CommandResult:
             selected = _select_documents(pairs, files, _compile_regexes(regex_expressions))
         except ValueError as e:
             return res.fail(f"エラー: {e}", 2)
+    try:
+        expecting = _expectations(args)
+    except ValueError as e:
+        return res.fail(f"エラー: {e}", 2)
+    if expecting:
+        problem = _expected_id_error(config, pairs, selected, args)
+        if problem:
+            return res.fail(f"エラー: {problem}", 2)
     prune_previews = {}
     expected_preview = getattr(args, "expect_preview", None)
     if expected_preview is not None and (not selected or sum(map(len, selected.values())) != 1
@@ -361,7 +419,8 @@ def run_status(args, echo=None) -> CommandResult:
             result = syncer.inspect(name, mapping.get(name))
             pending = syncer._pending().get(name)
             state = ("作成結果不明" if not pending.get("eid") else "同期未完了") if pending else result["state"]
-            doc = {"target": target.title or target.docs_dir, "file": name, "entity": target.entity,
+            doc = {"target": target.title or target.docs_dir, "selector": _target_selector(config, target),
+                   "file": name, "entity": target.entity,
                    "entity_id": mapping.get(name), "state": state, "remote_changes": [], "error": None,
                    "next_actions": []}
             path = files.get(name)
@@ -481,6 +540,15 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
     res = CommandResult(data={"dry_run": getattr(args, "dry_run", False), "documents": []}, echo=echo)
     if args.id and not getattr(args, "entity", None):
         return res.fail("エラー: --id 指定時は --entity も指定してください", 2)
+    files, regex_expressions = getattr(args, "files", None) or [], getattr(args, "regex", None)
+    if (files or regex_expressions) and (args.id or getattr(args, "dir", None)):
+        return res.fail("エラー: 文書の指定は --id・--dir と併用できません", 2)
+    try:
+        expecting = _expectations(args)
+    except ValueError as e:
+        return res.fail(f"エラー: {e}", 2)
+    if expecting and not (files or regex_expressions):
+        return res.fail("エラー: --expect-id は文書を1つ指定して使ってください", 2)
     config_path = Path(args.config).resolve()
     root = config_path.parent
     config = load_config(config_path)
@@ -565,37 +633,70 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
                 jobs.append((client, target, eid, data))
             except Exception as exc:
                 reason = error_text(exc, connection[1])
-                res.data["documents"].append({"entity": entity, "server": connection[0], "entity_id": eid, "error": reason})
+                res.data["documents"].append({"entity": entity, "server": public_url(connection[0]), "entity_id": eid,
+                                              "error": reason})
                 res.warn(f"  #{eid} の取得に失敗: {reason}")
                 failed += 1
     else:
         if export:
             for target in targets:
                 _pull_destination(config, root, export, target.entity, get_client_for_target(config, target))
-        for target in targets:
+        # push・diff と同じ指定で、取り込む文書を追跡中の文書から選ぶ。
+        selected = None
+        if files or regex_expressions:
+            pairs = [(t, EachDocsSyncer(None, t, root)) for t in targets]
+            try:
+                selected = _select_documents(pairs, files, _compile_regexes(regex_expressions))
+            except ValueError as e:
+                return res.fail(f"エラー: {e}", 2)
+            if expecting:
+                problem = _expected_id_error(config, pairs, selected, args)
+                if problem:
+                    return res.fail(f"エラー: {problem}", 2)
+        for index, target in enumerate(targets):
+            only = None if selected is None else selected.get(index, set())
+            if only is not None and not only:
+                continue
             client = _make_client_for_target(config, target)
             syncer = EachDocsSyncer(client, target, root)
             mapping = syncer._load_mapping(migrate=False)
+            for name in sorted((only or set()) - set(mapping)):
+                # 指定された文書がまだ eLabFTW の記事と紐付いていない（未追跡・改名後など）。
+                res.data["documents"].append({"target": target.docs_dir, "entity": target.entity,
+                                              "path": _project_relative(syncer.file_path(name), root),
+                                              "result": "untracked"})
+                res.say(f"  {name}: 追跡していない文書のため取得しません（改名した場合は esync mv で紐付けを移してください）")
             for name, eid in mapping.items():
+                if only is not None and name not in only:
+                    continue
                 if name in syncer._load_excluded():
                     continue
                 try:
                     jobs.append((client, target, eid, syncer._get_entity(eid)))
                 except Exception as exc:
                     reason = error_text(exc, get_client_for_target(config, target)[1])
-                    res.data["documents"].append({"entity": target.entity, "server": client.base_url,
+                    res.data["documents"].append({"entity": target.entity, "server": public_url(client.base_url),
                                                   "target": target.docs_dir, "entity_id": eid, "error": reason})
                     res.warn(f"  #{eid} の取得に失敗: {reason}")
                     failed += 1
     outputs = _PullOutputs()
     outputs.protect_tracked_attachments(config, root)
+    pulled_docs = []
     for client, target, eid, data in jobs:
-        doc = {"target": target.docs_dir, "entity": target.entity, "entity_id": eid, "server": client.base_url}
+        doc = {"target": target.docs_dir, "entity": target.entity, "entity_id": eid, "server": public_url(client.base_url)}
         res.data["documents"].append(doc)
         try:
+            conflicts_before = len(conflict_files)
+            report = {}
             result = _pull_entity_to_target(client, config, config_path, target, root, eid, data, target.entity,
-                                            args.force, export, dry_run=dry_run, conflict_files=conflict_files, outputs=outputs)
+                                            args.force, export, dry_run=dry_run, conflict_files=conflict_files, outputs=outputs,
+                                            report=report)
             doc["result"] = ("would_pull" if dry_run else "pulled") if result else "skipped"
+            doc["conflict"] = len(conflict_files) > conflicts_before
+            if "path" in report:
+                doc["path"] = _project_relative(report["path"], root)
+                if result and not dry_run:
+                    pulled_docs.append((target, Path(report["path"]).name))
             pulled += result
             skipped += int(result == 0)
         except Exception as exc:
@@ -606,7 +707,10 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
             if (root / RECOVERY).exists():
                 break
     if pulled and not dry_run and not export:
-        _relink_local_documents(_link_syncers(config, root))
+        only = None
+        if files or regex_expressions:
+            only = {(target.docs_dir, target.id_file, name) for target, name in pulled_docs}
+        _relink_local_documents(_link_syncers(config, root), only)
     res.say(f"\n{'確認' if dry_run else '完了'}: {pulled} 件取得{'予定' if dry_run else ''}、{skipped} 件スキップ、{failed} 件失敗")
     if conflict_files:
         res.say(f"競合マーカーが残っている文書: {len(conflict_files)} 件")
@@ -617,7 +721,24 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
     return res
 
 
+def _project_relative(path, root):
+    """プロジェクトのルートからの相対パス。ルートの外なら絶対パス。"""
+    try:
+        return Path(path).resolve().relative_to(root).as_posix()
+    except ValueError:
+        return str(Path(path).resolve())
+
+
 def cmd_pull(args):
+    if getattr(args, "json", False):
+        # 保存先を対話で選ばない。選べない記事は needs_target として返す。
+        # 同期処理が直接 print する通知で JSON が壊れないよう、実行中の標準出力は標準エラーへ回す。
+        with contextlib.redirect_stdout(sys.stderr):
+            result = run_pull(args)
+        for warning in result.warnings:
+            cli_echo(warning, stderr=True)
+        print(json.dumps(result.data, ensure_ascii=False))
+        return result.exit_code
     result = run_pull(args, echo=cli_echo, choose_target=_resolve_pull_target_interactive)
     if result.exit_code == 2:
         raise SystemExit(result.exit_code)
@@ -774,7 +895,8 @@ class _PullOutputs:
 
 
 def _pull_entity_to_target(client, config, config_path, target, project_root,
-                           eid, data, entity_type, force, pull_dir_override, dry_run=False, conflict_files=None, outputs=None):
+                           eid, data, entity_type, force, pull_dir_override, dry_run=False, conflict_files=None, outputs=None,
+                           report=None):
     docs_dir = project_root / (pull_dir_override or Path(target.docs_dir))
     is_temp_export = docs_dir.resolve() != (project_root / target.docs_dir).resolve()
     syncer = EachDocsSyncer(client, target, project_root)
@@ -817,14 +939,15 @@ def _pull_entity_to_target(client, config, config_path, target, project_root,
     result = _pull_each_entity(client, syncer, target, project_root, docs_dir, mapping,
                              {v: k for k, v in mapping.items()}, eid, data, entity_type,
                              force, is_temp_export, dry_run=dry_run, conflict_files=conflict_files, check_path=check_path,
-                             outputs=outputs, article=article)
+                             outputs=outputs, article=article, report=report)
     outputs.include(article)
     return result
 
 
 def _pull_each_entity(client, syncer, target, project_root, docs_dir,
                       mapping, reverse_mapping, eid, data, entity_type,
-                      force, is_temp_export, dry_run=False, conflict_files=None, check_path=None, outputs=None, article=None):
+                      force, is_temp_export, dry_run=False, conflict_files=None, check_path=None, outputs=None, article=None,
+                      report=None):
     title = data.get("title") or f"untitled_{eid}"
     if any(c in title for c in '/\\\x00<>:"|?*') or title in (".", ".."):
         raise ValueError(f"ファイル名にできないタイトルです: {title!r}")
@@ -834,6 +957,9 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
     # Keep a tracked document's subdirectory when the remote title changes.
     parent = old_path.parent if old_path else docs_dir
     filepath = safe_path(parent, filename)
+    if report is not None:
+        # 本文の保存先（タイトルの変更による改名後の名前）。dry-run でも同じ規則で決まる。
+        report["path"] = filepath
     outputs = outputs or _PullOutputs()
     article = article or _PullOutputs()
 
@@ -933,6 +1059,8 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
             metadata_pending = merge and syncer._has_meta_changed(old_name, Path(old_name).stem, target.category, target.tags)
             if state == "送信待ち":
                 progress(f"  [{title}] ローカル編集を保持（送信待ち）")
+                if report is not None:
+                    report["path"] = old_path  # 取得しないので、本文は今の場所に残る
                 return 0
             if state == "最新" and old_path == filepath:
                 progress(f"  [{title}] 最新（スキップ）")
@@ -1130,8 +1258,7 @@ def run_diff(args, echo=None) -> CommandResult:
         old_names = {}
         preview_error = None
         if preview:
-            selector = next((value for value in (target.title, target.docs_dir) if value and
-                             sum(_matches_target(t, value) for t in config.targets) == 1), None)
+            selector = _target_selector(config, target)
             server = public_url(syncer.client.base_url)
             try:
                 planned, old_names = syncer.preview_mapping(mapping, syncer.collect_files())
@@ -1271,6 +1398,10 @@ def cmd_init(args):
     url = ""
     while not url:
         url = input("eLabFTW の URL: ").strip().rstrip("/")
+        # 設定の読み込みと同じ条件で確かめる（保存した設定を push・pull で読めるように）。値は表示しない。
+        if url and not _valid_server_url(url):
+            print("  URL が不正です。https://elab.example.com のように、空白を含まない http:// または https:// の URL を入力してください")
+            url = ""
 
     ssl_input = input("SSL 証明書を検証しますか？ [Y/n]: ").strip().lower()
     verify_ssl = ssl_input != "n"
@@ -1318,6 +1449,8 @@ def run_clone(args, echo=None) -> CommandResult:
     res = CommandResult(data={"dry_run": getattr(args, "dry_run", False), "documents": []}, echo=echo)
 
     url = args.url.rstrip("/")
+    if not _valid_server_url(url):
+        return res.fail("エラー: --url が不正です。https://elab.example.com のように、空白を含まない http:// または https:// の URL を指定してください", 2)
     api_key = _os.environ.get("ELABFTW_API_KEY", "").strip()
     if not api_key:
         return res.fail("エラー: 環境変数 ELABFTW_API_KEY を設定してください")
@@ -1325,7 +1458,7 @@ def run_clone(args, echo=None) -> CommandResult:
     entity = _normalize_entity(args.entity)
     ids = args.id
     project_dir = Path(args.dir or f"elab-clone-{ids[0]}")
-    res.data.update(path=str(project_dir), entity=entity, server=url)
+    res.data.update(path=str(project_dir), entity=entity, server=public_url(url))
     docs_dir = "docs/"
 
     # 既存ディレクトリへの上書き防止
@@ -1335,7 +1468,7 @@ def run_clone(args, echo=None) -> CommandResult:
     if not project_dir.exists():
         dir_created = True
 
-    res.say(f"=== esync clone: {url} ===\n")
+    res.say(f"=== esync clone: {public_url(url)} ===\n")
 
     client = ELabFTWClient(url, api_key, verify_ssl=not args.no_verify)
     get_fn = client.get_experiment if entity == "experiments" else client.get_item
@@ -2184,6 +2317,10 @@ def cmd_link(args):
 @returns_partial_result
 def run_mv(args, echo=None) -> CommandResult:
     res = CommandResult(data={"dry_run": args.dry_run}, echo=echo)
+    try:
+        _expectations(args)
+    except ValueError as e:
+        return res.fail(f"エラー: {e}", 2)
     config_path = Path(args.config).resolve()
     config = load_config(config_path)
     old_path, new_path = Path(args.old).absolute(), Path(args.new).absolute()
@@ -2217,6 +2354,9 @@ def run_mv(args, echo=None) -> CommandResult:
         raise ValueError("移動先に追跡・除外情報があります")
     if syncer._pending():
         raise ValueError("未完了の同期を解決してからmvしてください")
+    problem = _article_mismatch(config, syncer.target, mapping[old_path.name], args)
+    if problem:
+        return res.fail(f"エラー: {old_path.name} の{problem}", 2)
     res.say(f"  {old_path} → {new_path}（リモートタイトルは次回pushで更新）")
     res.data.update(old=str(old_path), new=str(new_path), entity_id=mapping[old_path.name])
     if args.dry_run:
@@ -2528,7 +2668,9 @@ def run_profile_list(args, echo=None) -> CommandResult:
         res.say("  プロファイルがありません")
         return res
     for name, pdata in profiles.items():
-        url = pdata.get("url", "?")
+        # URL の認証情報は表示しない。形が不正な URL は値ごと伏せる（どこまでが認証情報か判断できないため）。
+        raw_url = pdata.get("url")
+        url = public_url(raw_url) if raw_url and _valid_server_url(raw_url) else ("（不正な URL）" if raw_url else "?")
         has_api_key = bool(pdata.get("api_key"))
         has_key = "✓" if has_api_key else "✗"
         try:
@@ -2540,7 +2682,7 @@ def run_profile_list(args, echo=None) -> CommandResult:
             if env_name:
                 has_api_key = bool(os.getenv(env_name, "").strip())
                 has_key = f"環境変数 {env_name} " + ("✓" if has_api_key else "✗（未設定）")
-        res.data["profiles"].append({"name": name, "url": pdata.get("url"), "has_api_key": has_api_key,
+        res.data["profiles"].append({"name": name, "url": url if raw_url else None, "has_api_key": has_api_key,
                                      "verify_ssl": pdata.get("verify_ssl", True)})
         ssl = "SSL検証あり" if pdata.get("verify_ssl", True) else "SSL検証なし"
         res.say(f"  {name}: {url} (API キー: {has_key}, {ssl})")
@@ -2557,6 +2699,11 @@ def cmd_profile(args):
     elif args.profile_action == "add":
         name = args.profile_name
         url = args.url
+        if not _valid_server_url(url):
+            # 不正な URL を保存すると、設定を検証するコマンド（push・pull など）が失敗する。値は表示しない。
+            print("エラー: --url が不正です。https://elab.example.com のように、http:// または https:// から始まる URL を指定してください",
+                  file=sys.stderr)
+            sys.exit(2)
         api_key = args.api_key or ""
         raw_key_env = getattr(args, "api_key_env", None)
         if raw_key_env is not None and not raw_key_env.strip():
@@ -2819,6 +2966,10 @@ def build_parser():
     push_parser.add_argument("files", nargs="*", help="同期するファイル・ディレクトリ・glob（カレントディレクトリ基準、複数指定可。省略時は全文書）")
     push_parser.add_argument("--regex", action="append", help="同期するファイル名に部分一致する正規表現（複数指定可）")
     push_parser.add_argument("--expect-preview", metavar="TOKEN", help="diff --json で確認した 1 文書だけを送信")
+    push_parser.add_argument("--expect-id", type=int, metavar="ID", help="指定した1文書の紐付けがこの記事 ID と異なる場合は、送信せず終了コード 2（--force と併用できる）")
+    push_parser.add_argument("--expect-server", metavar="URL", help="--expect-id と併用。確認時の接続先（認証情報を除いた URL）と照合する")
+    push_parser.add_argument("--expect-entity", choices=["items", "experiments", "resources"],
+                             help="--expect-id と併用。確認時の記事の種別と照合する")
     sub.add_parser("init", help="対話的に設定ファイルを作成", parents=[sub_common])
     diff_parser = sub.add_parser("diff", help="前回の同期からのローカルと eLabFTW の変更を表示", parents=[sub_common])
     diff_parser.add_argument("--json", action="store_true", help="送信先、改名予定、差分を JSON で出力")
@@ -2834,6 +2985,14 @@ def build_parser():
                              help="エンティティ種別（resources は items のエイリアス）")
     pull_parser.add_argument("--dir", default=None, help="保存先ディレクトリ（未指定時は自動振り分け）")
     pull_parser.add_argument("--auto", action="store_true", help="曖昧な振り分けもスコア最大で自動決定")
+    pull_parser.add_argument("files", nargs="*",
+                             help="取り込む追跡中の文書・ディレクトリ・glob（push と同じ指定。省略時は全文書。--id・--dir とは併用不可）")
+    pull_parser.add_argument("--regex", action="append", help="取り込むファイル名に部分一致する正規表現（複数指定可）")
+    pull_parser.add_argument("--json", action="store_true", help="取り込んだ文書のパス・結果・競合の有無を JSON で出力")
+    pull_parser.add_argument("--expect-id", type=int, metavar="ID", help="指定した1文書の紐付けがこの記事 ID と異なる場合は、取り込まず終了コード 2")
+    pull_parser.add_argument("--expect-server", metavar="URL", help="--expect-id と併用。確認時の接続先（認証情報を除いた URL）と照合する")
+    pull_parser.add_argument("--expect-entity", choices=["items", "experiments", "resources"],
+                             help="--expect-id と併用。確認時の記事の種別と照合する")
 
     log_parser = sub.add_parser("log", help="同期ログを表示", parents=[sub_common])
     log_parser.add_argument("--limit", "-l", type=int, default=20, help="表示件数（デフォルト: 20）")
@@ -2971,6 +3130,10 @@ def build_parser():
     mv_parser = sub.add_parser("mv", help="文書と紐付けを移動", parents=[sub_common])
     mv_parser.add_argument("old")
     mv_parser.add_argument("new")
+    mv_parser.add_argument("--expect-id", type=int, metavar="ID", help="移動元の紐付けがこの記事 ID と異なる場合は、移動せず終了コード 2")
+    mv_parser.add_argument("--expect-server", metavar="URL", help="--expect-id と併用。確認時の接続先（認証情報を除いた URL）と照合する")
+    mv_parser.add_argument("--expect-entity", choices=["items", "experiments", "resources"],
+                             help="--expect-id と併用。確認時の記事の種別と照合する")
 
     return parser
 

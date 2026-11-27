@@ -39,7 +39,7 @@
 
 ```bash
 esync [--dry-run] [--force] [-t TARGET] [--prune-attachments]
-esync push [ファイル・ディレクトリ・glob ...] [--regex 式] [--dry-run] [--force] [-t TARGET] [--prune-attachments]
+esync push [ファイル・ディレクトリ・glob ...] [--regex 式] [--dry-run] [--force] [-t TARGET] [--prune-attachments] [--expect-id ID]
 ```
 
 | オプション | 説明 |
@@ -48,6 +48,7 @@ esync push [ファイル・ディレクトリ・glob ...] [--regex 式] [--dry-r
 | `--regex` | ファイル名に部分一致する文書だけを push（`esync push` のみ。複数指定可） |
 | `--dry-run` | 実際に送信せず変更予定を表示 |
 | `--force` | リモート本文を退避して強制送信。接続・取得エラーは無視しない |
+| `--expect-id`・`--expect-server`・`--expect-entity` | 書き換える直前に、指定した1文書の紐付けが確認時の記事（ID・認証情報を除いた接続先 URL・種別）と同じかを照合する。異なれば何も送信せず終了コード 2。記事を照合する場合は `--expect-id` が必須で、`--expect-server`・`--expect-entity` は省略できる（省略したものは照合しない。照合しない通常の push では3つとも指定しない）。`--expect-id` なしで `--expect-server`・`--expect-entity` を指定すると、何もせず終了コード 2。`--expect-server` には `diff --json` が返す、認証情報を除いた `server` を渡す。照合の条件は push・pull・mv で共通。`--force` と併用できる（VS Code 拡張が上書きの前に使う）。文書の選択結果が1つのターゲットの1文書でなければ終了コード 2。同じファイルが複数のターゲットに一致する場合は、`diff --json` の `selector` を `--target` に指定して絞る（例: `esync push --force --target notes --expect-id 42 --expect-server https://elab.example.com --expect-entity items -- docs/a.md`） |
 | `-t`, `--target` | 特定ターゲットのみ実行 |
 | `--prune-attachments` | attachments_dir が存在する場合、attachments_pattern に一致し、同名のローカル添付も本文からの参照もない非画像添付を削除 |
 
@@ -86,7 +87,8 @@ esync push docs/note.md --dry-run          # 対象と変更有無を確認
 ## pull
 
 ```bash
-esync pull [--id ID] [--entity TYPE] [--dry-run] [--force] [--auto] [--dir DIR] [-t TARGET]
+esync pull [--id ID] [--entity TYPE] [--dry-run] [--force] [--auto] [--dir DIR] [-t TARGET] [--json]
+esync pull [ファイル・ディレクトリ・glob ...] [--regex 式] [-t TARGET] [--dry-run] [--force] [--json] [--expect-id ID]
 ```
 
 | オプション | 説明 |
@@ -96,6 +98,9 @@ esync pull [--id ID] [--entity TYPE] [--dry-run] [--force] [--auto] [--dir DIR] 
 | `--force` | ローカルをバックアップして上書き。別文書との名前衝突は拒否 |
 | `--dry-run` | 取得予定を確認。本文が参照する画像と非画像添付の保存先を照合し、設定・画像・状態ファイルも変更しない |
 | `--auto` | 振り分けを自動決定 |
+| ファイル・`--regex` | 取り込む追跡中の文書を push・diff と同じ方法で指定する（省略時は全文書）。`--id`・`--dir` とは併用できない（終了コード 2）。指定した文書がまだ記事と紐付いていない場合は取得せず、`result: "untracked"` を返す。改名した文書は旧名で紐付いているので、先に `esync mv <旧パス> <新パス>` で紐付けを移す |
+| `--expect-id`・`--expect-server`・`--expect-entity` | push と同じ照合を、取り込む前に行う。文書を指定し、選択結果が1つのターゲットの1文書のときだけ使える。異なれば何も変更せず終了コード 2 |
+| `--json` | 結果を JSON で出力する。`documents` の要素は `result` ごとに次のキーを持つ。`pulled`・`would_pull`・`skipped`: `target`・`entity`・`entity_id`・`server`（認証情報を除いた URL）・`conflict`（今回競合マーカーを残したか）・`path`（本文の保存先。取得する場合はタイトルの変更による改名後の名前で、dry-run でも同じ。ローカルの編集を残してスキップした場合は、今の本文の場所）。`untracked`: `target`・`entity`・`path`。`needs_target`: `entity`・`entity_id`。取得に失敗した記事は `result` の代わりに `error` を持ち、`path` はない。記事の取得に失敗したときの `error` と標準エラーでは、URL に含まれるユーザー名・パスワードを `https://***@elab.example.com:8443/...` のように伏せる。`--expect-server` が一致しないときのエラーには、指定した値を表示しない。ほかに `pulled`・`skipped`・`failed`・`conflict_files`。保存先は対話で選ばない。警告は標準エラーに出る。引数や文書の指定の誤りは終了コード 2 で、標準エラーに理由を出す |
 | `--dir` | 保存先ディレクトリを指定。既存ターゲットの管理下なら取得元と種別・接続設定（URL、API キー、SSL 検証）が一致する必要がある。`--target` 省略時も照合する。ID を省略した一括取得では、選択したターゲットに不一致があれば全件の取得前に中止する。対象を限定するには `--target` を指定する |
 
 **保存先が重なる場合**
@@ -109,7 +114,7 @@ esync pull [--id ID] [--entity TYPE] [--dry-run] [--force] [--auto] [--dir DIR] 
 **pull 時の特別動作:**
 - 両側が変更した文書（状態「競合」）は、前回の同期時点の本文を基準に 3-way マージする。両側が同じ箇所を変えた場合は `<<<<<<< ローカル` / `=======` / `>>>>>>> eLabFTW #ID` のマーカーで両方を残し、終了コード 1 で文書の一覧を表示する。マーカーが残っている文書は push しない（`push --force` でも同じ）。通常の pull もその文書を飛ばし、`pull --force` はマーカーごと eLabFTW の内容で上書きする。基準の本文がない文書（v1.0.4 より前に同期した文書）は、差のある箇所をすべてマーカーで示す。添付は取得先の内容が前回の SHA-256 に一致すれば新版を取得する。添付が両側で異なる内容に変わった場合や、マージ後の本文が古い添付を参照するおそれがある場合は停止する。`--dry-run` では「マージ予定」と表示する。`--force` 指定時はマージせずに上書きする
 - eLabFTW 記事 URL → ローカルリンクに逆変換（他ターゲットの文書へのリンクを含む。リンク先がこの PC で置かれている場所への相対パス）
-- 1件以上取得したあと、取得済みでローカル未編集の文書に残る記事 URL のうち、追跡中の文書を指すものをローカルリンクに更新する。`--id` や `-t` で指定した文書に限らず、設定にある全ターゲットの文書が対象。変更前の内容はバックアップされる。`--dry-run` と `--dir` 指定時は行わない
+- 1件以上取得したあと、取得済みでローカル未編集の文書に残る記事 URL のうち、追跡中の文書を指すものをローカルリンクに更新する。`--id` や `-t` で指定した文書に限らず、設定にある全ターゲットの文書が対象。ただし文書（ファイル・`--regex`）を指定した場合は、指定した文書のうち実際に取得した文書だけを対象にする（スキップした文書や指定外の文書は書き換えない）。変更前の内容はバックアップされる。`--dry-run` と `--dir` 指定時は行わない
 - タイトル変更によるファイルリネーム
 - タイトルに `/`、`\`、`:`、`?`、`*`、`<`、`>`、`"`、`|`、NULがある場合は取得を拒否します。`--force`でも回避できないため、eLabFTW側でタイトルを修正してください。
 
@@ -122,7 +127,7 @@ esync init [--config PATH]
 対話的に `.elab-sync.yaml` を生成する。
 
 **質問項目:**
-1. eLabFTW の URL
+1. eLabFTW の URL（前後の空白を除いてから [設定ファイル](04_CONFIGURATION.md) の `url` の条件で確かめ、不正ならもう一度尋ねます）
 2. SSL 証明書検証の有無
 3. Markdown ファイルディレクトリ
 4. ファイルパターン
@@ -202,7 +207,7 @@ esync status [-t TARGET] [--json]
 
 各ファイルの送信待ち・取得待ち・競合・最新・未追跡・基準情報なし・削除・確認失敗を表示します。リモートにも接続して確認します。未完了の同期と作成結果不明も区別します。「競合」「取得待ち」のときは、eLabFTW 側で変わった項目（本文・タイトル・カテゴリ・タグ・添付など）を併記します。
 
-`--json` は `documents` と `recovery_pending` を出力します。各文書の `path` は設定ファイル基準のパスです。プロジェクト外の文書は絶対パス、ローカルにない文書は `null` です。競合や復旧待ちなどで終了コードが 1 のときも、確認できた文書の一覧を読み取れます。
+`--json` は `documents` と `recovery_pending` を出力します。各文書の `selector` は、そのターゲットを一意に指定できる `--target` の値（`title` または `docs_dir`）で、一意に指定できなければ `null` です。各文書の `path` は設定ファイル基準のパスです。プロジェクト外の文書は絶対パス、ローカルにない文書は `null` です。競合や復旧待ちなどで終了コードが 1 のときも、確認できた文書の一覧を読み取れます。
 
 ## clone
 
@@ -213,7 +218,7 @@ esync clone --url URL --entity TYPE --id ID [--dir DIR] [--no-verify]
 リモートの eLabFTW エンティティからローカルプロジェクトを構築する。
 `.elab-sync.yaml` とディレクトリ構造を自動生成。
 
-`ELABFTW_API_KEY` 環境変数が必須です。`--entity` の既定は `items`、`--id` は複数指定できます。`--dir` を省略すると `elab-clone-<最初のID>` を作成します。生成する `.gitignore` には `.elab-sync.yaml`・`.elab-sync-ids/`・`.elab-sync-backups/`・`.elab-displaced-*/`・`.elab-sync-operations/`・`.elab-sync-recovery.json` を含みます。
+`ELABFTW_API_KEY` 環境変数が必須です。`--url` が [設定ファイル](04_CONFIGURATION.md) の `url` の条件を満たさない場合は、作成先にプロジェクトのファイルを作らずに終了コード 2 で終わります（本実行では作成先のロックと復旧記録を先に確かめるので、そちらに問題があればその理由で終わります）。表示と結果の URL では認証情報を伏せます。ただし `--url` に含めたユーザー名・パスワードは、生成する `.elab-sync.yaml` の `elabftw.url` にはそのまま保存されるので、設定ファイルを共有しないでください。`.gitignore` は記事を取得した後に作るので、途中で中断した場合は、共有の前に `.elab-sync.yaml` が除外されているかを確かめてください。また、記事の本文にある `app/download.php` または `/uploads/` を含む相対画像リンクで、添付一覧に一致しないものは、接続先 URL を補った絶対 URL になり、認証情報が含まれることがあります。取得した記事を共有する前に、リンクも確かめてください。`--entity` の既定は `items`、`--id` は複数指定できます。`--dir` を省略すると `elab-clone-<最初のID>` を作成します。生成する `.gitignore` には `.elab-sync.yaml`・`.elab-sync-ids/`・`.elab-sync-backups/`・`.elab-displaced-*/`・`.elab-sync-operations/`・`.elab-sync-recovery.json` を含みます。
 
 同名の画像・添付や文書が同じ保存先を必要とする場合は、該当記事を取得できません。`clone --dry-run` で事前に確認できます。一括取得の衝突では先の記事と添付を保持し、後から衝突した記事だけが失敗します。残りの ID の取得を続け、部分成功の終了コードは 1 です。
 
@@ -422,7 +427,7 @@ esync profile add team-c --url https://elab.example.com --api-key-env ENV_NAME [
 esync profile remove team-b
 ```
 
-`.elab-sync.yaml` の `profiles` セクションを編集します。`--api-key-env` は、キーを設定ファイルに書かず、環境変数の名前を `api_key_env` として登録します（`--api-key` とは同時に指定できません）。`list` は URL・API キーの有無（✓/✗。`api_key_env` のときは環境変数の名前と設定の有無）・SSL 検証の有無を表示し、キー自体は表示しません。`elabftw` セクションは `default` として表示します。
+`.elab-sync.yaml` の `profiles` セクションを編集します。`--api-key-env` は、キーを設定ファイルに書かず、環境変数の名前を `api_key_env` として登録します（`--api-key` とは同時に指定できません）。`list` は URL・API キーの有無（✓/✗。`api_key_env` のときは環境変数の名前と設定の有無）・SSL 検証の有無を表示し、キー自体は表示しません。`elabftw` セクションは `default` として表示します。URL に含まれるユーザー名・パスワードは伏せ、形が不正な URL は「（不正な URL）」と表示します（設定を直すプロファイルを特定できます。URL の条件は [設定ファイル](04_CONFIGURATION.md) の `url` を参照）。`add` は不正な `--url` を保存せず、終了コード 2 にします。
 
 ## whoami — ユーザー情報
 
@@ -462,7 +467,7 @@ esync link 42 --file note.md --target docs
 esync link --new --file note.md --target docs
 ```
 
-`mv` は同じターゲット内で文書と紐付けを移動します。リモートタイトルは次のpushで更新します。`link --file` は対象docs_dirからの相対パス、`mv` と `rm` はカレントディレクトリ基準です。`--target` は設定の `title` または `docs_dir` で指定できます。
+`mv` は同じターゲット内で文書と紐付けを移動します。`--expect-id`・`--expect-server`・`--expect-entity` を指定すると、移動元の紐付けが確認時の記事と異なる場合は移動せず終了コード 2 にします。リモートタイトルは次のpushで更新します。`link --file` は対象docs_dirからの相対パス、`mv` と `rm` はカレントディレクトリ基準です。`--target` は設定の `title` または `docs_dir` で指定できます。
 
 `restore` はバックアップに記録されたディレクトリ全体を復元し、復元直前もバックアップします。強制push前のリモート退避データはJSONで取り出します。リモート自体への復元は行いません。
 

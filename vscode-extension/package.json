@@ -29,7 +29,11 @@
       { "command": "esync.push", "category": "esync", "title": "この差分の文書を push", "icon": "$(cloud-upload)", "enablement": "resourceScheme == esync-preview" },
       { "command": "esync.refresh", "category": "esync", "title": "同期状態を更新", "icon": "$(refresh)" },
       { "command": "esync.showRemoteChanges", "category": "esync", "title": "eLabFTW 側の変更を表示", "icon": "$(cloud)" },
-      { "command": "esync.previewFromStatusBar", "category": "esync", "title": "この文書の差分を確認", "icon": "$(diff)" }
+      { "command": "esync.previewFromStatusBar", "category": "esync", "title": "この文書の差分を確認", "icon": "$(diff)" },
+      { "command": "esync.pull", "category": "esync", "title": "eLabFTW の変更を取り込む", "icon": "$(cloud-download)" },
+      { "command": "esync.adoptLocal", "category": "esync", "title": "ローカルの内容で eLabFTW を上書き（push --force）" },
+      { "command": "esync.adoptRemote", "category": "esync", "title": "eLabFTW の内容でローカルを上書き（pull --force）" },
+      { "command": "esync.showBackups", "category": "esync", "title": "バックアップの一覧を表示" }
     ],
     "viewsContainers": {
       "activitybar": [{ "id": "esync", "title": "esync", "icon": "media/esync.svg" }]
@@ -49,12 +53,22 @@
         { "command": "esync.previewFromPanel", "when": "false" },
         { "command": "esync.showRemoteChanges", "when": "false" },
         { "command": "esync.previewFromStatusBar", "when": "false" },
+        { "command": "esync.pull", "when": "esync.hasProjects && resourceLangId == markdown" },
+        { "command": "esync.adoptLocal", "when": "false" },
+        { "command": "esync.adoptRemote", "when": "false" },
+        { "command": "esync.showBackups", "when": "esync.hasProjects" },
         { "command": "esync.preview", "when": "esync.hasProjects && resourceLangId == markdown" },
         { "command": "esync.push", "when": "resourceScheme == esync-preview" },
         { "command": "esync.refresh", "when": "esync.hasProjects" }
       ],
       "view/title": [{ "command": "esync.refresh", "when": "view == esync.status || view == esync.current", "group": "navigation" }],
-      "view/item/context": [{ "command": "esync.previewFromPanel", "when": "view == esync.status && viewItem == esync.document", "group": "inline" }]
+      "view/item/context": [
+        { "command": "esync.previewFromPanel", "when": "view == esync.status && viewItem =~ /esync\\.document/", "group": "inline" },
+        { "command": "esync.pull", "when": "view == esync.status && viewItem =~ /\\bpull\\b/", "group": "inline" },
+        { "command": "esync.pull", "when": "view == esync.status && viewItem =~ /\\bpull\\b/", "group": "1_sync@1" },
+        { "command": "esync.adoptLocal", "when": "view == esync.status && viewItem =~ /\\bconflict\\b/", "group": "2_adopt@1" },
+        { "command": "esync.adoptRemote", "when": "view == esync.status && viewItem =~ /\\b(conflict|markers)\\b/", "group": "2_adopt@2" }
+      ]
     },
     "configuration": {
       "title": "esync",

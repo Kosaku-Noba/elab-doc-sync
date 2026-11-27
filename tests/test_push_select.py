@@ -11,6 +11,10 @@ import yaml
 from elab_doc_sync.cli import main
 
 
+# テストから接続先の URL を差し替えるため、fixture が作ったクライアントを置く。
+CLIENTS = []
+
+
 @pytest.fixture
 def project(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -37,6 +41,7 @@ def project(tmp_path, monkeypatch):
     client.update_item.side_effect = lambda eid, **kw: remote[eid].update(kw)
     client.list_uploads.return_value = []
     client.get_tags.return_value = []
+    CLIENTS[:] = [client]
     with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
         yield tmp_path, remote
 
@@ -262,3 +267,334 @@ def test_rename_of_unselected_document_moves_mapping_only(project):
     assert push() in (0, None)
     assert remote[ids['b']]['title'] == 'b2'
     assert len(remote) == 4
+
+
+def pull_json(*args, capsys):
+    capsys.readouterr()
+    with patch.object(sys, 'argv', ['esync', 'pull', '--json', *args]):
+        try:
+            code = main()
+        except SystemExit as exc:
+            code = exc.code
+    return code, json.loads(capsys.readouterr().out)
+
+
+def test_pull_selected_document_only(project, capsys):
+    root, remote = project
+    assert push('docs/a.md', 'docs/b.md') in (0, None)
+    ids = {remote[eid]['title']: eid for eid in remote}
+    for eid in remote.values():
+        eid['body'] = eid['body'] + '\n\nremote edit'
+    code, data = pull_json('--', 'docs/a.md', capsys=capsys)
+    assert code in (0, None)
+    [doc] = data['documents']
+    assert (doc['path'], doc['result'], doc['conflict'], doc['entity_id']) == ('docs/a.md', 'pulled', False, ids['a'])
+    assert 'remote edit' in (root / 'docs/a.md').read_text(encoding='utf-8')
+    assert 'remote edit' not in (root / 'docs/b.md').read_text(encoding='utf-8'), 'other documents are not pulled'
+
+
+def test_pull_selected_conflict_and_untracked_documents(project, capsys):
+    root, remote = project
+    assert push('docs/a.md') in (0, None)
+    [eid] = remote
+    remote[eid]['body'] = '# remote heading'
+    (root / 'docs/a.md').write_text('# local heading', encoding='utf-8')
+    code, data = pull_json('--', 'docs/a.md', capsys=capsys)
+    assert code == 1
+    [doc] = data['documents']
+    assert doc['conflict'] is True and doc['path'] == 'docs/a.md'
+    assert data['conflict_files'] and '<<<<<<< ローカル' in (root / 'docs/a.md').read_text(encoding='utf-8')
+
+    code, data = pull_json('--', 'docs/b.md', capsys=capsys)
+    assert code in (0, None)
+    assert data['documents'] == [{'target': 'docs', 'entity': 'items', 'path': 'docs/b.md', 'result': 'untracked'}]
+
+
+def test_pull_document_selection_rejects_id_and_dir(project, capsys):
+    assert push('docs/a.md') in (0, None)
+    code, _ = pull_json('--id', '1', '--entity', 'items', '--', 'docs/a.md', capsys=capsys)
+    assert code == 2
+
+
+def test_renamed_document_keeps_its_article_after_mv_then_pull(project, capsys):
+    root, remote = project
+    assert push('docs/a.md') in (0, None)
+    [eid] = remote
+    (root / 'docs/a.md').rename(root / 'docs/moved.md')
+    remote[eid]['body'] = remote[eid]['body'] + '\n\nremote edit'
+    code, data = pull_json('--', 'docs/moved.md', capsys=capsys)
+    assert data['documents'][0]['result'] == 'untracked', 'pull does not follow a rename by itself'
+    assert not (root / 'docs/a.md').exists()
+
+    with patch.object(sys, 'argv', ['esync', 'mv', 'docs/a.md', 'docs/moved.md']):
+        assert main() in (0, None)
+    code, data = pull_json('--', 'docs/moved.md', capsys=capsys)
+    [doc] = data['documents']
+    # pull はファイル名を eLabFTW のタイトルに合わせる。紐付けを移したので本文は取り込まれ、別記事にはならない。
+    assert (doc['path'], doc['entity_id'], doc['result']) == ('docs/a.md', eid, 'pulled')
+    assert 'remote edit' in (root / 'docs/a.md').read_text(encoding='utf-8')
+    assert not (root / 'docs/moved.md').exists()
+    assert json.loads((root / '.ids/mapping.json').read_text(encoding='utf-8')) == {'a.md': eid}
+
+
+def test_pull_json_hides_credentials_in_server_url(project, capsys):
+    root, remote = project
+    CLIENTS[0].base_url = 'https://user:secret@example.test'
+    assert push('docs/a.md') in (0, None)
+    [eid] = remote
+    remote[eid]['body'] += '\n\nremote edit'
+    for args in (('--dry-run',), ()):
+        code, data = pull_json(*args, '--', 'docs/a.md', capsys=capsys)
+        assert 'secret' not in json.dumps(data)
+        assert data['documents'][0]['server'] == 'https://example.test'
+
+
+def test_pull_of_one_document_leaves_links_in_other_documents(project, capsys):
+    root, remote = project
+    assert push('docs/a.md') in (0, None)
+    [eid] = remote
+    url = f'https://example.test/database.php?mode=view&id={eid}'
+    (root / 'docs/b.md').write_text(f'[A]({url})', encoding='utf-8')
+    assert push('docs/b.md') in (0, None)
+    remote[eid]['body'] += '\n\nremote edit'
+    code, data = pull_json('--', 'docs/a.md', capsys=capsys)
+    assert [d['path'] for d in data['documents']] == ['docs/a.md']
+    assert (root / 'docs/b.md').read_text(encoding='utf-8') == f'[A]({url})', 'only the selected document is rewritten'
+
+
+def test_pull_json_path_follows_a_title_change(project, capsys):
+    root, remote = project
+    assert push('docs/a.md') in (0, None)
+    [eid] = remote
+    remote[eid]['title'] = 'renamed'
+    code, data = pull_json('--dry-run', '--', 'docs/a.md', capsys=capsys)
+    assert data['documents'][0]['path'] == 'docs/renamed.md', 'the plan names the file pull will write'
+    code, data = pull_json('--', 'docs/a.md', capsys=capsys)
+    assert data['documents'][0]['path'] == 'docs/renamed.md'
+    assert (root / 'docs/renamed.md').exists() and not (root / 'docs/a.md').exists()
+
+
+def test_expect_id_refuses_a_document_linked_to_another_article(project, capsys):
+    root, remote = project
+    assert push('docs/a.md', 'docs/b.md') in (0, None)
+    ids = {remote[eid]['title']: eid for eid in remote}
+    (root / 'docs/a.md').write_text('# local', encoding='utf-8')
+    before = {eid: dict(value) for eid, value in remote.items()}
+    assert push('--force', '--expect-id', str(ids['b']), 'docs/a.md') == 2, 'a.md is linked to another article'
+    assert remote == before
+    assert push('--force', '--expect-id', str(ids['a']), 'docs/a.md') in (0, None)
+    assert remote[ids['a']]['body'].startswith('# local')
+
+    remote[ids['a']]['body'] = '# remote'
+    code, _ = pull_json('--force', '--expect-id', str(ids['b']), '--', 'docs/a.md', capsys=capsys)
+    assert code == 2 and (root / 'docs/a.md').read_text(encoding='utf-8') == '# local'
+    code, data = pull_json('--force', '--expect-id', str(ids['a']), '--', 'docs/a.md', capsys=capsys)
+    assert data['documents'][0]['result'] == 'pulled'
+    code, _ = pull_json('--expect-id', str(ids['a']), capsys=capsys)
+    assert code == 2, '--expect-id needs exactly one document'
+
+
+def test_pull_error_hides_credentials_in_urls(project, capsys):
+    root, remote = project
+    assert push('docs/a.md') in (0, None)
+    CLIENTS[0].get_item.side_effect = ConnectionError(
+        "Max retries exceeded with url: https://us'er:se'c\" ret@example.test:9/api/v2/items/1")
+    capsys.readouterr()
+    with patch.object(sys, 'argv', ['esync', 'pull', '--json', '--dry-run', '--', 'docs/a.md']):
+        try:
+            main()
+        except SystemExit:
+            pass
+    out, err = capsys.readouterr()
+    for text in (out, err):
+        assert 'se\'c' not in text and 'us\'er' not in text and ' ret@' not in text, 'hide credentials with quotes and spaces'
+    assert 'https://***@example.test:9' in json.loads(out)['documents'][0]['error']
+    assert 'https://***@example.test:9' in err
+
+
+def test_expect_id_also_checks_server_and_entity(project, capsys):
+    root, remote = project
+    assert push('docs/a.md') in (0, None)
+    [eid] = remote
+    (root / 'docs/a.md').write_text('# local', encoding='utf-8')
+    before = json.dumps(remote, sort_keys=True)
+    base = ['--force', '--expect-id', str(eid)]
+    assert push(*base, '--expect-server', 'https://other.test', 'docs/a.md') == 2, 'same ID on another server'
+    assert push(*base, '--expect-entity', 'experiments', 'docs/a.md') == 2, 'same ID of another type'
+    assert json.dumps(remote, sort_keys=True) == before
+    assert push(*base, '--expect-server', 'https://example.test/', '--expect-entity', 'resources', 'docs/a.md') in (0, None)
+
+
+def test_mv_checks_the_expected_article(project, capsys):
+    root, remote = project
+    assert push('docs/a.md') in (0, None)
+    [eid] = remote
+    (root / 'docs/a.md').rename(root / 'docs/moved.md')
+    with patch.object(sys, 'argv', ['esync', 'mv', '--expect-id', str(eid + 1), 'docs/a.md', 'docs/moved.md']):
+        with pytest.raises(SystemExit) as exited:
+            main()
+    assert exited.value.code == 2
+    assert json.loads((root / '.ids/mapping.json').read_text(encoding='utf-8')) == {'a.md': eid}
+    with patch.object(sys, 'argv', ['esync', 'mv', '--expect-id', str(eid), '--expect-server', 'https://example.test',
+                                    'docs/a.md', 'docs/moved.md']):
+        assert main() in (0, None)
+    assert json.loads((root / '.ids/mapping.json').read_text(encoding='utf-8')) == {'moved.md': eid}
+
+
+def test_status_json_includes_a_unique_selector(project, capsys):
+    root, remote = project
+    capsys.readouterr()
+    with patch.object(sys, 'argv', ['esync', 'status', '--json']):
+        try:
+            main()
+        except SystemExit:
+            pass
+    selectors = {doc['file']: doc['selector'] for doc in json.loads(capsys.readouterr().out)['documents']}
+    assert selectors['a.md'] == 'T' and selectors['n.md'] == 'N'
+
+
+def test_skipped_pull_reports_where_the_body_is(project, capsys):
+    root, remote = project
+    assert push('docs/a.md') in (0, None)
+    [eid] = remote
+    # ローカルだけ編集して改名する（送信待ち）。記事のタイトルは a のまま。
+    (root / 'docs/a.md').write_text('# local edit only', encoding='utf-8')
+    with patch.object(sys, 'argv', ['esync', 'mv', 'docs/a.md', 'docs/new.md']):
+        assert main() in (0, None)
+    code, data = pull_json('--', 'docs/new.md', capsys=capsys)
+    [doc] = data['documents']
+    assert doc['result'] == 'skipped' and doc['path'] == 'docs/new.md', 'a skipped document stays where it is'
+    assert (root / 'docs/new.md').exists()
+
+
+def test_expectations_need_an_article_id_and_hide_the_expected_server(project, capsys):
+    root, remote = project
+    assert push('docs/a.md') in (0, None)
+    [eid] = remote
+    (root / 'docs/a.md').write_text('# local', encoding='utf-8')
+    before = json.dumps(remote, sort_keys=True)
+    assert push('--force', '--expect-server', 'https://other.test', 'docs/a.md') == 2, '--expect-server alone is refused'
+    code, _ = pull_json('--force', '--expect-entity', 'experiments', '--', 'docs/a.md', capsys=capsys)
+    assert code == 2 and (root / 'docs/a.md').read_text(encoding='utf-8') == '# local', 'a refused pull keeps local edits'
+    (root / 'docs/a.md').rename(root / 'docs/moved.md')
+    with patch.object(sys, 'argv', ['esync', 'mv', '--expect-entity', 'experiments', 'docs/a.md', 'docs/moved.md']):
+        with pytest.raises(SystemExit) as exited:
+            main()
+    assert exited.value.code == 2
+    assert json.loads((root / '.ids/mapping.json').read_text(encoding='utf-8')) == {'a.md': eid}
+    assert json.dumps(remote, sort_keys=True) == before
+    (root / 'docs/moved.md').rename(root / 'docs/a.md')
+    capsys.readouterr()
+    assert push('--force', '--expect-id', str(eid), '--expect-server', 'https://user:secret@other.test', 'docs/a.md') == 2
+    assert 'secret' not in capsys.readouterr().err
+
+
+def test_malformed_server_url_is_rejected_without_showing_it(project, capsys):
+    root, remote = project
+    cfg = root / '.elab-sync.yaml'
+    data = yaml.safe_load(cfg.read_text(encoding='utf-8'))
+    data['elabftw']['url'] = 'https:/user:pa ss@example.test'
+    cfg.write_text(yaml.safe_dump(data), encoding='utf-8')
+    capsys.readouterr()
+    with patch.object(sys, 'argv', ['esync', 'pull', '--json', '--dry-run', '--id', '1', '--entity', 'items']):
+        try:
+            code = main()
+        except SystemExit as exc:
+            code = exc.code
+    out, err = capsys.readouterr()
+    assert code not in (0, None)
+    assert 'pa ss' not in out + err and 'user' not in out + err
+    assert 'url が不正です' in out + err
+
+
+def _run(args, capsys):
+    capsys.readouterr()
+    with patch.object(sys, 'argv', ['esync', *args]):
+        try:
+            code = main()
+        except SystemExit as exc:
+            code = exc.code
+    out, err = capsys.readouterr()
+    return code, out + err
+
+
+def test_password_parsed_as_a_port_is_rejected(project, capsys):
+    root, remote = project
+    cfg = root / '.elab-sync.yaml'
+    data = yaml.safe_load(cfg.read_text(encoding='utf-8'))
+    data['elabftw']['url'] = 'https://user:pa55word/example.test'
+    cfg.write_text(yaml.safe_dump(data), encoding='utf-8')
+    code, text = _run(['pull', '--json', '--dry-run', '--id', '1', '--entity', 'items'], capsys)
+    assert code not in (0, None) and 'pa55word' not in text and 'url が不正です' in text
+
+
+def test_profile_list_hides_url_credentials_and_add_rejects_bad_urls(project, capsys):
+    root, remote = project
+    cfg = root / '.elab-sync.yaml'
+    data = yaml.safe_load(cfg.read_text(encoding='utf-8'))
+    data['profiles'] = {'good': {'url': 'https://user:secret@elab.example.test', 'api_key': 'k'},
+                        'bad': {'url': 'https:/user:pa ss@elab.example.test', 'api_key': 'k'},
+                        'wide': {'url': '\u3000https://wuser:wpass@elab.example.test', 'api_key': 'k'}}
+    cfg.write_text(yaml.safe_dump(data, allow_unicode=True), encoding='utf-8')
+    code, text = _run(['profile', 'list'], capsys)
+    for secret in ('secret', 'pa ss', 'wpass', 'wuser'):
+        assert secret not in text
+    assert 'https://elab.example.test' in text and '（不正な URL）' in text
+    # MCP などに返す構造化結果も同じ値にする。
+    from elab_doc_sync.cli import run_profile_list
+    from types import SimpleNamespace
+    urls = {p['name']: p['url'] for p in run_profile_list(SimpleNamespace(config=str(cfg))).data['profiles']}
+    assert urls == {'default': 'https://example.test', 'good': 'https://elab.example.test',
+                    'bad': '（不正な URL）', 'wide': '（不正な URL）'}
+    before = cfg.read_text(encoding='utf-8')
+    for url in ('https:/x:y z@host', 'https://example .test', 'https://elab.example.test:65536', '\u3000https://e.test',
+                'https://elab.example.test/la\u200bb'):
+        code, text = _run(['profile', 'add', 'other', '--url', url], capsys)
+        assert code == 2 and 'y z' not in text and cfg.read_text(encoding='utf-8') == before, url
+
+
+def test_init_and_clone_check_the_url_like_the_config_loader(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('ELABFTW_API_KEY', 'k')
+    code, text = _run(['clone', '--url', 'https://example.test/lab site', '--id', '1'], capsys)
+    assert code == 2 and 'url が不正です' in text.lower()
+    assert not any(tmp_path.iterdir()), 'clone creates nothing for a bad URL'
+
+
+def test_init_asks_again_for_a_url_the_config_loader_would_reject(tmp_path, monkeypatch, capsys):
+    from argparse import Namespace
+    from elab_doc_sync.cli import cmd_init
+    monkeypatch.chdir(tmp_path)
+    inputs = iter(['https://example.test/lab site', 'https://elab.example.com', 'n', '', '', 'items', 'md'])
+    monkeypatch.setattr('builtins.input', lambda _: next(inputs))
+    cfg = tmp_path / '.elab-sync.yaml'
+    cmd_init(Namespace(config=str(cfg)))
+    assert 'URL が不正です' in capsys.readouterr().out
+    assert yaml.safe_load(cfg.read_text(encoding='utf-8'))['elabftw']['url'] == 'https://elab.example.com'
+
+
+def test_init_strips_surrounding_spaces_before_checking_the_url(tmp_path, monkeypatch, capsys):
+    from argparse import Namespace
+    from elab_doc_sync.cli import cmd_init
+    monkeypatch.chdir(tmp_path)
+    inputs = iter(['\u3000https://elab.example.com/\u3000', 'n', '', '', 'items', 'md'])
+    monkeypatch.setattr('builtins.input', lambda _: next(inputs))
+    cfg = tmp_path / '.elab-sync.yaml'
+    cmd_init(Namespace(config=str(cfg)))
+    assert 'URL が不正です' not in capsys.readouterr().out
+    assert yaml.safe_load(cfg.read_text(encoding='utf-8'))['elabftw']['url'] == 'https://elab.example.com'
+
+
+def test_clone_hides_url_credentials(tmp_path, monkeypatch, capsys):
+    from types import SimpleNamespace
+    from elab_doc_sync.cli import run_clone
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('ELABFTW_API_KEY', 'k')
+    client = MagicMock()
+    client.get_item.side_effect = ConnectionError('offline')
+    with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
+        result = run_clone(SimpleNamespace(url='https://user:secret@elab.example.test', id=[1], dir=None,
+                                           entity='items', no_verify=False, dry_run=True),
+                           echo=lambda message, stderr=False: print(message))
+    assert result.data['server'] == 'https://elab.example.test'
+    assert 'secret' not in json.dumps(result.data) + capsys.readouterr().out

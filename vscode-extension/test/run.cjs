@@ -19,6 +19,11 @@ case "$1" in
   status) cat "$dir/status.json" ;;
   diff) cat "$dir/diff.json" ;;
   push) echo "1 件を送信しました" ;;
+  pull) if [ -f "$dir/pull-error" ]; then cat "$dir/pull-error" >&2; exit 2; fi
+        case "$*" in *--dry-run*) cat "$dir/pull-dry.json" ;; *) cat "$dir/pull.json" ;; esac ;;
+  mv) [ -f "$dir/pull-dry-after-mv.json" ] && mv "$dir/pull-dry-after-mv.json" "$dir/pull-dry.json"
+      echo "紐付けを移しました" ;;
+  backup) echo "バックアップ: 20261127-1" ;;
 esac
 `, 0o755);
     const doc = { file: 'note.md', path: 'docs/note.md', entity: 'items', entity_id: 42, target: 'Lab', state: '送信待ち',

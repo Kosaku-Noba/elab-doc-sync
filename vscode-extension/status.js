@@ -16,8 +16,14 @@ function messageItem(message, detail) {
     const item = treeItem(message);
     item.tooltip = detail || message;
     item.iconPath = new vscode.ThemeIcon('info');
+    if (message === recoveryNotice) {
+        item.command = { command: 'esync.showBackups', title: 'バックアップの一覧を表示' };
+        item.tooltip = 'クリックで esync backup list の結果を出力「esync」に表示';
+    }
     return item;
 }
+
+const recoveryNotice = '復旧待ちのローカル変更があります。esync backup list で確認してください。';
 
 async function readStatus(folder, run) {
     const result = await run(folder, ['status', '--json']);
@@ -29,7 +35,7 @@ async function readStatus(folder, run) {
     }
     const { documents, recovery_pending } = JSON.parse(result.stdout);
     const notices = [];
-    if (recovery_pending) notices.push('復旧待ちのローカル変更があります。esync backup list で確認してください。');
+    if (recovery_pending) notices.push(recoveryNotice);
     if (result.stderr.trim()) notices.push(result.stderr.trim());
     return { documents, notices, root: await fs.realpath(folder.uri.fsPath) };
 }
@@ -45,6 +51,18 @@ function candidateSet(documents) {
         .map(doc => [doc.target, doc.entity, doc.entity_id]).sort());
 }
 
+// eLabFTW 側の変更を取り込める状態と、どちらかを採用して解決する状態。
+const pullStates = ['取得待ち', '競合'];
+
+/**
+ * 行のメニューを出し分ける contextValue。push・diff と同じ文書なら esync.document を含む。
+ * @param {string} state
+ */
+function documentContext(state) {
+    return ['esync.document', pullStates.includes(state) && 'pull', state === '競合' && 'conflict',
+        state === '競合マーカーあり' && 'markers'].filter(Boolean).join(' ');
+}
+
 function documentItem(folder, doc) {
     const item = treeItem(doc.file);
     item.description = doc.path || doc.target;
@@ -53,7 +71,7 @@ function documentItem(folder, doc) {
     if (doc.path) {
         item.resourceUri = vscode.Uri.file(path.resolve(folder.uri.fsPath, doc.path));
         item.command = { command: 'vscode.open', title: '文書を開く', arguments: [item.resourceUri] };
-        item.contextValue = 'esync.document';
+        item.contextValue = documentContext(doc.syncState || doc.state);
         item.folder = folder;
         item.doc = doc;
     }
@@ -80,6 +98,27 @@ function detailItems(folder, doc) {
     ];
     if (doc.error) rows.push(messageItem(doc.error));
     rows.push(action);
+    const state = doc.syncState || doc.state;
+    const command = (label, icon, name, tooltip) => {
+        const item = treeItem(label);
+        item.iconPath = new vscode.ThemeIcon(icon);
+        item.tooltip = tooltip;
+        item.command = { command: name, title: label, arguments: [source] };
+        rows.push(item);
+    };
+    if (pullStates.includes(state)) {
+        command('eLabFTW の変更を取り込む', 'cloud-download', 'esync.pull',
+            'ローカルでも編集している箇所はマージし、重なる箇所は競合マーカーで示します。');
+    }
+    if (state === '競合') {
+        command('ローカルの内容で eLabFTW を上書き', 'arrow-up', 'esync.adoptLocal', 'push --force。eLabFTW 側の変更は失われます。');
+    }
+    if (state === '競合' || state === '競合マーカーあり') {
+        command('eLabFTW の内容でローカルを上書き', 'arrow-down', 'esync.adoptRemote', 'pull --force。ローカルの変更は失われます。');
+    }
+    if (state === '競合マーカーあり') {
+        rows.push(messageItem('競合マーカーを解消して保存してから、差分を確認して push してください。'));
+    }
     return rows;
 }
 
@@ -306,7 +345,7 @@ class StatusProvider {
         // CLI は送信先 ID を決めた後に記事の取得に失敗すると、ID とエラーを両方返す。
         if (match.error && match.entity_id == null) return { ...doc, idMessage: '確認できません', error: match.error };
         return { ...doc, entity_id: match.entity_id, state: match.renamed_from && match.state ? match.state : doc.state,
-            error: match.error || doc.error };
+            renamed_from: match.renamed_from, error: match.error || doc.error };
     }
 
     /**
@@ -428,8 +467,8 @@ class CurrentDocumentProvider {
         }
         for (const { folder, stale, doc: current } of matches) {
             // 取り直し中・取得失敗時の状態やエラーは前回のもの。今回の結果と取り違えないよう明示する。
-            const doc = stale ? { ...current, state: previous(current.state), error: current.error && previous(current.error) }
-                : current;
+            const doc = stale ? { ...current, syncState: current.state, state: previous(current.state),
+                error: current.error && previous(current.error) } : current;
             const details = detailItems(folder, doc);
             if (matches.length === 1) rows.push(...details);
             else {
