@@ -117,14 +117,19 @@ def redact(text: str, *secrets: str | None) -> str:
 # ホストとの区切りはその範囲の最後の @（記事本文などには生の @ を含む旧い形式もありうる）。
 URL_USERINFO_CHARS = "A-Za-z0-9._~%!$&*+;=:-"
 _URL_USERINFO = re.compile(rf"[@{URL_USERINFO_CHARS}]*[{URL_USERINFO_CHARS}]@")
+# エラー文・警告用。設定の検証を通らない URL（記事本文や入力値由来など）も入りうるので、次の / か空白より前の
+# 最後の @ までを、文字の種類を問わず伏せる（短い文なので、伏せすぎても読める）。空白を含む認証情報は伏せきれない。
+_LOOSE_USERINFO = re.compile(r"[^/\s]*@")
 _SCHEME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+.-")
 
 
-def redact_url_credentials(text: str) -> str:
+def redact_url_credentials(text: str, *, loose: bool = False) -> str:
     """文中の URL に含まれるユーザー名・パスワード（scheme://user:pass@）を *** にする。
 
     日本語の直後に続く URL も対象にする。長い本文でも線形時間で済むよう、:// の位置から調べる。
+    loose=True（エラー文・警告用）では、次の / か空白より前の最後の @ までを、文字の種類を問わず伏せる。
     """
+    userinfo = _LOOSE_USERINFO if loose else _URL_USERINFO
     parts = []
     last = 0
     start = text.find("://")
@@ -136,7 +141,7 @@ def redact_url_credentials(text: str) -> str:
         while scheme < start and not text[scheme].isalpha():
             scheme += 1
         rest = start + 3
-        found = _URL_USERINFO.match(text, rest)
+        found = userinfo.match(text, rest)
         if scheme < start and text[scheme].isalpha() and found:
             parts.append(text[last:rest] + "***@")
             last = found.end()
@@ -147,9 +152,6 @@ def redact_url_credentials(text: str) -> str:
     return "".join(parts)
 
 
-# エラー文用。例外文には設定の検証を通らない URL（記事本文由来など）も入りうるので、次の / か空白より前の
-# 最後の @ までを、文字の種類を問わず伏せる（短い文なので、伏せすぎても読める）。
-_LOOSE_URL_CREDENTIALS = re.compile(r"(?i)([a-z][a-z0-9+.-]*://)[^/\s]*@")
 
 
 def error_text(exc: Exception, api_key: str | None = None) -> str:
@@ -158,4 +160,4 @@ def error_text(exc: Exception, api_key: str | None = None) -> str:
     if status is not None:
         reason = {401: "認証エラー", 403: "権限がありません", 404: "見つかりません"}.get(status)
         return f"HTTP {status}" + (f"（{reason}）" if reason else "")
-    return _LOOSE_URL_CREDENTIALS.sub(r"\1***@", redact(str(exc), api_key))
+    return redact_url_credentials(redact(str(exc), api_key), loose=True)

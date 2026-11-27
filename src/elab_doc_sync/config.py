@@ -166,7 +166,7 @@ def _valid_server_url(url) -> bool:
         userinfo = parts.netloc.rpartition("@")[0]
         if "@" in parts.netloc and not re.fullmatch(f"[{URL_USERINFO_CHARS}]+", userinfo):
             return False
-        # HTTP の Basic 認証（requests）は ASCII 以外を確実には送れない（%xx で書いた日本語なども接続時に失敗する）。
+        # このツールは、%xx を戻した後の認証情報を ASCII に限る（Basic 認証で確実に送れる範囲。日本語は %xx でも不可）。
         from urllib.parse import unquote
         try:
             unquote(userinfo, errors="strict").encode("ascii")

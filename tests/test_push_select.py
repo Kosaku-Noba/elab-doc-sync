@@ -738,3 +738,18 @@ def test_unbalanced_fragments_and_non_latin1_credentials():
     assert not _valid_server_url('https://user:%E3%83%91%E3%82%B9@elab.test'), 'Basic auth cannot send Japanese'
     assert not _valid_server_url('https://user:caf%E9@elab.test')
     assert _valid_server_url('https://user:pa%28ss%29@elab.test')
+
+
+def test_mcp_error_fields_use_the_broad_mask_and_fragment_order_is_checked():
+    import time
+    from elab_doc_sync.mcp_server import _scrub
+    from elab_doc_sync.result import redact_url_credentials
+    from elab_doc_sync.sync import _rewrite_elab_links_to_local
+    reply = {'warnings': ["エラー: key=value 形式で指定してください: https://u:pa'ss@h.test"], 'error': 'see https://a:b"c@h.test/x'}
+    assert _scrub(reply, []) == {'warnings': ['エラー: key=value 形式で指定してください: https://***@h.test'],
+                                 'error': 'see https://***@h.test/x'}
+    body = '[a](<https://example.test/database.php?mode=view&id=7#sec)mid(end>)'
+    assert _rewrite_elab_links_to_local(body, 'https://example.test', {'seven.md': 7}, 'items') == body
+    started = time.monotonic()
+    redact_url_credentials('a' * 200_000 + ':/' + 'b' * 200_000, loose=True)
+    assert time.monotonic() - started < 1

@@ -193,12 +193,16 @@ def _secrets(config):
     return tuple(set(secrets) - {""})
 
 
-def _scrub(value, secrets):
+# エラー文・警告を入れる欄。入力値や例外文をそのまま含みうるので、エラー文用の広いマスクを使う。
+_ERROR_FIELDS = frozenset({"warnings", "error", "errors"})
+
+
+def _scrub(value, secrets, loose=False):
     if isinstance(value, str):
         # API キーに加え、URL に含まれるユーザー名・パスワードも伏せる（各コマンドで漏れがあっても応答に出さない）。
-        return redact_url_credentials(redact(value, *secrets))
+        return redact_url_credentials(redact(value, *secrets), loose=loose)
     if isinstance(value, list):
-        return [_scrub(item, secrets) for item in value]
+        return [_scrub(item, secrets, loose) for item in value]
     if isinstance(value, dict):
         scrubbed = {}
         for key, item in value.items():
@@ -208,7 +212,7 @@ def _scrub(value, secrets):
                 base, n = key, 2
                 while key in scrubbed:
                     key, n = f"{base} ({n})", n + 1
-            scrubbed[key] = _scrub(item, secrets)
+            scrubbed[key] = _scrub(item, secrets, loose or key in _ERROR_FIELDS)
         return scrubbed
     return value
 
