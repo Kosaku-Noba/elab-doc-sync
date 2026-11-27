@@ -263,7 +263,11 @@ def test_article_commands_scope_to_selected_url(MockClient, tmp_path, capsys, mo
     client.get_metadata_raw.return_value = "invalid"
     assert cli.cmd_metadata(args("metadata", "set", "--", "key=value")) == 1
     assert client.update_metadata.call_count == 1
-    client.get_metadata.return_value = {"large": 9007199254740993}
+    client.get_metadata_raw.return_value = '{"precise":0.1234567890123456789}'
+    assert cli.cmd_metadata(args("metadata", "get")) == 1
+    assert cli.cmd_metadata(args("metadata", "set", "--", "other=value")) == 1
+    assert client.update_metadata.call_count == 1
+    client.get_metadata_raw.return_value = '{"large":9007199254740993}'
     assert cli.cmd_metadata(args("metadata", "get")) == 0
     # パース済み数値を JS へ往復させず、CLI の表示文字列とトークンをそのまま使う。
     entry = json.loads(capsys.readouterr().out.splitlines()[-1])["entities"][0]
@@ -291,9 +295,10 @@ def test_new_targets_includes_empty_directory(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["targets"] == [{"target": "T", "docs_dir": "docs/", "selector": "T", "pattern": "*.md"}]
 
 
-@pytest.mark.parametrize("output_options", [[], ["--json"]])
+@pytest.mark.parametrize("output_options", [[], ["--json"], ["-o", "docs/../docs/old.md"]])
 @patch("elab_doc_sync.cli.ELabFTWClient")
-def test_new_document_preserves_legacy_tracking(MockClient, tmp_path, output_options):
+def test_new_document_preserves_legacy_tracking(MockClient, tmp_path, output_options, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     cfg = _project(tmp_path)
     data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
     data["targets"][0]["id_file"] = ".target-ids/docs.id"

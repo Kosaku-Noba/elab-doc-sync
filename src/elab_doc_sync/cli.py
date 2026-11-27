@@ -11,6 +11,7 @@ import os
 import shutil
 import sys
 from dataclasses import asdict, replace
+from decimal import Decimal
 from fnmatch import fnmatch
 from functools import lru_cache
 from unicodedata import normalize
@@ -1996,6 +1997,21 @@ def _relate_action(res, client, action, entity_type, entity_id, dests, dry_run=F
                 res.say(f"  {label}: {target_label} #{target_id} へのリンクが見つかりません")
 
 
+def _editable_metadata(raw):
+    def checked_float(text):
+        number = float(text)
+        if not Decimal(text).is_finite() or Decimal(str(number)) != Decimal(text):
+            raise ValueError("精度を保てない数値が含まれています")
+        return number
+
+    if raw is None or raw == "":
+        return {}
+    value = json.loads(raw, parse_float=checked_float, parse_constant=checked_float) if isinstance(raw, str) else raw
+    if not isinstance(value, dict):
+        raise ValueError("メタデータは JSON オブジェクトである必要があります")
+    return value
+
+
 def _metadata_value_token(value):
     encoded = json.dumps(value, sort_keys=True, ensure_ascii=True).encode("ascii")
     return hashlib.sha256(encoded).hexdigest()
@@ -2051,23 +2067,26 @@ def run_metadata(args, echo=None) -> CommandResult:
                      "entity_id": eid}
             res.data["entities"].append(entry)
             if args.meta_action == "get":
-                meta = client.get_metadata(etype, eid)
-                entry["metadata"] = meta
                 if getattr(args, "expect_article_url", None):
+                    try:
+                        meta = _editable_metadata(client.get_metadata_raw(etype, eid))
+                    except ValueError as exc:
+                        return res.fail(f"既存メタデータを読み取れません: {exc}")
                     entry["fields"] = [{"key": key, "token": _metadata_value_token(value),
                                         "text": value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)}
                                        for key, value in meta.items()]
+                else:
+                    meta = client.get_metadata(etype, eid)
+                entry["metadata"] = meta
                 res.say(f"  {label}:")
                 res.say(f"    {json.dumps(meta, ensure_ascii=False, indent=2)}")
             elif args.meta_action == "set":
                 raw = client.get_metadata_raw(etype, eid)
                 if getattr(args, "expect_article_url", None):
                     try:
-                        existing = {} if raw is None or raw == "" else json.loads(raw) if isinstance(raw, str) else raw
-                    except ValueError:
-                        existing = None
-                    if not isinstance(existing, dict):
-                        return res.fail("既存メタデータを読み取れないため更新を中止しました")
+                        existing = _editable_metadata(raw)
+                    except ValueError as exc:
+                        return res.fail(f"既存メタデータを読み取れないため更新を中止しました: {exc}")
                     if edit is not None:
                         key = edit["key"]
                         current = _metadata_value_token(existing[key]) if key in existing else None
@@ -2232,20 +2251,22 @@ def run_new(args, echo=None) -> CommandResult:
         if (not _matches_relative_glob(relative, selected.pattern) or syncer.is_displaced_path(syncer.docs_dir / relative)
                 or outpath.name in syncer._load_excluded()):
             return res.fail(f"{relative} は {selected.docs_dir} の同期対象外です。ファイル名・配置を {selected.pattern} に合わせてください")
-        if any(p.name == outpath.name and p.absolute() != outpath.absolute() for p in syncer.collect_files()):
-            return res.fail(f"同じターゲットに同名文書があります: {outpath.name}")
     if not outpath.exists():
+        destination = outpath.resolve()
         for owner in config.targets:
-            syncer = _make_syncer(None, owner, project_root)
-            if not outpath.absolute().is_relative_to(syncer.docs_dir):
+            docs_dir = (project_root / owner.docs_dir).resolve()
+            if not destination.is_relative_to(docs_dir):
                 continue
-            relative = outpath.absolute().relative_to(syncer.docs_dir)
+            relative = destination.relative_to(docs_dir)
             if not _matches_relative_glob(relative, owner.pattern):
                 continue
+            syncer = _make_syncer(_make_client_for_target(config, owner), owner, project_root)
+            if any(p.name == destination.name for p in syncer.collect_files()):
+                return res.fail(f"同じターゲットに同名文書があります: {destination.name}")
             # 旧共通マッピングは docs_dir 直下のファイルが現れた時点で有効になる。
             prospective = outpath.name if len(relative.parts) == 1 else None
             mapping = syncer._load_mapping(migrate=False, prospective_name=prospective)
-            if outpath.name in mapping or outpath.name in syncer._pending():
+            if outpath.name in mapping or outpath.name in syncer._pending() or syncer._receipt_path(outpath.name).exists():
                 return res.fail(f"既存の記事との紐付けまたは作成記録があります: {outpath.name}")
     res.data.update(path=str(outpath), title=title, template_id=args.template_id,
                     template_title=template.get("title", ""), dry_run=dry_run, created=False)
