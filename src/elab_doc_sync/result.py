@@ -112,8 +112,9 @@ def redact(text: str, *secrets: str | None) -> str:
 
 
 # URL に埋め込まれたユーザー名・パスワード（scheme://user:pass@host）。
-# パスワードには引用符なども入りうるので、ホストの前の最後の @ までを認証情報とみなす。
-_URL_CREDENTIALS = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s]*@")
+# パスワードには引用符や空白も入りうるので、scheme:// から、次の / より前にある最後の @ までを認証情報とみなす
+# （伏せすぎても、認証情報を出すよりよい）。
+_URL_CREDENTIALS = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/]*@")
 
 
 def error_text(exc: Exception, api_key: str | None = None) -> str:

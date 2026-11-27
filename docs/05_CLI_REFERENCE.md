@@ -48,7 +48,7 @@ esync push [ファイル・ディレクトリ・glob ...] [--regex 式] [--dry-r
 | `--regex` | ファイル名に部分一致する文書だけを push（`esync push` のみ。複数指定可） |
 | `--dry-run` | 実際に送信せず変更予定を表示 |
 | `--force` | リモート本文を退避して強制送信。接続・取得エラーは無視しない |
-| `--expect-id`・`--expect-server`・`--expect-entity` | 書き換える直前に、指定した1文書の紐付けが確認時の記事（ID・認証情報を除いた接続先 URL・種別）と同じかを照合する。異なれば何も送信せず終了コード 2。`--expect-server` と `--expect-entity` は省略でき、指定したものだけを照合する。`--force` と併用できる（VS Code 拡張が上書きの前に使う）。文書の選択結果が1つのターゲットの1文書でなければ終了コード 2。同じファイルが複数のターゲットに一致する場合は、`diff --json` の `selector` を `--target` に指定して絞る（例: `esync push --force --target notes --expect-id 42 --expect-server https://elab.example.com --expect-entity items -- docs/a.md`） |
+| `--expect-id`・`--expect-server`・`--expect-entity` | 書き換える直前に、指定した1文書の紐付けが確認時の記事（ID・認証情報を除いた接続先 URL・種別）と同じかを照合する。異なれば何も送信せず終了コード 2。`--expect-id` は必須で、`--expect-server`・`--expect-entity` は省略できる（省略したものは照合しない）。`--expect-id` なしで `--expect-server`・`--expect-entity` を指定すると、何もせず終了コード 2。`--expect-server` には `diff --json` が返す、認証情報を除いた `server` を渡す。照合の条件は push・pull・mv で共通。`--force` と併用できる（VS Code 拡張が上書きの前に使う）。文書の選択結果が1つのターゲットの1文書でなければ終了コード 2。同じファイルが複数のターゲットに一致する場合は、`diff --json` の `selector` を `--target` に指定して絞る（例: `esync push --force --target notes --expect-id 42 --expect-server https://elab.example.com --expect-entity items -- docs/a.md`） |
 | `-t`, `--target` | 特定ターゲットのみ実行 |
 | `--prune-attachments` | attachments_dir が存在する場合、attachments_pattern に一致し、同名のローカル添付も本文からの参照もない非画像添付を削除 |
 
@@ -100,7 +100,7 @@ esync pull [ファイル・ディレクトリ・glob ...] [--regex 式] [-t TARG
 | `--auto` | 振り分けを自動決定 |
 | ファイル・`--regex` | 取り込む追跡中の文書を push・diff と同じ方法で指定する（省略時は全文書）。`--id`・`--dir` とは併用できない（終了コード 2）。指定した文書がまだ記事と紐付いていない場合は取得せず、`result: "untracked"` を返す。改名した文書は旧名で紐付いているので、先に `esync mv <旧パス> <新パス>` で紐付けを移す |
 | `--expect-id`・`--expect-server`・`--expect-entity` | push と同じ照合を、取り込む前に行う。文書を指定し、選択結果が1つのターゲットの1文書のときだけ使える。異なれば何も変更せず終了コード 2 |
-| `--json` | 結果を JSON で出力する。`documents` の要素は `result` ごとに次のキーを持つ。`pulled`・`would_pull`・`skipped`: `target`・`entity`・`entity_id`・`server`（認証情報を除いた URL）・`conflict`（今回競合マーカーを残したか）・`path`（本文の保存先。取得する場合はタイトルの変更による改名後の名前で、dry-run でも同じ。ローカルの編集を残してスキップした場合は、今の本文の場所）。`untracked`: `target`・`entity`・`path`。`needs_target`: `entity`・`entity_id`。取得に失敗した記事は `result` の代わりに `error` を持ち、`path` はない。`error` と標準エラーでは、URL に含まれるユーザー名・パスワードを `https://***@elab.example.com:8443/...` のように伏せる。ほかに `pulled`・`skipped`・`failed`・`conflict_files`。保存先は対話で選ばない。警告は標準エラーに出る。引数や文書の指定の誤りは終了コード 2 で、標準エラーに理由を出す |
+| `--json` | 結果を JSON で出力する。`documents` の要素は `result` ごとに次のキーを持つ。`pulled`・`would_pull`・`skipped`: `target`・`entity`・`entity_id`・`server`（認証情報を除いた URL）・`conflict`（今回競合マーカーを残したか）・`path`（本文の保存先。取得する場合はタイトルの変更による改名後の名前で、dry-run でも同じ。ローカルの編集を残してスキップした場合は、今の本文の場所）。`untracked`: `target`・`entity`・`path`。`needs_target`: `entity`・`entity_id`。取得に失敗した記事は `result` の代わりに `error` を持ち、`path` はない。記事の取得に失敗したときの `error` と標準エラーでは、URL に含まれるユーザー名・パスワードを `https://***@elab.example.com:8443/...` のように伏せる。`--expect-server` が一致しないときのエラーには、指定した値を表示しない。ほかに `pulled`・`skipped`・`failed`・`conflict_files`。保存先は対話で選ばない。警告は標準エラーに出る。引数や文書の指定の誤りは終了コード 2 で、標準エラーに理由を出す |
 | `--dir` | 保存先ディレクトリを指定。既存ターゲットの管理下なら取得元と種別・接続設定（URL、API キー、SSL 検証）が一致する必要がある。`--target` 省略時も照合する。ID を省略した一括取得では、選択したターゲットに不一致があれば全件の取得前に中止する。対象を限定するには `--target` を指定する |
 
 **保存先が重なる場合**

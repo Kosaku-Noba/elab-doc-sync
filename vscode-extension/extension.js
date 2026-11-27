@@ -225,7 +225,9 @@ async function activate(context) {
         let match = matches[0];
         if (matches.length > 1) {
             const choice = await vscode.window.showQuickPick(matches.map(m => ({
-                label: m.doc.target, description: m.folder.name + ' / ' + m.doc.state, match: m,
+                label: m.doc.selector || m.doc.target, match: m,
+                description: m.folder.name + ' / ' + m.doc.entity + (m.doc.entity_id == null ? '' : ' #' + m.doc.entity_id)
+                    + ' — ' + m.doc.state,
             })), { placeHolder: '操作する送信先を選択' });
             if (!choice) return;
             match = choice.match;
@@ -299,20 +301,22 @@ async function activate(context) {
             if (moved.code !== 0) throw new Error('紐付けを移せませんでした。出力「esync」を確認してください。');
             refresh();
         }
-        return { folder, file, name, options, entityId: current.entity_id };
+        // 確認ダイアログに出す記事の表記。別サーバーに同じ番号の記事があっても見分けられるようにする。
+        const article = '#' + current.entity_id + '（' + current.server + ' の' + (current.entity === 'experiments' ? '実験ノート' : 'リソース') + '）';
+        return { folder, file, name, options, entityId: current.entity_id, article };
     }
 
     async function pull(arg) {
         const target = await prepareWrite(arg);
         if (!target) return;
-        const { folder, file, name, options, entityId } = target;
+        const { folder, file, name, options, entityId, article } = target;
         const planned = await pullJson(folder, ['--dry-run', ...options], file);
         const incoming = planned.documents.find(d => d.result === 'would_pull' && d.entity_id === entityId);
         if (!incoming) {
             vscode.window.showInformationMessage(name + ' — 取り込む eLabFTW の変更はありません。');
             return;
         }
-        if (!await dialogs.confirm(name + ' に eLabFTW #' + entityId + ' の変更を取り込みます。ローカルでも編集している場合はマージし、'
+        if (!await dialogs.confirm(name + ' に eLabFTW の記事 ' + article + ' の変更を取り込みます。ローカルでも編集している場合はマージし、'
                 + '両方で変えた箇所は競合マーカーで示します。', '取り込む')) return;
         await finishPull(folder, file, await pullJson(folder, options, file, { timeout: 0 }));
     }
@@ -342,8 +346,8 @@ async function activate(context) {
     async function adoptLocal(arg) {
         const target = await prepareWrite(arg);
         if (!target) return;
-        const { folder, file, name, options, entityId } = target;
-        if (!await dialogs.confirm('eLabFTW の記事 #' + entityId + ' を ' + name + ' の内容で上書きします。'
+        const { folder, file, name, options, article } = target;
+        if (!await dialogs.confirm('eLabFTW の記事 ' + article + ' を ' + name + ' の内容で上書きします。'
                 + 'eLabFTW 側の変更は記事から失われます（上書き前の本文はバックアップに退避され、esync restore で取り出せます）。',
         'ローカルの内容で上書き')) return;
         try {
@@ -362,8 +366,8 @@ async function activate(context) {
     async function adoptRemote(arg) {
         const target = await prepareWrite(arg);
         if (!target) return;
-        const { folder, file, name, options, entityId } = target;
-        if (!await dialogs.confirm(name + ' を eLabFTW の記事 #' + entityId + ' の内容で上書きします。ローカルの変更はファイルから失われます'
+        const { folder, file, name, options, article } = target;
+        if (!await dialogs.confirm(name + ' を eLabFTW の記事 ' + article + ' の内容で上書きします。ローカルの変更はファイルから失われます'
                 + '（上書き前のファイルはバックアップに退避され、esync restore で戻せます）。', 'eLabFTW の内容で上書き')) return;
         await finishPull(folder, file, await pullJson(folder, ['--force', ...options], file, { timeout: 0 }));
     }

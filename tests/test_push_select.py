@@ -398,7 +398,7 @@ def test_pull_error_hides_credentials_in_urls(project, capsys):
     root, remote = project
     assert push('docs/a.md') in (0, None)
     CLIENTS[0].get_item.side_effect = ConnectionError(
-        "Max retries exceeded with url: https://us'er:se'c\"ret@example.test:9/api/v2/items/1")
+        "Max retries exceeded with url: https://us'er:se'c\" ret@example.test:9/api/v2/items/1")
     capsys.readouterr()
     with patch.object(sys, 'argv', ['esync', 'pull', '--json', '--dry-run', '--', 'docs/a.md']):
         try:
@@ -407,7 +407,7 @@ def test_pull_error_hides_credentials_in_urls(project, capsys):
             pass
     out, err = capsys.readouterr()
     for text in (out, err):
-        assert 'se\'c' not in text and 'us\'er' not in text, 'hide credentials containing quotes'
+        assert 'se\'c' not in text and 'us\'er' not in text and ' ret@' not in text, 'hide credentials with quotes and spaces'
     assert 'https://***@example.test:9' in json.loads(out)['documents'][0]['error']
     assert 'https://***@example.test:9' in err
 
@@ -465,3 +465,25 @@ def test_skipped_pull_reports_where_the_body_is(project, capsys):
     [doc] = data['documents']
     assert doc['result'] == 'skipped' and doc['path'] == 'docs/new.md', 'a skipped document stays where it is'
     assert (root / 'docs/new.md').exists()
+
+
+def test_expectations_need_an_article_id_and_hide_the_expected_server(project, capsys):
+    root, remote = project
+    assert push('docs/a.md') in (0, None)
+    [eid] = remote
+    (root / 'docs/a.md').write_text('# local', encoding='utf-8')
+    before = json.dumps(remote, sort_keys=True)
+    assert push('--force', '--expect-server', 'https://other.test', 'docs/a.md') == 2, '--expect-server alone is refused'
+    code, _ = pull_json('--force', '--expect-entity', 'experiments', '--', 'docs/a.md', capsys=capsys)
+    assert code == 2
+    (root / 'docs/a.md').rename(root / 'docs/moved.md')
+    with patch.object(sys, 'argv', ['esync', 'mv', '--expect-entity', 'experiments', 'docs/a.md', 'docs/moved.md']):
+        with pytest.raises(SystemExit) as exited:
+            main()
+    assert exited.value.code == 2
+    assert json.loads((root / '.ids/mapping.json').read_text(encoding='utf-8')) == {'a.md': eid}
+    assert json.dumps(remote, sort_keys=True) == before
+    (root / 'docs/moved.md').rename(root / 'docs/a.md')
+    capsys.readouterr()
+    assert push('--force', '--expect-id', str(eid), '--expect-server', 'https://user:secret@other.test', 'docs/a.md') == 2
+    assert 'secret' not in capsys.readouterr().err

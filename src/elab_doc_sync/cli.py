@@ -259,6 +259,15 @@ def _target_selector(config, target):
                  sum(_matches_target(t, value) for t in config.targets) == 1), None)
 
 
+def _expectations(args):
+    """照合の指定があるか。--expect-server・--expect-entity は --expect-id がないと照合できないので、それだけなら誤り。"""
+    if getattr(args, "expect_id", None) is not None:
+        return True
+    if getattr(args, "expect_server", None) is not None or getattr(args, "expect_entity", None) is not None:
+        raise ValueError("--expect-server・--expect-entity は --expect-id と一緒に指定してください")
+    return False
+
+
 def _article_mismatch(config, target, eid, args):
     """--expect-id/--expect-server/--expect-entity: 確認した記事と、これから書き換える記事が同じかを照合する。"""
     expected_id = getattr(args, "expect_id", None)
@@ -270,7 +279,8 @@ def _article_mismatch(config, target, eid, args):
     server = getattr(args, "expect_server", None)
     current = public_url(get_client_for_target(config, target)[0]).rstrip("/")
     if server is not None and server.rstrip("/") != current:
-        return f"接続先が確認時と異なります（確認時 {server}、現在 {current}）。差分を開き直してください"
+        # 指定値には認証情報が含まれうるので表示しない。
+        return f"接続先が確認時と異なります（現在 {current}）。差分を開き直してください"
     entity = getattr(args, "expect_entity", None)
     if entity is not None and _normalize_entity(entity) != target.entity:
         return f"記事の種別が確認時と異なります（確認時 {entity}、現在 {target.entity}）。差分を開き直してください"
@@ -306,7 +316,11 @@ def run_push(args, echo=None) -> CommandResult:
             selected = _select_documents(pairs, files, _compile_regexes(regex_expressions))
         except ValueError as e:
             return res.fail(f"エラー: {e}", 2)
-    if getattr(args, "expect_id", None) is not None:
+    try:
+        expecting = _expectations(args)
+    except ValueError as e:
+        return res.fail(f"エラー: {e}", 2)
+    if expecting:
         problem = _expected_id_error(config, pairs, selected, args)
         if problem:
             return res.fail(f"エラー: {problem}", 2)
@@ -529,7 +543,11 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
     files, regex_expressions = getattr(args, "files", None) or [], getattr(args, "regex", None)
     if (files or regex_expressions) and (args.id or getattr(args, "dir", None)):
         return res.fail("エラー: 文書の指定は --id・--dir と併用できません", 2)
-    if getattr(args, "expect_id", None) is not None and not (files or regex_expressions):
+    try:
+        expecting = _expectations(args)
+    except ValueError as e:
+        return res.fail(f"エラー: {e}", 2)
+    if expecting and not (files or regex_expressions):
         return res.fail("エラー: --expect-id は文書を1つ指定して使ってください", 2)
     config_path = Path(args.config).resolve()
     root = config_path.parent
@@ -631,7 +649,7 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
                 selected = _select_documents(pairs, files, _compile_regexes(regex_expressions))
             except ValueError as e:
                 return res.fail(f"エラー: {e}", 2)
-            if getattr(args, "expect_id", None) is not None:
+            if expecting:
                 problem = _expected_id_error(config, pairs, selected, args)
                 if problem:
                     return res.fail(f"エラー: {problem}", 2)
@@ -2293,6 +2311,10 @@ def cmd_link(args):
 @returns_partial_result
 def run_mv(args, echo=None) -> CommandResult:
     res = CommandResult(data={"dry_run": args.dry_run}, echo=echo)
+    try:
+        _expectations(args)
+    except ValueError as e:
+        return res.fail(f"エラー: {e}", 2)
     config_path = Path(args.config).resolve()
     config = load_config(config_path)
     old_path, new_path = Path(args.old).absolute(), Path(args.new).absolute()
