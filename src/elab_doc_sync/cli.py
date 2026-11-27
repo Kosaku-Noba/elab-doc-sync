@@ -2036,9 +2036,10 @@ def run_whoami(args, echo=None) -> CommandResult:
             try:
                 url, api_key, verify_ssl = profile_connection(profile)
             except ValueError as exc:
+                reason = error_text(exc)  # 例外文に設定由来の値（プロファイル名など）が入りうるので伏せる
                 res.data["profiles"].append({"profile": profile.name, "url": public_url(profile.url) if profile.url else None,
-                                             "error": str(exc)})
-                res.say(f"  エラー: {exc}")
+                                             "error": reason})
+                res.say(f"  エラー: {reason}")
                 res.say()
                 continue
         else:
