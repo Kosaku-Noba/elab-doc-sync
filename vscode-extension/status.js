@@ -331,7 +331,7 @@ class StatusProvider {
             const entry = this.status(folder);
             // 取得に失敗した、または取り直している間の結果は前回のもの。
             const stale = Boolean(entry.error || entry.loading);
-            if (stale) errors.push(folder.name + ' — ' + entry.error);
+            if (entry.error) errors.push(folder.name + ' — ' + entry.error);
             if (!entry.value) {
                 waiting ||= entry.loading;
                 continue;

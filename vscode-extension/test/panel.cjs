@@ -4,7 +4,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const vscode = require('vscode');
-const { StatusProvider, CurrentDocumentProvider } = require('../status');
+const { StatusProvider, CurrentDocumentProvider, statusBarView } = require('../status');
 
 // 改名元の候補が変わったら古い ID を捨て、取得エラーがあっても判明した ID は表示する。
 async function renameCandidates(folder, file, doc, waitForUpdate, events, currentEvents) {
@@ -54,7 +54,10 @@ async function renameCandidates(folder, file, doc, waitForUpdate, events, curren
     assert.equal(lookups.length, 2);
     // 保存などで同期状態を取り直したら、再照会が終わるまで改名先の記事を示さない。
     status.invalidate();
-    await status.documentsFor(file, undefined);
+    const refreshing = await status.documentsFor(file, undefined);
+    assert.deepEqual(refreshing.errors, [], 'a refresh in progress is not a fetch failure');
+    assert.ok(refreshing.matches.every(match => match.stale), 'results being refreshed are marked as previous');
+    assert.match(statusBarView(refreshing.matches, refreshing.errors).text, /（更新中）$/);
     let refreshed = waitForUpdate();
     respond([doc, candidate(42)]);
     await refreshed;
