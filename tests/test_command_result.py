@@ -265,9 +265,9 @@ def test_article_commands_scope_to_selected_url(MockClient, tmp_path, capsys, mo
     assert client.update_metadata.call_count == 1
     client.get_metadata_raw.return_value = '{"key":"newer","other":3}'
     guarded = args("metadata", "set", "--edit-stdin")
-    monkeypatch.setattr("sys.stdin", StringIO('{"key":"key","value":"edited","previous":"older"}'))
+    monkeypatch.setattr("sys.stdin", StringIO(json.dumps({"key": "key", "value": "edited", "previous_token": "stale"})))
     assert cli.cmd_metadata(guarded) == 1 and client.update_metadata.call_count == 1
-    monkeypatch.setattr("sys.stdin", StringIO('{"key":"key","value":"edited","previous":"newer"}'))
+    monkeypatch.setattr("sys.stdin", StringIO(json.dumps({"key": "key", "value": "edited", "previous_token": cli._metadata_value_token("newer")})))
     assert cli.cmd_metadata(guarded) == 0
     client.update_metadata.assert_called_with("items", 42, {"key":"edited","other":3})
 
@@ -277,3 +277,20 @@ def test_new_targets_includes_empty_directory(tmp_path, capsys):
     args = cli.build_parser().parse_args(["new", "--config", str(cfg), "--list-targets", "--json"])
     assert cli.cmd_new(args) == 0
     assert json.loads(capsys.readouterr().out)["targets"] == [{"target": "T", "docs_dir": "docs/", "selector": "T", "pattern": "*.md"}]
+
+
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_new_document_preserves_legacy_tracking(MockClient, tmp_path):
+    cfg = _project(tmp_path)
+    data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    data["targets"][0]["id_file"] = ".target-ids/docs.id"
+    cfg.write_text(yaml.safe_dump(data), encoding="utf-8")
+    legacy = tmp_path / ".elab-sync-ids/mapping.json"
+    legacy.parent.mkdir()
+    legacy.write_text('{"old.md": 42}')
+    MockClient.return_value._req.return_value.json.return_value = {"title": "old", "body": ""}
+    args = cli.build_parser().parse_args(["new", "--json", "--target=T", "--config", str(cfg), "--template-id=7"])
+    result = cli.run_new(args)
+    assert result.exit_code == 1 and "紐付け" in result.warnings[0]
+    assert not (tmp_path / "docs/old.md").exists()
+    assert not (tmp_path / ".target-ids/mapping.json").exists()

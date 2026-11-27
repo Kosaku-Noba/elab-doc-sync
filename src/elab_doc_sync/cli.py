@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import difflib
 import glob
+import hashlib
 import re
 import json
 import os
@@ -1313,13 +1314,14 @@ def run_diff(args, echo=None) -> CommandResult:
                     continue
                 if eid is not None:
                     try:
-                        syncer.checked_state(baseline)
+                        recorded = syncer.checked_state(baseline)
                     except (OSError, ValueError, TypeError, KeyError) as exc:
                         doc["error"] = error_text(exc)
                         res.warn(doc["error"])
                         failed = True
                         continue
-                    doc["url"] = entity_url(server, target.entity, eid)
+                    if recorded is not None:
+                        doc["url"] = entity_url(server, target.entity, eid)
                 if local_path.is_file():
                     raw = local_path.read_text(encoding="utf-8")
                     local_md = raw.strip()
@@ -1994,6 +1996,11 @@ def _relate_action(res, client, action, entity_type, entity_id, dests, dry_run=F
                 res.say(f"  {label}: {target_label} #{target_id} へのリンクが見つかりません")
 
 
+def _metadata_value_token(value):
+    encoded = json.dumps(value, sort_keys=True, ensure_ascii=True).encode("ascii")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 @returns_partial_result
 def run_metadata(args, echo=None) -> CommandResult:
     config_path = Path(args.config)
@@ -2042,20 +2049,23 @@ def run_metadata(args, echo=None) -> CommandResult:
             if args.meta_action == "get":
                 meta = client.get_metadata(etype, eid)
                 entry["metadata"] = meta
+                if getattr(args, "expect_article_url", None):
+                    entry["value_tokens"] = {key: _metadata_value_token(value) for key, value in meta.items()}
                 res.say(f"  {label}:")
                 res.say(f"    {json.dumps(meta, ensure_ascii=False, indent=2)}")
             elif args.meta_action == "set":
                 raw = client.get_metadata_raw(etype, eid)
                 if getattr(args, "expect_article_url", None):
                     try:
-                        existing = json.loads(raw) if isinstance(raw, str) and raw else (raw or {})
+                        existing = {} if raw is None or raw == "" else json.loads(raw) if isinstance(raw, str) else raw
                     except ValueError:
                         existing = None
                     if not isinstance(existing, dict):
                         return res.fail("既存メタデータを読み取れないため更新を中止しました")
                     if edit is not None:
                         key = edit["key"]
-                        if (key in existing) != ("previous" in edit) or json.dumps(existing.get(key)) != json.dumps(edit.get("previous")):
+                        current = _metadata_value_token(existing[key]) if key in existing else None
+                        if current != edit.get("previous_token"):
                             return res.fail("編集中にメタデータが変わりました。一覧を更新してやり直してください")
                     if any(isinstance(existing.get(key), (dict, list)) for key in pairs):
                         return res.fail("オブジェクトや配列の値は文字列で上書きできません")
@@ -2216,7 +2226,7 @@ def run_new(args, echo=None) -> CommandResult:
         if (not _matches_relative_glob(relative, selected.pattern) or syncer.is_displaced_path(syncer.docs_dir / relative)
                 or outpath.name in syncer._load_excluded()):
             return res.fail(f"{relative} は {selected.docs_dir} の同期対象外です。ファイル名・配置を {selected.pattern} に合わせてください")
-        if not outpath.exists() and (outpath.name in syncer._load_mapping(migrate=False) or outpath.name in syncer._pending()):
+        if not outpath.exists() and (outpath.name in syncer._load_mapping(migrate=False, prospective_name=outpath.name) or outpath.name in syncer._pending()):
             return res.fail(f"既存の記事との紐付けまたは作成記録があります: {outpath.name}")
         if any(p.name == outpath.name and p.absolute() != outpath.absolute() for p in syncer.collect_files()):
             return res.fail(f"同じターゲットに同名文書があります: {outpath.name}")

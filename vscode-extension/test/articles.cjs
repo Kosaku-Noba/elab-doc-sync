@@ -18,7 +18,7 @@ exports.run = async function () {
         calls.push({ args, options });
         const data = args.includes('remove') ? {} : args[0] === 'relate' ?
             { sources: [{ links: { items: [{ id: 7, title: '材料' }], experiments: [] } }] } :
-            { entities: [{ tags: ['-第1回'], metadata: { 担当: 'A' } }] };
+            { entities: [{ tags: ['-第1回'], metadata: { 担当: 'A' }, value_tokens: { 担当: 'previous-token' } }] };
         return { code: 0, stdout: JSON.stringify(data) };
     };
     const actions = articleActions(run, () => [folder], () => { refreshed = true; }, {}, { confirm: () => confirmed });
@@ -43,7 +43,7 @@ exports.run = async function () {
     try {
         vscode.window.showInputBox = async () => 'B';
         await actions.edit(metadataRow);
-        assert.deepEqual(JSON.parse(calls[4].options.input), { key: '担当', value: 'B', previous: 'A' });
+        assert.deepEqual(JSON.parse(calls[4].options.input), { key: '担当', value: 'B', previous_token: 'previous-token' });
         assert.ok(calls[4].args.includes('--edit-stdin'));
         assert.ok(!calls[4].args.includes('担当=B'));
         const project = { ...folder, uri: vscode.Uri.file(root) };

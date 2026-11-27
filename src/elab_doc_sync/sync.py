@@ -1577,7 +1577,7 @@ class EachDocsSyncer:
             paths.append(self.project_root / self.target.attachments_dir)
         return paths
 
-    def _load_mapping(self, *, migrate=True):
+    def _load_mapping(self, *, migrate=True, prospective_name=None):
         source = self.mapping_file
         load_legacy = not source.exists()
         if load_legacy:
@@ -1594,7 +1594,7 @@ class EachDocsSyncer:
                 if load_legacy:
                     continue
                 raise ValueError(f"紐付け情報の形式が不正です: {source} のファイル名 {name!r}")
-            if load_legacy and not (self.docs_dir / name).is_file():
+            if load_legacy and name != prospective_name and not (self.docs_dir / name).is_file():
                 continue
             if type(eid) is not int or eid <= 0:
                 raise ValueError(f"紐付け情報の形式が不正です: {source} の {name!r} の記事 ID")
@@ -2044,7 +2044,7 @@ class EachDocsSyncer:
             return result
         try:
             state = self.checked_state(filename)
-            result["binding_checked"] = True
+            result["binding_checked"] = state is not None
             data = self._get_entity(eid) if data is None else data
             uploads = self.client.list_uploads(self.entity, eid) if uploads is None else uploads
             result.update(data=data, uploads=uploads)

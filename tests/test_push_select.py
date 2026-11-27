@@ -773,3 +773,16 @@ def test_article_url_withheld_when_saved_server_differs(project):
     assert 'url' not in doc and '接続先' in doc['error']
     diff = cli.run_diff(cli.build_parser().parse_args(['diff', '--json', '--', 'docs/a.md']))
     assert 'url' not in diff.data['documents'][0] and '接続先' in diff.data['documents'][0]['error']
+
+
+def test_article_url_requires_saved_destination(project):
+    root, remote = project
+    assert push('docs/a.md') in (0, None)
+    (root / '.ids/a.md.state.json').unlink()
+    from elab_doc_sync import cli
+    parser = cli.build_parser()
+    status = cli.run_status(parser.parse_args(['status', '--json']))
+    doc = next(row for row in status.data['documents'] if row['path'] == 'docs/a.md')
+    assert doc['entity_id'] and 'url' not in doc
+    diff = cli.run_diff(parser.parse_args(['diff', '--json', '--', 'docs/a.md']))
+    assert 'url' not in diff.data['documents'][0]

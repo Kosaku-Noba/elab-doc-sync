@@ -49,7 +49,7 @@ function articleActions(run, projects, refresh, output, dialogs) {
                     leaf(kindName(type) + ' #' + link.id, { type, id: link.id }, link.title)));
             } else {
                 rows = Object.entries(data.entities[0].metadata).map(([key, value]) =>
-                    Object.assign(leaf(key, key, typeof value === 'string' ? value : JSON.stringify(value)), { previous: value }));
+                    Object.assign(leaf(key, key, typeof value === 'string' ? value : JSON.stringify(value)), { previousToken: data.entities[0].value_tokens[key] }));
             }
             return rows.length ? rows : [new vscode.TreeItem(groups[kind] + 'はありません')];
         } catch (error) {
@@ -83,7 +83,7 @@ function articleActions(run, projects, refresh, output, dialogs) {
             if (!key) return;
             const value = await vscode.window.showInputBox({ prompt: key + ' の値（文字列）', value: row.description || '' });
             if (value === undefined) return;
-            input = JSON.stringify({ key, value, previous: row.previous });
+            input = JSON.stringify({ key, value, previous_token: row.previousToken });
             options = ['--edit-stdin'];
             action = 'set';
             summary = 'メタデータ「' + key + '」を設定';
