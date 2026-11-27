@@ -449,7 +449,7 @@ def run_status(args, echo=None) -> CommandResult:
                    "file": name, "entity": target.entity,
                    "entity_id": mapping.get(name), "state": state, "remote_changes": [], "error": None,
                    "next_actions": []}
-            if doc["entity_id"] is not None:
+            if doc["entity_id"] is not None and result.get("binding_checked"):
                 doc["url"] = entity_url(get_client_for_target(config, target)[0], target.entity, doc["entity_id"])
             path = files.get(name)
             if path is not None:
@@ -1308,11 +1308,18 @@ def run_diff(args, echo=None) -> CommandResult:
             if preview:
                 doc.update(target=target.title or target.docs_dir, selector=selector,
                            server=server, renamed_from=old_names.get(eid))
-                if eid is not None:
-                    doc["url"] = entity_url(server, target.entity, eid)
                 if preview_error:
                     doc["error"] = preview_error
                     continue
+                if eid is not None:
+                    try:
+                        syncer.checked_state(baseline)
+                    except (OSError, ValueError, TypeError, KeyError) as exc:
+                        doc["error"] = error_text(exc)
+                        res.warn(doc["error"])
+                        failed = True
+                        continue
+                    doc["url"] = entity_url(server, target.entity, eid)
                 if local_path.is_file():
                     raw = local_path.read_text(encoding="utf-8")
                     local_md = raw.strip()
@@ -1997,9 +2004,19 @@ def run_metadata(args, echo=None) -> CommandResult:
     res = CommandResult(data={"action": args.meta_action, "dry_run": dry_run, "entities": [],
                               "unsynced_targets": []}, echo=echo)
 
+    edit = None
     pairs = {}
     if args.meta_action == "set":
         # 送信前にすべての指定を確認する
+        if getattr(args, "edit_stdin", False):
+            if not getattr(args, "expect_article_url", None) or args.keyvalues:
+                raise ValueError("--edit-stdin には --expect-article-url が必要です。値は標準入力で指定してください")
+            edit = json.load(sys.stdin)
+            if not isinstance(edit, dict) or not isinstance(edit.get("key"), str) or not edit["key"] or not isinstance(edit.get("value"), str):
+                raise ValueError("編集するキーと値を JSON 文字列で指定してください")
+            pairs[edit["key"]] = edit["value"]
+        elif not args.keyvalues:
+            raise ValueError("key=value を指定してください")
         for kv in args.keyvalues:
             if "=" not in kv:
                 return res.fail(f"エラー: '{kv}' は key=value 形式ではありません")
@@ -2036,6 +2053,10 @@ def run_metadata(args, echo=None) -> CommandResult:
                         existing = None
                     if not isinstance(existing, dict):
                         return res.fail("既存メタデータを読み取れないため更新を中止しました")
+                    if edit is not None:
+                        key = edit["key"]
+                        if (key in existing) != ("previous" in edit) or json.dumps(existing.get(key)) != json.dumps(edit.get("previous")):
+                            return res.fail("編集中にメタデータが変わりました。一覧を更新してやり直してください")
                     if any(isinstance(existing.get(key), (dict, list)) for key in pairs):
                         return res.fail("オブジェクトや配列の値は文字列で上書きできません")
                 else:
@@ -2148,7 +2169,7 @@ def run_new(args, echo=None) -> CommandResult:
         if not getattr(args, "json", False):
             raise ValueError("--list-targets には --json を指定してください")
         return CommandResult(data={"targets": [{"target": t.title or t.docs_dir, "docs_dir": t.docs_dir,
-                                                "selector": _target_selector(config, t)} for t in config.targets]})
+                                                "selector": _target_selector(config, t), "pattern": t.pattern} for t in config.targets]})
     if getattr(args, "json", False) and args.target and sum(_matches_target(t, args.target) for t in config.targets) != 1:
         raise ValueError("文書の作成先を一意に指定してください")
     client = _direct_client(config, args.target)
@@ -2187,6 +2208,18 @@ def run_new(args, echo=None) -> CommandResult:
             outpath = project_root / target.docs_dir / filename
         else:
             outpath = project_root / filename
+    if getattr(args, "json", False) and args.target:
+        selected = next(t for t in config.targets if _matches_target(t, args.target))
+        syncer = _make_syncer(client, selected, project_root)
+        relative = outpath.absolute().relative_to(syncer.docs_dir.absolute())
+        safe_path(syncer.docs_dir, relative.as_posix())
+        if (not _matches_relative_glob(relative, selected.pattern) or syncer.is_displaced_path(syncer.docs_dir / relative)
+                or outpath.name in syncer._load_excluded()):
+            return res.fail(f"{relative} は {selected.docs_dir} の同期対象外です。ファイル名・配置を {selected.pattern} に合わせてください")
+        if not outpath.exists() and (outpath.name in syncer._load_mapping(migrate=False) or outpath.name in syncer._pending()):
+            return res.fail(f"既存の記事との紐付けまたは作成記録があります: {outpath.name}")
+        if any(p.name == outpath.name and p.absolute() != outpath.absolute() for p in syncer.collect_files()):
+            return res.fail(f"同じターゲットに同名文書があります: {outpath.name}")
     res.data.update(path=str(outpath), title=title, template_id=args.template_id,
                     template_title=template.get("title", ""), dry_run=dry_run, created=False)
 
@@ -3093,7 +3126,8 @@ def build_parser():
     meta_get_p = meta_sub.add_parser("get", help="メタデータを表示")
     meta_get_p.add_argument("--id", type=int, help="対象の記事 ID")
     meta_set_p = meta_sub.add_parser("set", help="メタデータを設定")
-    meta_set_p.add_argument("keyvalues", nargs="+", help="key=value ペア")
+    meta_set_p.add_argument("--edit-stdin", action="store_true", help="キー・値・編集前の値を標準入力の JSON で指定")
+    meta_set_p.add_argument("keyvalues", nargs="*", help="key=value ペア")
     meta_set_p.add_argument("--id", type=int, default=None, help="エンティティ ID")
 
     estatus_parser = sub.add_parser("entity-status", help="エンティティのステータスを管理", parents=[sub_common])

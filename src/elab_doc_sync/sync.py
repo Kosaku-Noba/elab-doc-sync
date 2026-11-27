@@ -2025,6 +2025,15 @@ class EachDocsSyncer:
                 **({} if metadata_pending else {"meta_hash": meta_hash}),
             })
 
+    def checked_state(self, filename):
+        """保存した紐付けが現在の接続先に属するかを確かめる。"""
+        state = self._state(filename)
+        if state and (server_id(state["server"]) != server_id(self.client.base_url) or state["entity"] != self.entity
+                      or state.get("profile", self.target.profile) != self.target.profile
+                      or state.get("team", self.target.team) != self.target.team):
+            raise ValueError("接続先が前回同期時と異なります。別の状態ディレクトリを指定してください")
+        return state
+
     def inspect(self, filename, eid, data=None, uploads=None):
         """Read-only; legacy body hashes remain usable without inventing a baseline."""
         path = self.file_path(filename)
@@ -2034,14 +2043,11 @@ class EachDocsSyncer:
         if eid is None:
             return result
         try:
+            state = self.checked_state(filename)
+            result["binding_checked"] = True
             data = self._get_entity(eid) if data is None else data
             uploads = self.client.list_uploads(self.entity, eid) if uploads is None else uploads
             result.update(data=data, uploads=uploads)
-            state = self._state(filename)
-            if state and (server_id(state["server"]) != server_id(self.client.base_url) or state["entity"] != self.entity
-                          or state.get("profile", self.target.profile) != self.target.profile
-                          or state.get("team", self.target.team) != self.target.team):
-                raise ValueError("接続先が前回同期時と異なります。別の状態ディレクトリを指定してください")
             hp = self._remote_hash_path(filename)
             remote_known = bool(state or hp.exists())
             remote_changed = (state["remote"] != self._remote_signature(data, uploads)) if state else (

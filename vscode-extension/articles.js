@@ -21,12 +21,12 @@ function articleUri(doc) {
 
 /** @param {() => vscode.WorkspaceFolder[]} projects */
 function articleActions(run, projects, refresh, output, dialogs) {
-    async function json(folder, args, writing = false) {
-        const result = await run(folder, args, writing ? { timeout: 0 } : {});
+    async function json(folder, args, writing = false, input = undefined) {
+        const result = await run(folder, args, writing ? { timeout: 0, input } : {});
         if (result.code !== 0) throw new Error(result.stderr.trim() || 'esync の操作に失敗しました。');
         return JSON.parse(result.stdout);
     }
-    async function article(row, action, options = [], writing = false) {
+    async function article(row, action, options = [], writing = false, input = undefined) {
         const { doc, folder, kind } = row;
         if (!doc.selector || !Number.isSafeInteger(doc.entity_id) || doc.entity_id <= 0) {
             throw new Error('記事を特定できません。一覧を更新してください。');
@@ -34,7 +34,7 @@ function articleActions(run, projects, refresh, output, dialogs) {
         const args = [kind, '--json', '--target=' + doc.selector, '--expect-article-url=' + doc.url,
             action, '--id=' + doc.entity_id];
         if (kind !== 'metadata') args.push('--entity=' + doc.entity);
-        return json(folder, [...args, ...options], writing);
+        return json(folder, [...args, ...options], writing, input);
     }
     async function children(row) {
         try {
@@ -49,7 +49,7 @@ function articleActions(run, projects, refresh, output, dialogs) {
                     leaf(kindName(type) + ' #' + link.id, { type, id: link.id }, link.title)));
             } else {
                 rows = Object.entries(data.entities[0].metadata).map(([key, value]) =>
-                    leaf(key, key, typeof value === 'string' ? value : JSON.stringify(value)));
+                    Object.assign(leaf(key, key, typeof value === 'string' ? value : JSON.stringify(value)), { previous: value }));
             }
             return rows.length ? rows : [new vscode.TreeItem(groups[kind] + 'はありません')];
         } catch (error) {
@@ -59,7 +59,7 @@ function articleActions(run, projects, refresh, output, dialogs) {
     async function edit(row, remove = false) {
         const { kind, doc } = row;
         let action = remove ? 'remove' : 'add';
-        let options, summary;
+        let options, summary, input;
         if (kind === 'tag') {
             const tag = remove ? row.value : await vscode.window.showInputBox({ prompt: '追加するタグ名' });
             if (!tag?.trim()) return;
@@ -81,15 +81,15 @@ function articleActions(run, projects, refresh, output, dialogs) {
             const key = row.value ?? await vscode.window.showInputBox({ prompt: 'メタデータのキー',
                 validateInput: v => v.trim() && !v.includes('=') ? undefined : '「=」を含まないキーを入力してください。' });
             if (!key) return;
-            if (key.includes('=')) throw new Error('このキーは CLI の key=value 形式で指定できません。');
             const value = await vscode.window.showInputBox({ prompt: key + ' の値（文字列）', value: row.description || '' });
             if (value === undefined) return;
-            options = ['--', key + '=' + value];
+            input = JSON.stringify({ key, value, previous: row.previous });
+            options = ['--edit-stdin'];
             action = 'set';
             summary = 'メタデータ「' + key + '」を設定';
         }
         if (!await dialogs.confirm(doc.target + ' の ' + doc.url + ' で' + summary + 'します。', '変更する')) return;
-        await article(row, action, options, true);
+        await article(row, action, options, true, input);
         refresh();
     }
     /** @returns {Promise<vscode.WorkspaceFolder | undefined>} */
@@ -105,7 +105,7 @@ function articleActions(run, projects, refresh, output, dialogs) {
         const folder = await project();
         if (!folder) return;
         const { targets } = await json(folder, ['new', '--json', '--list-targets']);
-        const choices = targets.filter(t => t.selector).map(t => ({ label: t.target, description: t.docs_dir, selector: t.selector }));
+        const choices = targets.filter(t => t.selector).map(t => ({ label: t.target, description: t.docs_dir, selector: t.selector, pattern: t.pattern }));
         if (!choices.length) throw new Error('作成先を特定できません。ターゲットに一意の title を指定してください。');
         /** @type {any} */
         const target = await vscode.window.showQuickPick(choices, { placeHolder: '文書の作成先を選択' });
@@ -119,7 +119,13 @@ function articleActions(run, projects, refresh, output, dialogs) {
         if (!template) return;
         const title = await vscode.window.showInputBox({ prompt: '文書のタイトル', value: template.label });
         if (!title?.trim()) return;
-        const result = await json(folder, [...args, '--template-id=' + template.id, '--title=' + title], true);
+        const create = [...args, '--template-id=' + template.id, '--title=' + title];
+        if (target.pattern && !['*.md', '**/*.md'].includes(target.pattern)) {
+            const filename = await vscode.window.showInputBox({ prompt: target.description + ' 内のファイル名（' + target.pattern + '）' });
+            if (!filename?.trim()) return;
+            create.push('--output=' + path.resolve(folder.uri.fsPath, target.description, filename));
+        }
+        const result = await json(folder, create, true);
         await vscode.window.showTextDocument(vscode.Uri.file(path.resolve(folder.uri.fsPath, result.path)));
         refresh();
     }

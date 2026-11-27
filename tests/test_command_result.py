@@ -239,7 +239,8 @@ def test_run_verify_does_not_migrate_legacy_mapping(tmp_path):
 
 
 @patch("elab_doc_sync.cli.ELabFTWClient")
-def test_article_commands_scope_to_selected_url(MockClient, tmp_path, capsys):
+def test_article_commands_scope_to_selected_url(MockClient, tmp_path, capsys, monkeypatch):
+    from io import StringIO
     cfg = _project(tmp_path)
     parser = cli.build_parser()
     client = MockClient.return_value
@@ -262,10 +263,17 @@ def test_article_commands_scope_to_selected_url(MockClient, tmp_path, capsys):
     client.get_metadata_raw.return_value = "invalid"
     assert cli.cmd_metadata(args("metadata", "set", "--", "key=value")) == 1
     assert client.update_metadata.call_count == 1
+    client.get_metadata_raw.return_value = '{"key":"newer","other":3}'
+    guarded = args("metadata", "set", "--edit-stdin")
+    monkeypatch.setattr("sys.stdin", StringIO('{"key":"key","value":"edited","previous":"older"}'))
+    assert cli.cmd_metadata(guarded) == 1 and client.update_metadata.call_count == 1
+    monkeypatch.setattr("sys.stdin", StringIO('{"key":"key","value":"edited","previous":"newer"}'))
+    assert cli.cmd_metadata(guarded) == 0
+    client.update_metadata.assert_called_with("items", 42, {"key":"edited","other":3})
 
 
 def test_new_targets_includes_empty_directory(tmp_path, capsys):
     cfg = _project(tmp_path)
     args = cli.build_parser().parse_args(["new", "--config", str(cfg), "--list-targets", "--json"])
     assert cli.cmd_new(args) == 0
-    assert json.loads(capsys.readouterr().out)["targets"] == [{"target": "T", "docs_dir": "docs/", "selector": "T"}]
+    assert json.loads(capsys.readouterr().out)["targets"] == [{"target": "T", "docs_dir": "docs/", "selector": "T", "pattern": "*.md"}]
