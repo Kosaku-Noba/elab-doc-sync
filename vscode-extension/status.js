@@ -78,6 +78,82 @@ function detailItems(folder, doc) {
     return rows;
 }
 
+/**
+ * 差分タブで確認している内容。push される内容とその前提を表示する。
+ * @param {{ uri: string, selected: any, warnings: string, remote: boolean }} preview
+ */
+function previewItem(preview) {
+    const doc = preview.selected;
+    const group = treeItem('差分タブで確認中の内容', vscode.TreeItemCollapsibleState.Expanded);
+    group.description = doc.state;
+    const rows = [field('送信先サーバー', doc.server), field('比較の基準（左側）', doc.base_label || '前回の同期')];
+    if (doc.renamed_from) rows.push(field('改名前の文書', doc.renamed_from));
+    if (doc.local_changed) rows.push(messageItem('画像・添付ファイルまたは設定に変更があります。push で送信されます。'));
+    if (doc.remote_changes?.length || preview.remote) {
+        const remote = treeItem('eLabFTW 側の変更');
+        remote.description = (doc.remote_changes || []).join('、');
+        remote.tooltip = 'push すると、eLabFTW 側の変更はローカルの内容で上書きされます。';
+        remote.iconPath = new vscode.ThemeIcon('warning');
+        if (preview.remote) {
+            remote.command = { command: 'esync.showRemoteChanges', title: 'eLabFTW 側の変更を表示', arguments: [preview.uri] };
+        }
+        rows.push(remote);
+    }
+    if (preview.warnings) rows.push(messageItem(preview.warnings));
+    group.children = rows;
+    return group;
+}
+
+// 状態ごとの表示。並び順は、複数の送信先がある文書で代表として示す優先度（先頭ほど注意が必要）。
+const stateStyles = [
+    ['競合', 'warning', '!', 'gitDecoration.conflictingResourceForeground'],
+    ['作成結果不明', 'question', '?', 'list.warningForeground'],
+    ['同期未完了', 'sync', '!', 'list.warningForeground'],
+    ['確認失敗', 'error', '?', 'list.warningForeground'],
+    ['基準情報なし', 'question', '?', 'list.warningForeground'],
+    ['取得待ち', 'cloud-download', '↓', 'gitDecoration.renamedResourceForeground'],
+    ['送信待ち', 'cloud-upload', 'M', 'gitDecoration.modifiedResourceForeground'],
+    ['リネーム予定', 'arrow-right', 'R', 'gitDecoration.modifiedResourceForeground'],
+    ['未追跡', 'new-file', 'U', 'gitDecoration.untrackedResourceForeground'],
+    ['最新', 'check'],
+];
+
+/** @param {string[]} states 最も注意が必要な状態とその表示 */
+function leadingState(states) {
+    const style = stateStyles.find(([state]) => states.includes(state));
+    if (style) return { state: style[0], icon: style[1], badge: style[2], color: style[3] };
+    return states.length ? { state: states[0], icon: 'sync' } : undefined;
+}
+
+/**
+ * ステータスバーの表示。送信先がなければ undefined。
+ * @param {{ doc: any }[]} matches
+ */
+function statusBarView(matches) {
+    const lead = leadingState(matches.map(({ doc }) => doc.state));
+    if (!lead) return;
+    const more = matches.length > 1 ? '（送信先 ' + matches.length + ' 件）' : '';
+    return {
+        text: '$(' + lead.icon + ') esync: ' + lead.state + more,
+        tooltip: matches.map(({ doc }) => doc.target + ' ' + (doc.entity_id == null ? '未割り当て' : '#' + doc.entity_id)
+            + ' — ' + doc.state).join('\n') + '\nクリックで差分を確認',
+    };
+}
+
+/**
+ * Explorer のバッジ。最新や未知の状態には付けない。
+ * @param {string[]} states
+ * @returns {vscode.FileDecoration | undefined}
+ */
+function fileDecoration(states) {
+    const lead = leadingState(states);
+    if (!lead?.badge) return;
+    const decoration = new vscode.FileDecoration(lead.badge, 'esync: ' + [...new Set(states)].join('・'),
+        new vscode.ThemeColor(lead.color));
+    decoration.propagate = false;
+    return decoration;
+}
+
 class StatusProvider {
     constructor(projects, run, events, currentEvents) {
         this.projects = projects;
@@ -98,6 +174,14 @@ class StatusProvider {
             entry.loading = true;
             readStatus(folder, this.run).then(value => {
                 entry.value = value;
+                // Explorer の装飾用。シンボリックリンク経由のパスでも引けるよう、両方の起点で登録する。
+                entry.files = new Map();
+                for (const doc of value.documents.filter(doc => doc.path)) {
+                    for (const base of new Set([value.root, folder.uri.fsPath])) {
+                        const name = path.resolve(base, doc.path);
+                        entry.files.set(name, [...(entry.files.get(name) || []), doc.state]);
+                    }
+                }
                 entry.error = undefined;
                 const unassigned = new Set(value.documents.filter(doc => doc.path && doc.entity_id == null)
                     .map(doc => path.resolve(value.root, doc.path)));
@@ -174,6 +258,51 @@ class StatusProvider {
             error: match.error || doc.error };
     }
 
+    /**
+     * 取得済みの同期状態から、ファイルの状態を返す（取得はしない）。
+     * @param {vscode.Uri} uri
+     * @returns {string[]}
+     */
+    statesOf(uri) {
+        const states = [];
+        for (const entry of this.cache.values()) states.push(...(entry.files?.get(uri.fsPath) || []));
+        return states;
+    }
+
+    /**
+     * 開いている文書に対応する送信先を、取得済みの同期状態から探す。未取得のプロジェクトは取得を始める。
+     * loadDiff を渡すと、改名中などで記事 ID が未確定の文書は差分を照会して ID を補う。
+     * @param {vscode.Uri} file
+     * @param {{ uri: vscode.Uri } | undefined} previewFolder 差分タブで確認中のプロジェクト
+     * @param {Function} [loadDiff]
+     */
+    async documentsFor(file, previewFolder, loadDiff) {
+        const realPath = await fs.realpath(file.fsPath).catch(() => file.fsPath);
+        const folders = this.projects();
+        const matches = [];
+        const errors = [];
+        const warnings = [];
+        // docs_dir が他のワークスペースフォルダーを指す場合も、その設定の送信先を表示する。
+        const relevant = previewFolder ? folders.filter(f => f.uri.toString() === previewFolder.uri.toString()) : folders;
+        let waiting = false;
+        for (const folder of relevant) {
+            const entry = this.status(folder);
+            if (entry.error) errors.push(folder.name + ' — ' + entry.error);
+            if (!entry.value) {
+                waiting ||= entry.loading;
+                continue;
+            }
+            const { root, notices, documents } = entry.value;
+            warnings.push(...notices);
+            for (const doc of documents) {
+                if (doc.path && path.relative(realPath, path.resolve(root, doc.path)) === '') {
+                    matches.push({ folder, doc: loadDiff ? this.effectiveDocument(entry, folder, file, doc, loadDiff) : doc });
+                }
+            }
+        }
+        return { matches, errors, warnings, waiting };
+    }
+
     getTreeItem(item) { return item; }
 
     async getChildren(item) {
@@ -224,39 +353,15 @@ class CurrentDocumentProvider {
         if (item) return item.children || [];
         const active = this.activeFile();
         if (!active) return [messageItem('同期対象の Markdown を開いてください。')];
-        const { file, folder: previewFolder } = active;
-        const realPath = await fs.realpath(file.fsPath).catch(() => file.fsPath);
-        const folders = this.status.projects();
-        const matches = [];
-        const notices = [];
-        // docs_dir が他のワークスペースフォルダーを指す場合も、その設定の送信先を表示する。
-        const relevant = previewFolder ? folders.filter(f => f.uri.toString() === previewFolder.uri.toString()) : folders;
-        let waiting = false;
-        let failed = false;
-        for (const folder of relevant) {
-            const entry = this.status.status(folder);
-            if (entry.error) {
-                notices.push(messageItem(folder.name + ' — ' + entry.error));
-                failed = true;
-            }
-            if (!entry.value) {
-                waiting ||= entry.loading;
-                continue;
-            }
-            const { root, notices: warnings, documents } = entry.value;
-            notices.push(...warnings.map(notice => messageItem(notice)));
-            for (const doc of documents) {
-                if (doc.path && path.relative(realPath, path.resolve(root, doc.path)) === '') {
-                    const effective = this.status.effectiveDocument(entry, folder, file, doc, this.loadDiff);
-                    matches.push({ folder, doc: effective });
-                }
-            }
-        }
+        const { file, folder: previewFolder, preview } = active;
+        const { matches, errors, warnings, waiting } = await this.status.documentsFor(file, previewFolder, this.loadDiff);
+        const notices = [...errors, ...warnings].map(notice => messageItem(notice));
+        const failed = errors.length > 0;
         const name = treeItem(path.basename(file.fsPath));
         name.resourceUri = file;
         name.tooltip = file.fsPath;
         name.command = { command: 'vscode.open', title: '文書を開く', arguments: [file] };
-        const rows = [name, ...notices];
+        const rows = [name, ...(preview ? [previewItem(preview)] : []), ...notices];
         if (waiting) rows.push(messageItem('同期状態を取得中…'));
         if (!matches.length && !waiting && !failed) {
             rows.push(messageItem('この文書は同期対象に含まれていません。'));
@@ -275,4 +380,4 @@ class CurrentDocumentProvider {
     }
 }
 
-module.exports = { StatusProvider, CurrentDocumentProvider };
+module.exports = { StatusProvider, CurrentDocumentProvider, statusBarView, fileDecoration };

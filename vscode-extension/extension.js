@@ -2,11 +2,14 @@ const vscode = require('vscode');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
-const { StatusProvider, CurrentDocumentProvider } = require('./status');
+const { StatusProvider, CurrentDocumentProvider, statusBarView, fileDecoration } = require('./status');
 const { createRunner, checkVersion } = require('./cli');
 
 const configName = '.elab-sync.yaml';
+// 差分タブの右側（確認した送信内容）。push はこのタブから行う。
 const previewScheme = 'esync-preview';
+// 差分タブの左側や eLabFTW 側の本文。読み取り専用。
+const snapshotScheme = 'esync-snapshot';
 const output = vscode.window.createOutputChannel('esync');
 const settings = () => vscode.workspace.getConfiguration('esync');
 const run = createRunner(() => settings().get('executable', 'esync'), line => output.appendLine(line),
@@ -17,29 +20,11 @@ async function fingerprint(file) {
 }
 
 async function loadDiff(folder, file, options, token) {
-    const result = await run(folder, ['diff', '--json', ...options, '--', file.fsPath], { token });
+    const result = await run(folder, ['diff', '--json', '--bodies', ...options, '--', file.fsPath], { token });
     if (result.code !== 0 && !(result.code === 1 && result.stdout.trim())) {
         throw new Error(result.stderr.trim() || '差分を取得できませんでした。');
     }
     return { documents: JSON.parse(result.stdout).documents, warnings: result.stderr.trim() };
-}
-
-function diffText(doc, warnings) {
-    const destination = doc.entity_id == null ? '新規作成' : '#' + doc.entity_id;
-    const lines = [targetLabel(doc) + ' — ' + doc.server + ' / ' + doc.entity + ' ' + destination,
-        doc.path + ' — ' + doc.state];
-    if (doc.renamed_from) lines.push('改名前の文書: ' + doc.renamed_from);
-    if (warnings) lines.push(warnings);
-    for (const [label, changes] of [
-        ['ローカルの変更', doc.local_diff],
-        ['ローカルと eLabFTW の本文の差', doc.direct_diff],
-        ['eLabFTW 側の変更', doc.remote_changes],
-        ['eLabFTW 側の本文の差', doc.remote_diff],
-    ]) {
-        if (changes?.length) lines.push('', label, changes.join('\n'));
-    }
-    if (doc.local_changed) lines.push('画像・添付ファイルまたは設定に変更があります。');
-    return lines.join('\n') + '\n';
 }
 
 function targetLabel(doc) {
@@ -50,6 +35,11 @@ async function activate(context) {
     const events = new vscode.EventEmitter();
     const currentEvents = new vscode.EventEmitter();
     const previews = new Map();
+    /** @type {Map<string, string>} */
+    const snapshots = new Map();
+    // 差分タブの左側から、その差分タブの右側（確認した内容）を引く。左側にフォーカスがあっても push できるようにする。
+    /** @type {Map<string, string>} */
+    const owners = new Map();
     const pushing = new Set();
     let projects = [];
     let scan = 0;
@@ -59,7 +49,7 @@ async function activate(context) {
         const doc = vscode.window.activeTextEditor?.document;
         if (!doc) return;
         const entry = previews.get(doc.uri.toString());
-        if (entry) return { file: entry.file, folder: entry.folder };
+        if (entry) return { file: entry.file, folder: entry.folder, preview: entry };
         if (doc.uri.scheme === 'file' && doc.languageId === 'markdown') return { file: doc.uri };
     }, currentEvents, loadDiff);
     let checkedExecutable;
@@ -154,25 +144,61 @@ async function activate(context) {
         if (!selected) throw new Error('同期対象の文書がありません。');
         if (selected.error) throw new Error(selected.error);
         if (diffResult.documents.length > 1 && !selected.selector) throw new Error('送信先を区別できるよう設定でターゲットに一意の title を付けてください。');
-        if (!selected.preview_token) throw new Error('push --expect-preview に対応した esync CLI に更新してください。');
+        if (!selected.preview_token || selected.local_body == null) {
+            throw new Error('esync CLI を 1.5.0 以降に更新してください。');
+        }
         const options = selected.selector ? ['--target=' + selected.selector] : [];
         if (token?.isCancellationRequested) return;
-        const previewUri = vscode.Uri.from({
-            scheme: previewScheme, path: file.path + '.diff', query: String(++sequence),
-        });
-        previews.set(previewUri.toString(), { folder, file, hash, config, configHash, options,
-            selected, text: diffText(selected, warnings) });
+        const id = String(++sequence);
+        const snapshot = (/** @type {string} */ side, /** @type {string} */ text) => {
+            const uri = vscode.Uri.from({ scheme: snapshotScheme, path: file.path, query: id + '-' + side });
+            snapshots.set(uri.toString(), text);
+            return uri;
+        };
+        // 右側は保存した文書そのものではなく、確認時点の内容。push はこの内容と一致する場合だけ送信する。
+        const previewUri = vscode.Uri.from({ scheme: previewScheme, path: file.path, query: id });
+        const left = snapshot('base', selected.base_body ?? '');
+        const remote = selected.remote_body == null ? undefined
+            : { left: snapshot('remote-base', selected.remote_base_body ?? ''), right: snapshot('remote', selected.remote_body) };
+        const entry = { uri: previewUri.toString(), folder, file, hash, config, configHash, options, selected,
+            warnings, text: selected.local_body, snapshots: [left, remote?.left, remote?.right].filter(Boolean), remote };
+        previews.set(entry.uri, entry);
+        for (const uri of entry.snapshots) owners.set(uri.toString(), entry.uri);
+        const destination = selected.entity_id == null ? '新規作成' : '#' + selected.entity_id;
+        const title = path.basename(file.fsPath) + ': ' + (selected.base_label || '前回の同期') + ' ↔ 送信する内容（'
+            + targetLabel(selected) + ' ' + destination + '）';
         try {
-            const diff = await vscode.workspace.openTextDocument(previewUri);
-            await vscode.window.showTextDocument(diff, { preview: true });
+            await vscode.commands.executeCommand('vscode.diff', left, previewUri, title, { preview: true });
         } catch (error) {
-            previews.delete(previewUri.toString());
+            forget(entry);
             throw error;
+        }
+        if ((selected.base_body ?? '') === selected.local_body) {
+            vscode.window.showInformationMessage(selected.local_changed
+                ? '本文の変更はありません。画像・添付ファイルまたは設定の変更が push で送信されます。'
+                : '本文の変更はありません。');
         }
     }
 
+    function forget(entry) {
+        previews.delete(entry.uri);
+        for (const uri of entry.snapshots) {
+            snapshots.delete(uri.toString());
+            owners.delete(uri.toString());
+        }
+    }
+
+    async function showRemoteChanges(uri) {
+        const entry = previews.get(uri);
+        if (!entry?.remote) throw new Error('差分を開き直してください。');
+        // プレビュー用のタブで開くと差分タブと置き換わり、確認中の内容が破棄されるので、別のタブで開く。
+        await vscode.commands.executeCommand('vscode.diff', entry.remote.left, entry.remote.right,
+            path.basename(entry.file.fsPath) + ': 前回の同期 ↔ eLabFTW の現在の本文', { preview: false });
+    }
+
     async function push(uri) {
-        const entry = previews.get((uri || vscode.window.activeTextEditor?.document.uri)?.toString());
+        const key = (uri || vscode.window.activeTextEditor?.document.uri)?.toString();
+        const entry = previews.get(key) || previews.get(owners.get(key));
         if (!entry) throw new Error('送信する文書の差分を開き直してください。');
         const { folder, file, hash, config, configHash, options, selected } = entry;
         const project = folder.uri.toString();
@@ -215,6 +241,33 @@ async function activate(context) {
         });
     }
 
+    // 開いている Markdown の同期状態。クリックで差分を開く。
+    const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
+    statusBar.name = 'esync';
+    statusBar.command = 'esync.preview';
+    let statusUpdate = 0;
+    async function updateStatusBar() {
+        const current = ++statusUpdate;
+        const doc = vscode.window.activeTextEditor?.document;
+        const view = projects.length && doc?.uri.scheme === 'file' && doc.languageId === 'markdown'
+            ? statusBarView((await status.documentsFor(doc.uri, undefined)).matches) : undefined;
+        if (current !== statusUpdate) return;
+        if (!view) {
+            statusBar.hide();
+            return;
+        }
+        statusBar.text = view.text;
+        statusBar.tooltip = view.tooltip;
+        statusBar.show();
+    }
+
+    // Explorer のバッジ。取得済みの同期状態だけを使い、表示のために eLabFTW へ問い合わせない。
+    const decorations = {
+        changed: new vscode.EventEmitter(),
+        get onDidChangeFileDecorations() { return this.changed.event; },
+        provideFileDecoration: uri => uri.scheme === 'file' ? fileDecoration(status.statesOf(uri)) : undefined,
+    };
+
     const watcher = vscode.workspace.createFileSystemWatcher('**/' + configName);
     context.subscriptions.push(
         events, currentEvents, output, watcher,
@@ -233,15 +286,30 @@ async function activate(context) {
         vscode.workspace.registerTextDocumentContentProvider(previewScheme, {
             provideTextDocumentContent: uri => previews.get(uri.toString())?.text,
         }),
-        vscode.workspace.onDidCloseTextDocument(doc => previews.delete(doc.uri.toString())),
+        vscode.workspace.registerTextDocumentContentProvider(snapshotScheme, {
+            provideTextDocumentContent: uri => snapshots.get(uri.toString()),
+        }),
+        // 差分タブを閉じたら、その左側と eLabFTW 側の本文も破棄する。
+        vscode.workspace.onDidCloseTextDocument(doc => {
+            const entry = previews.get(doc.uri.toString());
+            if (entry) forget(entry);
+        }),
         vscode.workspace.onDidChangeWorkspaceFolders(discover),
         watcher.onDidCreate(discover), watcher.onDidDelete(discover), watcher.onDidChange(discover),
         vscode.commands.registerCommand('esync.refresh', refresh),
         command('esync.previewFromPanel', 'esync 差分を取得中', (row, token) => preview(row.resourceUri, row, token), true),
         command('esync.preview', 'esync 差分を取得中', (uri, token) => preview(uri, undefined, token), true),
         command('esync.push', 'esync 送信中', push),
+        command('esync.showRemoteChanges', 'esync 差分を表示中', showRemoteChanges),
+        statusBar,
+        vscode.window.registerFileDecorationProvider(decorations),
+        events.event(() => decorations.changed.fire(undefined)),
+        decorations.changed,
+        currentEvents.event(updateStatusBar),
     );
     await discover();
+    // テスト用。拡張ホストのテストから内部の状態を確かめる。
+    return { preview, statusBar, snapshots, previews };
 }
 
 module.exports = { activate };

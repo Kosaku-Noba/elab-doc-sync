@@ -27,7 +27,8 @@
       { "command": "esync.preview", "category": "esync", "title": "この文書の差分を確認", "icon": "$(diff)" },
       { "command": "esync.previewFromPanel", "category": "esync", "title": "この文書の差分を確認", "icon": "$(diff)" },
       { "command": "esync.push", "category": "esync", "title": "この差分の文書を push", "icon": "$(cloud-upload)", "enablement": "resourceScheme == esync-preview" },
-      { "command": "esync.refresh", "category": "esync", "title": "同期状態を更新", "icon": "$(refresh)" }
+      { "command": "esync.refresh", "category": "esync", "title": "同期状態を更新", "icon": "$(refresh)" },
+      { "command": "esync.showRemoteChanges", "category": "esync", "title": "eLabFTW 側の変更を表示", "icon": "$(cloud)" }
     ],
     "viewsContainers": {
       "activitybar": [{ "id": "esync", "title": "esync", "icon": "media/esync.svg" }]
@@ -45,6 +46,7 @@
       ],
       "commandPalette": [
         { "command": "esync.previewFromPanel", "when": "false" },
+        { "command": "esync.showRemoteChanges", "when": "false" },
         { "command": "esync.preview", "when": "esync.hasProjects && resourceLangId == markdown" },
         { "command": "esync.push", "when": "resourceScheme == esync-preview" },
         { "command": "esync.refresh", "when": "esync.hasProjects" }
