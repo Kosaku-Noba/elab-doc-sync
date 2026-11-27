@@ -197,6 +197,8 @@ class StatusProvider {
         if (entry.dirty && !entry.loading) {
             entry.dirty = false;
             entry.loading = true;
+            // 取り直している間は前回の失敗を今回の失敗として示さない。今回も失敗したら改めて記録する。
+            entry.error = undefined;
             readStatus(folder, this.run).then(value => {
                 entry.value = value;
                 // Explorer の装飾用。シンボリックリンク経由のパスでも引けるよう、両方の起点で登録する。
@@ -338,11 +340,14 @@ class StatusProvider {
             }
             const { root, notices, documents } = entry.value;
             warnings.push(...notices);
+            const found = matches.length;
             for (const doc of documents) {
                 if (doc.path && path.relative(realPath, path.resolve(root, doc.path)) === '') {
                     matches.push({ folder, stale, doc: this.effectiveDocument(entry, folder, file, doc, loadDiff) });
                 }
             }
+            // 新しく作った・改名した文書は前回の一覧にないので、取り直し中は同期対象外と決めない。
+            if (matches.length === found && entry.loading) waiting = true;
         }
         return { matches, errors, warnings, waiting };
     }

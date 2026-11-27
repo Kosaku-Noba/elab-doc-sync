@@ -92,6 +92,39 @@ async function renameCandidates(folder, file, doc, waitForUpdate, events, curren
     console.log('PASS: replaced and added rename candidates, stale first lookup, ID with fetch error');
 }
 
+// 取り直しの間は「取得中」として扱い、前回の失敗や前回の一覧だけで判断しない。
+async function refreshStates(folder, file, doc, waitForUpdate, events, currentEvents) {
+    const statuses = [];
+    const status = new StatusProvider(() => [folder], () => new Promise(resolve => statuses.push(resolve)),
+        events, currentEvents);
+    const reply = async result => {
+        const updated = waitForUpdate();
+        statuses.at(-1)(result);
+        await updated;
+    };
+    const ok = documents => ({ code: 0, stderr: '', stdout: JSON.stringify({ documents, recovery_pending: false }) });
+    await status.documentsFor(file, undefined);
+    await reply(ok([{ ...doc, file: 'other.md', path: 'other.md' }]));
+    let found = await status.documentsFor(file, undefined);
+    assert.equal(found.waiting, false);
+    assert.equal(found.matches.length, 0, 'the file is not in the first list');
+    status.invalidate();
+    found = await status.documentsFor(file, undefined);
+    assert.equal(found.waiting, true, 'a file missing from the previous list may appear after the refresh');
+
+    await reply({ code: 2, stdout: '', stderr: 'HTTP 401' });
+    found = await status.documentsFor(file, undefined);
+    assert.deepEqual(found.errors, ['Project — HTTP 401']);
+    status.invalidate();
+    found = await status.documentsFor(file, undefined);
+    assert.deepEqual(found.errors, [], 'a retry in progress does not repeat the previous failure');
+    assert.equal(found.waiting, true);
+    await reply({ code: 2, stdout: '', stderr: 'HTTP 401' });
+    assert.deepEqual((await status.documentsFor(file, undefined)).errors, ['Project — HTTP 401'],
+        'report the failure again once the retry fails');
+    console.log('PASS: refresh of a new file, retry after a failure');
+}
+
 exports.run = async function () {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'esync-panel-'));
     const events = new vscode.EventEmitter();
@@ -163,6 +196,7 @@ exports.run = async function () {
         for (const request of requests.slice(1)) respond(request, []);
         await completed;
         await renameCandidates(folder, file, doc, waitForUpdate, events, currentEvents);
+        await refreshStates(folder, file, doc, waitForUpdate, events, currentEvents);
     } finally {
         events.dispose();
         currentEvents.dispose();
