@@ -120,9 +120,9 @@ async function activate(context) {
             else {
                 const choice = await vscode.window.showQuickPick(
                     projects.map(p => ({ label: p.name, description: p.uri.fsPath, folder: p })),
-                    { placeHolder: 'この文書の同期設定があるフォルダーを選択' },
+                    { placeHolder: 'この文書の同期設定があるフォルダーを選択' }, token,
                 );
-                if (!choice) return;
+                if (!choice || token?.isCancellationRequested) return;
                 folder = choice.folder;
             }
         }

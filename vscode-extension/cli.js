@@ -46,7 +46,7 @@ function createRunner(executable, log, defaultTimeout) {
                 reject(new vscode.CancellationError());
                 return;
             }
-            // POSIX では新しいプロセスグループで起動し、止めるときは esync が起動した子孫ごと止める。
+            // POSIX では新しいプロセスグループで起動し、止めるときはそのグループに終了シグナルを送る。
             const group = process.platform !== 'win32';
             const child = spawn(executable(), args, {
                 cwd: folder.uri.fsPath,
@@ -62,6 +62,7 @@ function createRunner(executable, log, defaultTimeout) {
                 settled = true;
                 clearTimeout(timer);
                 cancel?.dispose();
+                if (stderr.trim()) log('esync ' + args.join(' ') + '\n' + stderr.trimEnd());
             };
             // 子孫がパイプを持ったまま残っても、終了を待たずに呼び出し元へ返す。
             const stop = (/** @type {Error} */ error) => {
@@ -93,7 +94,6 @@ function createRunner(executable, log, defaultTimeout) {
             child.on('close', (code, signal) => {
                 if (settled) return;
                 finish();
-                if (stderr.trim()) log('esync ' + args.join(' ') + '\n' + stderr.trimEnd());
                 if (signal) reject(new Error('esync が中断されました (' + signal + ')'));
                 else resolve({ code, stdout, stderr });
             });
