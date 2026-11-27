@@ -25,9 +25,14 @@ function helpers() {
     assert.equal(fileDecoration(['最新', 'リモート削除']).badge, 'D', 'a deleted article is not hidden by another target');
     assert.match(statusBarView([doc('最新'), doc('リモート削除')]).text, /trash.*リモート削除/);
     assert.equal(fileDecoration(['最新', '新しい状態']).badge, '?', 'an unknown state comes before 最新');
-    const failed = statusBarView([doc('最新')], ['Lab — HTTP 401']);
+    const stale = state => ({ ...doc(state), stale: true });
+    const failed = statusBarView([stale('最新')], ['Lab — HTTP 401']);
     assert.match(failed.text, /error.*取得できません（前回: 最新）/, 'do not present a stale state as current');
-    assert.match(failed.tooltip, /HTTP 401[\s\S]*前回取得した状態/);
+    assert.match(failed.tooltip, /HTTP 401[\s\S]*最新（前回取得）/);
+    const partial = statusBarView([doc('競合'), stale('最新')], ['Other — 設定を読み込めません']);
+    assert.match(partial.text, /warning\) esync: 競合（送信先 2 件） \$\(warning\)$/,
+        'a state fetched now is not shown as stale because another project failed');
+    assert.match(partial.tooltip, /最新（前回取得）[\s\S]*設定を読み込めません/);
     assert.match(statusBarView([], ['Lab — HTTP 401']).text, /取得できません$/);
 }
 

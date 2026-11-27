@@ -52,14 +52,26 @@ async function renameCandidates(folder, file, doc, waitForUpdate, events, curren
     assert.deepEqual(status.statesOf(file), ['リネーム予定']);
     assert.equal((await status.documentsFor(file, undefined)).matches[0].doc.entity_id, 42);
     assert.equal(lookups.length, 2);
+    // 保存などで同期状態を取り直したら、再照会が終わるまで改名先の記事を示さない。
+    status.invalidate();
+    await status.documentsFor(file, undefined);
+    let refreshed = waitForUpdate();
+    respond([doc, candidate(42)]);
+    await refreshed;
+    assert.deepEqual(status.statesOf(file), ['未追跡'], 'do not reuse a lookup that needs re-checking');
+    assert.equal((await status.documentsFor(file, undefined)).matches[0].doc.entity_id, null);
+    assert.equal(lookups.length, 2, 'the status bar and badges do not start lookups');
+    await idOf();
+    await finishLookup(2, renamed(42));
+    assert.deepEqual(status.statesOf(file), ['リネーム予定']);
 
     await refreshWith([doc, candidate(42)]);
     assert.equal(await idOf(), '#42', 'keep the confirmed ID while the same candidates are re-checked');
-    await finishLookup(2, renamed(42));
+    await finishLookup(3, renamed(42));
     // 候補が増えると改名先が曖昧になりうるので、確認済みの ID も表示しない。
     await refreshWith([doc, candidate(42), candidate(17)]);
     assert.equal(await idOf(), '確認中…', 'drop the ID when another candidate appears');
-    await finishLookup(3, renamed(42, { state: undefined, error: 'HTTP 403' }));
+    await finishLookup(4, renamed(42, { state: undefined, error: 'HTTP 403' }));
     const rows = await current.getChildren();
     assert.equal(rows.find(r => r.label === '記事 ID').description, '#42', 'show the ID even if fetching it failed');
     assert.ok(rows.find(r => r.label === 'HTTP 403'), 'keep the fetch error in its own row');
@@ -68,12 +80,12 @@ async function renameCandidates(folder, file, doc, waitForUpdate, events, curren
     // 照会中に最後の候補が消えると、照会の完了を待たずに「未割り当て」を表示する。
     await refreshWith([doc, candidate(42)]);
     assert.equal(await idOf(), '確認中…', 'the candidates shrank from #17 and #42 to #42');
-    assert.equal(lookups.length, 5);
+    assert.equal(lookups.length, 6);
     await refreshWith([doc]);
     assert.equal(await idOf(), '未割り当て', 'show 未割り当て as soon as the last rename candidate is gone');
-    await finishLookup(4, renamed(42));
+    await finishLookup(5, renamed(42));
     assert.equal(await idOf(), '未割り当て', 'ignore the lookup started while a candidate existed');
-    assert.equal(lookups.length, 5, 'do not look up a document without rename candidates');
+    assert.equal(lookups.length, 6, 'do not look up a document without rename candidates');
     console.log('PASS: replaced and added rename candidates, stale first lookup, ID with fetch error');
 }
 

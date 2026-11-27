@@ -134,26 +134,34 @@ function leadingState(states) {
 
 /**
  * ステータスバーの表示。送信先がなく、取得の失敗もなければ undefined。
- * @param {{ doc: any }[]} matches
+ * 今回取得できた送信先の状態を優先し、取得に失敗したプロジェクトの結果は「前回」として区別する。
+ * @param {{ doc: any, stale?: boolean }[]} matches
  * @param {string[]} [errors] 同期状態を取得できなかったプロジェクト
  */
 function statusBarView(matches, errors = []) {
-    const lead = leadingState(matches.map(({ doc }) => doc.state));
-    if (!lead && !errors.length) return;
-    const lines = matches.map(({ doc }) => doc.target + ' ' + (doc.entity_id == null ? '未割り当て' : '#' + doc.entity_id)
-        + ' — ' + doc.state);
-    if (errors.length) {
+    const line = ({ doc, stale }) => doc.target + ' ' + (doc.entity_id == null ? '未割り当て' : '#' + doc.entity_id)
+        + ' — ' + doc.state + (stale ? '（前回取得）' : '');
+    const fresh = matches.filter(match => !match.stale);
+    const lead = leadingState(fresh.map(({ doc }) => doc.state));
+    const failure = errors.length ? ['同期状態を取得できなかったプロジェクト:', ...errors] : [];
+    if (!lead) {
+        if (!errors.length) return;
+        const previous = leadingState(matches.map(({ doc }) => doc.state));
         return {
-            text: '$(error) esync: 同期状態を取得できません' + (lead ? '（前回: ' + lead.state + '）' : ''),
-            tooltip: [...errors, ...(lines.length ? ['前回取得した状態:', ...lines] : [])].join('\n'),
+            text: '$(error) esync: 同期状態を取得できません' + (previous ? '（前回: ' + previous.state + '）' : ''),
+            tooltip: [...failure, ...matches.map(line)].join('\n'),
         };
     }
     const more = matches.length > 1 ? '（送信先 ' + matches.length + ' 件）' : '';
-    return { text: '$(' + lead.icon + ') esync: ' + lead.state + more, tooltip: lines.join('\n') + '\nクリックで差分を確認' };
+    const partial = errors.length ? ' $(warning)' : '';
+    return {
+        text: '$(' + lead.icon + ') esync: ' + lead.state + more + partial,
+        tooltip: [...matches.map(line), ...failure, 'クリックで差分を確認'].join('\n'),
+    };
 }
 
 /**
- * Explorer のバッジ。最新や未知の状態には付けない。
+ * Explorer のバッジ。代表の状態が「最新」なら付けない。未知の状態が代表なら ? を付ける。
  * @param {string[]} states
  * @returns {vscode.FileDecoration | undefined}
  */
@@ -235,17 +243,19 @@ class StatusProvider {
     // 旧名の追跡記録や未完了の作成がある場合、実際の送信先は diff の判定に従う。
     effectiveDocument(entry, folder, file, doc, loadDiff) {
         if (doc.entity_id != null) return doc;
+        const key = path.resolve(entry.value.root, doc.path);
+        const details = entry.details;
+        // loadDiff がなければ照会せず、最新の同期状態に対して照会し終えた結果だけを使う。
+        // 再照会が必要な間（dirty）や照会中は、改名判定が変わりうるので status の結果のまま返す。
+        if (!loadDiff) {
+            const detail = details.get(key);
+            if (!detail || detail.dirty || detail.loading) return doc;
+            const resolved = this.resolveDocument(detail, doc);
+            return resolved.idMessage ? doc : resolved;
+        }
         const missing = entry.value.documents.some(other => !other.path && other.entity_id != null
             && other.target === doc.target && other.entity === doc.entity);
         if (!missing && doc.state !== '同期未完了') return doc;
-        const key = path.resolve(entry.value.root, doc.path);
-        const details = entry.details;
-        // loadDiff がなければ照会せず、照会済みの結果だけを使う。未確定なら status の結果のまま返す。
-        if (!loadDiff) {
-            const detail = details.get(key);
-            const resolved = detail && this.resolveDocument(detail, doc);
-            return resolved && !resolved.idMessage ? resolved : doc;
-        }
         if (!details.has(key)) details.set(key, { dirty: true, generation: 0 });
         const detail = details.get(key);
         if (detail.dirty && !detail.loading) {
@@ -314,7 +324,8 @@ class StatusProvider {
         let waiting = false;
         for (const folder of relevant) {
             const entry = this.status(folder);
-            if (entry.error) errors.push(folder.name + ' — ' + entry.error);
+            const stale = Boolean(entry.error);
+            if (stale) errors.push(folder.name + ' — ' + entry.error);
             if (!entry.value) {
                 waiting ||= entry.loading;
                 continue;
@@ -323,7 +334,7 @@ class StatusProvider {
             warnings.push(...notices);
             for (const doc of documents) {
                 if (doc.path && path.relative(realPath, path.resolve(root, doc.path)) === '') {
-                    matches.push({ folder, doc: this.effectiveDocument(entry, folder, file, doc, loadDiff) });
+                    matches.push({ folder, stale, doc: this.effectiveDocument(entry, folder, file, doc, loadDiff) });
                 }
             }
         }
