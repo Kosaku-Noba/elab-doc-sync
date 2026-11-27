@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main, develop]
 
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ${{ matrix.os }}
@@ -38,3 +44,41 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: xvfb-run -a npm test
+      - name: Package extension
+        run: SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" npm run package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: esync-vsix
+          path: vscode-extension/dist/*.vsix
+          if-no-files-found: error
+
+  release-vsix:
+    if: github.event_name == 'release'
+    needs: [test, vscode-extension]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: esync-vsix
+          path: dist
+      - name: Attach VSIX to the published release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_ID: ${{ github.event.release.id }}
+        run: |
+          files=(dist/*.vsix)
+          [[ ${#files[@]} -eq 1 && -f "${files[0]}" ]]
+          file=${files[0]}
+          digest=$(sha256sum "$file")
+          existing=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets" |
+            jq -r --arg name "${file##*/}" '.[] | select(.name == $name) | .digest // "unknown"')
+          if [[ -z "$existing" ]]; then
+            gh release upload "$RELEASE_TAG" "$file" --repo "$GITHUB_REPOSITORY"
+          elif [[ "$existing" != "sha256:${digest%% *}" ]]; then
+            echo "::error::同名の Release 添付ファイルの内容が異なります。"
+            exit 1
+          fi

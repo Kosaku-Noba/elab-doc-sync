@@ -51,9 +51,11 @@ Node.js 22 以降が必要です（テストに使う `@vscode/test-electron` �
 
 ## VSIX の作成
 
-このディレクトリで次を実行します。
+Node.js 22 以降で、このディレクトリから実行します。
 
 ```sh
-mkdir -p dist
-npx --yes @vscode/vsce package --no-dependencies --out dist/esync-0.3.0.vsix
+npm ci
+npm run package
 ```
+
+パッケージは `dist/esync-<拡張の版>.vsix` に生成されます。PR では GitHub Actions の Tests 実行画面から成果物 `esync-vsix` をダウンロードし、ZIP を展開してインストールできます。GitHub Release を公開すると、そのタグのコードでテストとパッケージ作成が実行され、成功後に同じ VSIX が Release の Assets に追加されます。

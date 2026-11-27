@@ -15,11 +15,17 @@
   },
   "activationEvents": ["onStartupFinished"],
   "files": ["extension.js", "status.js", "articles.js", "cli.js", "media/esync.svg", "README.md"],
-  "scripts": { "check": "tsc -p jsconfig.json", "test": "node test/run.cjs" },
+  "scripts": {
+    "check": "tsc -p jsconfig.json",
+    "test": "node test/run.cjs",
+    "package": "vsce package --no-dependencies --out dist/",
+    "prepackage": "node -e \"require('node:fs').mkdirSync('dist', { recursive: true })\""
+  },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "1.85.0",
     "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "4.1.1",
     "typescript": "^5.9.3"
   },
   "contributes": {
