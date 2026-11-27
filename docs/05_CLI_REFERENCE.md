@@ -48,7 +48,7 @@ esync push [ファイル・ディレクトリ・glob ...] [--regex 式] [--dry-r
 | `--regex` | ファイル名に部分一致する文書だけを push（`esync push` のみ。複数指定可） |
 | `--dry-run` | 実際に送信せず変更予定を表示 |
 | `--force` | リモート本文を退避して強制送信。接続・取得エラーは無視しない |
-| `--expect-id`・`--expect-server`・`--expect-entity` | 書き換える直前に、指定した1文書の紐付けが確認時の記事（ID・認証情報を除いた接続先 URL・種別）と同じかを照合する。異なれば何も送信せず終了コード 2。`--expect-id` は必須で、`--expect-server`・`--expect-entity` は省略できる（省略したものは照合しない）。`--expect-id` なしで `--expect-server`・`--expect-entity` を指定すると、何もせず終了コード 2。`--expect-server` には `diff --json` が返す、認証情報を除いた `server` を渡す。照合の条件は push・pull・mv で共通。`--force` と併用できる（VS Code 拡張が上書きの前に使う）。文書の選択結果が1つのターゲットの1文書でなければ終了コード 2。同じファイルが複数のターゲットに一致する場合は、`diff --json` の `selector` を `--target` に指定して絞る（例: `esync push --force --target notes --expect-id 42 --expect-server https://elab.example.com --expect-entity items -- docs/a.md`） |
+| `--expect-id`・`--expect-server`・`--expect-entity` | 書き換える直前に、指定した1文書の紐付けが確認時の記事（ID・認証情報を除いた接続先 URL・種別）と同じかを照合する。異なれば何も送信せず終了コード 2。記事を照合する場合は `--expect-id` が必須で、`--expect-server`・`--expect-entity` は省略できる（省略したものは照合しない。照合しない通常の push では3つとも指定しない）。`--expect-id` なしで `--expect-server`・`--expect-entity` を指定すると、何もせず終了コード 2。`--expect-server` には `diff --json` が返す、認証情報を除いた `server` を渡す。照合の条件は push・pull・mv で共通。`--force` と併用できる（VS Code 拡張が上書きの前に使う）。文書の選択結果が1つのターゲットの1文書でなければ終了コード 2。同じファイルが複数のターゲットに一致する場合は、`diff --json` の `selector` を `--target` に指定して絞る（例: `esync push --force --target notes --expect-id 42 --expect-server https://elab.example.com --expect-entity items -- docs/a.md`） |
 | `-t`, `--target` | 特定ターゲットのみ実行 |
 | `--prune-attachments` | attachments_dir が存在する場合、attachments_pattern に一致し、同名のローカル添付も本文からの参照もない非画像添付を削除 |
 

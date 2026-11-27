@@ -290,10 +290,12 @@ async function activate(context) {
         // 確認した記事（接続先・種別・ID）を CLI に渡し、書き込む直前に紐付けが変わっていないかを照合させる。
         const options = [...(current.selector ? ['--target=' + current.selector] : []), '--expect-id=' + current.entity_id,
             '--expect-server=' + current.server, '--expect-entity=' + current.entity];
+        // 確認ダイアログに出す記事の表記。別サーバーに同じ番号の記事があっても見分けられるようにする。
+        const article = '#' + current.entity_id + '（' + current.server + ' の' + (current.entity === 'experiments' ? '実験ノート' : 'リソース') + '）';
         if (current.renamed_from) {
             // 改名した文書は旧名で紐付いている。紐付けを先に移すと、記事 ID の照合と pull の取り込み先が改名後のファイルになる。
-            if (!await dialogs.confirm(name + ' は ' + current.renamed_from + ' から改名されています。続ける前に、記事 #'
-                    + current.entity_id + ' との紐付けを ' + name + ' に移します（esync mv）。この後の確認で取り消しても、'
+            if (!await dialogs.confirm(name + ' は ' + current.renamed_from + ' から改名されています。続ける前に、記事 '
+                    + article + ' との紐付けを ' + name + ' に移します（esync mv）。この後の確認で取り消しても、'
                     + '紐付けは ' + name + ' に移ったままです。', '紐付けを移して続ける')) return;
             const from = path.join(path.dirname(file.fsPath), current.renamed_from);
             const moved = await run(folder, ['mv', ...options, '--', from, file.fsPath], { timeout: 0 });
@@ -301,8 +303,6 @@ async function activate(context) {
             if (moved.code !== 0) throw new Error('紐付けを移せませんでした。出力「esync」を確認してください。');
             refresh();
         }
-        // 確認ダイアログに出す記事の表記。別サーバーに同じ番号の記事があっても見分けられるようにする。
-        const article = '#' + current.entity_id + '（' + current.server + ' の' + (current.entity === 'experiments' ? '実験ノート' : 'リソース') + '）';
         return { folder, file, name, options, entityId: current.entity_id, article };
     }
 

@@ -149,6 +149,16 @@ def profile_connection(profile: "ProfileConfig") -> tuple[str, str, bool]:
     return profile.url, profile.api_key, profile.verify_ssl
 
 
+def _valid_server_url(url) -> bool:
+    """http(s) のスキームとホストを持つ URL か。"""
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(str(url).strip())
+        return parts.scheme in ("http", "https") and bool(parts.hostname)
+    except ValueError:
+        return False
+
+
 def _parse_profiles(raw: dict) -> dict[str, ProfileConfig]:
     """YAML の profiles セクションをパースする。"""
     profiles_raw = raw.get("profiles", {})
@@ -230,6 +240,12 @@ def read_config(config_path: Path) -> Config:
                 team=profiles["default"].team,
                 api_key_env=profiles["default"].api_key_env,
             )
+
+    # 接続先 URL の形を確かめる。不正な URL は認証情報ごとエラー文や JSON に出かねないので、値は表示しない。
+    for profile in profiles.values():
+        if profile.url and not _valid_server_url(profile.url):
+            _abort(f"プロファイル '{profile.name}' の url が不正です\n"
+                   "→ https://elab.example.com のように、http:// または https:// から始まる URL を指定してください")
 
     # url / api_key のバリデーション（default プロファイルベース）
     default_profile = profiles.get("default")

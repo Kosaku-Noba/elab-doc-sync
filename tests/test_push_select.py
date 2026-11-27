@@ -475,7 +475,7 @@ def test_expectations_need_an_article_id_and_hide_the_expected_server(project, c
     before = json.dumps(remote, sort_keys=True)
     assert push('--force', '--expect-server', 'https://other.test', 'docs/a.md') == 2, '--expect-server alone is refused'
     code, _ = pull_json('--force', '--expect-entity', 'experiments', '--', 'docs/a.md', capsys=capsys)
-    assert code == 2
+    assert code == 2 and (root / 'docs/a.md').read_text(encoding='utf-8') == '# local', 'a refused pull keeps local edits'
     (root / 'docs/a.md').rename(root / 'docs/moved.md')
     with patch.object(sys, 'argv', ['esync', 'mv', '--expect-entity', 'experiments', 'docs/a.md', 'docs/moved.md']):
         with pytest.raises(SystemExit) as exited:
@@ -487,3 +487,21 @@ def test_expectations_need_an_article_id_and_hide_the_expected_server(project, c
     capsys.readouterr()
     assert push('--force', '--expect-id', str(eid), '--expect-server', 'https://user:secret@other.test', 'docs/a.md') == 2
     assert 'secret' not in capsys.readouterr().err
+
+
+def test_malformed_server_url_is_rejected_without_showing_it(project, capsys):
+    root, remote = project
+    cfg = root / '.elab-sync.yaml'
+    data = yaml.safe_load(cfg.read_text(encoding='utf-8'))
+    data['elabftw']['url'] = 'https:/user:pa ss@example.test'
+    cfg.write_text(yaml.safe_dump(data), encoding='utf-8')
+    capsys.readouterr()
+    with patch.object(sys, 'argv', ['esync', 'pull', '--json', '--dry-run', '--id', '1', '--entity', 'items']):
+        try:
+            code = main()
+        except SystemExit as exc:
+            code = exc.code
+    out, err = capsys.readouterr()
+    assert code not in (0, None)
+    assert 'pa ss' not in out + err and 'user' not in out + err
+    assert 'url が不正です' in out + err
