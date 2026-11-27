@@ -42,6 +42,7 @@ async function renameCandidates(folder, file, doc, waitForUpdate, events, curren
     // 初回の照会中に候補が #17 から #42 に変わると、その照会結果は表示しない。
     await refreshWith([doc, candidate(42)]);
     assert.equal(await idOf(), '確認中…');
+    assert.equal(lookups.length, 1, 'do not start a second lookup while the stale one is in flight');
     await finishLookup(0, renamed(17));
     assert.equal(await idOf(), '確認中…', 'ignore a lookup started before the candidates changed');
     assert.equal(lookups.length, 2, 'look up again only after the stale request finishes');

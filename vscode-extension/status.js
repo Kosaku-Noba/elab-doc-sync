@@ -24,7 +24,7 @@ async function readStatus(folder, run) {
     return { documents, notices, root: await fs.realpath(folder.uri.fsPath) };
 }
 
-// 改名元の候補（ローカルにない記事）の集合。変わると改名先の判定も変わりうる。
+// 改名元の候補（ローカルにない記事）の集合。変わると、文書が引き継ぐ記事 ID も変わりうる。
 function candidateSet(documents) {
     return JSON.stringify(documents.filter(doc => !doc.path && doc.entity_id != null)
         .map(doc => [doc.target, doc.entity, doc.entity_id]).sort());
