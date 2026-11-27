@@ -295,6 +295,12 @@ esync relate list --from exp/2026-10-20.md
 
 既にあるリンクの追加・ないリンクの削除・文書自身へのリンクは、その旨を表示して飛ばします。`remove` はリンクだけを外し、リンク先の記事は削除しません。`add` / `remove` に `--dry-run` を付けると、既存のリンクを読んで追加・削除の予定だけを表示します。push 時に自動でリンクを張る設定は [設定ファイル仕様](04_CONFIGURATION.md) の `links` を参照してください。
 
+## 記事操作の JSON 出力
+
+`tag`・`relate`・`metadata` はサブコマンドの前に `--json` を指定すると処理結果を JSON で返します。例えば `esync tag --target=週報 --json list --entity=experiments --id=42` のタグ一覧は `entities[0].tags` に入ります。`status --json` や `diff --json` が返す記事の `url` を `--expect-article-url` に渡すと、指定したターゲット・種別・ID が示す URL を実行時に照合します。前回同期時の接続先が確認できない記事の結果には `url` が入りません。
+
+`esync new --json --list-targets` は空の文書ディレクトリも含めて作成先候補を返します。一意に指定できるターゲットには `selector` が入ります。`new --json --target=<selector> --list` でテンプレートを取得し、`--template-id` と `--title` で作成すると、結果の `path` でファイルを開けます。
+
 ## tag — タグ操作
 
 ```bash
@@ -327,6 +333,8 @@ esync metadata -t "週報" set key1=value1 key2=value2 --id 42
 ```
 
 `--id` を省略すると、各ターゲット（`-t` で限定可）の同期済みの全文書が対象です。`--id` は `--entity` を取らず、対象の各ターゲットの `entity` の記事として扱います。`-t` を省略すると、全ターゲットそれぞれの種別の #42（items と experiments のターゲットがあれば両方）を変更するため、`-t` でターゲットを 1 つに絞ってください（`-t` は `set` などの前に書く）。`set` は既存のメタデータ（JSON）に `key=value` を追記・上書きします。既存のメタデータが読めない場合は警告を出して上書きします。各ターゲットの接続プロファイルで送信します。
+
+`--expect-article-url` を指定した更新では、既存の JSON が読めない場合、書き戻すと精度が失われる小数を含む場合、オブジェクト・配列を文字列で上書きする場合は中止します。拡張は `esync metadata --target=週報 --expect-article-url="https://elab.example.com/experiments.php?mode=view&id=42" set --id=42 --edit-stdin` に `{"key":"担当","value":"B","previous_token":"取得したトークン"}` を標準入力で渡します。`previous_token` には同じ `--target`・`--expect-article-url` を指定した `esync metadata --json … get --id=42` が返した `entities[0].fields[]` の該当キーの `token` を指定します。表示と編集欄の初期値には同じ要素の `text` を使います。入力の `key` は空でない文字列、`value` は文字列です。新しいキーを追加する場合は `previous_token` を省略します。既存の JSON が読めない場合や小数の精度を保てない場合は、拡張のメタデータ一覧の取得も中止します。更新前に既存値を読み直し、編集開始時と異なれば中止します。メタデータ全体の再取得と更新は別の API 要求で、この2つの要求の間に他の利用者が加えた変更は検出できません。
 
 ## entity-status — ステータス操作
 
@@ -445,6 +453,8 @@ esync new --template-id 3 [--title "名前"] [-o path/to/file.md] [-t "ターゲ
 ```
 
 eLabFTW の実験テンプレート（`experiments_templates`）の本文を Markdown に変換して保存します。`-o` を省略すると、`-t`（`title` または `docs_dir`）に一致するターゲット（`-t` 省略時は最初のターゲット）の `docs_dir` にタイトル名のファイルを作ります。テンプレートは `category` と同じく `-t` で選んだ接続先から取得します。既存ファイルは `--force` なしでは上書きしません。
+
+同期対象のファイルを新規作成するときは、`-o` で指定した場合も、作成先が属する各ターゲットを調べます。同名の文書、紐付け（旧形式を含む）、または作成記録があれば、別の記事と誤って同期することを防ぐため作成を中止します。別のファイル名を指定してください。
 
 ## log — 同期ログ
 

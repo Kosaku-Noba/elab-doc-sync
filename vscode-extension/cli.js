@@ -22,7 +22,7 @@ function compareVersions(a, b) {
 
 /**
  * @typedef {{ code: number | null, stdout: string, stderr: string }} RunResult
- * @typedef {{ token?: vscode.CancellationToken, timeout?: number }} RunOptions
+ * @typedef {{ token?: vscode.CancellationToken, timeout?: number, input?: string }} RunOptions
  */
 
 /**
@@ -51,7 +51,7 @@ function createRunner(executable, log, defaultTimeout) {
             const child = spawn(executable(), args, {
                 cwd: folder.uri.fsPath,
                 env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
-                stdio: ['ignore', 'pipe', 'pipe'],
+                stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
                 windowsHide: true,
                 detached: group,
             });
@@ -62,7 +62,10 @@ function createRunner(executable, log, defaultTimeout) {
                 settled = true;
                 clearTimeout(timer);
                 cancel?.dispose();
-                if (stderr.trim()) log('esync ' + args.join(' ') + '\n' + stderr.trimEnd());
+                if (stderr.trim()) {
+                    const command = ['metadata', 'tag', 'new'].includes(args[0]) ? args[0] : args.join(' ');
+                    log('esync ' + command + '\n' + stderr.trimEnd());
+                }
             };
             // 子孫がパイプを持ったまま残っても、終了を待たずに呼び出し元へ返す。
             const stop = (/** @type {Error} */ error) => {
@@ -91,6 +94,12 @@ function createRunner(executable, log, defaultTimeout) {
                     ? new Error('esync を起動できません。設定 esync.executable で実行ファイルを指定してください。')
                     : error);
             });
+            if (options.input !== undefined) {
+                child.stdin.on('error', (/** @type {NodeJS.ErrnoException} */ error) => {
+                    if (error.code !== 'EPIPE') stop(error);
+                });
+                child.stdin.end(options.input, 'utf8');
+            }
             child.on('close', (code, signal) => {
                 if (settled) return;
                 finish();

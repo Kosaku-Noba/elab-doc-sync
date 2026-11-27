@@ -236,3 +236,106 @@ def test_run_verify_does_not_migrate_legacy_mapping(tmp_path):
         res = cli.run_verify(Namespace(config=str(cfg), target=None))
     assert sorted(str(p) for p in tmp_path.rglob("*")) == before
     assert res.data["documents"][0]["entity_id"] == 42
+
+
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_article_commands_scope_to_selected_url(MockClient, tmp_path, capsys, monkeypatch):
+    from io import StringIO
+    cfg = _project(tmp_path)
+    parser = cli.build_parser()
+    client = MockClient.return_value
+    client.get_tags.return_value = [{"tag": "会議"}]
+    url = "https://elab.example.com/database.php?mode=view&id=42"
+    def args(command, action, *rest):
+        return parser.parse_args([command, "--config", str(cfg), "--json", "--target=T",
+                                  "--expect-article-url=" + url, action, "--id=42", *rest])
+    client.base_url = "https://elab.example.com"
+    assert cli.cmd_tag(args("tag", "list", "--entity=items")) == 0
+    assert json.loads(capsys.readouterr().out)["entities"][0]["tags"] == ["会議"]
+    invalid = args("relate", "add", "--entity=items", "--to=items", "--", "17")
+    invalid.expect_article_url = url.replace("elab.", "other.")
+    with pytest.raises(ValueError, match="送信先"):
+        cli.cmd_relate(invalid)
+    client.add_link.assert_not_called()
+    client.get_metadata_raw.return_value = "{}"
+    assert cli.cmd_metadata(args("metadata", "set", "--", "key=value")) == 0
+    client.update_metadata.assert_called_once_with("items", 42, {"key": "value"})
+    client.get_metadata_raw.return_value = "invalid"
+    assert cli.cmd_metadata(args("metadata", "set", "--", "key=value")) == 1
+    assert client.update_metadata.call_count == 1
+    client.get_metadata_raw.return_value = '{"precise":0.1234567890123456789}'
+    assert cli.cmd_metadata(args("metadata", "get")) == 1
+    assert cli.cmd_metadata(args("metadata", "set", "--", "other=value")) == 1
+    assert client.update_metadata.call_count == 1
+    client.get_metadata_raw.return_value = '{"large":9007199254740993}'
+    assert cli.cmd_metadata(args("metadata", "get")) == 0
+    # パース済み数値を JS へ往復させず、CLI の表示文字列とトークンをそのまま使う。
+    entry = json.loads(capsys.readouterr().out.splitlines()[-1])["entities"][0]
+    field = entry["fields"][0]
+    assert field["text"] == "9007199254740993"
+    client.get_metadata_raw.return_value = '{"large":9007199254740993}'
+    guarded = args("metadata", "set", "--edit-stdin")
+    monkeypatch.setattr("sys.stdin", StringIO(json.dumps({"key": "large", "value": field["text"], "previous_token": field["token"]})))
+    assert cli.cmd_metadata(guarded) == 0
+    client.update_metadata.assert_called_with("items", 42, {"large": "9007199254740993"})
+    client.update_metadata.reset_mock()
+    client.get_metadata_raw.return_value = '{"key":"newer","other":3}'
+    guarded = args("metadata", "set", "--edit-stdin")
+    monkeypatch.setattr("sys.stdin", StringIO(json.dumps({"key": "key", "value": "edited", "previous_token": "0" * 64})))
+    assert cli.cmd_metadata(guarded) == 1 and client.update_metadata.call_count == 0
+    monkeypatch.setattr("sys.stdin", StringIO(json.dumps({"key": "key", "value": "edited", "previous_token": cli._metadata_value_token("newer")})))
+    assert cli.cmd_metadata(guarded) == 0
+    client.update_metadata.assert_called_with("items", 42, {"key":"edited","other":3})
+
+
+def test_new_targets_includes_empty_directory(tmp_path, capsys):
+    cfg = _project(tmp_path)
+    args = cli.build_parser().parse_args(["new", "--config", str(cfg), "--list-targets", "--json"])
+    assert cli.cmd_new(args) == 0
+    assert json.loads(capsys.readouterr().out)["targets"] == [{"target": "T", "docs_dir": "docs/", "selector": "T", "pattern": "*.md"}]
+
+
+@pytest.mark.parametrize("output_options", [[], ["--json"], ["-o", "docs/../docs/old.md"]])
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_new_document_preserves_legacy_tracking(MockClient, tmp_path, output_options, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    cfg = _project(tmp_path)
+    data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    data["targets"][0]["id_file"] = ".target-ids/docs.id"
+    cfg.write_text(yaml.safe_dump(data), encoding="utf-8")
+    legacy = tmp_path / ".elab-sync-ids/mapping.json"
+    legacy.parent.mkdir()
+    legacy.write_text('{"old.md": 42}')
+    MockClient.return_value._req.return_value.json.return_value = {"title": "old", "body": ""}
+    args = cli.build_parser().parse_args(["new", *output_options, "--target=T", "--config", str(cfg), "--template-id=7"])
+    result = cli.run_new(args)
+    assert result.exit_code == 1 and "紐付け" in result.warnings[0]
+    assert not (tmp_path / "docs/old.md").exists()
+    assert not (tmp_path / ".target-ids/mapping.json").exists()
+
+
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_new_with_resolved_target_directory(MockClient, tmp_path):
+    cfg = _project(tmp_path)
+    data = yaml.safe_load(cfg.read_text())
+    data["targets"][0].update(docs_dir="docs/../notes", pattern="report*.md")
+    cfg.write_text(yaml.safe_dump(data))
+    MockClient.return_value._req.return_value.json.return_value = {"title": "report", "body": ""}
+    destination = tmp_path / "notes/report.md"
+    args = cli.build_parser().parse_args(["new", "--json", "--target=T", "--config", str(cfg),
+                                          "--template-id=7", "--output", str(destination)])
+    assert cli.run_new(args).exit_code == 0
+    assert destination.is_file()
+
+
+def test_structured_metadata_preserves_precision_until_guarded_edit():
+    from requests import Response
+    from elab_doc_sync.client import ELabFTWClient
+
+    client = ELabFTWClient("https://elab.example.com", "test")
+    response = Response()
+    response._content = b'{"metadata":{"nested":[0.1234567890123456789]}}'
+    with patch.object(client, "_req", return_value=response):
+        raw = client.get_metadata_raw("items", 42, exact_numbers=True)
+    with pytest.raises(ValueError, match="精度"):
+        cli._editable_metadata(raw)

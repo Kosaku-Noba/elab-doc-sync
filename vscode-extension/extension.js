@@ -3,6 +3,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { StatusProvider, CurrentDocumentProvider, statusBarView, fileDecoration } = require('./status');
+const { articleActions, articleUri } = require('./articles');
 const { createRunner, checkVersion } = require('./cli');
 
 const configName = '.elab-sync.yaml';
@@ -51,7 +52,7 @@ async function activate(context) {
         const entry = previews.get(doc.uri.toString());
         if (entry) return { file: entry.file, folder: entry.folder, preview: entry };
         if (doc.uri.scheme === 'file' && doc.languageId === 'markdown') return { file: doc.uri };
-    }, currentEvents, loadDiff);
+    }, currentEvents, loadDiff, row => articles.children(row));
     let checkedExecutable;
 
     function refresh() {
@@ -208,6 +209,8 @@ async function activate(context) {
         confirm: async (/** @type {string} */ message, /** @type {string} */ button) =>
             await vscode.window.showWarningMessage(message, { modal: true }, button) === button,
     };
+
+    const articles = articleActions(run, () => projects, refresh, output, dialogs);
 
     // 行・URI・開いている文書から、操作する文書とその送信先を決める。
     async function documentTarget(arg) {
@@ -501,6 +504,11 @@ async function activate(context) {
         command('esync.pull', 'esync 取り込み中', pull),
         command('esync.adoptLocal', 'esync 上書き中', adoptLocal),
         command('esync.adoptRemote', 'esync 上書き中', adoptRemote),
+        command('esync.openArticle', '記事を開く', row => vscode.env.openExternal(articleUri(row.doc))),
+        command('esync.editArticle', '記事を更新', row => articles.edit(row)),
+        command('esync.removeArticleEntry', '記事を更新', row => articles.edit(row, true)),
+        command('esync.newDocument', '新規文書を作成', articles.newDocument),
+        command('esync.log', '同期ログを表示', articles.log),
         command('esync.showBackups', 'esync バックアップを確認中', showBackups),
         statusBar,
         vscode.window.registerFileDecorationProvider(decorations),

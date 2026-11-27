@@ -4,12 +4,14 @@ import argparse
 import contextlib
 import difflib
 import glob
+import hashlib
 import re
 import json
 import os
 import shutil
 import sys
 from dataclasses import asdict, replace
+from decimal import Decimal
 from fnmatch import fnmatch
 from functools import lru_cache
 from unicodedata import normalize
@@ -21,9 +23,10 @@ from markdownify import markdownify as html_to_md
 from .safety import hold_document, atomic_write, write_json, safe_path, snapshot, local_transaction, project_command, restore, BACKUPS, RECOVERY
 from .config import TargetConfig
 from .client import ELabFTWClient, public_url, server_id, upload_sha256
-from .config import read_config as load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, append_target_to_yaml, profile_connection, _parse_api_key_env, _valid_server_url
+from .config import read_config as load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, profile_for_target, append_target_to_yaml, profile_connection, _parse_api_key_env, _valid_server_url
 from .merge import merge_text
 from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _compute_file_hash, _is_image, _normalize_remote_image_urls, _download_attachments, _localize_attachment_links, _linked_article_upload_ids, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
+from .search import entity_url
 from . import sync_log
 from .result import CommandResult, cli_echo, progress, error_text, redact_url_credentials, returns_partial_result
 from . import update_check
@@ -259,6 +262,31 @@ def _target_selector(config, target):
                  sum(_matches_target(t, value) for t in config.targets) == 1), None)
 
 
+def _article_scope(config, args):
+    """表示済みの記事を直接操作する場合、現在の設定でも同じ記事を指すことを確認する。"""
+    expected = getattr(args, "expect_article_url", None)
+    if expected is None:
+        return
+    targets = [t for t in config.targets if _matches_target(t, args.target)]
+    if not args.target or len(targets) != 1 or not getattr(args, "id", None) or args.id <= 0:
+        raise ValueError("記事の照合には一意な --target と正の --id が必要です")
+    target = targets[0]
+    entity = _normalize_entity(getattr(args, "entity", None) or target.entity)
+    url, _, _ = get_client_for_target(config, target)
+    if entity != target.entity or entity_url(url, entity, args.id) != expected:
+        raise ValueError("送信先が変わりました。一覧を更新してください。")
+
+
+def _print_command_result(operation, args):
+    if not getattr(args, "json", False):
+        return operation(args, echo=cli_echo).exit_code
+    result = operation(args)
+    for warning in result.warnings:
+        cli_echo(warning, stderr=True)
+    print(json.dumps(result.data, ensure_ascii=False))
+    return result.exit_code
+
+
 def _expectations(args):
     """照合の指定があるか。--expect-server・--expect-entity は --expect-id がないと照合できないので、それだけなら誤り。"""
     if getattr(args, "expect_id", None) is not None:
@@ -423,6 +451,8 @@ def run_status(args, echo=None) -> CommandResult:
                    "file": name, "entity": target.entity,
                    "entity_id": mapping.get(name), "state": state, "remote_changes": [], "error": None,
                    "next_actions": []}
+            if doc["entity_id"] is not None and result.get("binding_checked"):
+                doc["url"] = entity_url(get_client_for_target(config, target)[0], target.entity, doc["entity_id"])
             path = files.get(name)
             if path is not None:
                 path = path.resolve()
@@ -1283,6 +1313,16 @@ def run_diff(args, echo=None) -> CommandResult:
                 if preview_error:
                     doc["error"] = preview_error
                     continue
+                if eid is not None:
+                    try:
+                        recorded = syncer.checked_state(baseline)
+                    except (OSError, ValueError, TypeError, KeyError) as exc:
+                        doc["error"] = error_text(exc)
+                        res.warn(doc["error"])
+                        failed = True
+                        continue
+                    if recorded is not None:
+                        doc["url"] = entity_url(server, target.entity, eid)
                 if local_path.is_file():
                     raw = local_path.read_text(encoding="utf-8")
                     local_md = raw.strip()
@@ -1704,6 +1744,7 @@ def run_tag(args, echo=None) -> CommandResult:
     config_path = Path(args.config)
     project_root = config_path.parent or Path(".")
     config = load_config(config_path)
+    _article_scope(config, args)
     dry_run = getattr(args, "dry_run", False)
     res = CommandResult(data={"action": args.tag_action, "dry_run": dry_run, "entities": [],
                               "unsynced_targets": []}, echo=echo)
@@ -1737,7 +1778,7 @@ def run_tag(args, echo=None) -> CommandResult:
 
 
 def cmd_tag(args):
-    return run_tag(args, echo=cli_echo).exit_code
+    return _print_command_result(run_tag, args)
 
 
 def _tag_names(client, entity_type, entity_id):
@@ -1843,6 +1884,7 @@ def run_relate(args, echo=None) -> CommandResult:
     config_path = Path(args.config).resolve()
     project_root = config_path.parent
     config = load_config(config_path)
+    _article_scope(config, args)
     dry_run = getattr(args, "dry_run", False)
     res = CommandResult(data={"action": args.relate_action, "dry_run": dry_run, "sources": [], "changes": [],
                               "unsynced_targets": []}, echo=echo)
@@ -1903,7 +1945,7 @@ def run_relate(args, echo=None) -> CommandResult:
 
 
 def cmd_relate(args):
-    return run_relate(args, echo=cli_echo).exit_code
+    return _print_command_result(run_relate, args)
 
 
 def _relate_action(res, client, action, entity_type, entity_id, dests, dry_run=False, server=None):
@@ -1955,18 +1997,57 @@ def _relate_action(res, client, action, entity_type, entity_id, dests, dry_run=F
                 res.say(f"  {label}: {target_label} #{target_id} へのリンクが見つかりません")
 
 
+def _editable_metadata(raw):
+    def checked_float(text):
+        number = float(text)
+        if not Decimal(text).is_finite() or Decimal(str(number)) != Decimal(text):
+            raise ValueError("精度を保てない数値が含まれています")
+        return number
+
+    if raw is None or raw == "":
+        return {}
+    if isinstance(raw, str):
+        value = json.loads(raw, parse_float=checked_float, parse_constant=checked_float)
+    else:
+        # API が JSON オブジェクトで返した場合、小数は Decimal のまま取得してある。
+        value = json.loads(json.dumps(raw, default=checked_float, allow_nan=False))
+    if not isinstance(value, dict):
+        raise ValueError("メタデータは JSON オブジェクトである必要があります")
+    return value
+
+
+def _metadata_value_token(value):
+    encoded = json.dumps(value, sort_keys=True, ensure_ascii=True).encode("ascii")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 @returns_partial_result
 def run_metadata(args, echo=None) -> CommandResult:
     config_path = Path(args.config)
     project_root = config_path.parent or Path(".")
     config = load_config(config_path)
+    _article_scope(config, args)
     dry_run = getattr(args, "dry_run", False)
     res = CommandResult(data={"action": args.meta_action, "dry_run": dry_run, "entities": [],
                               "unsynced_targets": []}, echo=echo)
 
+    edit = None
     pairs = {}
     if args.meta_action == "set":
         # 送信前にすべての指定を確認する
+        if getattr(args, "edit_stdin", False):
+            if not getattr(args, "expect_article_url", None) or args.keyvalues:
+                raise ValueError("--edit-stdin には --expect-article-url が必要です。値は標準入力で指定してください")
+            edit = json.load(sys.stdin)
+            if not isinstance(edit, dict) or set(edit) - {"key", "value", "previous_token"}:
+                raise ValueError("標準入力には key・value と任意の previous_token を指定してください")
+            if "previous_token" in edit and (not isinstance(edit["previous_token"], str) or not re.fullmatch("[0-9a-f]{64}", edit["previous_token"])):
+                raise ValueError("previous_token の形式が不正です")
+            if not isinstance(edit.get("key"), str) or not edit["key"] or not isinstance(edit.get("value"), str):
+                raise ValueError("編集するキーと値を JSON 文字列で指定してください")
+            pairs[edit["key"]] = edit["value"]
+        elif not args.keyvalues:
+            raise ValueError("key=value を指定してください")
         for kv in args.keyvalues:
             if "=" not in kv:
                 return res.fail(f"エラー: '{kv}' は key=value 形式ではありません")
@@ -1990,14 +2071,37 @@ def run_metadata(args, echo=None) -> CommandResult:
                      "entity_id": eid}
             res.data["entities"].append(entry)
             if args.meta_action == "get":
-                meta = client.get_metadata(etype, eid)
+                if getattr(args, "expect_article_url", None):
+                    try:
+                        meta = _editable_metadata(client.get_metadata_raw(etype, eid, exact_numbers=True))
+                    except ValueError as exc:
+                        return res.fail(f"既存メタデータを読み取れません: {exc}")
+                    entry["fields"] = [{"key": key, "token": _metadata_value_token(value),
+                                        "text": value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)}
+                                       for key, value in meta.items()]
+                else:
+                    meta = client.get_metadata(etype, eid)
                 entry["metadata"] = meta
                 res.say(f"  {label}:")
                 res.say(f"    {json.dumps(meta, ensure_ascii=False, indent=2)}")
             elif args.meta_action == "set":
-                raw = client.get_metadata_raw(etype, eid)
-                existing = client.get_metadata(etype, eid)
-                if raw and not existing:
+                guarded = bool(getattr(args, "expect_article_url", None))
+                raw = client.get_metadata_raw(etype, eid, exact_numbers=True) if guarded else client.get_metadata_raw(etype, eid)
+                if guarded:
+                    try:
+                        existing = _editable_metadata(raw)
+                    except ValueError as exc:
+                        return res.fail(f"既存メタデータを読み取れないため更新を中止しました: {exc}")
+                    if edit is not None:
+                        key = edit["key"]
+                        current = _metadata_value_token(existing[key]) if key in existing else None
+                        if current != edit.get("previous_token"):
+                            return res.fail("編集中にメタデータが変わりました。一覧を更新してやり直してください")
+                    if any(isinstance(existing.get(key), (dict, list)) for key in pairs):
+                        return res.fail("オブジェクトや配列の値は文字列で上書きできません")
+                else:
+                    existing = client.get_metadata(etype, eid)
+                if raw and not existing and not getattr(args, "expect_article_url", None):
                     entry["unreadable_existing"] = True
                     res.warn(f"  {label}: ⚠ 既存メタデータの読み取りに失敗しました（上書きされます）")
                 existing.update(pairs)
@@ -2014,7 +2118,7 @@ def run_metadata(args, echo=None) -> CommandResult:
 
 
 def cmd_metadata(args):
-    return run_metadata(args, echo=cli_echo).exit_code
+    return _print_command_result(run_metadata, args)
 
 
 @returns_partial_result
@@ -2101,6 +2205,13 @@ def run_new(args, echo=None) -> CommandResult:
     config_path = Path(args.config)
     project_root = config_path.parent or Path(".")
     config = load_config(config_path)
+    if getattr(args, "list_targets", False):
+        if not getattr(args, "json", False):
+            raise ValueError("--list-targets には --json を指定してください")
+        return CommandResult(data={"targets": [{"target": t.title or t.docs_dir, "docs_dir": t.docs_dir,
+                                                "selector": _target_selector(config, t), "pattern": t.pattern} for t in config.targets]})
+    if getattr(args, "json", False) and args.target and sum(_matches_target(t, args.target) for t in config.targets) != 1:
+        raise ValueError("文書の作成先を一意に指定してください")
     client = _direct_client(config, args.target)
     dry_run = getattr(args, "dry_run", False)
     res = CommandResult(echo=echo)
@@ -2137,6 +2248,39 @@ def run_new(args, echo=None) -> CommandResult:
             outpath = project_root / target.docs_dir / filename
         else:
             outpath = project_root / filename
+    if getattr(args, "json", False) and args.target:
+        selected = next(t for t in config.targets if _matches_target(t, args.target))
+        syncer = _make_syncer(client, selected, project_root)
+        # VS Code は設定の docs_dir を解決した絶対パスを渡す。入力側のリンクや .. は safe_path で検査する。
+        root = syncer.docs_dir.absolute()
+        output = outpath.absolute()
+        relative = output.relative_to(root if output.is_relative_to(root) else root.resolve())
+        safe_path(root, relative.as_posix())
+        if (not _matches_relative_glob(relative, selected.pattern) or syncer.is_displaced_path(syncer.docs_dir / relative)
+                or outpath.name in syncer._load_excluded()):
+            return res.fail(f"{relative} は {selected.docs_dir} の同期対象外です。ファイル名・配置を {selected.pattern} に合わせてください")
+    creating = not outpath.exists()
+    if creating or args.force:
+        destination = outpath.resolve()
+        for owner in config.targets:
+            docs_dir = (project_root / owner.docs_dir).resolve()
+            if not destination.is_relative_to(docs_dir):
+                continue
+            relative = destination.relative_to(docs_dir)
+            if not _matches_relative_glob(relative, owner.pattern):
+                continue
+            syncer = _make_syncer(None, owner, project_root)
+            if any(p.name == destination.name and p.resolve() != destination for p in syncer.collect_files()):
+                return res.fail(f"同じターゲットに同名文書があります: {destination.name}")
+            if not creating:
+                continue
+            # 旧共通マッピングは docs_dir 直下のファイルが現れた時点で有効になる。
+            prospective = outpath.name if len(relative.parts) == 1 else None
+            mapping = syncer._load_mapping(migrate=False, prospective_name=prospective)
+            profile = profile_for_target(config, owner)
+            base_url = (profile.url if profile else config.url).rstrip("/")
+            if outpath.name in mapping or outpath.name in syncer._pending() or syncer._receipt_path(outpath.name, base_url=base_url).exists():
+                return res.fail(f"既存の記事との紐付けまたは作成記録があります: {outpath.name}")
     res.data.update(path=str(outpath), title=title, template_id=args.template_id,
                     template_title=template.get("title", ""), dry_run=dry_run, created=False)
 
@@ -2147,7 +2291,7 @@ def run_new(args, echo=None) -> CommandResult:
         res.say(f"  {outpath} を作成予定（テンプレート #{args.template_id}: {template.get('title', '')}）")
         return res
     outpath.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write(outpath, f"# {title}\n\n{body_md}\n")
+    atomic_write(outpath, f"# {title}\n\n{body_md}\n", exclusive=not args.force)
     res.data["created"] = True
     res.say(f"  ✅ {outpath} を作成しました（テンプレート #{args.template_id}: {template.get('title', '')}）")
     return res
@@ -2155,7 +2299,7 @@ def run_new(args, echo=None) -> CommandResult:
 
 def cmd_new(args):
     """テンプレートから新規 Markdown ファイルを生成する。"""
-    return run_new(args, echo=cli_echo).exit_code
+    return _print_command_result(run_new, args)
 
 
 @returns_partial_result
@@ -3040,9 +3184,11 @@ def build_parser():
 
     meta_parser = sub.add_parser("metadata", help="メタデータを管理", parents=[sub_common])
     meta_sub = meta_parser.add_subparsers(dest="meta_action")
-    meta_sub.add_parser("get", help="メタデータを表示")
+    meta_get_p = meta_sub.add_parser("get", help="メタデータを表示")
+    meta_get_p.add_argument("--id", type=int, help="対象の記事 ID")
     meta_set_p = meta_sub.add_parser("set", help="メタデータを設定")
-    meta_set_p.add_argument("keyvalues", nargs="+", help="key=value ペア")
+    meta_set_p.add_argument("--edit-stdin", action="store_true", help="標準入力 JSON の key・value で編集。既存キーは previous_token が必須、新規キーは省略")
+    meta_set_p.add_argument("keyvalues", nargs="*", help="key=value ペア")
     meta_set_p.add_argument("--id", type=int, default=None, help="エンティティ ID")
 
     estatus_parser = sub.add_parser("entity-status", help="エンティティのステータスを管理", parents=[sub_common])
@@ -3061,10 +3207,16 @@ def build_parser():
     cat_set_p.add_argument("--entity", required=True, choices=["items", "experiments", "resources"], help="items / experiments / resources")
 
     new_parser = sub.add_parser("new", help="テンプレートから新規ドキュメントを作成", parents=[sub_common])
+    new_parser.add_argument("--list-targets", action="store_true", help="文書の作成先を JSON で一覧表示")
     new_parser.add_argument("--list", dest="list_templates", action="store_true", help="テンプレート一覧を表示")
     new_parser.add_argument("--template-id", type=int, default=None, help="テンプレート ID")
     new_parser.add_argument("--title", default=None, help="ファイルのタイトル（省略時はテンプレート名）")
     new_parser.add_argument("--output", "-o", default=None, help="出力ファイルパス")
+
+    for article_parser in (tag_parser, relate_parser, meta_parser):
+        article_parser.add_argument("--expect-article-url", help="選択済みの記事 URL と現在の送信先を照合")
+    for json_parser in (tag_parser, relate_parser, meta_parser, new_parser):
+        json_parser.add_argument("--json", action="store_true", help="結果を JSON で表示")
 
     list_parser = sub.add_parser("list", help="リモートのリソース/実験ノート一覧を表示", parents=[sub_common])
     list_parser.add_argument("--entity", dest="entity_type", default="items", choices=["items", "experiments", "resources"], help="エンティティ種別")
@@ -3156,7 +3308,8 @@ def main():
         handler = commands[args.command]
         no_dry_run = args.command == "init" or (
             args.command == "profile" and args.profile_action in ("add", "remove"))
-        other_write = no_dry_run or args.command == "new" or (
+        create_document = args.command == "new" and not (args.list_templates or args.list_targets)
+        other_write = no_dry_run or create_document or (
             args.command == "tag" and args.tag_action in ("add", "remove")) or (
             args.command == "relate" and args.relate_action in ("add", "remove")) or (
             args.command == "metadata" and args.meta_action == "set") or (

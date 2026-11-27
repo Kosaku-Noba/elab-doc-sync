@@ -361,18 +361,26 @@ def get_client_for_target(config: Config, target: TargetConfig):
       - profiles の中から同じ team 値を持つプロファイルを自動選択
       - target.profile が明示的に指定されている場合は profile を優先
     """
+    profile = profile_for_target(config, target)
+    if profile:
+        return profile_connection(profile)
+    return config.url, config.api_key, config.verify_ssl
+
+
+def profile_for_target(config: Config, target: TargetConfig):
+    """ターゲットの接続先を選ぶ。API キーの確認は通信時に行う。"""
     # profile が明示的に指定されている場合はそれを優先
     if target.profile != "default":
         profile = config.profiles.get(target.profile)
         if not profile:
             raise ValueError(f"接続プロファイルが見つかりません: {target.profile}")
-        return profile_connection(profile)
+        return profile
 
     # team が指定されている場合、profiles から対応するものを探す
     if target.team is not None and config.profiles:
         for profile in config.profiles.values():
             if profile.team is not None and _team_matches(profile.team, target.team):
-                return profile_connection(profile)
+                return profile
         # team 指定があるが対応するプロファイルが見つからない場合はエラー情報を出す
         print(
             f"警告: ターゲット '{target.docs_dir}' の team '{target.team}' に対応する"
@@ -381,10 +389,7 @@ def get_client_for_target(config: Config, target: TargetConfig):
         )
 
     # フォールバック: profile 名で検索 → config のデフォルト値
-    profile = config.profiles.get(target.profile)
-    if profile:
-        return profile_connection(profile)
-    return config.url, config.api_key, config.verify_ssl
+    return config.profiles.get(target.profile)
 
 
 def _team_matches(profile_team: str | int, target_team: str | int) -> bool:
