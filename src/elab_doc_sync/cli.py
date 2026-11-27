@@ -1458,7 +1458,7 @@ def run_clone(args, echo=None) -> CommandResult:
     entity = _normalize_entity(args.entity)
     ids = args.id
     project_dir = Path(args.dir or f"elab-clone-{ids[0]}")
-    res.data.update(path=str(project_dir), entity=entity, server=url)
+    res.data.update(path=str(project_dir), entity=entity, server=public_url(url))
     docs_dir = "docs/"
 
     # 既存ディレクトリへの上書き防止
@@ -1468,7 +1468,7 @@ def run_clone(args, echo=None) -> CommandResult:
     if not project_dir.exists():
         dir_created = True
 
-    res.say(f"=== esync clone: {url} ===\n")
+    res.say(f"=== esync clone: {public_url(url)} ===\n")
 
     client = ELabFTWClient(url, api_key, verify_ssl=not args.no_verify)
     get_fn = client.get_experiment if entity == "experiments" else client.get_item

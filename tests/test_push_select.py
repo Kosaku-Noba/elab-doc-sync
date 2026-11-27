@@ -571,3 +571,30 @@ def test_init_asks_again_for_a_url_the_config_loader_would_reject(tmp_path, monk
     cmd_init(Namespace(config=str(cfg)))
     assert 'URL が不正です' in capsys.readouterr().out
     assert yaml.safe_load(cfg.read_text(encoding='utf-8'))['elabftw']['url'] == 'https://elab.example.com'
+
+
+def test_init_strips_surrounding_spaces_before_checking_the_url(tmp_path, monkeypatch, capsys):
+    from argparse import Namespace
+    from elab_doc_sync.cli import cmd_init
+    monkeypatch.chdir(tmp_path)
+    inputs = iter(['\u3000https://elab.example.com/\u3000', 'n', '', '', 'items', 'md'])
+    monkeypatch.setattr('builtins.input', lambda _: next(inputs))
+    cfg = tmp_path / '.elab-sync.yaml'
+    cmd_init(Namespace(config=str(cfg)))
+    assert 'URL が不正です' not in capsys.readouterr().out
+    assert yaml.safe_load(cfg.read_text(encoding='utf-8'))['elabftw']['url'] == 'https://elab.example.com'
+
+
+def test_clone_hides_url_credentials(tmp_path, monkeypatch, capsys):
+    from types import SimpleNamespace
+    from elab_doc_sync.cli import run_clone
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('ELABFTW_API_KEY', 'k')
+    client = MagicMock()
+    client.get_item.side_effect = ConnectionError('offline')
+    with patch('elab_doc_sync.cli.ELabFTWClient', return_value=client):
+        result = run_clone(SimpleNamespace(url='https://user:secret@elab.example.test', id=[1], dir=None,
+                                           entity='items', no_verify=False, dry_run=True),
+                           echo=lambda message, stderr=False: print(message))
+    assert result.data['server'] == 'https://elab.example.test'
+    assert 'secret' not in json.dumps(result.data) + capsys.readouterr().out
