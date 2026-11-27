@@ -35,6 +35,11 @@ async function readStatus(folder, run) {
 }
 
 // 改名元の候補（ローカルにない記事）の集合。変わると、文書が引き継ぐ記事 ID も変わりうる。
+/** 前回取得した値であることを示す。既に付いていれば重ねない。 @param {string} text */
+function previous(text) {
+    return text.endsWith('（前回取得）') ? text : text + '（前回取得）';
+}
+
 function candidateSet(documents) {
     return JSON.stringify(documents.filter(doc => !doc.path && doc.entity_id != null)
         .map(doc => [doc.target, doc.entity, doc.entity_id]).sort());
@@ -282,7 +287,12 @@ class StatusProvider {
                 if (details.get(key) === detail && this.cache.get(folder.uri.toString()) === entry) this.currentEvents.fire();
             });
         }
-        return this.resolveDocument(detail, doc);
+        const resolved = this.resolveDocument(detail, doc);
+        // 照会し直している間、前回の照会で得たエラーは今回の結果ではない。
+        if ((detail.loading || detail.dirty) && resolved.error && resolved.error !== doc.error) {
+            return { ...resolved, error: previous(resolved.error) };
+        }
+        return resolved;
     }
 
     /** 照会結果から記事 ID と状態を補う。確定できなければ idMessage を付ける。 */
@@ -417,8 +427,8 @@ class CurrentDocumentProvider {
         }
         for (const { folder, stale, doc: current } of matches) {
             // 取り直し中・取得失敗時の状態やエラーは前回のもの。今回の結果と取り違えないよう明示する。
-            const doc = stale ? { ...current, state: current.state + '（前回取得）',
-                error: current.error && current.error + '（前回取得）' } : current;
+            const doc = stale ? { ...current, state: previous(current.state), error: current.error && previous(current.error) }
+                : current;
             const details = detailItems(folder, doc);
             if (matches.length === 1) rows.push(...details);
             else {

@@ -10,10 +10,11 @@ const { StatusProvider, CurrentDocumentProvider, statusBarView } = require('../s
 async function renameCandidates(folder, file, doc, waitForUpdate, events, currentEvents) {
     const statuses = [];
     const lookups = [];
+    const failures = [];
     const status = new StatusProvider(() => [folder], () => new Promise(resolve => statuses.push(resolve)),
         events, currentEvents);
     const current = new CurrentDocumentProvider(status, () => ({ file }), currentEvents,
-        () => new Promise(resolve => lookups.push(resolve)));
+        () => new Promise((resolve, reject) => { lookups.push(resolve); failures.push(reject); }));
     const respond = (documents) => statuses.at(-1)({ code: 0, stderr: '',
         stdout: JSON.stringify({ documents, recovery_pending: false }) });
     const candidate = id => ({ ...doc, file: 'old' + id + '.md', path: null, entity_id: id });
@@ -89,6 +90,21 @@ async function renameCandidates(folder, file, doc, waitForUpdate, events, curren
     await finishLookup(5, renamed(42));
     assert.equal(await idOf(), '未割り当て', 'ignore the lookup started while a candidate existed');
     assert.equal(lookups.length, 6, 'do not look up a document without rename candidates');
+
+    // 記事 ID の照会が失敗した後、照会し直している間は、そのエラーを前回のものと示す。
+    await refreshWith([doc, candidate(42)]);
+    assert.equal(await idOf(), '確認中…');
+    let updated = waitForUpdate();
+    failures[6](new Error('差分照会失敗'));
+    await updated;
+    assert.ok((await current.getChildren()).find(r => r.label === '差分照会失敗'));
+    await refreshWith([doc, candidate(42)]);
+    const rechecking = await current.getChildren();
+    assert.equal(lookups.length, 8, 'the same candidates are looked up again');
+    assert.ok(rechecking.find(r => r.label === '差分照会失敗（前回取得）'), 'mark the earlier lookup error as previous');
+    assert.ok(!rechecking.find(r => r.label === '差分照会失敗（前回取得）（前回取得）'));
+    await finishLookup(7, renamed(42));
+    assert.equal(await idOf(), '#42');
     console.log('PASS: replaced and added rename candidates, stale first lookup, ID with fetch error');
 }
 
