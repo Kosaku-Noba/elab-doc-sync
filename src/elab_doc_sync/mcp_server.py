@@ -200,8 +200,16 @@ def _scrub(value, secrets):
     if isinstance(value, list):
         return [_scrub(item, secrets) for item in value]
     if isinstance(value, dict):
-        return {_scrub(key, secrets) if isinstance(key, str) else key: _scrub(item, secrets)
-                for key, item in value.items()}
+        scrubbed = {}
+        for key, item in value.items():
+            if isinstance(key, str):
+                key = _scrub(key, secrets)
+                # 伏せた結果が別のキーと重なっても値を失わないよう、番号を付けて残す。
+                base, n = key, 2
+                while key in scrubbed:
+                    key, n = f"{base} ({n})", n + 1
+            scrubbed[key] = _scrub(item, secrets)
+        return scrubbed
     return value
 
 

@@ -668,3 +668,24 @@ def test_merging_pull_rewrites_an_old_state_server_without_credentials(project, 
     code, result = pull_json('--', 'docs/a.md', capsys=capsys)
     assert result['documents'][0]['result'] == 'pulled'
     assert 'secret' not in state.read_text(encoding='utf-8')
+
+
+def test_url_masking_edges_and_subpath_links():
+    import time
+    from elab_doc_sync.config import _valid_server_url
+    from elab_doc_sync.mcp_server import _scrub
+    from elab_doc_sync.result import redact_url_credentials
+    from elab_doc_sync.sync import _rewrite_elab_links_to_local
+    assert not _valid_server_url('https://a@b:pass@host.test'), 'a raw @ in the user name is rejected'
+    assert _valid_server_url('https://a%40b:pass@host.test')
+    link = 'https://example.test?to=a@example.org'
+    assert redact_url_credentials(link) == link, 'do not mask into the query'
+    assert redact_url_credentials('x https://u:p@h.test#y@z') == 'x https://***@h.test#y@z'
+    assert _scrub({'https://a:1@h.test': 'one', 'https://b:2@h.test': 'two'}, []) == \
+        {'https://***@h.test': 'one', 'https://***@h.test (2)': 'two'}, 'keep both values after masking keys'
+    started = time.monotonic()
+    redact_url_credentials('a' * 200_000 + '://' + 'b' * 200_000)
+    assert time.monotonic() - started < 1, 'linear in the text length'
+    body = '[b](https://example.test/a/database.php?mode=view&id=7) [c](https://example.test/b/database.php?mode=view&id=7)'
+    result = _rewrite_elab_links_to_local(body, 'https://user:pw@example.test/a', {'b.md': 7}, 'items')
+    assert result == '[b](./b.md) [c](https://example.test/b/database.php?mode=view&id=7)'

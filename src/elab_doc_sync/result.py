@@ -111,15 +111,35 @@ def redact(text: str, *secrets: str | None) -> str:
     return text
 
 
-# URL に埋め込まれたユーザー名・パスワード（scheme://user:pass@host）。引用符は含みうる。
-# 設定の読み込みで空白を含む URL は拒否するので、空白や改行の先までは伏せない（本文中のメールアドレスなどを守る）。
-# 日本語の直後に続く URL も対象にするため、単語境界は使わない。
-_URL_CREDENTIALS = re.compile(r"(?i)([a-z][a-z0-9+.-]*://)[^/\s@]+@")
+# URL に埋め込まれたユーザー名・パスワード（scheme://user:pass@host）の、:// の後ろの部分。引用符は含みうる。
+# 設定の読み込みで空白や @ を含む認証情報は拒否するので、空白・改行・/・?・#・@ の先までは伏せない
+# （URL の後ろのメールアドレスや、クエリ内のアドレスを守る）。
+_URL_USERINFO = re.compile(r"[^/\s@?#]+@")
+_SCHEME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+.-")
 
 
 def redact_url_credentials(text: str) -> str:
-    """文中の URL に含まれるユーザー名・パスワード（scheme://user:pass@）を *** にする。"""
-    return _URL_CREDENTIALS.sub(r"\1***@", text)
+    """文中の URL に含まれるユーザー名・パスワード（scheme://user:pass@）を *** にする。
+
+    日本語の直後に続く URL も対象にする。長い本文でも線形時間で済むよう、:// の位置から調べる。
+    """
+    parts = []
+    last = 0
+    start = text.find("://")
+    while start != -1:
+        scheme = start
+        while scheme > 0 and text[scheme - 1] in _SCHEME_CHARS:
+            scheme -= 1
+        rest = start + 3
+        found = _URL_USERINFO.match(text, rest)
+        if scheme < start and text[scheme].isalpha() and found:
+            parts.append(text[last:rest] + "***@")
+            last = found.end()
+            start = text.find("://", last)
+        else:
+            start = text.find("://", rest)
+    parts.append(text[last:])
+    return "".join(parts)
 
 
 def error_text(exc: Exception, api_key: str | None = None) -> str:

@@ -720,7 +720,9 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
 #   experiments → {base_url}/experiments.php?mode=view&id={id}
 # フラグメント部分もキャプチャして逆変換時に保持する
 _ELAB_URL_RE = re.compile(
-    r"(?P<base>https?://[^/]+)/(?P<page>database|experiments)\.php\?mode=view&id=(?P<id>\d+)(?P<fragment>#[^\s)]*)?")
+    # base はサブパスに設置した eLabFTW（https://host/elab）も含む。
+    r"(?P<base>https?://[^/?#\s]+(?:/[^?#\s]*?)?)/(?P<page>database|experiments)\.php\?mode=view&id=(?P<id>\d+)"
+    r"(?P<fragment>#[^\s)]*)?")
 
 # eLabFTW の entity タイプと URL ページ名の対応
 _ENTITY_TO_PAGE = {"items": "database", "experiments": "experiments"}
