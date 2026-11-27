@@ -111,7 +111,7 @@ def redact(text: str, *secrets: str | None) -> str:
     return text
 
 
-# URL に埋め込まれたユーザー名・パスワード（scheme://user:pass@host）の、:// の後ろの部分。引用符は含みうる。
+# URL に埋め込まれたユーザー名・パスワード（scheme://user:pass@host）の、:// の後ろの部分。
 # 認証情報に使える文字は URL_USERINFO_CHARS（設定の読み込みも同じ文字だけを受け付ける。ほかは %xx と書く）。
 # これで設定が受け付けた認証情報は必ず全体を伏せ、引用符・カンマ・括弧・空白・全角文字の先までは伏せない。
 # ホストとの区切りはその範囲の最後の @（記事本文などには生の @ を含む旧い形式もありうる）。
@@ -147,10 +147,15 @@ def redact_url_credentials(text: str) -> str:
     return "".join(parts)
 
 
+# エラー文用。例外文には設定の検証を通らない URL（記事本文由来など）も入りうるので、次の / か空白より前の
+# 最後の @ までを、文字の種類を問わず伏せる（短い文なので、伏せすぎても読める）。
+_LOOSE_URL_CREDENTIALS = re.compile(r"(?i)([a-z][a-z0-9+.-]*://)[^/\s]*@")
+
+
 def error_text(exc: Exception, api_key: str | None = None) -> str:
     """HTTP エラーは URL を省き、それ以外の例外文では接続先の API キーと URL の認証情報を伏せる。"""
     status = getattr(getattr(exc, "response", None), "status_code", None)
     if status is not None:
         reason = {401: "認証エラー", 403: "権限がありません", 404: "見つかりません"}.get(status)
         return f"HTTP {status}" + (f"（{reason}）" if reason else "")
-    return redact_url_credentials(redact(str(exc), api_key))
+    return _LOOSE_URL_CREDENTIALS.sub(r"\1***@", redact(str(exc), api_key))

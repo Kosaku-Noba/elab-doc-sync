@@ -398,7 +398,7 @@ def test_pull_error_hides_credentials_in_urls(project, capsys):
     root, remote = project
     assert push('docs/a.md') in (0, None)
     CLIENTS[0].get_item.side_effect = ConnectionError(
-        "Max retries exceeded with url: https://us!er:se$c&ret@example.test:9/api/v2/items/1")
+        "Max retries exceeded with url: https://us'er:se'c\"ret@example.test:9/api/v2/items/1")
     capsys.readouterr()
     with patch.object(sys, 'argv', ['esync', 'pull', '--json', '--dry-run', '--', 'docs/a.md']):
         try:
@@ -407,7 +407,7 @@ def test_pull_error_hides_credentials_in_urls(project, capsys):
             pass
     out, err = capsys.readouterr()
     for text in (out, err):
-        assert 'se$c' not in text and 'us!er' not in text, 'hide credentials containing symbols'
+        assert 'se\'c' not in text and 'us\'er' not in text, 'hide old-style credentials with quotes in errors'
     assert 'https://***@example.test:9' in json.loads(out)['documents'][0]['error']
     assert 'https://***@example.test:9' in err
 
@@ -728,3 +728,13 @@ def test_accepted_credentials_are_always_masked_and_masking_stops_at_quotes():
     body = '[a](https://example.test/database.php?mode=view&id=7#section(1))'
     assert _rewrite_elab_links_to_local(body, 'https://example.test', {'seven.md': 7}, 'items') == \
         '[a](./seven.md#section(1))'
+
+
+def test_unbalanced_fragments_and_non_latin1_credentials():
+    from elab_doc_sync.config import _valid_server_url
+    from elab_doc_sync.sync import _rewrite_elab_links_to_local
+    body = '[a](<https://example.test/database.php?mode=view&id=7#sec)end>)'
+    assert _rewrite_elab_links_to_local(body, 'https://example.test', {'seven.md': 7}, 'items') == body
+    assert not _valid_server_url('https://user:%E3%83%91%E3%82%B9@elab.test'), 'Basic auth cannot send Japanese'
+    assert not _valid_server_url('https://user:caf%E9@elab.test')
+    assert _valid_server_url('https://user:pa%28ss%29@elab.test')

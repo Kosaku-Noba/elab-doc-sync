@@ -908,6 +908,9 @@ def _rewrite_elab_links_to_local(body: str, base_url: str,
         link_entity = _PAGE_TO_ENTITY.get(link_page, link_page)  # → "items" or "experiments"
         link_id = int(match.group("id"))
         fragment = match.group("fragment") or ""  # #section など
+        # 括弧の対応がとれないフラグメントは、ローカルリンクに書き戻すとリンク先が変わるので変換しない。
+        if fragment.count("(") != fragment.count(")"):
+            return link.original
 
         # ホスト完全一致でなければスキップ（外部 eLabFTW リンク）
         if not _hosts_match(base_url, link_base):

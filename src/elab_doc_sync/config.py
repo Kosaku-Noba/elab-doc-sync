@@ -166,6 +166,12 @@ def _valid_server_url(url) -> bool:
         userinfo = parts.netloc.rpartition("@")[0]
         if "@" in parts.netloc and not re.fullmatch(f"[{URL_USERINFO_CHARS}]+", userinfo):
             return False
+        # HTTP の Basic 認証（requests）は ASCII 以外を確実には送れない（%xx で書いた日本語なども接続時に失敗する）。
+        from urllib.parse import unquote
+        try:
+            unquote(userinfo, errors="strict").encode("ascii")
+        except (UnicodeDecodeError, UnicodeEncodeError):
+            return False
         parts.port  # 数字でないポートや 0〜65535 の範囲外（区切りの誤記でパスワードがポート扱いになった場合など）は ValueError
         return parts.scheme in ("http", "https") and bool(parts.hostname)
     except ValueError:
