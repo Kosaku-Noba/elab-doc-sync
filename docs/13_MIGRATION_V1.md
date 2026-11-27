@@ -88,12 +88,13 @@ esync restore <バックアップID>
 記事の新規作成要求で応答が失われた場合は、自動再作成しません。
 
 ```bash
-# ターゲットの接続先と種別で探す（実験ノートは --entity experiments、既定はリソース）
-esync list --limit 100 --target docs --entity experiments
+# docs は送信先のターゲットに置き換える。種別はリソースなら items、実験ノートなら experiments
+esync list --limit 100 --target docs --entity items
 # 作成された記事がある場合（--file は docs_dir からの相対パス）
 esync link <ID> --file note.md --target docs
 # サーバー側にも対応記事が存在しないと確認できた場合だけ
 esync link --new --file note.md --target docs
+esync push docs/note.md --target docs   # この push で記事が作成される
 ```
 
 一覧はサーバー側の表示件数に制限される場合があります。必要に応じてeLabFTWの画面でも確認してください。作成記録 `.elab-sync-operations/` はローカル復元の対象外とし、復元で紐付けが戻っても重複作成を防ぎます。
