@@ -34,12 +34,12 @@ async function readStatus(folder, run) {
     return { documents, notices, root: await fs.realpath(folder.uri.fsPath) };
 }
 
-// 改名元の候補（ローカルにない記事）の集合。変わると、文書が引き継ぐ記事 ID も変わりうる。
 /** 前回取得した値であることを示す。既に付いていれば重ねない。 @param {string} text */
 function previous(text) {
     return text.endsWith('（前回取得）') ? text : text + '（前回取得）';
 }
 
+// 改名元の候補（ローカルにない記事）の集合。変わると、文書が引き継ぐ記事 ID も変わりうる。
 function candidateSet(documents) {
     return JSON.stringify(documents.filter(doc => !doc.path && doc.entity_id != null)
         .map(doc => [doc.target, doc.entity, doc.entity_id]).sort());
@@ -288,9 +288,10 @@ class StatusProvider {
             });
         }
         const resolved = this.resolveDocument(detail, doc);
-        // 照会し直している間、前回の照会で得たエラーは今回の結果ではない。
+        // 照会し直している間、前回の照会で得たエラーは今回の結果ではない。記事 ID 欄も照会中と示す。
         if ((detail.loading || detail.dirty) && resolved.error && resolved.error !== doc.error) {
-            return { ...resolved, error: previous(resolved.error) };
+            const idMessage = resolved.idMessage === '確認できません' ? '確認中…' : resolved.idMessage;
+            return { ...resolved, idMessage, error: previous(resolved.error) };
         }
         return resolved;
     }

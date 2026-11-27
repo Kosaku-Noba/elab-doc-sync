@@ -102,7 +102,17 @@ async function renameCandidates(folder, file, doc, waitForUpdate, events, curren
     const rechecking = await current.getChildren();
     assert.equal(lookups.length, 8, 'the same candidates are looked up again');
     assert.ok(rechecking.find(r => r.label === '差分照会失敗（前回取得）'), 'mark the earlier lookup error as previous');
-    assert.ok(!rechecking.find(r => r.label === '差分照会失敗（前回取得）（前回取得）'));
+    assert.equal(rechecking.find(r => r.label === '記事 ID').description, '確認中…',
+        'the ID field shows the lookup is running again, not that it failed again');
+    // 記事 ID の照会と一覧の取り直しが同時に進んでいても、接尾辞は一度だけ付ける。
+    status.invalidate();
+    const both = await current.getChildren();
+    assert.ok(both.find(r => r.label === '同期状態を取得中…'));
+    assert.ok(both.find(r => r.label === '差分照会失敗（前回取得）'));
+    assert.ok(!both.find(r => r.label === '差分照会失敗（前回取得）（前回取得）'));
+    updated = waitForUpdate();
+    respond([doc, candidate(42)]);
+    await updated;
     await finishLookup(7, renamed(42));
     assert.equal(await idOf(), '#42');
     console.log('PASS: replaced and added rename candidates, stale first lookup, ID with fetch error');
@@ -222,7 +232,11 @@ exports.run = async function () {
         const lookupFailed = waitForUpdate();
         rejectLookup(new Error('照会に失敗'));
         await lookupFailed;
-        assert.equal((await current.getChildren()).find(r => r.label === '記事 ID').description, '確認できません');
+        // 失敗した照会の間に一覧が更新されていたので、すぐに照会し直す。その間は失敗を前回のものと示す。
+        const afterFailure = await current.getChildren();
+        assert.equal(afterFailure.find(r => r.label === '記事 ID').description, '確認中…');
+        assert.ok(afterFailure.find(r => r.label === '照会に失敗（前回取得）'));
+        assert.equal(lookups, 3, 'look up again because the status changed during the failed lookup');
         console.log('PASS: symlink, partial refresh, coalesced saves, rename ID, failed lookup, row actions');
         const completed = waitForUpdate();
         for (const request of requests.slice(1)) respond(request, []);
