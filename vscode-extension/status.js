@@ -24,8 +24,10 @@ async function readStatus(folder, run) {
     return { documents, notices, root: await fs.realpath(folder.uri.fsPath) };
 }
 
-function candidateKey(doc) {
-    return JSON.stringify([doc.target, doc.entity, doc.entity_id]);
+// 改名元の候補（ローカルにない記事）の集合。変わると改名先の判定も変わりうる。
+function candidateSet(documents) {
+    return JSON.stringify(documents.filter(doc => !doc.path && doc.entity_id != null)
+        .map(doc => [doc.target, doc.entity, doc.entity_id]).sort());
 }
 
 function documentItem(folder, doc) {
@@ -89,17 +91,15 @@ class StatusProvider {
                 entry.error = undefined;
                 const unassigned = new Set(value.documents.filter(doc => doc.path && doc.entity_id == null)
                     .map(doc => path.resolve(value.root, doc.path)));
-                const candidates = new Set(value.documents.filter(doc => !doc.path && doc.entity_id != null)
-                    .map(doc => candidateKey(doc)));
+                const candidates = candidateSet(value.documents);
                 for (const [name, detail] of entry.details) {
                     if (!unassigned.has(name)) {
                         entry.details.delete(name);
                         continue;
                     }
                     detail.dirty = true;
-                    // 改名元の候補が消えた場合、以前の照会結果は送信先として使えない。
-                    if (detail.documents?.some(doc => doc.renamed_from && doc.entity_id != null
-                            && !candidates.has(candidateKey(doc)))) {
+                    // 照会を始めた後に候補が変わった場合、その結果は送信先として使えない。
+                    if (detail.candidates !== candidates) {
                         detail.generation += 1;
                         detail.documents = undefined;
                         detail.error = undefined;
@@ -140,6 +140,7 @@ class StatusProvider {
             detail.dirty = false;
             detail.loading = true;
             const generation = detail.generation;
+            detail.candidates = candidateSet(entry.value.documents);
             loadDiff(folder, file, []).then(result => {
                 if (detail.generation !== generation) return;
                 detail.documents = result.documents.map(({ target, entity, entity_id, renamed_from, state, error }) =>

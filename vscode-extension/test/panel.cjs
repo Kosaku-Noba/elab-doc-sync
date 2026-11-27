@@ -21,43 +21,45 @@ async function renameCandidates(folder, file, doc, waitForUpdate, events, curren
         state: 'リネーム予定', ...extra }] });
     const idOf = async () => (await current.getChildren()).find(r => r.label === '記事 ID').description;
 
-    await current.getChildren();
-    let updated = waitForUpdate();
-    respond([doc, candidate(17)]);
-    await updated;
-    assert.equal(await idOf(), '確認中…');
-    updated = waitForUpdate();
-    lookups[0](renamed(17));
-    await updated;
-    assert.equal(await idOf(), '#17');
+    const refreshWith = async documents => {
+        status.invalidate();
+        await current.getChildren();
+        const updated = waitForUpdate();
+        respond(documents);
+        await updated;
+    };
+    const finishLookup = async (index, result) => {
+        const updated = waitForUpdate();
+        lookups[index](result);
+        await updated;
+    };
 
-    // 再照会中に候補が #17 から #42 に変わると、#17 の照会結果は表示しない。
-    status.invalidate();
     await current.getChildren();
-    updated = waitForUpdate();
+    const first = waitForUpdate();
     respond([doc, candidate(17)]);
-    await updated;
-    assert.equal(await idOf(), '#17', 'keep the confirmed ID while the same candidate is re-checked');
-    assert.equal(lookups.length, 2);
-    status.invalidate();
-    await current.getChildren();
-    updated = waitForUpdate();
-    respond([doc, candidate(42)]);
-    await updated;
-    assert.equal(await idOf(), '確認中…', 'drop an ID whose rename source left the candidates');
-    updated = waitForUpdate();
-    lookups[1](renamed(17));
-    await updated;
+    await first;
+    assert.equal(await idOf(), '確認中…');
+    // 初回の照会中に候補が #17 から #42 に変わると、その照会結果は表示しない。
+    await refreshWith([doc, candidate(42)]);
+    assert.equal(await idOf(), '確認中…');
+    await finishLookup(0, renamed(17));
     assert.equal(await idOf(), '確認中…', 'ignore a lookup started before the candidates changed');
-    assert.equal(lookups.length, 3, 'look up again after the stale request finishes');
-    updated = waitForUpdate();
-    lookups[2](renamed(42, { state: undefined, error: 'HTTP 403' }));
-    await updated;
+    assert.equal(lookups.length, 2, 'look up again only after the stale request finishes');
+    await finishLookup(1, renamed(42));
+    assert.equal(await idOf(), '#42');
+
+    await refreshWith([doc, candidate(42)]);
+    assert.equal(await idOf(), '#42', 'keep the confirmed ID while the same candidates are re-checked');
+    await finishLookup(2, renamed(42));
+    // 候補が増えると改名先が曖昧になりうるので、確認済みの ID も表示しない。
+    await refreshWith([doc, candidate(42), candidate(17)]);
+    assert.equal(await idOf(), '確認中…', 'drop the ID when another candidate appears');
+    await finishLookup(3, renamed(42, { state: undefined, error: 'HTTP 403' }));
     const rows = await current.getChildren();
     assert.equal(rows.find(r => r.label === '記事 ID').description, '#42', 'show the ID even if fetching it failed');
     assert.ok(rows.find(r => r.label === 'HTTP 403'), 'keep the fetch error in its own row');
     assert.equal(rows.find(r => r.label === '同期状態（保存時点）').description, '未追跡');
-    console.log('PASS: changed rename candidates, stale lookup, ID with fetch error');
+    console.log('PASS: replaced and added rename candidates, stale first lookup, ID with fetch error');
 }
 
 exports.run = async function () {
