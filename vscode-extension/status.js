@@ -288,7 +288,7 @@ class StatusProvider {
             });
         }
         const resolved = this.resolveDocument(detail, doc);
-        // 照会し直している間、前回の照会で得たエラーは今回の結果ではない。記事 ID 欄も照会中と示す。
+        // 照会し直している間、前回の照会で得たエラーは今回の結果ではない。前回「確認できません」だった ID 欄は「確認中…」に戻す。
         if ((detail.loading || detail.dirty) && resolved.error && resolved.error !== doc.error) {
             const idMessage = resolved.idMessage === '確認できません' ? '確認中…' : resolved.idMessage;
             return { ...resolved, idMessage, error: previous(resolved.error) };

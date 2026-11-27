@@ -97,7 +97,10 @@ async function renameCandidates(folder, file, doc, waitForUpdate, events, curren
     let updated = waitForUpdate();
     failures[6](new Error('差分照会失敗'));
     await updated;
-    assert.ok((await current.getChildren()).find(r => r.label === '差分照会失敗'));
+    const failedRows = await current.getChildren();
+    assert.ok(failedRows.find(r => r.label === '差分照会失敗'));
+    assert.equal(failedRows.find(r => r.label === '記事 ID').description, '確認できません',
+        'once the lookup has failed, the ID field says so until it is looked up again');
     await refreshWith([doc, candidate(42)]);
     const rechecking = await current.getChildren();
     assert.equal(lookups.length, 8, 'the same candidates are looked up again');
