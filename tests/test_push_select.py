@@ -60,6 +60,35 @@ def preview(file, capsys):
     return json.loads(capsys.readouterr().out)['documents']
 
 
+def bodies(file, capsys):
+    capsys.readouterr()
+    with patch.object(sys, 'argv', ['esync', 'diff', '--json', '--bodies', '--', file]):
+        main()
+    return json.loads(capsys.readouterr().out)['documents']
+
+
+def test_preview_bodies_compare_last_sync_with_local_and_remote_changes(project, capsys):
+    root, remote = project
+    [doc] = preview('docs/a.md', capsys)
+    assert 'base_body' not in doc and 'local_body' not in doc, 'bodies are only added on request'
+    [doc] = bodies('docs/a.md', capsys)
+    assert (doc['base_label'], doc['base_body'], doc['local_body']) == ('新規作成', '', '# docs/a.md')
+
+    assert push('docs/a.md') in (0, None)
+    eid = next(iter(remote))
+    (root / 'docs/a.md').write_text('# docs/a.md\n\nlocal edit', encoding='utf-8')
+    [doc] = bodies('docs/a.md', capsys)
+    assert doc['base_label'] == '前回の同期'
+    assert (doc['base_body'], doc['local_body']) == ('# docs/a.md', '# docs/a.md\n\nlocal edit')
+    assert 'remote_body' not in doc
+
+    remote[eid]['body'] = remote[eid]['body'] + '\n\nremote edit'
+    [doc] = bodies('docs/a.md', capsys)
+    assert doc['remote_base_body'] == '# docs/a.md'
+    assert doc['remote_body'].endswith('remote edit')
+    assert doc['base_body'] == '# docs/a.md', 'the left side stays the last synced text, not the remote edit'
+
+
 def test_preview_keeps_rename_read_only_and_identifies_existing_article(project, capsys):
     root, remote = project
     assert push('docs/a.md') in (0, None)

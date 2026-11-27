@@ -186,6 +186,7 @@ esync status
 esync diff                 # 全文書
 esync diff docs/note.md    # 指定した文書だけ（push と同じ指定方法）
 esync diff --json docs/note.md    # 差分・送信先・記事 ID を JSON で確認
+esync diff --json --bodies docs/note.md    # 比較した本文も含めて JSON で確認（VS Code 拡張が使用）
 ```
 
 文書ごとに、前回の同期からの変更を次の 2 つに分けて表示します。

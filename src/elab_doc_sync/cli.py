@@ -1056,11 +1056,12 @@ def _show_diff(old_text, new_text, old_label, new_label):
     return diff
 
 
-def _show_document_diff(syncer, target, filename, eid, data, uploads, local_path, mapping, links, doc, local_md=None):
+def _show_document_diff(syncer, target, filename, eid, data, uploads, local_path, mapping, links, doc, local_md=None,
+                        bodies=False):
     """1文書の差分を「ローカルの変更」と「eLabFTW 側の変更」に分けて表示する。差分があれば True。
 
     どちらも前回の同期時点と比べるため、eLabFTW が保存時に本文を書き換えた分
-    （箇条書きの記号など）は差分に出ない。
+    （箇条書きの記号など）は差分に出ない。bodies なら比較した本文も doc に入れる。
     """
     if local_md is None:
         local_md = local_path.read_text(encoding="utf-8").strip()
@@ -1073,10 +1074,15 @@ def _show_document_diff(syncer, target, filename, eid, data, uploads, local_path
                   "eLabFTW による書き換えも差分に出ます）:")
             doc["direct_diff"] = _show_diff(remote_md, local_md, "eLabFTW", "ローカル")
             shown = bool(doc["direct_diff"])
-    elif synced_local.strip() != local_md:
-        progress("  ローカルの変更（前回の同期 → 現在のファイル）:")
-        doc["local_diff"] = _show_diff(synced_local.strip(), local_md, "前回の同期", "ローカル")
-        shown = bool(doc["local_diff"])
+        base, base_label = remote_md, "eLabFTW"
+    else:
+        base, base_label = synced_local.strip(), "前回の同期"
+        if base != local_md:
+            progress("  ローカルの変更（前回の同期 → 現在のファイル）:")
+            doc["local_diff"] = _show_diff(base, local_md, "前回の同期", "ローカル")
+            shown = bool(doc["local_diff"])
+    if bodies:
+        doc.update(base_body=base, base_label=base_label, local_body=local_md)
     lines, old_body, new_body = syncer.describe_remote_changes(filename, data, uploads)
     if old_body is not None and old_body != new_body:
         old_md = _remote_markdown({"body": old_body, "content_type": data.get("content_type")}, target)
@@ -1090,6 +1096,8 @@ def _show_document_diff(syncer, target, filename, eid, data, uploads, local_path
             progress(f"    {line}")
         if old_md != new_md:
             doc["remote_diff"] = _show_diff(old_md, new_md, "前回の同期", "eLabFTW")
+            if bodies:
+                doc.update(remote_base_body=old_md, remote_body=new_md)
         shown = True
     return shown
 
@@ -1117,6 +1125,7 @@ def run_diff(args, echo=None) -> CommandResult:
             continue
         mapping = syncer._load_mapping(migrate=False)
         preview = getattr(args, "json", False)
+        bodies = preview and getattr(args, "bodies", False)
         planned = mapping.copy()
         old_names = {}
         preview_error = None
@@ -1154,6 +1163,8 @@ def run_diff(args, echo=None) -> CommandResult:
                     doc["preview_token"] = syncer.preview_token(local_path, eid, local_md, assets_hash, planned, links)
                     if eid is None:
                         doc["local_diff"] = _show_diff("", raw, "/dev/null", label)
+                        if bodies:
+                            doc.update(base_body="", base_label="新規作成", local_body=local_md)
             if eid is None:
                 doc["state"] = "未追跡"
                 res.say(f"━━ {label}（未追跡）━━\n  push で eLabFTW に新規作成されます\n")
@@ -1185,7 +1196,8 @@ def run_diff(args, echo=None) -> CommandResult:
                     failed = True
             res.say(f"  状態: {result['state']}")
             syncer._print_next_actions(result["state"], filename, eid)
-            if _show_document_diff(syncer, target, baseline, eid, data, uploads, local_path, mapping, links, doc, local_md):
+            if _show_document_diff(syncer, target, baseline, eid, data, uploads, local_path, mapping, links, doc, local_md,
+                                   bodies=bodies):
                 has_diff = True
             elif result.get("local_changed"):
                 doc["local_changed"] = True
@@ -2810,6 +2822,8 @@ def build_parser():
     sub.add_parser("init", help="対話的に設定ファイルを作成", parents=[sub_common])
     diff_parser = sub.add_parser("diff", help="前回の同期からのローカルと eLabFTW の変更を表示", parents=[sub_common])
     diff_parser.add_argument("--json", action="store_true", help="送信先、改名予定、差分を JSON で出力")
+    diff_parser.add_argument("--bodies", action="store_true",
+                             help="--json と併用。比較した本文（前回の同期またはeLabFTW、ローカル、eLabFTW 側の変更前後）も出力")
     diff_parser.add_argument("files", nargs="*", help="表示するファイル・ディレクトリ・glob（push と同じ指定。省略時は全文書）")
     diff_parser.add_argument("--regex", action="append", help="表示するファイル名に部分一致する正規表現（複数指定可）")
     sub.add_parser("update", help="ツールを最新版に更新")
