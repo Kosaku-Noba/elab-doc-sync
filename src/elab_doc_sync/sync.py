@@ -28,7 +28,7 @@ from collections import Counter
 
 from .result import progress, error_text
 from .safety import hold_document, DISPLACED_PREFIX, atomic_write, write_json, safe_path, snapshot, local_transaction
-from .client import ELabFTWClient, UploadConfirmationError, public_url, upload_sha256, upload_url
+from .client import ELabFTWClient, UploadConfirmationError, public_url, server_id, upload_sha256, upload_url
 from .config import TargetConfig
 from . import sync_log
 from .merge import has_conflict_markers
@@ -395,7 +395,8 @@ def _download_images(body: str, entity: str, entity_id: int, client: ELabFTWClie
         if not matched_upload:
             # list_uploads にない画像: 絶対 URL に変換して保持
             if not src.startswith(("http://", "https://", "//")) and ("app/download.php" in src or "/uploads/" in src):
-                abs_url = urljoin(str(client.base_url).rstrip("/") + "/", src)
+                # 本文に残る URL なので、接続先の認証情報は含めない。
+                abs_url = urljoin(public_url(client.base_url).rstrip("/") + "/", src)
                 if not preview:
                     progress(f"    画像を絶対 URL に変換: {Path(src).name[:40]}")
                 return link.with_url(abs_url)
@@ -719,20 +720,30 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
 #   experiments → {base_url}/experiments.php?mode=view&id={id}
 # フラグメント部分もキャプチャして逆変換時に保持する
 _ELAB_URL_RE = re.compile(
-    r"(?P<base>https?://[^/]+)/(?P<page>database|experiments)\.php\?mode=view&id=(?P<id>\d+)(?P<fragment>#[^\s)]*)?")
+    # base はサブパスに設置した eLabFTW（https://host/elab）も含む。
+    # リンク先全体がこの形のときだけ一致する。id の後に別のクエリや %xx などが続くリンクは、
+    # ローカルリンクで表せない（別の記事を指すこともある）ので対象にしない（元の URL を残す）。
+    r"(?P<base>https?://[^/?#\s]+(?:/[^?#\s]*?)?)/(?P<page>database|experiments)\.php\?mode=view&id=(?P<id>\d+)"
+    r"(?P<fragment>#\S*)?\Z")
 
 # eLabFTW の entity タイプと URL ページ名の対応
 _ENTITY_TO_PAGE = {"items": "database", "experiments": "experiments"}
 _PAGE_TO_ENTITY = {"database": "items", "experiments": "experiments"}
 
 def _hosts_match(base_url: str, link_base: str) -> bool:
-    """base_url と link_base のホスト部分が完全一致するか判定する。
+    """base_url と link_base のホスト・ポートと設置パスが一致するか判定する（認証情報は比べない）。
 
     前方一致ではなくホスト完全一致を使い、
     elab.example.com と elab.example.co の誤マッチを防ぐ。
     """
     from urllib.parse import urlparse
-    return urlparse(base_url).netloc == urlparse(link_base).netloc
+
+    # 接続先の認証情報は比較に含めない（本文のリンクには通常付いていない）。同じホストの別のパスに
+    # 設置された eLabFTW は別のサーバーなので、ベースパスまで比べる。
+    def key(url):
+        parsed = urlparse(public_url(url))
+        return parsed.netloc.lower(), parsed.path.rstrip("/")
+    return key(base_url) == key(link_base)
 
 
 class LinkTargets:
@@ -861,7 +872,7 @@ def _rewrite_elab_links_to_local(body: str, base_url: str,
 
     each モード専用。merge モードでは mapping が空のため変換は行われない。
 
-    対象: [text](https://elab.example.com/items.php?mode=view&id=42)
+    対象: [text](https://elab.example.com/database.php?mode=view&id=42)（実験ノートは experiments.php）
     → [text](./file.md)  (同一ターゲット内)
     → [text](../other_dir/file.md)  (他ターゲット)
 
@@ -897,6 +908,15 @@ def _rewrite_elab_links_to_local(body: str, base_url: str,
         link_entity = _PAGE_TO_ENTITY.get(link_page, link_page)  # → "items" or "experiments"
         link_id = int(match.group("id"))
         fragment = match.group("fragment") or ""  # #section など
+        # 括弧の対応がとれないフラグメント（数や順序が合わない）は、ローカルリンクに書き戻すと
+        # リンク先が変わるので変換しない。
+        depth = 0
+        for char in fragment:
+            depth += {"(": 1, ")": -1}.get(char, 0)
+            if depth < 0:
+                break
+        if depth != 0:
+            return link.original
 
         # ホスト完全一致でなければスキップ（外部 eLabFTW リンク）
         if not _hosts_match(base_url, link_base):
@@ -1259,7 +1279,8 @@ def _localize_attachment_links(body, uploads, directory, source, base_url, entit
         if local is None:
             base_path = urlsplit(base_url).path.rstrip("/")
             if link.url.startswith(("/app/download.php?", "/api/v2/", base_path + "/app/download.php?", base_path + "/api/v2/")):
-                site = urlsplit(base_url)
+                # 本文に残る URL なので、接続先の認証情報は含めない。
+                site = urlsplit(public_url(base_url))
                 return link.with_url(f"{site.scheme}://{site.netloc}{link.url}")
             return link.original
         destination = _html.escape(local, quote=False)
@@ -1517,7 +1538,8 @@ class EachDocsSyncer:
             # 接続先を変える前の紐付けは、別サーバーの ID を指すため使わない
             try:
                 state = syncer._state(name)
-                return state is None or (state["server"] == str(syncer.client.base_url) and state["entity"] == syncer.entity)
+                return state is None or (server_id(state["server"]) == server_id(syncer.client.base_url)
+                                         and state["entity"] == syncer.entity)
             except (OSError, ValueError, KeyError, TypeError, AttributeError):
                 return False
 
@@ -1919,7 +1941,7 @@ class EachDocsSyncer:
             assets_hash = self._compute_assets_hash(raw_body, filename)
         atomic_write(self.hash_dir / f"{filename}.assets_hash", assets_hash + "\n")
         write_json(self.hash_dir / f"{filename}.state.json", {
-            "version": 1, "server": str(self.client.base_url), "entity": self.entity,
+            "version": 1, "server": server_id(self.client.base_url), "entity": self.entity,
             "profile": self.target.profile, "team": self.target.team, "body_format": self.target.body_format,
             "local_hash": _compute_hash(raw_body), "assets_hash": assets_hash,
             "meta_hash": _compute_meta_hash(Path(filename).stem, self.target.category, self.target.tags),
@@ -1997,7 +2019,9 @@ class EachDocsSyncer:
         state = self._state(filename)
         if state:
             write_json(self.hash_dir / f"{filename}.state.json", {
-                **state, "remote": self._remote_signature(data, uploads),
+                # 以前の版が記録した接続先（認証情報付きのことがある）は、書き直すときに除く。
+                **state, "server": server_id(state.get("server") or self.client.base_url),
+                "remote": self._remote_signature(data, uploads),
                 **({} if metadata_pending else {"meta_hash": meta_hash}),
             })
 
@@ -2014,7 +2038,7 @@ class EachDocsSyncer:
             uploads = self.client.list_uploads(self.entity, eid) if uploads is None else uploads
             result.update(data=data, uploads=uploads)
             state = self._state(filename)
-            if state and (state["server"] != str(self.client.base_url) or state["entity"] != self.entity
+            if state and (server_id(state["server"]) != server_id(self.client.base_url) or state["entity"] != self.entity
                           or state.get("profile", self.target.profile) != self.target.profile
                           or state.get("team", self.target.team) != self.target.team):
                 raise ValueError("接続先が前回同期時と異なります。別の状態ディレクトリを指定してください")
@@ -2404,7 +2428,7 @@ class EachDocsSyncer:
             try:
                 if force and result.get("data") is not None:
                     snapshot(self.project_root, [], "強制push前のリモート本文", remote={
-                        "server": str(self.client.base_url), "entity": self.entity, "id": eid,
+                        "server": server_id(self.client.base_url), "entity": self.entity, "id": eid,
                         "title": result["data"].get("title"), "body": result["data"].get("body"),
                         "content_type": result["data"].get("content_type"),
                     })

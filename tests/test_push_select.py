@@ -398,7 +398,7 @@ def test_pull_error_hides_credentials_in_urls(project, capsys):
     root, remote = project
     assert push('docs/a.md') in (0, None)
     CLIENTS[0].get_item.side_effect = ConnectionError(
-        "Max retries exceeded with url: https://us'er:se'c\" ret@example.test:9/api/v2/items/1")
+        "Max retries exceeded with url: https://us'er:se'c\"ret@example.test:9/api/v2/items/1")
     capsys.readouterr()
     with patch.object(sys, 'argv', ['esync', 'pull', '--json', '--dry-run', '--', 'docs/a.md']):
         try:
@@ -407,7 +407,7 @@ def test_pull_error_hides_credentials_in_urls(project, capsys):
             pass
     out, err = capsys.readouterr()
     for text in (out, err):
-        assert 'se\'c' not in text and 'us\'er' not in text and ' ret@' not in text, 'hide credentials with quotes and spaces'
+        assert 'se\'c' not in text and 'us\'er' not in text, 'hide old-style credentials with quotes in errors'
     assert 'https://***@example.test:9' in json.loads(out)['documents'][0]['error']
     assert 'https://***@example.test:9' in err
 
@@ -598,3 +598,166 @@ def test_clone_hides_url_credentials(tmp_path, monkeypatch, capsys):
                            echo=lambda message, stderr=False: print(message))
     assert result.data['server'] == 'https://elab.example.test'
     assert 'secret' not in json.dumps(result.data) + capsys.readouterr().out
+
+
+def test_pulled_links_and_state_files_do_not_keep_url_credentials(project, capsys):
+    root, remote = project
+    CLIENTS[0].base_url = 'https://user:secret@example.test'
+    assert push('docs/a.md') in (0, None)
+    [eid] = remote
+    state = root / '.ids' / 'a.md.state.json'
+    states = list(root.glob('.ids/**/a.md.state.json'))
+    assert states and all('secret' not in p.read_text(encoding='utf-8') for p in states)
+    # 添付一覧にない画像・添付のリンクは、接続先 URL を補った絶対 URL になる。認証情報は含めない。
+    remote[eid]['body'] = '![img](app/download.php?f=x.png&storage=1)\n\n[doc](/app/download.php?f=y.pdf&storage=1)'
+    code, data = pull_json('--', 'docs/a.md', capsys=capsys)
+    body = (root / 'docs/a.md').read_text(encoding='utf-8')
+    assert 'secret' not in body and 'user:' not in body
+    assert 'https://example.test/app/download.php?f=x.png' in body
+
+
+def test_unmatched_attachment_links_become_absolute_without_credentials(tmp_path):
+    from pathlib import Path as _Path
+    from elab_doc_sync.sync import _localize_attachment_links
+    body = '[doc](/app/download.php?f=y.pdf&storage=1)'
+    result = _localize_attachment_links(body, [], tmp_path / 'att', tmp_path / 'docs/a.md',
+                                        'https://user:secret@example.test', 'items', 1)
+    assert result == '[doc](https://example.test/app/download.php?f=y.pdf&storage=1)'
+
+
+def test_old_state_files_with_credentials_still_match_the_server(project, capsys):
+    root, remote = project
+    CLIENTS[0].base_url = 'https://user:secret@example.test'
+    assert push('docs/a.md') in (0, None)
+    [state] = list(root.glob('.ids/**/a.md.state.json'))
+    data = json.loads(state.read_text(encoding='utf-8'))
+    data['server'] = 'https://user:secret@example.test'  # 以前の版が記録した形
+    state.write_text(json.dumps(data), encoding='utf-8')
+    [doc] = preview('docs/a.md', capsys)
+    assert doc.get('error') is None and doc['entity_id'] is not None
+
+
+def test_url_helpers_ignore_credentials():
+    from elab_doc_sync.sync import _hosts_match
+    from elab_doc_sync.search import entity_url, _server_key
+    from elab_doc_sync.mcp_server import _scrub
+    assert _hosts_match('https://u:p@Elab.Example.test', 'https://elab.example.test')
+    assert entity_url('https://u:p@h.test/', 'items', 3) == 'https://h.test/database.php?mode=view&id=3'
+    assert _server_key('https://u:p@H.test/x/') == _server_key('https://h.test/x')
+    assert _scrub({'server': 'https://u:p@h.test', 'messages': ['接続先はhttps://a:b$c@h.test/x']}, []) == \
+        {'server': 'https://***@h.test', 'messages': ['接続先はhttps://***@h.test/x']}
+    assert _scrub({'https://k:v@h.test': 1}, []) == {'https://***@h.test': 1}, 'mask URLs in dictionary keys too'
+    text = '資料 https://example.test を参照。\n担当者 admin@example.test'
+    assert _scrub(text, []) == text, 'do not mask past the URL'
+    assert not _hosts_match('https://h.test/a', 'https://h.test/b'), 'another installation on the same host'
+    assert _hosts_match('https://u:p@h.test/a/', 'https://h.test/a')
+
+
+def test_merging_pull_rewrites_an_old_state_server_without_credentials(project, capsys):
+    root, remote = project
+    CLIENTS[0].base_url = 'https://user:secret@example.test'
+    (root / 'docs/a.md').write_text('# a\n\nline1\n\nline2', encoding='utf-8')
+    assert push('docs/a.md') in (0, None)
+    [eid] = remote
+    [state] = list(root.glob('.ids/**/a.md.state.json'))
+    data = json.loads(state.read_text(encoding='utf-8'))
+    data['server'] = 'https://user:secret@example.test'  # 以前の版が記録した形
+    state.write_text(json.dumps(data), encoding='utf-8')
+    (root / 'docs/a.md').write_text('# a\n\nline1 local\n\nline2', encoding='utf-8')
+    remote[eid]['body'] = remote[eid]['body'].replace('line2', 'line2 remote')
+    code, result = pull_json('--', 'docs/a.md', capsys=capsys)
+    assert result['documents'][0]['result'] == 'pulled'
+    assert 'secret' not in state.read_text(encoding='utf-8')
+
+
+def test_url_masking_edges_and_subpath_links():
+    import time
+    from elab_doc_sync.config import _valid_server_url
+    from elab_doc_sync.mcp_server import _scrub
+    from elab_doc_sync.result import redact_url_credentials
+    from elab_doc_sync.sync import _rewrite_elab_links_to_local
+    assert not _valid_server_url('https://a@b:pass@host.test'), 'a raw @ in the user name is rejected'
+    assert _valid_server_url('https://a%40b:pass@host.test')
+    link = 'https://example.test?to=a@example.org'
+    assert redact_url_credentials(link) == link, 'do not mask into the query'
+    assert redact_url_credentials('x https://u:p@h.test#y@z') == 'x https://***@h.test#y@z'
+    assert _scrub({'https://a:1@h.test': 'one', 'https://b:2@h.test': 'two'}, []) == \
+        {'https://***@h.test': 'one', 'https://***@h.test (2)': 'two'}, 'keep both values after masking keys'
+    started = time.monotonic()
+    redact_url_credentials('a' * 200_000 + '://' + 'b' * 200_000)
+    assert time.monotonic() - started < 1, 'linear in the text length'
+    body = '[b](https://example.test/a/database.php?mode=view&id=7) [c](https://example.test/b/database.php?mode=view&id=7)'
+    result = _rewrite_elab_links_to_local(body, 'https://user:pw@example.test/a', {'b.md': 7}, 'items')
+    assert result == '[b](./b.md) [c](https://example.test/b/database.php?mode=view&id=7)'
+
+
+def test_masking_diff_lines_and_old_style_userinfo_and_query_links():
+    from elab_doc_sync.mcp_server import _scrub
+    from elab_doc_sync.sync import _rewrite_elab_links_to_local
+    lines = ['+https://u:secret@h.test/x', '-https://u:secret@h.test/y', ' see https://a@b:secret@h.test/z']
+    assert _scrub(lines, []) == ['+https://***@h.test/x', '-https://***@h.test/y', ' see https://***@h.test/z']
+    body = '[b](https://example.test/a/database.php?mode=view&id=7&lang=ja#section)'
+    assert _rewrite_elab_links_to_local(body, 'https://example.test/a', {'b.md': 7}, 'items') == body, \
+        'keep links whose extra query a local link cannot express'
+
+
+def test_masking_stays_inside_the_url_and_links_match_whole_targets():
+    from elab_doc_sync.mcp_server import _scrub
+    from elab_doc_sync.sync import _rewrite_elab_links_to_local
+    text = '[eLab](https://user:pw@elab.test)（担当：ops@example.org）'
+    assert _scrub(text, []) == '[eLab](https://***@elab.test)（担当：ops@example.org）'
+    body = '[x](https://example.test/database.php?mode=view&id=7%32&lang=ja#s)'
+    assert _rewrite_elab_links_to_local(body, 'https://example.test', {'seven.md': 7}, 'items') == body, \
+        'do not take id=7%32 for article 7'
+    assert _rewrite_elab_links_to_local('[y](https://example.test/database.php?mode=view&id=7#s)',
+                                        'https://example.test', {'seven.md': 7}, 'items') == '[y](./seven.md#s)'
+
+
+def test_accepted_credentials_are_always_masked_and_masking_stops_at_quotes():
+    from elab_doc_sync.config import _valid_server_url
+    from elab_doc_sync.mcp_server import _scrub
+    from elab_doc_sync.sync import _rewrite_elab_links_to_local
+    for url in ('https://user:pa(ss)@elab.test', "https://user:pa'ss@elab.test", 'https://user:パス@elab.test',
+                'https://user:pa,ss@elab.test'):
+        assert not _valid_server_url(url), url
+    accepted = 'https://us.er~1:p%28a%29s!$&*+;=-s@elab.test'
+    assert _valid_server_url(accepted)
+    assert _scrub(f'[x]({accepted}/a)', []) == '[x](https://***@elab.test/a)', 'every accepted form is masked whole'
+    line = '+{"url":"https://elab.test","owner":"ops@example.org"}'
+    assert _scrub(line, []) == line, 'do not mask past a closing quote'
+    body = '[a](https://example.test/database.php?mode=view&id=7#section(1))'
+    assert _rewrite_elab_links_to_local(body, 'https://example.test', {'seven.md': 7}, 'items') == \
+        '[a](./seven.md#section(1))'
+
+
+def test_unbalanced_fragments_and_non_latin1_credentials():
+    from elab_doc_sync.config import _valid_server_url
+    from elab_doc_sync.sync import _rewrite_elab_links_to_local
+    body = '[a](<https://example.test/database.php?mode=view&id=7#sec)end>)'
+    assert _rewrite_elab_links_to_local(body, 'https://example.test', {'seven.md': 7}, 'items') == body
+    assert not _valid_server_url('https://user:%E3%83%91%E3%82%B9@elab.test'), 'Basic auth cannot send Japanese'
+    assert not _valid_server_url('https://user:caf%E9@elab.test')
+    assert _valid_server_url('https://user:pa%28ss%29@elab.test')
+
+
+def test_mcp_error_fields_use_the_broad_mask_and_fragment_order_is_checked():
+    import time
+    from elab_doc_sync.mcp_server import _scrub
+    from elab_doc_sync.result import redact_url_credentials
+    from elab_doc_sync.sync import _rewrite_elab_links_to_local
+    reply = {'warnings': ["エラー: key=value 形式で指定してください: https://u:pa'ss@h.test"], 'error': 'see https://a:b"c@h.test/x'}
+    assert _scrub(reply, [], top=True) == {'warnings': ['エラー: key=value 形式で指定してください: https://***@h.test'],
+                                           'error': 'see https://***@h.test/x'}
+    # 広いマスクは元のキー名で、トップレベルの診断欄にだけ使う。利用者のメタデータの error 欄には通常のマスクを使う。
+    assert _scrub({'warnings': ["x https://u:pa'ss@h.test"]}, ['warn'], top=True) == {'***ings': ['x https://***@h.test']}
+    meta = {'data': {'metadata': {'error': 'https://elab.test?to=a@example.org'}}, 'warnings': []}
+    assert _scrub(meta, [], top=True) == meta
+    from elab_doc_sync.result import error_text
+    started = time.monotonic()
+    error_text(ValueError('a' * 200_000 + ':/' + 'b' * 200_000))
+    assert time.monotonic() - started < 1, 'error_text stays linear'
+    body = '[a](<https://example.test/database.php?mode=view&id=7#sec)mid(end>)'
+    assert _rewrite_elab_links_to_local(body, 'https://example.test', {'seven.md': 7}, 'items') == body
+    started = time.monotonic()
+    redact_url_credentials('a' * 200_000 + ':/' + 'b' * 200_000, loose=True)
+    assert time.monotonic() - started < 1

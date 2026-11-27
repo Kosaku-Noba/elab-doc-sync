@@ -189,6 +189,8 @@ esync diff --json docs/note.md    # 差分・送信先・記事 ID を JSON で�
 esync diff --json --bodies docs/note.md    # 比較した本文も含めて JSON で確認（VS Code 拡張が使用）
 ```
 
+`esync diff` は記事の本文をそのまま表示します（`--json --bodies` の本文も同じ）。本文に認証情報付きの URL が書かれている場合は、出力を共有する前に確認してください。
+
 文書ごとに、前回の同期からの変更を次の 2 つに分けて表示します。
 
 - **ローカルの変更**: 前回同期した時点から、手元で編集した箇所
@@ -333,7 +335,7 @@ export ELABFTW_API_KEY="your_key"
 esync clone --url https://elab.example.com --entity items --id 42 --id 43
 ```
 
-`elab-clone-42/` にプロジェクトディレクトリ一式（`.elab-sync.yaml`・`.gitignore`・取得した文書）が生成されます。`--dir` で名前を変えられます。
+`elab-clone-42/` にプロジェクトディレクトリ一式（`.elab-sync.yaml`・`.gitignore`・取得した文書）が生成されます。`--dir` で名前を変えられます。`--url` にユーザー名・パスワードを含めた場合（`https://user:pass@host`。記号は `(` を `%28` のように `%xx` で書きます。使える文字は [設定ファイル](docs/04_CONFIGURATION.md) の `url` を参照）、生成した `.elab-sync.yaml` にはそれもそのまま保存されます（`.gitignore` で除外されます）。プロジェクトを共有するときは `.elab-sync.yaml` を含めないでください。
 
 ### 別の PC や共同編集者と同じ文書を扱いたい
 
@@ -564,7 +566,7 @@ $$\frac{\partial f}{\partial x} = 2x + 1$$
 詳しくは [セットアップガイド](./setup.md) を参照。
 ```
 
-push 時にローカルリンクが eLabFTW の記事 URL に、pull 時に記事 URL がローカルリンクに変換されます。別のターゲット（`docs_dir`）の文書へのリンクも変換されます（接続先のホストが同じ場合）。未同期の文書へのリンクはそのまま残るので、リンク先を先に push してください。変換の詳細は [同期エンジンの文書間リンクの変換](docs/07_SYNC_ENGINE.md#文書間リンクの変換) を参照してください。
+push 時にローカルリンクが eLabFTW の記事 URL に、pull 時に記事 URL がローカルリンクに変換されます。別のターゲット（`docs_dir`）の文書へのリンクも変換されます（接続先のホスト・ポートと設置パスが同じ場合。認証情報の有無は問いません）。未同期の文書へのリンクはそのまま残るので、リンク先を先に push してください。変換の詳細は [同期エンジンの文書間リンクの変換](docs/07_SYNC_ENGINE.md#文書間リンクの変換) を参照してください。
 
 ### スクリプトや定期実行で使いたい
 

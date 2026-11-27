@@ -266,7 +266,9 @@ _PAGES = {"items": "database", "experiments": "experiments"}
 
 
 def entity_url(base_url: str, entity_type: str, entity_id) -> str:
-    return f"{base_url.rstrip('/')}/{_PAGES[entity_type]}.php?mode=view&id={entity_id}"
+    from .client import public_url
+    # 結果として表示・保存される URL なので、接続先の認証情報は含めない。
+    return f"{public_url(base_url).rstrip('/')}/{_PAGES[entity_type]}.php?mode=view&id={entity_id}"
 
 
 def split_tags(value) -> list[str]:
@@ -285,7 +287,9 @@ def body_markdown(entity: dict) -> str:
 
 def _server_key(url: str) -> tuple[str, str]:
     from urllib.parse import urlparse
-    parsed = urlparse(url.strip())
+    from .client import public_url
+    # 同じ eLabFTW かの判定に、接続先の認証情報は含めない。
+    parsed = urlparse(public_url(url.strip()))
     return (parsed.netloc.lower(), parsed.path.rstrip("/"))
 
 

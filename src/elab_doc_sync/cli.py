@@ -20,12 +20,12 @@ from markdownify import markdownify as html_to_md
 
 from .safety import hold_document, atomic_write, write_json, safe_path, snapshot, local_transaction, project_command, restore, BACKUPS, RECOVERY
 from .config import TargetConfig
-from .client import ELabFTWClient, public_url, upload_sha256
+from .client import ELabFTWClient, public_url, server_id, upload_sha256
 from .config import read_config as load_config, BODY_FORMAT_INIT, _read_yaml_text, update_target_in_yaml, get_client_for_target, append_target_to_yaml, profile_connection, _parse_api_key_env, _valid_server_url
 from .merge import merge_text
 from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _compute_file_hash, _is_image, _normalize_remote_image_urls, _download_attachments, _localize_attachment_links, _linked_article_upload_ids, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
 from . import sync_log
-from .result import CommandResult, cli_echo, progress, error_text, returns_partial_result
+from .result import CommandResult, cli_echo, progress, error_text, redact_url_credentials, returns_partial_result
 from . import update_check
 
 DEFAULT_CONFIG = ".elab-sync.yaml"
@@ -858,13 +858,13 @@ class _PullOutputs:
             directory = root / target.attachments_dir
             syncer = EachDocsSyncer(None, target, root)
             try:
-                server = get_client_for_target(config, target)[0].rstrip("/")
+                server = server_id(get_client_for_target(config, target)[0])
                 for name, eid in syncer._load_mapping(migrate=False).items():
                     state = syncer._state(name)
                     if state is None:
                         self.missing_records.add(self.key(directory))
                         continue
-                    owner_server = str(state.get("server") or server).rstrip("/")
+                    owner_server = server_id(state.get("server") or server)
                     owner = (owner_server, state.get("entity") or target.entity, eid)
                     uploads = state["remote"]["uploads"]
                     if not isinstance(uploads, list):
@@ -979,7 +979,7 @@ def _pull_each_entity(client, syncer, target, project_root, docs_dir,
         if path.exists() and not path.is_file():
             raise ConflictError(f"保存先が通常ファイルではありません: {path}")
         key = outputs.key(path)
-        server = str(client.base_url).rstrip("/")
+        server = server_id(client.base_url)
         source = (server, entity_type, eid, asset, upload_id)
         owner = (server, entity_type, eid)
         owners = outputs.owners.get(key, set())
@@ -1749,7 +1749,7 @@ def _tag_action(res, client, args, entity_type, entity_id, target=None):
     label = f"{_entity_label(entity_type)} #{entity_id}"
     dry_run = getattr(args, "dry_run", False)
     # 別サーバーに同じ種別・ID があり得るため、接続先（ベース URL。API キーは含めない）も返す
-    entry = {"target": target, "server": client.base_url, "entity": entity_type, "entity_id": entity_id}
+    entry = {"target": target, "server": public_url(client.base_url), "entity": entity_type, "entity_id": entity_id}
     res.data["entities"].append(entry)
     if args.tag_action == "list":
         tag_names = _tag_names(client, entity_type, entity_id)
@@ -1788,7 +1788,7 @@ def _tracked_documents(config, project_root, targets):
     docs = []
     for target in targets:
         syncer = _make_syncer(None, target, project_root)
-        server = get_client_for_target(config, target)[0].rstrip("/")
+        server = server_id(get_client_for_target(config, target)[0])
         for name, eid in (syncer._load_mapping(migrate=False) or {}).items():
             # 同期エンジンのキーはファイル名。状態ファイル由来の外部パスは扱わない。
             if Path(name).name != name or name in ("", ".", ".."):
@@ -1799,7 +1799,7 @@ def _tracked_documents(config, project_root, targets):
                 continue  # 同名ファイルが複数ある文書は特定できない
             # 同期後に接続先や種別を変えた紐付けの ID は、別の記事を指す
             state = syncer._state(name)
-            current = state is None or (state["server"] == server and state["entity"] == target.entity)
+            current = state is None or (server_id(state["server"]) == server and state["entity"] == target.entity)
             docs.append((target, path, eid, path.relative_to(syncer.docs_dir).as_posix(), current))
     return docs
 
@@ -1898,7 +1898,7 @@ def run_relate(args, echo=None) -> CommandResult:
         if connection not in clients:
             clients[connection] = ELabFTWClient(*connection)
         _relate_action(res, clients[connection], args.relate_action, etype, eid, [(t, i) for t, i, _ in dests],
-                       dry_run=dry_run, server=connection[0])
+                       dry_run=dry_run, server=public_url(connection[0]))
     return res
 
 
@@ -1986,7 +1986,7 @@ def run_metadata(args, echo=None) -> CommandResult:
 
         for eid, etype in ids:
             label = f"{_entity_label(etype)} #{eid}"
-            entry = {"target": target.title or target.docs_dir, "server": client.base_url, "entity": etype,
+            entry = {"target": target.title or target.docs_dir, "server": public_url(client.base_url), "entity": etype,
                      "entity_id": eid}
             res.data["entities"].append(entry)
             if args.meta_action == "get":
@@ -2031,19 +2031,22 @@ def run_whoami(args, echo=None) -> CommandResult:
         profiles_to_show = [None]
 
     for profile in profiles_to_show:
+        name = redact_url_credentials(profile.name, loose=True) if profile else None
         if profile:
-            res.say(f"[profile: {profile.name}]")
+            res.say(f"[profile: {name}]")
             try:
                 url, api_key, verify_ssl = profile_connection(profile)
             except ValueError as exc:
-                res.data["profiles"].append({"profile": profile.name, "url": profile.url, "error": str(exc)})
-                res.say(f"  エラー: {exc}")
+                reason = error_text(exc)  # 例外文に含まれる URL の認証情報を伏せる
+                res.data["profiles"].append({"profile": name, "url": public_url(profile.url) if profile.url else None,
+                                             "error": reason})
+                res.say(f"  エラー: {reason}")
                 res.say()
                 continue
         else:
             url, api_key, verify_ssl = config.url, config.api_key, config.verify_ssl
             res.say("[default]")
-        info = {"profile": profile.name if profile else None, "url": url, "error": None}
+        info = {"profile": name, "url": public_url(url) if url else None, "error": None}
         res.data["profiles"].append(info)
 
         client = ELabFTWClient(url, api_key, verify_ssl)
@@ -2799,7 +2802,7 @@ def run_entity_status(args, echo=None, confirm=None) -> CommandResult:
         all_ids.extend((client, label, eid, etype) for eid, etype in ids)
 
     def entry(client, label, eid, etype, **kw):
-        item = {"target": label, "server": client.base_url, "entity": etype, "entity_id": eid, **kw}
+        item = {"target": label, "server": public_url(client.base_url), "entity": etype, "entity_id": eid, **kw}
         res.data["entities"].append(item)
         return item
 
@@ -2830,12 +2833,12 @@ def run_entity_status(args, echo=None, confirm=None) -> CommandResult:
                     res.say(f"{head}: すでにステータス #{status_id}（{name}）です")
                 else:
                     entry(client, label, eid, etype, current=name, result="would_change")
-                    res.say(f"{head}: ステータスを {name} から #{status_id} に変更予定（{client.base_url}）")
+                    res.say(f"{head}: ステータスを {name} から #{status_id} に変更予定（{public_url(client.base_url)}）")
             return res
         if len(all_ids) > 1 and not getattr(args, "id", None):
             res.say(f"  対象: {len(all_ids)} 件のエンティティ")
             for client, label, eid, etype in all_ids:
-                res.say(f"    - [{label}] {_entity_label(etype)} #{eid}（{client.base_url}）")
+                res.say(f"    - [{label}] {_entity_label(etype)} #{eid}（{public_url(client.base_url)}）")
             if confirm is None:
                 raise ValueError("複数件のステータス変更には確認が必要です。--id で 1 件に絞ってください")
             if not confirm("  全て変更しますか？ [y/N]: "):
@@ -2868,7 +2871,7 @@ def run_category(args, echo=None) -> CommandResult:
     direct_entity = getattr(args, "entity", None)
 
     action = args.cat_action
-    res = CommandResult(data={"action": action, "server": client.base_url}, echo=echo)
+    res = CommandResult(data={"action": action, "server": public_url(client.base_url)}, echo=echo)
 
     if action == "list":
         entity_type = _normalize_entity(direct_entity) if direct_entity else "items"

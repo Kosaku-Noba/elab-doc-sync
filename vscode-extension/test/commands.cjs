@@ -137,7 +137,12 @@ async function pullAndResolve(api, root, note, calls) {
     await write('diff.json', diff);
     // 代用の esync は mv を実行したとき、この内容に差し替える（紐付けを移した後は取り込み予定になる）。
     await write('pull-dry-after-mv.json', { dry_run: true, documents: [{ ...pulled, path: 'docs/moved.md', result: 'would_pull' }] });
+    await vscode.window.showTextDocument(moved);
     await vscode.commands.executeCommand('esync.refresh');
+    await until(() => {
+        const current = api.statusBar.command?.arguments?.[0];
+        return current?.file.fsPath === moved.fsPath && current.matches.some(match => !match.stale);
+    }, 'wait for the renamed document to appear in the refreshed status');
     before = (await calls()).length;
     await vscode.commands.executeCommand('esync.pull', moved);
     run = (await calls()).slice(before);

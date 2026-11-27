@@ -111,10 +111,47 @@ def redact(text: str, *secrets: str | None) -> str:
     return text
 
 
-# URL に埋め込まれたユーザー名・パスワード（scheme://user:pass@host）。
-# パスワードには引用符や空白も入りうるので、scheme:// から、次の / より前にある最後の @ までを認証情報とみなす
-# （伏せすぎても、認証情報を出すよりよい）。
-_URL_CREDENTIALS = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/]*@")
+# URL に埋め込まれたユーザー名・パスワード（scheme://user:pass@host）の、:// の後ろの部分。
+# 認証情報に使える文字は URL_USERINFO_CHARS（設定の読み込みも同じ文字だけを受け付ける。ほかは %xx と書く）。
+# これで設定が受け付けた認証情報は必ず全体を伏せ、引用符・カンマ・括弧・空白・全角文字の先までは伏せない。
+# ホストとの区切りはその範囲の最後の @（記事本文などには生の @ を含む旧い形式もありうる）。
+URL_USERINFO_CHARS = "A-Za-z0-9._~%!$&*+;=:-"
+_URL_USERINFO = re.compile(rf"[@{URL_USERINFO_CHARS}]*[{URL_USERINFO_CHARS}]@")
+# エラー文・警告用。設定の検証を通らない URL（記事本文や入力値由来など）も入りうるので、次の / か空白より前の
+# 最後の @ までを、文字の種類を問わず伏せる（短い文なので、伏せすぎても読める）。空白を含む認証情報は伏せきれない。
+_LOOSE_USERINFO = re.compile(r"[^/\s]*@")
+_SCHEME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+.-")
+
+
+def redact_url_credentials(text: str, *, loose: bool = False) -> str:
+    """文中の URL に含まれるユーザー名・パスワード（scheme://user:pass@）を *** にする。
+
+    日本語の直後に続く URL も対象にする。長い本文でも線形時間で済むよう、:// の位置から調べる。
+    loose=True（エラー文・警告用）では、次の / か空白より前の最後の @ までを、文字の種類を問わず伏せる。
+    """
+    userinfo = _LOOSE_USERINFO if loose else _URL_USERINFO
+    parts = []
+    last = 0
+    start = text.find("://")
+    while start != -1:
+        scheme = start
+        while scheme > 0 and text[scheme - 1] in _SCHEME_CHARS:
+            scheme -= 1
+        # スキームは英字で始まる。差分の行頭の + や - などはスキームに含めない。
+        while scheme < start and not text[scheme].isalpha():
+            scheme += 1
+        rest = start + 3
+        found = userinfo.match(text, rest)
+        if scheme < start and text[scheme].isalpha() and found:
+            parts.append(text[last:rest] + "***@")
+            last = found.end()
+            start = text.find("://", last)
+        else:
+            start = text.find("://", rest)
+    parts.append(text[last:])
+    return "".join(parts)
+
+
 
 
 def error_text(exc: Exception, api_key: str | None = None) -> str:
@@ -123,4 +160,4 @@ def error_text(exc: Exception, api_key: str | None = None) -> str:
     if status is not None:
         reason = {401: "認証エラー", 403: "権限がありません", 404: "見つかりません"}.get(status)
         return f"HTTP {status}" + (f"（{reason}）" if reason else "")
-    return _URL_CREDENTIALS.sub(r"\1***@", redact(str(exc), api_key))
+    return redact_url_credentials(redact(str(exc), api_key), loose=True)

@@ -11,7 +11,7 @@ import yaml
 
 from . import cli
 from .config import _parse_api_key_env, _read_yaml_text
-from .result import CommandResult, error_text, redact
+from .result import CommandResult, error_text, redact, redact_url_credentials
 from .safety import project_command, safe_path
 
 
@@ -193,14 +193,30 @@ def _secrets(config):
     return tuple(set(secrets) - {""})
 
 
-def _scrub(value, secrets):
+# 応答のトップレベルにある、コマンドが生成した診断の欄。入力値や例外文をそのまま含みうるので、エラー文用の
+# 広いマスクを使う。入れ子の error は各コマンドが error_text で作るので、利用者のメタデータなど入れ子の欄には通常のマスクを使う。
+_ERROR_FIELDS = frozenset({"warnings", "error", "errors"})
+
+
+def _scrub(value, secrets, loose=False, top=False):
     if isinstance(value, str):
-        return redact(value, *secrets)
+        # API キーに加え、設定が受け付ける形式の URL 認証情報を、応答の生成時にも伏せる。
+        return redact_url_credentials(redact(value, *secrets), loose=loose)
     if isinstance(value, list):
-        return [_scrub(item, secrets) for item in value]
+        return [_scrub(item, secrets, loose) for item in value]
     if isinstance(value, dict):
-        return {redact(key, *secrets) if key in secrets else key: _scrub(item, secrets)
-                for key, item in value.items()}
+        scrubbed = {}
+        for key, item in value.items():
+            # 広いマスクを使うかは、伏せる前の元のキーで決める。
+            diagnostic = loose or (top and key in _ERROR_FIELDS)
+            if isinstance(key, str):
+                key = _scrub(key, secrets)
+                # 伏せた結果が別のキーと重なっても値を失わないよう、番号を付けて残す。
+                base, n = key, 2
+                while key in scrubbed:
+                    key, n = f"{base} ({n})", n + 1
+            scrubbed[key] = _scrub(item, secrets, diagnostic)
+        return scrubbed
     return value
 
 
@@ -239,7 +255,7 @@ def create_server(config, clone_url=None):
             result = getattr(exc, "partial_result", None) or CommandResult()
             reason = "設定の YAML が不正です" if isinstance(exc, yaml.YAMLError) else error_text(exc)
             result.fail(reason, 2 if isinstance(exc, ValueError) else 1)
-        payload = _scrub(result.to_dict(), secrets)
+        payload = _scrub(result.to_dict(), secrets, top=True)
         return types.CallToolResult(isError=bool(result.exit_code), structuredContent=payload,
                                     content=[types.TextContent(type="text", text=json.dumps(payload, ensure_ascii=False))])
 

@@ -15,7 +15,7 @@
 | クラス | 説明 |
 |---|---|
 | `EachDocsSyncer` | 1ファイル=1エンティティの同期。`inspect()` で状態判定、`sync()` で push、pull・diff・mv・rm・link の処理を持つ |
-| `LinkTargets` | 同じホストの全ターゲットで追跡中の文書と、ローカルパスの対応 |
+| `LinkTargets` | 接続先のホスト・ポートと設置パスが同じ全ターゲットで追跡中の文書と、ローカルパスの対応（認証情報は比べない） |
 | `ConflictError` | リモート競合時に発生する例外 |
 
 #### 内部関数 — 画像・動画・ファイル処理
@@ -46,7 +46,7 @@
 | `_rewrite_local_links(body, entity, base_url, mapping, all_mappings=None, *, source=None, links=None)` | `[text](./file.md)` → eLabFTW URL に変換。`links` があれば、`source` からの相対パスで全ターゲットの文書を解決 |
 | `_rewrite_elab_links_to_local(body, base_url, mapping, entity, all_mappings=None, target_docs_dir="", *, source=None, links=None)` | eLabFTW URL → `[text](./file.md)` に逆変換。`links` があれば、`source` からリンク先の実際の場所への相対パスにする |
 | `EachDocsSyncer.link_targets(mapping=None)` | `LinkTargets` を作る |
-| `_hosts_match(base_url, link_base)` | ホスト完全一致判定（urlparse） |
+| `_hosts_match(base_url, link_base)` | ホスト・ポートと設置パスの一致判定（認証情報は除く。urlparse） |
 
 #### 内部関数 — カウント・判定
 
@@ -220,7 +220,10 @@ YAML 設定読み込み・バリデーション。
 - `run_clone` は次の順に確かめる。(1) 本実行のときだけ、作成先のロックと未完了の復旧記録を確かめ、問題があれば例外になる（例外の種類と CLI の終了コードは原因による。`dry_run=True` では確かめない）。(2) `--url` が [設定ファイル](04_CONFIGURATION.md) の `url` の条件を満たさなければ、作成先にプロジェクトのファイルを作らずに `exit_code` 2 の `CommandResult` を返す。(3) `ELABFTW_API_KEY` が未設定または空白だけなら `exit_code` 1 を返す。(2)・(3) では理由を `warnings` に入れ、`data` は `dry_run` と空の `documents` だけで `server` を含まない。それ以降の結果では、`data["server"]` は認証情報を除いた URL
 - 設定の誤り・通信の失敗など、上記以外のエラーは `CommandResult` にならず例外として呼び出し元に伝わる（CLI は終了コード 2 / 1 にする）。呼び出し側で例外を処理する。結果を作った後の例外には `partial_result` が付く。リモート書き換え系の各件は送信前に記録され、`result` のない件は完了未確認（応答を受け取れなかった場合を含む）なので、再試行の前に実際の状態を確認する（[設計判断 13.4](12_DESIGN_DECISIONS.md)）
 - `run_*` が使う `read_config` は設定の検証失敗を `ConfigError`（`ValueError` の派生型）で通知する。互換 API の `config.load_config` は従来どおり理由を表示して `SystemExit(2)` を送出する
-- 書き換え系（`tag`・`relate`・`metadata`・`category`・`entity-status`）の各件と `run_category` の `data` には、接続先のベース URL `server` が入る
+- 書き換え系（`tag`・`relate`・`metadata`・`category`・`entity-status`）の各件と `run_category` の `data` には、接続先のベース URL `server` が入る。`server`、`run_whoami` の `profiles[].url` など、結果に含まれる接続先 URL からはユーザー名・パスワードを除く（設定が `https://user:pass@elab.example.com` なら `https://elab.example.com`）。
+- MCP でコマンドが返した警告は `structuredContent.warnings[]`、文書ごとの失敗理由は `data` 内の各文書の `error` で確認する。`whoami` はプロファイルごとに接続を試みるため、`exit_code: 0` で `warnings` が空でも、接続できなかった理由が `data.profiles[].error` に入る。SDK が実行前に引数を拒否すると `structuredContent` は返らない。この場合は `isError` と `content` を確認する。
+- MCP は応答の文字列と辞書のキーに含まれる URL の認証情報を伏せる。マスク後のキーが重なった場合は `https://***@host (2)` のように番号を付け、両方の値を残す。本文や利用者のメタデータ（`metadata.error` を含む）では、設定で使える文字で書かれた認証情報を伏せる。クエリやフラグメント内の `@` は保持する。生の引用符・括弧・カンマ・空白・全角文字などを含む認証情報は残る場合がある。
+- コマンドが生成する例外の診断文と MCP のトップレベルの `warnings[]` では、`scheme://` の直後から最初の `/` または空白までにある最後の `@` までを伏せる。このため `https://host?to=a@example.org` は `https://***@example.org` と表示されることがある。空白を含む認証情報は伏せきれない場合がある。
 
 | 関数 | `data` |
 |---|---|
