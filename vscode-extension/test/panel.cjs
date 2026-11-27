@@ -94,7 +94,8 @@ exports.run = async function () {
         const doc = { file: 'new.md', path: 'new.md', entity: 'items', entity_id: null, target: 'Lab',
             state: '未追跡', remote_changes: [], next_actions: [] };
         let lookups = 0;
-        let rejectLookup;
+        /** @type {(error: Error) => void} */
+        let rejectLookup = () => {};
         const current = new CurrentDocumentProvider(status, () => ({ file }), currentEvents, async () => {
             if (++lookups === 1) return { documents: [{ ...doc, entity_id: 17, renamed_from: 'old.md', state: 'リネーム予定' }] };
             return new Promise((resolve, reject) => { rejectLookup = reject; });

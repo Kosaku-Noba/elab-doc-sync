@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.5.0（未リリース）
+
+### 追加
+
+- VS Code 拡張「esync for eLabFTW」（`vscode-extension/`、0.3.0）を追加した。Markdown の差分を確認してから文書単位で push でき、サイドバーに開いている文書とプロジェクト全体の同期状態を表示する。CLI 1.5.0 以降が必要で、古い CLI を使っているとワークスペースを開いたときに警告する。
+- `esync status --json`・`esync diff --json` で、文書の状態・送信先・差分を JSON で出力できるようにした。`esync push --expect-preview <TOKEN>` は、`diff --json` で確認した内容から文書・設定・送信先が変わっていない場合だけ、その1文書を送信する。
+
 ## v1.4.0 (2026-11-24)
 
 ### 追加

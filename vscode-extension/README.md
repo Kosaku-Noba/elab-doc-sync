@@ -4,11 +4,13 @@ VS Code の左端にある esync アイコンから、編集中の Markdown の�
 
 ## セットアップ
 
-1. elab-doc-sync のリポジトリ直下で `uv tool install --force .` を実行します。`esync push --help` に `--expect-preview` があり、`esync status --help` と `esync diff --help` に `--json` がある版を使います。
-2. VS Code 1.85 以降のコマンドパレットで「Extensions: Install from VSIX...」を選び、`esync-0.2.1.vsix` を開きます。ソースから使う場合は、先に下の「VSIX の作成」を実行し、`dist/` にできたファイルを選びます。
+1. elab-doc-sync のリポジトリ直下で `uv tool install --force .` を実行します。`esync --version` が 1.5.0 以降の版を使います。古い版や版を確認できない場合は、ワークスペースを開いたときに警告が表示されます。
+2. VS Code 1.85 以降のコマンドパレットで「Extensions: Install from VSIX...」を選び、`esync-0.3.0.vsix` を開きます。ソースから使う場合は、先に下の「VSIX の作成」を実行し、`dist/` にできたファイルを選びます。
 3. `.elab-sync.yaml` があるディレクトリをワークスペースフォルダーとして開きます。接続先や API キーは CLI と共通です。環境変数を使う場合は、VS Code の拡張ホストからも参照できるようにしてください。
 
 信頼済みのファイルシステム上のワークスペースで、PATH 上の `esync` を使います。別の環境にインストールした場合は、VS Code のユーザー設定 `esync.executable` に実行ファイルの絶対パスを指定できます。リポジトリで `uv sync` 済みなら、その `.venv/bin/esync`（Windows は `.venv\Scripts\esync.exe`）も指定できます。
+
+同期状態や差分の取得は、既定で 120 秒たつと打ち切ります。待ち時間は設定 `esync.timeoutSeconds` で変更でき、0 にすると打ち切りません。差分の取得中は通知の「キャンセル」で中止できます。push は記事を中途半端に更新しないよう、時間で打ち切らず、キャンセルもできません。CLI の警告やエラーは出力「esync」に記録されます。
 
 ## 使い方
 
@@ -25,11 +27,18 @@ VS Code の左端にある esync アイコンから、編集中の Markdown の�
 - 下の「プロジェクト全体の同期一覧」には「送信待ち」「取得待ち」「競合」などの状態ごとに文書が並びます。ローカルにある文書は、行をクリックすると編集でき、行にポインターを合わせて差分ボタンを押すとプレビューできます。
 - 送信先サーバーは差分タブの先頭で確認できます。パネル右上の更新ボタンで最新の同期状態を取得できます。取得中は前回の一覧が表示されたままになります。一覧の更新に失敗した場合、エラーの下には前回取得した一覧が表示されます。本文を取り込むには CLI の `esync pull` を使います。Markdown の保存後と push の後にも一覧を更新します。
 
+## 開発
+
+このディレクトリで `npm install` を実行してから、次のコマンドを使います。
+
+- `npm run check`: JSDoc の型注釈を TypeScript で検査します。
+- `npm test`: 拡張ホストでテストを実行します。VS Code を自動で取得します。インストール済みの VS Code を使う場合は、環境変数 `VSCODE_EXECUTABLE` に実行ファイルのパスを指定します。画面のない Linux では `xvfb-run -a npm test` で実行します。
+
 ## VSIX の作成
 
 このディレクトリで次を実行します。
 
 ```sh
 mkdir -p dist
-npx --yes @vscode/vsce package --no-dependencies --out dist/esync-0.2.1.vsix
+npx --yes @vscode/vsce package --no-dependencies --out dist/esync-0.3.0.vsix
 ```

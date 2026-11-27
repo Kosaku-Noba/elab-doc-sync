@@ -2,8 +2,18 @@ const vscode = require('vscode');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
+/**
+ * ツリーの行。文書・プロジェクト・子の行を持たせる。
+ * @typedef {vscode.TreeItem & { folder?: any, doc?: any, projectRoot?: any, children?: vscode.TreeItem[] }} Item
+ */
+
+/** @param {string} label @param {vscode.TreeItemCollapsibleState} [state] @returns {Item} */
+function treeItem(label, state) {
+    return new vscode.TreeItem(label, state);
+}
+
 function messageItem(message, detail) {
-    const item = new vscode.TreeItem(message);
+    const item = treeItem(message);
     item.tooltip = detail || message;
     item.iconPath = new vscode.ThemeIcon('info');
     return item;
@@ -31,7 +41,7 @@ function candidateSet(documents) {
 }
 
 function documentItem(folder, doc) {
-    const item = new vscode.TreeItem(doc.file);
+    const item = treeItem(doc.file);
     item.description = doc.path || doc.target;
     item.tooltip = [doc.target, doc.entity_id && '#' + doc.entity_id, doc.error,
         ...doc.remote_changes, ...doc.next_actions].filter(Boolean).join('\n');
@@ -46,7 +56,7 @@ function documentItem(folder, doc) {
 }
 
 function field(label, value) {
-    const item = new vscode.TreeItem(label);
+    const item = treeItem(label);
     item.description = value;
     item.tooltip = value;
     return item;
@@ -55,7 +65,7 @@ function field(label, value) {
 function detailItems(folder, doc) {
     const source = documentItem(folder, doc);
     const entity = doc.entity === 'items' ? 'リソース' : '実験ノート';
-    const action = new vscode.TreeItem('差分を確認');
+    const action = treeItem('差分を確認');
     action.iconPath = new vscode.ThemeIcon('diff');
     action.command = { command: 'esync.previewFromPanel', title: '差分を確認', arguments: [source] };
     const id = doc.entity_id == null ? '未割り当て' : '#' + doc.entity_id;
@@ -172,7 +182,7 @@ class StatusProvider {
         const folders = this.projects();
         if (!item && folders.length > 1) {
             return folders.map(folder => {
-                const root = new vscode.TreeItem(folder.name, vscode.TreeItemCollapsibleState.Collapsed);
+                const root = treeItem(folder.name, vscode.TreeItemCollapsibleState.Collapsed);
                 root.projectRoot = folder;
                 return root;
             });
@@ -187,7 +197,7 @@ class StatusProvider {
         const groups = new Map();
         for (const doc of documents) {
             if (!groups.has(doc.state)) {
-                const group = new vscode.TreeItem(doc.state, vscode.TreeItemCollapsibleState.Expanded);
+                const group = treeItem(doc.state, vscode.TreeItemCollapsibleState.Expanded);
                 group.children = [];
                 groups.set(doc.state, group);
                 rows.push(group);
@@ -242,7 +252,7 @@ class CurrentDocumentProvider {
                 }
             }
         }
-        const name = new vscode.TreeItem(path.basename(file.fsPath));
+        const name = treeItem(path.basename(file.fsPath));
         name.resourceUri = file;
         name.tooltip = file.fsPath;
         name.command = { command: 'vscode.open', title: '文書を開く', arguments: [file] };
@@ -255,7 +265,7 @@ class CurrentDocumentProvider {
             const details = detailItems(folder, doc);
             if (matches.length === 1) rows.push(...details);
             else {
-                const group = new vscode.TreeItem(doc.target, vscode.TreeItemCollapsibleState.Expanded);
+                const group = treeItem(doc.target, vscode.TreeItemCollapsibleState.Expanded);
                 group.description = folder.name + ' / ' + doc.entity;
                 group.children = details;
                 rows.push(group);

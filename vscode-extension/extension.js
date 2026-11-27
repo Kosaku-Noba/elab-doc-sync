@@ -1,42 +1,23 @@
 const vscode = require('vscode');
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
 const { createHash } = require('node:crypto');
 const { StatusProvider, CurrentDocumentProvider } = require('./status');
+const { createRunner, checkVersion } = require('./cli');
 
 const configName = '.elab-sync.yaml';
 const previewScheme = 'esync-preview';
-
-function run(folder, args) {
-    const executable = vscode.workspace.getConfiguration('esync').get('executable', 'esync');
-    return new Promise((resolve, reject) => {
-        const child = spawn(executable, args, {
-            cwd: folder.uri.fsPath,
-            env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
-            stdio: ['ignore', 'pipe', 'pipe'],
-            windowsHide: true,
-        });
-        let stdout = '';
-        let stderr = '';
-        child.stdout.setEncoding('utf8').on('data', data => { stdout += data; });
-        child.stderr.setEncoding('utf8').on('data', data => { stderr += data; });
-        child.on('error', error => reject(error.code === 'ENOENT'
-            ? new Error('esync を起動できません。設定 esync.executable で実行ファイルを指定してください。')
-            : error));
-        child.on('close', (code, signal) => {
-            if (signal) reject(new Error('esync が中断されました (' + signal + ')'));
-            else resolve({ code, stdout, stderr });
-        });
-    });
-}
+const output = vscode.window.createOutputChannel('esync');
+const settings = () => vscode.workspace.getConfiguration('esync');
+const run = createRunner(() => settings().get('executable', 'esync'), line => output.appendLine(line),
+    () => Math.max(0, settings().get('timeoutSeconds', 120)) * 1000);
 
 async function fingerprint(file) {
     return createHash('sha256').update(await fs.readFile(file.fsPath)).digest('hex');
 }
 
-async function loadDiff(folder, file, options) {
-    const result = await run(folder, ['diff', '--json', ...options, '--', file.fsPath]);
+async function loadDiff(folder, file, options, token) {
+    const result = await run(folder, ['diff', '--json', ...options, '--', file.fsPath], { token });
     if (result.code !== 0 && !(result.code === 1 && result.stdout.trim())) {
         throw new Error(result.stderr.trim() || '差分を取得できませんでした。');
     }
@@ -81,7 +62,7 @@ async function activate(context) {
         if (entry) return { file: entry.file, folder: entry.folder };
         if (doc.uri.scheme === 'file' && doc.languageId === 'markdown') return { file: doc.uri };
     }, currentEvents, loadDiff);
-    const output = vscode.window.createOutputChannel('esync');
+    let checkedExecutable;
 
     function refresh() {
         status.invalidate();
@@ -103,9 +84,28 @@ async function activate(context) {
         projects = found.filter(Boolean);
         await vscode.commands.executeCommand('setContext', 'esync.hasProjects', projects.length > 0);
         refresh();
+        checkCli();
     }
 
-    async function preview(uri, row) {
+    // 古い CLI では差分や push が途中で失敗するので、使い始める前に一度だけ知らせる。
+    async function checkCli() {
+        const executable = settings().get('executable', 'esync');
+        if (!projects.length || executable === checkedExecutable) return;
+        checkedExecutable = executable;
+        let problem;
+        try {
+            problem = await checkVersion(run, projects[0]);
+        } catch (error) {
+            problem = error.message;
+        }
+        if (!problem || executable !== settings().get('executable', 'esync')) return;
+        const open = '設定を開く';
+        if (await vscode.window.showWarningMessage(problem, open) === open) {
+            await vscode.commands.executeCommand('workbench.action.openSettings', 'esync.executable');
+        }
+    }
+
+    async function preview(uri, row, token) {
         const file = uri || vscode.window.activeTextEditor?.document.uri;
         if (file?.scheme !== 'file' || !projects.length) {
             throw new Error('.elab-sync.yaml のあるフォルダーを開き、同期対象の Markdown を選んでください。');
@@ -135,16 +135,18 @@ async function activate(context) {
         const hash = await fingerprint(file);
         const config = vscode.Uri.joinPath(folder.uri, configName);
         const configHash = await fingerprint(config);
-        const diffResult = await loadDiff(folder, file, []);
+        const diffResult = await loadDiff(folder, file, [], token);
         const warnings = diffResult.warnings;
         const documents = row ? diffResult.documents.filter(doc =>
             doc.target === row.doc.target && doc.entity === row.doc.entity) : diffResult.documents;
         if (row && !documents.length) throw new Error('送信先が変わりました。一覧を更新してください。');
         let selected = documents[0];
         if (documents.length > 1) {
-            const choice = await vscode.window.showQuickPick(documents.map(doc => ({
+            /** @type {(vscode.QuickPickItem & { doc: any })[]} */
+            const items = documents.map(doc => ({
                 label: targetLabel(doc), description: doc.server + ' / ' + doc.entity, doc,
-            })), { placeHolder: '差分を確認して push するターゲットを選択' });
+            }));
+            const choice = await vscode.window.showQuickPick(items, { placeHolder: '差分を確認して push するターゲットを選択' });
             if (!choice) return;
             selected = choice.doc;
         }
@@ -184,9 +186,11 @@ async function activate(context) {
                     || await fingerprint(config) !== configHash || doc.isDirty || await fingerprint(file) !== hash) {
                 throw new Error('同期対象の内容、設定または eLabFTW の状態が変わりました。差分を開き直してください。');
             }
-            const result = await run(folder, ['push', '--expect-preview', selected.preview_token, ...options, '--', file.fsPath]);
-            const report = (result.stdout + '\n' + result.stderr).trim();
-            output.appendLine(report);
+            // 送信を途中で止めると記事が中途半端に更新されるので、push は時間で打ち切らない。
+            const result = await run(folder, ['push', '--expect-preview', selected.preview_token, ...options, '--', file.fsPath],
+                { timeout: 0 });
+            // stderr は run が出力に書く。
+            if (result.stdout.trim()) output.appendLine(result.stdout.trimEnd());
             if (result.code !== 0) {
                 output.show(true);
                 throw new Error('push に失敗しました。出力「esync」で結果を確認してください。');
@@ -198,12 +202,13 @@ async function activate(context) {
         }
     }
 
-    function command(name, title, action) {
+    function command(name, title, action, cancellable = false) {
         return vscode.commands.registerCommand(name, async uri => {
+            const location = cancellable ? vscode.ProgressLocation.Notification : vscode.ProgressLocation.Window;
             try {
-                await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title }, () => action(uri));
+                await vscode.window.withProgress({ location, title, cancellable }, (_, token) => action(uri, token));
             } catch (error) {
-                vscode.window.showErrorMessage(error.message);
+                if (!(error instanceof vscode.CancellationError)) vscode.window.showErrorMessage(error.message);
             }
         });
     }
@@ -218,7 +223,10 @@ async function activate(context) {
             if (doc.languageId === 'markdown') refresh();
         }),
         vscode.workspace.onDidChangeConfiguration(event => {
-            if (event.affectsConfiguration('esync.executable')) refresh();
+            if (event.affectsConfiguration('esync.executable')) {
+                refresh();
+                checkCli();
+            }
         }),
         vscode.workspace.registerTextDocumentContentProvider(previewScheme, {
             provideTextDocumentContent: uri => previews.get(uri.toString())?.text,
@@ -227,8 +235,8 @@ async function activate(context) {
         vscode.workspace.onDidChangeWorkspaceFolders(discover),
         watcher.onDidCreate(discover), watcher.onDidDelete(discover), watcher.onDidChange(discover),
         vscode.commands.registerCommand('esync.refresh', refresh),
-        command('esync.previewFromPanel', 'esync 差分を取得中', row => preview(row.resourceUri, row)),
-        command('esync.preview', 'esync 差分を取得中', preview),
+        command('esync.previewFromPanel', 'esync 差分を取得中', (row, token) => preview(row.resourceUri, row, token), true),
+        command('esync.preview', 'esync 差分を取得中', (uri, token) => preview(uri, undefined, token), true),
         command('esync.push', 'esync 送信中', push),
     );
     await discover();

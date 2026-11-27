@@ -2,7 +2,7 @@
   "name": "esync",
   "displayName": "esync for eLabFTW",
   "description": "Markdown の差分確認、文書単位の push、eLabFTW との同期状態の表示",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "publisher": "elab-doc-sync",
   "repository": { "type": "git", "url": "https://github.com/Kosaku-Noba/elab-doc-sync.git", "directory": "vscode-extension" },
   "engines": { "vscode": "^1.85.0" },
@@ -14,7 +14,14 @@
     "virtualWorkspaces": { "supported": false }
   },
   "activationEvents": ["onStartupFinished"],
-  "files": ["extension.js", "status.js", "media/esync.svg", "README.md"],
+  "files": ["extension.js", "status.js", "cli.js", "media/esync.svg", "README.md"],
+  "scripts": { "check": "tsc -p jsconfig.json", "test": "node test/run.cjs" },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "1.85.0",
+    "@vscode/test-electron": "^3.1.0",
+    "typescript": "^5.9.3"
+  },
   "contributes": {
     "commands": [
       { "command": "esync.preview", "category": "esync", "title": "この文書の差分を確認", "icon": "$(diff)" },
@@ -53,6 +60,12 @@
           "default": "esync",
           "scope": "machine",
           "description": "esync CLI の実行ファイル名または絶対パス。"
+        },
+        "esync.timeoutSeconds": {
+          "type": "number",
+          "default": 120,
+          "minimum": 0,
+          "description": "同期状態や差分の取得を打ち切るまでの秒数。0 にすると打ち切りません。push は時間で打ち切りません。"
         }
       }
     }
