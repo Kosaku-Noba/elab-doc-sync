@@ -14,7 +14,7 @@
     "virtualWorkspaces": { "supported": false }
   },
   "activationEvents": ["onStartupFinished"],
-  "files": ["extension.js", "status.js", "cli.js", "media/esync.svg", "README.md"],
+  "files": ["extension.js", "status.js", "articles.js", "cli.js", "media/esync.svg", "README.md"],
   "scripts": { "check": "tsc -p jsconfig.json", "test": "node test/run.cjs" },
   "devDependencies": {
     "@types/node": "^20.0.0",
@@ -24,6 +24,11 @@
   },
   "contributes": {
     "commands": [
+      { "command": "esync.openArticle", "category": "esync", "title": "eLabFTW で開く", "icon": "$(link-external)" },
+      { "command": "esync.editArticle", "category": "esync", "title": "タグ・リンクを追加、またはメタデータを設定", "icon": "$(edit)" },
+      { "command": "esync.removeArticleEntry", "category": "esync", "title": "タグ・リンクを外す", "icon": "$(remove)" },
+      { "command": "esync.newDocument", "category": "esync", "title": "テンプレートから新規文書を作成", "icon": "$(new-file)" },
+      { "command": "esync.log", "category": "esync", "title": "同期ログを表示", "icon": "$(history)" },
       { "command": "esync.preview", "category": "esync", "title": "この文書の差分を確認", "icon": "$(diff)" },
       { "command": "esync.previewFromPanel", "category": "esync", "title": "この文書の差分を確認", "icon": "$(diff)" },
       { "command": "esync.push", "category": "esync", "title": "この差分の文書を push", "icon": "$(cloud-upload)", "enablement": "resourceScheme == esync-preview" },
@@ -50,6 +55,11 @@
         { "command": "esync.push", "when": "resourceScheme == esync-preview", "group": "navigation" }
       ],
       "commandPalette": [
+        { "command": "esync.log", "when": "esync.hasProjects" },
+        { "command": "esync.newDocument", "when": "esync.hasProjects" },
+        { "command": "esync.removeArticleEntry", "when": "false" },
+        { "command": "esync.editArticle", "when": "false" },
+        { "command": "esync.openArticle", "when": "false" },
         { "command": "esync.previewFromPanel", "when": "false" },
         { "command": "esync.showRemoteChanges", "when": "false" },
         { "command": "esync.previewFromStatusBar", "when": "false" },
@@ -61,8 +71,14 @@
         { "command": "esync.push", "when": "resourceScheme == esync-preview" },
         { "command": "esync.refresh", "when": "esync.hasProjects" }
       ],
-      "view/title": [{ "command": "esync.refresh", "when": "view == esync.status || view == esync.current", "group": "navigation" }],
+      "view/title": [
+        { "command": "esync.newDocument", "when": "view == esync.current", "group": "navigation" },
+        { "command": "esync.log", "when": "view == esync.status" },
+        { "command": "esync.refresh", "when": "view == esync.status || view == esync.current", "group": "navigation" }],
       "view/item/context": [
+        { "command": "esync.openArticle", "when": "view == esync.status && viewItem =~ /article/", "group": "inline" },
+        { "command": "esync.editArticle", "when": "view == esync.current && (viewItem =~ /esync[.]group[.]/ || viewItem == esync.entry.metadata)", "group": "1_article" },
+        { "command": "esync.removeArticleEntry", "when": "view == esync.current && (viewItem == esync.entry.tag || viewItem == esync.entry.relate)", "group": "1_article" },
         { "command": "esync.previewFromPanel", "when": "view == esync.status && viewItem =~ /esync\\.document/", "group": "inline" },
         { "command": "esync.pull", "when": "view == esync.status && viewItem =~ /\\bpull\\b/", "group": "inline" },
         { "command": "esync.pull", "when": "view == esync.status && viewItem =~ /\\bpull\\b/", "group": "1_sync@1" },

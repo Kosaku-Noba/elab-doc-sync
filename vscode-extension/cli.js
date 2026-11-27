@@ -62,7 +62,10 @@ function createRunner(executable, log, defaultTimeout) {
                 settled = true;
                 clearTimeout(timer);
                 cancel?.dispose();
-                if (stderr.trim()) log('esync ' + args.join(' ') + '\n' + stderr.trimEnd());
+                if (stderr.trim()) {
+                    const command = ['metadata', 'tag', 'new'].includes(args[0]) ? args[0] : args.join(' ');
+                    log('esync ' + command + '\n' + stderr.trimEnd());
+                }
             };
             // 子孫がパイプを持ったまま残っても、終了を待たずに呼び出し元へ返す。
             const stop = (/** @type {Error} */ error) => {

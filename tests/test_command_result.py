@@ -236,3 +236,36 @@ def test_run_verify_does_not_migrate_legacy_mapping(tmp_path):
         res = cli.run_verify(Namespace(config=str(cfg), target=None))
     assert sorted(str(p) for p in tmp_path.rglob("*")) == before
     assert res.data["documents"][0]["entity_id"] == 42
+
+
+@patch("elab_doc_sync.cli.ELabFTWClient")
+def test_article_commands_scope_to_selected_url(MockClient, tmp_path, capsys):
+    cfg = _project(tmp_path)
+    parser = cli.build_parser()
+    client = MockClient.return_value
+    client.get_tags.return_value = [{"tag": "会議"}]
+    url = "https://elab.example.com/database.php?mode=view&id=42"
+    def args(command, action, *rest):
+        return parser.parse_args([command, "--config", str(cfg), "--json", "--target=T",
+                                  "--expect-article-url=" + url, action, "--id=42", *rest])
+    client.base_url = "https://elab.example.com"
+    assert cli.cmd_tag(args("tag", "list", "--entity=items")) == 0
+    assert json.loads(capsys.readouterr().out)["entities"][0]["tags"] == ["会議"]
+    invalid = args("relate", "add", "--entity=items", "--to=items", "--", "17")
+    invalid.expect_article_url = url.replace("elab.", "other.")
+    with pytest.raises(ValueError, match="送信先"):
+        cli.cmd_relate(invalid)
+    client.add_link.assert_not_called()
+    client.get_metadata_raw.return_value = "{}"
+    assert cli.cmd_metadata(args("metadata", "set", "--", "key=value")) == 0
+    client.update_metadata.assert_called_once_with("items", 42, {"key": "value"})
+    client.get_metadata_raw.return_value = "invalid"
+    assert cli.cmd_metadata(args("metadata", "set", "--", "key=value")) == 1
+    assert client.update_metadata.call_count == 1
+
+
+def test_new_targets_includes_empty_directory(tmp_path, capsys):
+    cfg = _project(tmp_path)
+    args = cli.build_parser().parse_args(["new", "--config", str(cfg), "--list-targets", "--json"])
+    assert cli.cmd_new(args) == 0
+    assert json.loads(capsys.readouterr().out)["targets"] == [{"target": "T", "docs_dir": "docs/", "selector": "T"}]

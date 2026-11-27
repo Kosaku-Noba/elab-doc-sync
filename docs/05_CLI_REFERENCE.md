@@ -295,6 +295,12 @@ esync relate list --from exp/2026-10-20.md
 
 既にあるリンクの追加・ないリンクの削除・文書自身へのリンクは、その旨を表示して飛ばします。`remove` はリンクだけを外し、リンク先の記事は削除しません。`add` / `remove` に `--dry-run` を付けると、既存のリンクを読んで追加・削除の予定だけを表示します。push 時に自動でリンクを張る設定は [設定ファイル仕様](04_CONFIGURATION.md) の `links` を参照してください。
 
+## 記事操作の JSON 出力
+
+`tag`・`relate`・`metadata` はサブコマンドの前に `--json` を指定すると処理結果を JSON で返します。例えば `esync tag --target=週報 --json list --entity=experiments --id=42` のタグ一覧は `entities[0].tags` に入ります。`status --json` や `diff --json` が返す記事の `url` を `--expect-article-url` に渡すと、指定したターゲット・種別・ID が示す URL を実行時に照合します。
+
+`esync new --json --list-targets` は空の文書ディレクトリも含めて作成先候補を返します。一意に指定できるターゲットには `selector` が入ります。`new --json --target=<selector> --list` でテンプレートを取得し、`--template-id` と `--title` で作成すると、結果の `path` でファイルを開けます。
+
 ## tag — タグ操作
 
 ```bash

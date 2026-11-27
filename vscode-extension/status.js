@@ -1,3 +1,4 @@
+const { articleGroups } = require('./articles');
 const vscode = require('vscode');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -75,6 +76,11 @@ function documentItem(folder, doc) {
         item.folder = folder;
         item.doc = doc;
     }
+    if (doc.url && doc.entity_id != null) {
+        item.doc = doc;
+        item.folder = folder;
+        item.contextValue = [item.contextValue, "article"].filter(Boolean).join(" ");
+    }
     return item;
 }
 
@@ -106,6 +112,10 @@ function detailItems(folder, doc) {
         item.command = { command: name, title: label, arguments: [source] };
         rows.push(item);
     };
+    if (doc.url && doc.entity_id != null) {
+        command("eLabFTW で開く", "link-external", "esync.openArticle", doc.url);
+        if (doc.selector) rows.push(...articleGroups(folder, doc));
+    }
     if (pullStates.includes(state)) {
         command('eLabFTW の変更を取り込む', 'cloud-download', 'esync.pull',
             'ローカルでも編集している箇所はマージし、重なる箇所は競合マーカーで示します。');
@@ -316,8 +326,8 @@ class StatusProvider {
             detail.candidates = candidateSet(entry.value.documents);
             loadDiff(folder, file, []).then(result => {
                 if (detail.generation !== generation) return;
-                detail.documents = result.documents.map(({ target, entity, entity_id, renamed_from, state, error }) =>
-                    ({ target, entity, entity_id, renamed_from, state, error }));
+                detail.documents = result.documents.map(({ target, entity, entity_id, url, selector, renamed_from, state, error }) =>
+                    ({ target, entity, entity_id, url, selector, renamed_from, state, error }));
                 detail.error = undefined;
             }, error => {
                 if (detail.generation === generation) detail.error = error.message;
@@ -339,12 +349,13 @@ class StatusProvider {
     resolveDocument(detail, doc) {
         if (detail.error) return { ...doc, idMessage: '確認できません', error: detail.error };
         if (!detail.documents) return { ...doc, idMessage: '確認中…' };
-        const matches = detail.documents.filter(d => d.target === doc.target && d.entity === doc.entity);
+        const matches = detail.documents.filter(d => d.target === doc.target && d.entity === doc.entity
+            && (!d.selector || !doc.selector || d.selector === doc.selector));
         if (matches.length !== 1) return { ...doc, idMessage: '確認できません', error: '送信先ごとの記事 ID は差分で確認してください。' };
         const [match] = matches;
         // CLI は送信先 ID を決めた後に記事の取得に失敗すると、ID とエラーを両方返す。
         if (match.error && match.entity_id == null) return { ...doc, idMessage: '確認できません', error: match.error };
-        return { ...doc, entity_id: match.entity_id, state: match.renamed_from && match.state ? match.state : doc.state,
+        return { ...doc, entity_id: match.entity_id, url: match.url, state: match.renamed_from && match.state ? match.state : doc.state,
             renamed_from: match.renamed_from, error: match.error || doc.error };
     }
 
@@ -439,9 +450,10 @@ class StatusProvider {
 }
 
 class CurrentDocumentProvider {
-    constructor(status, activeFile, events, loadDiff) {
+    constructor(status, activeFile, events, loadDiff, articleChildren = undefined) {
         this.status = status;
         this.activeFile = activeFile;
+        this.articleChildren = articleChildren;
         this.loadDiff = loadDiff;
         this.onDidChangeTreeData = events.event;
     }
@@ -449,6 +461,7 @@ class CurrentDocumentProvider {
     getTreeItem(item) { return item; }
 
     async getChildren(item) {
+        if (item?.kind && item.value === undefined && this.articleChildren) return this.articleChildren(item);
         if (item) return item.children || [];
         const active = this.activeFile();
         if (!active) return [messageItem('同期対象の Markdown を開いてください。')];
