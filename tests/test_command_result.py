@@ -123,6 +123,24 @@ def test_run_whoami_never_returns_api_key(MockClient, tmp_path):
 
 
 @patch("elab_doc_sync.cli.ELabFTWClient")
+@pytest.mark.parametrize("configured", [False, True])
+def test_whoami_masks_credentials_in_profile_names(MockClient, tmp_path, monkeypatch, configured):
+    name = "https://reader:private'phrase@lab.example"
+    cfg = _project(tmp_path, profiles={name: {"url": "https://lab.example", "api_key_env": "WHOAMI_TEST_KEY"}})
+    if configured:
+        monkeypatch.setenv("WHOAMI_TEST_KEY", "test-key")
+    else:
+        monkeypatch.delenv("WHOAMI_TEST_KEY", raising=False)
+    MockClient.return_value._req.return_value.json.return_value = {"userid": 1}
+    lines = []
+    res = cli.run_whoami(Namespace(config=str(cfg)), echo=lines.append)
+    assert "[profile: https://***@lab.example]" in lines
+    info = next(p for p in res.data["profiles"] if p["profile"] == "https://***@lab.example")
+    assert (info["error"] is None) == configured
+    assert "private" not in json.dumps([lines, res.to_dict()])
+
+
+@patch("elab_doc_sync.cli.ELabFTWClient")
 def test_run_whoami_reports_connection_error(MockClient, tmp_path):
     cfg = _project(tmp_path)
     MockClient.return_value._req.side_effect = RuntimeError("down")

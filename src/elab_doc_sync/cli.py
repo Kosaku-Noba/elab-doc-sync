@@ -25,7 +25,7 @@ from .config import read_config as load_config, BODY_FORMAT_INIT, _read_yaml_tex
 from .merge import merge_text
 from .sync import EachDocsSyncer, ConflictError, _shell_quote, _download_images, _compute_file_hash, _is_image, _normalize_remote_image_urls, _download_attachments, _localize_attachment_links, _linked_article_upload_ids, _rewrite_elab_links_to_local, REMOTE_FIELD_LABELS, _remote_markdown, _MD_OPTS
 from . import sync_log
-from .result import CommandResult, cli_echo, progress, error_text, returns_partial_result
+from .result import CommandResult, cli_echo, progress, error_text, redact_url_credentials, returns_partial_result
 from . import update_check
 
 DEFAULT_CONFIG = ".elab-sync.yaml"
@@ -2031,13 +2031,14 @@ def run_whoami(args, echo=None) -> CommandResult:
         profiles_to_show = [None]
 
     for profile in profiles_to_show:
+        name = redact_url_credentials(profile.name, loose=True) if profile else None
         if profile:
-            res.say(f"[profile: {profile.name}]")
+            res.say(f"[profile: {name}]")
             try:
                 url, api_key, verify_ssl = profile_connection(profile)
             except ValueError as exc:
-                reason = error_text(exc)  # 例外文に設定由来の値（プロファイル名など）が入りうるので伏せる
-                res.data["profiles"].append({"profile": profile.name, "url": public_url(profile.url) if profile.url else None,
+                reason = error_text(exc)  # 例外文に含まれる URL の認証情報を伏せる
+                res.data["profiles"].append({"profile": name, "url": public_url(profile.url) if profile.url else None,
                                              "error": reason})
                 res.say(f"  エラー: {reason}")
                 res.say()
@@ -2045,7 +2046,7 @@ def run_whoami(args, echo=None) -> CommandResult:
         else:
             url, api_key, verify_ssl = config.url, config.api_key, config.verify_ssl
             res.say("[default]")
-        info = {"profile": profile.name if profile else None, "url": public_url(url) if url else None, "error": None}
+        info = {"profile": name, "url": public_url(url) if url else None, "error": None}
         res.data["profiles"].append(info)
 
         client = ELabFTWClient(url, api_key, verify_ssl)
