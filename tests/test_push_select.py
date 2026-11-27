@@ -262,3 +262,71 @@ def test_rename_of_unselected_document_moves_mapping_only(project):
     assert push() in (0, None)
     assert remote[ids['b']]['title'] == 'b2'
     assert len(remote) == 4
+
+
+def pull_json(*args, capsys):
+    capsys.readouterr()
+    with patch.object(sys, 'argv', ['esync', 'pull', '--json', *args]):
+        try:
+            code = main()
+        except SystemExit as exc:
+            code = exc.code
+    return code, json.loads(capsys.readouterr().out)
+
+
+def test_pull_selected_document_only(project, capsys):
+    root, remote = project
+    assert push('docs/a.md', 'docs/b.md') in (0, None)
+    ids = {remote[eid]['title']: eid for eid in remote}
+    for eid in remote.values():
+        eid['body'] = eid['body'] + '\n\nremote edit'
+    code, data = pull_json('--', 'docs/a.md', capsys=capsys)
+    assert code in (0, None)
+    [doc] = data['documents']
+    assert (doc['path'], doc['result'], doc['conflict'], doc['entity_id']) == ('docs/a.md', 'pulled', False, ids['a'])
+    assert 'remote edit' in (root / 'docs/a.md').read_text(encoding='utf-8')
+    assert 'remote edit' not in (root / 'docs/b.md').read_text(encoding='utf-8'), 'other documents are not pulled'
+
+
+def test_pull_selected_conflict_and_untracked_documents(project, capsys):
+    root, remote = project
+    assert push('docs/a.md') in (0, None)
+    [eid] = remote
+    remote[eid]['body'] = '# remote heading'
+    (root / 'docs/a.md').write_text('# local heading', encoding='utf-8')
+    code, data = pull_json('--', 'docs/a.md', capsys=capsys)
+    assert code == 1
+    [doc] = data['documents']
+    assert doc['conflict'] is True and doc['path'] == 'docs/a.md'
+    assert data['conflict_files'] and '<<<<<<< ローカル' in (root / 'docs/a.md').read_text(encoding='utf-8')
+
+    code, data = pull_json('--', 'docs/b.md', capsys=capsys)
+    assert code in (0, None)
+    assert data['documents'] == [{'target': 'docs', 'entity': 'items', 'path': 'docs/b.md', 'result': 'untracked'}]
+
+
+def test_pull_document_selection_rejects_id_and_dir(project, capsys):
+    assert push('docs/a.md') in (0, None)
+    code, _ = pull_json('--id', '1', '--entity', 'items', '--', 'docs/a.md', capsys=capsys)
+    assert code == 2
+
+
+def test_renamed_document_keeps_its_article_after_mv_then_pull(project, capsys):
+    root, remote = project
+    assert push('docs/a.md') in (0, None)
+    [eid] = remote
+    (root / 'docs/a.md').rename(root / 'docs/moved.md')
+    remote[eid]['body'] = remote[eid]['body'] + '\n\nremote edit'
+    code, data = pull_json('--', 'docs/moved.md', capsys=capsys)
+    assert data['documents'][0]['result'] == 'untracked', 'pull does not follow a rename by itself'
+    assert not (root / 'docs/a.md').exists()
+
+    with patch.object(sys, 'argv', ['esync', 'mv', 'docs/a.md', 'docs/moved.md']):
+        assert main() in (0, None)
+    code, data = pull_json('--', 'docs/moved.md', capsys=capsys)
+    [doc] = data['documents']
+    # pull はファイル名を eLabFTW のタイトルに合わせる。紐付けを移したので本文は取り込まれ、別記事にはならない。
+    assert (doc['path'], doc['entity_id'], doc['result']) == ('docs/a.md', eid, 'pulled')
+    assert 'remote edit' in (root / 'docs/a.md').read_text(encoding='utf-8')
+    assert not (root / 'docs/moved.md').exists()
+    assert json.loads((root / '.ids/mapping.json').read_text(encoding='utf-8')) == {'a.md': eid}

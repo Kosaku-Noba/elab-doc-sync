@@ -203,6 +203,148 @@ async function activate(context) {
         }
     }
 
+    // 書き換えを伴う操作の確認。テストでは差し替える。
+    const dialogs = {
+        confirm: async (/** @type {string} */ message, /** @type {string} */ button) =>
+            await vscode.window.showWarningMessage(message, { modal: true }, button) === button,
+    };
+
+    // 行・URI・開いている文書から、操作する文書とその送信先を決める。
+    async function documentTarget(arg) {
+        if (arg?.doc && arg.folder) {
+            const folder = projects.find(p => p.uri.toString() === arg.folder.uri.toString());
+            if (!folder) throw new Error('同期設定が変わりました。一覧を更新してください。');
+            return { folder, file: arg.resourceUri, doc: arg.doc };
+        }
+        const file = arg instanceof vscode.Uri ? arg : vscode.window.activeTextEditor?.document.uri;
+        if (file?.scheme !== 'file') throw new Error('同期対象の Markdown を開いてください。');
+        const { matches, waiting } = await status.documentsFor(file, undefined, loadDiff);
+        if (!matches.length) {
+            throw new Error(waiting ? '同期状態を取得中です。少し待ってからやり直してください。' : 'この文書は同期対象に含まれていません。');
+        }
+        let match = matches[0];
+        if (matches.length > 1) {
+            const choice = await vscode.window.showQuickPick(matches.map(m => ({
+                label: m.doc.target, description: m.folder.name + ' / ' + m.doc.state, match: m,
+            })), { placeHolder: '操作する送信先を選択' });
+            if (!choice) return;
+            match = choice.match;
+        }
+        return { folder: match.folder, file, doc: match.doc };
+    }
+
+    // CLI がファイルを書き換えるので、未保存の編集は先に保存してもらう。
+    async function ensureSaved(file) {
+        const doc = await vscode.workspace.openTextDocument(file);
+        if (!doc.isDirty) return true;
+        const save = '保存して続ける';
+        if (await vscode.window.showInformationMessage('この操作の前に文書の保存が必要です。', save) !== save) return false;
+        if (!await doc.save()) throw new Error('文書を保存できませんでした。');
+        return true;
+    }
+
+    async function pullJson(folder, options, file, runOptions) {
+        const result = await run(folder, ['pull', '--json', ...options, '--', file.fsPath], runOptions);
+        if (!result.stdout.trim()) throw new Error(result.stderr.trim() || 'pull の結果を取得できませんでした。');
+        const data = JSON.parse(result.stdout);
+        const failed = data.documents.find(doc => doc.error);
+        if (failed) throw new Error(failed.error);
+        return data;
+    }
+
+    async function pull(arg) {
+        const target = await documentTarget(arg);
+        if (!target || !await ensureSaved(target.file)) return;
+        const { folder, file, doc } = target;
+        const name = path.basename(file.fsPath);
+        const options = doc.target ? ['--target=' + doc.target] : [];
+        let planned = await pullJson(folder, ['--dry-run', ...options], file);
+        if (planned.documents.some(d => d.result === 'untracked')) {
+            // 改名した文書は旧名で紐付いている。pull は改名を判定しないので、先に紐付けを移す。
+            const renamed = (await loadDiff(folder, file, options)).documents.find(d => d.renamed_from && d.entity_id != null);
+            if (!renamed) throw new Error(name + ' はまだ eLabFTW の記事と紐付いていないため、取り込めません。');
+            if (!await dialogs.confirm(name + ' は ' + renamed.renamed_from + ' から改名されています。取り込む前に、記事 #'
+                    + renamed.entity_id + ' との紐付けを ' + name + ' に移します（esync mv）。', '紐付けを移して取り込む')) return;
+            const from = path.join(path.dirname(file.fsPath), renamed.renamed_from);
+            const moved = await run(folder, ['mv', ...options, '--', from, file.fsPath], { timeout: 0 });
+            if (moved.stdout.trim()) output.appendLine(moved.stdout.trimEnd());
+            if (moved.code !== 0) throw new Error('紐付けを移せませんでした。出力「esync」を確認してください。');
+            refresh();
+            planned = await pullJson(folder, ['--dry-run', ...options], file);
+        }
+        const incoming = planned.documents.find(d => d.result === 'would_pull');
+        if (!incoming) {
+            vscode.window.showInformationMessage(name + ' — 取り込む eLabFTW の変更はありません。');
+            return;
+        }
+        if (!await dialogs.confirm(name + ' に eLabFTW #' + incoming.entity_id + ' の変更を取り込みます。ローカルでも編集している場合はマージし、'
+                + '両方で変えた箇所は競合マーカーで示します。', '取り込む')) return;
+        await finishPull(folder, file, await pullJson(folder, options, file, { timeout: 0 }));
+    }
+
+    async function finishPull(folder, file, data) {
+        refresh();
+        const name = path.basename(file.fsPath);
+        const doc = data.documents[0];
+        const pulled = doc?.path ? vscode.Uri.file(path.resolve(folder.uri.fsPath, doc.path)) : file;
+        // pull はファイル名を eLabFTW のタイトルに合わせる。改名した文書は元の名前に戻ることがある。
+        if (pulled.fsPath !== file.fsPath) {
+            await vscode.window.showTextDocument(pulled);
+            vscode.window.showInformationMessage(name + ' は、eLabFTW の記事のタイトルに合わせて ' + path.basename(pulled.fsPath)
+                + ' になりました。改名し直して push すると、記事のタイトルも変わります。');
+        }
+        if (doc?.conflict) {
+            await vscode.window.showTextDocument(pulled);
+            vscode.window.showWarningMessage(name + ' — 両方で変えた箇所を競合マーカーで示しました。'
+                + 'エディタの「現在の変更を採用」などで解消して保存し、差分を確認してから push してください。');
+        } else if (doc?.result === 'pulled') {
+            vscode.window.showInformationMessage(name + ' — eLabFTW の変更を取り込みました。');
+        } else {
+            vscode.window.showInformationMessage(name + ' — 取り込む eLabFTW の変更はありません。');
+        }
+    }
+
+    async function adoptLocal(arg) {
+        const target = await documentTarget(arg);
+        if (!target || !await ensureSaved(target.file)) return;
+        const { folder, file, doc } = target;
+        const id = doc.entity_id == null ? '' : ' #' + doc.entity_id;
+        if (!await dialogs.confirm('eLabFTW の記事' + id + ' を ' + path.basename(file.fsPath) + ' の内容で上書きします。'
+                + 'eLabFTW 側の変更は記事から失われます（上書き前の本文はバックアップに退避され、esync restore で取り出せます）。',
+        'ローカルの内容で上書き')) return;
+        const options = doc.target ? ['--target=' + doc.target] : [];
+        try {
+            const result = await run(folder, ['push', '--force', ...options, '--', file.fsPath], { timeout: 0 });
+            if (result.stdout.trim()) output.appendLine(result.stdout.trimEnd());
+            if (result.code !== 0) {
+                output.show(true);
+                throw new Error('push --force に失敗しました。出力「esync」で結果を確認してください。');
+            }
+            vscode.window.showInformationMessage(path.basename(file.fsPath) + ' — ローカルの内容で eLabFTW を上書きしました。');
+        } finally {
+            refresh();
+        }
+    }
+
+    async function adoptRemote(arg) {
+        const target = await documentTarget(arg);
+        if (!target || !await ensureSaved(target.file)) return;
+        const { folder, file, doc } = target;
+        if (!await dialogs.confirm(path.basename(file.fsPath) + ' を eLabFTW の内容で上書きします。ローカルの変更はファイルから失われます'
+                + '（上書き前のファイルはバックアップに退避され、esync restore で戻せます）。', 'eLabFTW の内容で上書き')) return;
+        const options = doc.target ? ['--target=' + doc.target] : [];
+        await finishPull(folder, file, await pullJson(folder, ['--force', ...options], file, { timeout: 0 }));
+    }
+
+    async function showBackups() {
+        for (const folder of projects) {
+            const result = await run(folder, ['backup', 'list']);
+            output.appendLine('── ' + folder.name + ' ──');
+            output.appendLine((result.stdout || result.stderr).trimEnd());
+        }
+        output.show(true);
+    }
+
     async function showRemoteChanges(uri) {
         const entry = previews.get(uri);
         if (!entry?.remote) throw new Error('差分を開き直してください。');
@@ -320,6 +462,10 @@ async function activate(context) {
         command('esync.push', 'esync 送信中', push),
         command('esync.showRemoteChanges', 'esync 差分を表示中', showRemoteChanges),
         command('esync.previewFromStatusBar', 'esync 差分を取得中', previewMatches, true),
+        command('esync.pull', 'esync 取り込み中', pull),
+        command('esync.adoptLocal', 'esync 上書き中', adoptLocal),
+        command('esync.adoptRemote', 'esync 上書き中', adoptRemote),
+        command('esync.showBackups', 'esync バックアップを確認中', showBackups),
         statusBar,
         vscode.window.registerFileDecorationProvider(decorations),
         events.event(() => decorations.changed.fire(undefined)),
@@ -330,7 +476,7 @@ async function activate(context) {
     );
     await discover();
     // テスト用。拡張ホストのテストから内部の状態を確かめる。
-    return { preview, statusBar, snapshots, previews, decorations };
+    return { preview, statusBar, snapshots, previews, decorations, dialogs };
 }
 
 module.exports = { activate };

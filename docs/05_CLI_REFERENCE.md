@@ -86,7 +86,8 @@ esync push docs/note.md --dry-run          # 対象と変更有無を確認
 ## pull
 
 ```bash
-esync pull [--id ID] [--entity TYPE] [--dry-run] [--force] [--auto] [--dir DIR] [-t TARGET]
+esync pull [--id ID] [--entity TYPE] [--dry-run] [--force] [--auto] [--dir DIR] [-t TARGET] [--json]
+esync pull [ファイル・ディレクトリ・glob ...] [--regex 式] [-t TARGET] [--dry-run] [--force] [--json]
 ```
 
 | オプション | 説明 |
@@ -96,6 +97,8 @@ esync pull [--id ID] [--entity TYPE] [--dry-run] [--force] [--auto] [--dir DIR] 
 | `--force` | ローカルをバックアップして上書き。別文書との名前衝突は拒否 |
 | `--dry-run` | 取得予定を確認。本文が参照する画像と非画像添付の保存先を照合し、設定・画像・状態ファイルも変更しない |
 | `--auto` | 振り分けを自動決定 |
+| ファイル・`--regex` | 取り込む追跡中の文書を push・diff と同じ方法で指定する（省略時は全文書）。`--id`・`--dir` とは併用できない（終了コード 2）。指定した文書がまだ記事と紐付いていない場合は取得せず、`result: "untracked"` を返す。改名した文書は旧名で紐付いているので、先に `esync mv <旧パス> <新パス>` で紐付けを移す |
+| `--json` | 結果を JSON で出力する。`documents` の各要素に `target`・`entity`・`entity_id`・`result`（`pulled`・`would_pull`・`skipped`・`untracked`・`needs_target`）・`conflict`（競合マーカーを残したか）・`path`（取得後の文書のパス。タイトルの変更で名前が変わることがある）、失敗時は `error` を返す。ほかに `pulled`・`skipped`・`failed`・`conflict_files`。保存先は対話で選ばず、選べない記事は `needs_target` になる。警告は標準エラーに出る |
 | `--dir` | 保存先ディレクトリを指定。既存ターゲットの管理下なら取得元と種別・接続設定（URL、API キー、SSL 検証）が一致する必要がある。`--target` 省略時も照合する。ID を省略した一括取得では、選択したターゲットに不一致があれば全件の取得前に中止する。対象を限定するには `--target` を指定する |
 
 **保存先が重なる場合**

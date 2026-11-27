@@ -82,4 +82,70 @@ exports.run = async function () {
     assert.equal(await pending, undefined);
     assert.equal((await calls()).length, before, 'do not run esync diff after cancelling the folder picker');
     console.log('PASS: side-by-side diff, remote changes, push, status bar, folder picker cancel');
+    await pullAndResolve(api, root, note, calls);
 };
+
+// 取り込みと競合の解決。確認ダイアログは自動で応答し、CLI に渡した引数を確かめる。
+async function pullAndResolve(api, root, note, calls) {
+    const bin = name => path.join(root, 'bin', name);
+    const write = (name, value) => fs.writeFile(bin(name), JSON.stringify(value));
+    const asked = [];
+    api.dialogs.confirm = async (message, button) => { asked.push(button); return true; };
+    const doc = { file: 'note.md', path: 'docs/note.md', entity: 'items', entity_id: 42, target: 'Lab', state: '競合',
+        remote_changes: ['本文'], next_actions: [], error: null };
+    await write('status.json', { documents: [doc], recovery_pending: false });
+    const pulled = { target: 'docs', entity: 'items', entity_id: 42, path: 'docs/note.md', result: 'pulled', conflict: true };
+    await write('pull-dry.json', { dry_run: true, documents: [{ ...pulled, result: 'would_pull', conflict: false }] });
+    await write('pull.json', { dry_run: false, documents: [pulled], conflict_files: [note.fsPath] });
+    await vscode.window.showTextDocument(note);
+    await vscode.commands.executeCommand('esync.refresh');
+    await until(() => api.statusBar.text.includes('競合'), 'status bar shows the conflict');
+
+    let before = (await calls()).length;
+    await vscode.commands.executeCommand('esync.pull', note);
+    let run = (await calls()).slice(before);
+    assert.ok(run.includes('pull --json --dry-run --target=Lab -- ' + note.fsPath), 'check what will be pulled first');
+    assert.ok(run.includes('pull --json --target=Lab -- ' + note.fsPath), 'pull only the selected document');
+    assert.deepEqual(asked, ['取り込む']);
+    assert.equal(vscode.window.activeTextEditor?.document.uri.fsPath, note.fsPath, 'open the file to resolve the markers');
+
+    before = (await calls()).length;
+    await vscode.commands.executeCommand('esync.adoptLocal', note);
+    assert.ok((await calls()).slice(before).includes('push --force --target=Lab -- ' + note.fsPath));
+    before = (await calls()).length;
+    await vscode.commands.executeCommand('esync.adoptRemote', note);
+    assert.ok((await calls()).slice(before).includes('pull --json --force --target=Lab -- ' + note.fsPath));
+    assert.deepEqual(asked.slice(1), ['ローカルの内容で上書き', 'eLabFTW の内容で上書き'], 'confirm before overwriting');
+
+    // 拒否したら CLI を実行しない。
+    api.dialogs.confirm = async () => false;
+    before = (await calls()).length;
+    await vscode.commands.executeCommand('esync.adoptLocal', note);
+    assert.equal((await calls()).length, before, 'do not overwrite when the user declines');
+
+    // 改名した文書: 旧名の紐付けを esync mv で移してから取り込む。
+    api.dialogs.confirm = async (message, button) => { asked.push(button); return true; };
+    const moved = vscode.Uri.file(path.join(root, 'p1/docs/moved.md'));
+    await fs.writeFile(moved.fsPath, '# moved\n');
+    await write('status.json', { documents: [doc, { ...doc, file: 'moved.md', path: 'docs/moved.md', entity_id: null,
+        state: '未追跡' }], recovery_pending: false });
+    await write('pull-dry.json', { dry_run: true, documents: [{ target: 'docs', entity: 'items', path: 'docs/moved.md',
+        result: 'untracked' }] });
+    const diff = JSON.parse(await fs.readFile(bin('diff.json'), 'utf8'));
+    diff.documents[0] = { ...diff.documents[0], path: 'docs/moved.md', renamed_from: 'note.md', state: 'リネーム予定' };
+    await write('diff.json', diff);
+    // 代用の esync は mv を実行したとき、この内容に差し替える（紐付けを移した後は取り込み予定になる）。
+    await write('pull-dry-after-mv.json', { dry_run: true, documents: [{ ...pulled, path: 'docs/moved.md', result: 'would_pull' }] });
+    await vscode.commands.executeCommand('esync.refresh');
+    before = (await calls()).length;
+    await vscode.commands.executeCommand('esync.pull', moved);
+    run = (await calls()).slice(before);
+    assert.ok(run.includes('mv --target=Lab -- ' + path.join(root, 'p1/docs/note.md') + ' ' + moved.fsPath),
+        'move the mapping from the old name to the renamed file');
+    assert.ok(asked.includes('紐付けを移して取り込む'));
+
+    before = (await calls()).length;
+    await vscode.commands.executeCommand('esync.showBackups');
+    assert.ok((await calls()).slice(before).includes('backup list'));
+    console.log('PASS: pull one document, adopt local or remote, rename then pull, backups');
+}

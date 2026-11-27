@@ -1,6 +1,7 @@
 """CLI entry point for elab-doc-sync."""
 
 import argparse
+import contextlib
 import difflib
 import glob
 import re
@@ -481,6 +482,9 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
     res = CommandResult(data={"dry_run": getattr(args, "dry_run", False), "documents": []}, echo=echo)
     if args.id and not getattr(args, "entity", None):
         return res.fail("エラー: --id 指定時は --entity も指定してください", 2)
+    files, regex_expressions = getattr(args, "files", None) or [], getattr(args, "regex", None)
+    if (files or regex_expressions) and (args.id or getattr(args, "dir", None)):
+        return res.fail("エラー: 文書の指定は --id・--dir と併用できません", 2)
     config_path = Path(args.config).resolve()
     root = config_path.parent
     config = load_config(config_path)
@@ -572,11 +576,30 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
         if export:
             for target in targets:
                 _pull_destination(config, root, export, target.entity, get_client_for_target(config, target))
-        for target in targets:
+        # push・diff と同じ指定で、取り込む文書を追跡中の文書から選ぶ。
+        selected = None
+        if files or regex_expressions:
+            try:
+                selected = _select_documents([(t, EachDocsSyncer(None, t, root)) for t in targets], files,
+                                             _compile_regexes(regex_expressions))
+            except ValueError as e:
+                return res.fail(f"エラー: {e}", 2)
+        for index, target in enumerate(targets):
+            only = None if selected is None else selected.get(index, set())
+            if only is not None and not only:
+                continue
             client = _make_client_for_target(config, target)
             syncer = EachDocsSyncer(client, target, root)
             mapping = syncer._load_mapping(migrate=False)
+            for name in sorted((only or set()) - set(mapping)):
+                # 指定された文書がまだ eLabFTW の記事と紐付いていない（未追跡・改名後など）。
+                res.data["documents"].append({"target": target.docs_dir, "entity": target.entity,
+                                              "path": _project_relative(syncer.file_path(name), root),
+                                              "result": "untracked"})
+                res.say(f"  {name}: 追跡していない文書のため取得しません（改名した場合は esync mv で紐付けを移してください）")
             for name, eid in mapping.items():
+                if only is not None and name not in only:
+                    continue
                 if name in syncer._load_excluded():
                     continue
                 try:
@@ -589,13 +612,18 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
                     failed += 1
     outputs = _PullOutputs()
     outputs.protect_tracked_attachments(config, root)
+    pulled_docs = []
     for client, target, eid, data in jobs:
         doc = {"target": target.docs_dir, "entity": target.entity, "entity_id": eid, "server": client.base_url}
         res.data["documents"].append(doc)
         try:
+            conflicts_before = len(conflict_files)
             result = _pull_entity_to_target(client, config, config_path, target, root, eid, data, target.entity,
                                             args.force, export, dry_run=dry_run, conflict_files=conflict_files, outputs=outputs)
             doc["result"] = ("would_pull" if dry_run else "pulled") if result else "skipped"
+            doc["conflict"] = len(conflict_files) > conflicts_before
+            if not export:
+                pulled_docs.append((doc, target))
             pulled += result
             skipped += int(result == 0)
         except Exception as exc:
@@ -607,6 +635,12 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
                 break
     if pulled and not dry_run and not export:
         _relink_local_documents(_link_syncers(config, root))
+    # 取得後の紐付けから文書のパスを示す（タイトルの変更でファイル名が変わることがある）。
+    for doc, target in pulled_docs:
+        syncer = EachDocsSyncer(None, target, root)
+        names = [name for name, eid in syncer._load_mapping(migrate=False).items() if eid == doc["entity_id"]]
+        if len(names) == 1:
+            doc["path"] = _project_relative(syncer.file_path(names[0]), root)
     res.say(f"\n{'確認' if dry_run else '完了'}: {pulled} 件取得{'予定' if dry_run else ''}、{skipped} 件スキップ、{failed} 件失敗")
     if conflict_files:
         res.say(f"競合マーカーが残っている文書: {len(conflict_files)} 件")
@@ -617,7 +651,24 @@ def run_pull(args, echo=None, choose_target=None) -> CommandResult:
     return res
 
 
+def _project_relative(path, root):
+    """プロジェクトのルートからの相対パス。ルートの外なら絶対パス。"""
+    try:
+        return Path(path).resolve().relative_to(root).as_posix()
+    except ValueError:
+        return str(Path(path).resolve())
+
+
 def cmd_pull(args):
+    if getattr(args, "json", False):
+        # 保存先を対話で選ばない。選べない記事は needs_target として返す。
+        # 同期処理が直接 print する通知で JSON が壊れないよう、実行中の標準出力は標準エラーへ回す。
+        with contextlib.redirect_stdout(sys.stderr):
+            result = run_pull(args)
+        for warning in result.warnings:
+            cli_echo(warning, stderr=True)
+        print(json.dumps(result.data, ensure_ascii=False))
+        return result.exit_code
     result = run_pull(args, echo=cli_echo, choose_target=_resolve_pull_target_interactive)
     if result.exit_code == 2:
         raise SystemExit(result.exit_code)
@@ -2834,6 +2885,10 @@ def build_parser():
                              help="エンティティ種別（resources は items のエイリアス）")
     pull_parser.add_argument("--dir", default=None, help="保存先ディレクトリ（未指定時は自動振り分け）")
     pull_parser.add_argument("--auto", action="store_true", help="曖昧な振り分けもスコア最大で自動決定")
+    pull_parser.add_argument("files", nargs="*",
+                             help="取り込む追跡中の文書・ディレクトリ・glob（push と同じ指定。省略時は全文書。--id・--dir とは併用不可）")
+    pull_parser.add_argument("--regex", action="append", help="取り込むファイル名に部分一致する正規表現（複数指定可）")
+    pull_parser.add_argument("--json", action="store_true", help="取り込んだ文書のパス・結果・競合の有無を JSON で出力")
 
     log_parser = sub.add_parser("log", help="同期ログを表示", parents=[sub_common])
     log_parser.add_argument("--limit", "-l", type=int, default=20, help="表示件数（デフォルト: 20）")
