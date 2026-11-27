@@ -189,6 +189,8 @@ esync diff --json docs/note.md    # 差分・送信先・記事 ID を JSON で�
 esync diff --json --bodies docs/note.md    # 比較した本文も含めて JSON で確認（VS Code 拡張が使用）
 ```
 
+`esync diff` は記事の本文をそのまま表示します（`--json --bodies` の本文も同じ）。本文に認証情報付きの URL が書かれている場合は、出力を共有する前に確認してください。
+
 文書ごとに、前回の同期からの変更を次の 2 つに分けて表示します。
 
 - **ローカルの変更**: 前回同期した時点から、手元で編集した箇所

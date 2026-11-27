@@ -724,7 +724,7 @@ _ELAB_URL_RE = re.compile(
     # リンク先全体がこの形のときだけ一致する。id の後に別のクエリや %xx などが続くリンクは、
     # ローカルリンクで表せない（別の記事を指すこともある）ので対象にしない（元の URL を残す）。
     r"(?P<base>https?://[^/?#\s]+(?:/[^?#\s]*?)?)/(?P<page>database|experiments)\.php\?mode=view&id=(?P<id>\d+)"
-    r"(?P<fragment>#[^\s)]*)?\Z")
+    r"(?P<fragment>#\S*)?\Z")
 
 # eLabFTW の entity タイプと URL ページ名の対応
 _ENTITY_TO_PAGE = {"items": "database", "experiments": "experiments"}
@@ -872,7 +872,7 @@ def _rewrite_elab_links_to_local(body: str, base_url: str,
 
     each モード専用。merge モードでは mapping が空のため変換は行われない。
 
-    対象: [text](https://elab.example.com/items.php?mode=view&id=42)
+    対象: [text](https://elab.example.com/database.php?mode=view&id=42)（実験ノートは experiments.php）
     → [text](./file.md)  (同一ターゲット内)
     → [text](../other_dir/file.md)  (他ターゲット)
 

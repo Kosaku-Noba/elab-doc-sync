@@ -398,7 +398,7 @@ def test_pull_error_hides_credentials_in_urls(project, capsys):
     root, remote = project
     assert push('docs/a.md') in (0, None)
     CLIENTS[0].get_item.side_effect = ConnectionError(
-        "Max retries exceeded with url: https://us'er:se'c\"ret@example.test:9/api/v2/items/1")
+        "Max retries exceeded with url: https://us!er:se$c&ret@example.test:9/api/v2/items/1")
     capsys.readouterr()
     with patch.object(sys, 'argv', ['esync', 'pull', '--json', '--dry-run', '--', 'docs/a.md']):
         try:
@@ -407,7 +407,7 @@ def test_pull_error_hides_credentials_in_urls(project, capsys):
             pass
     out, err = capsys.readouterr()
     for text in (out, err):
-        assert 'se\'c' not in text and 'us\'er' not in text, 'hide credentials containing quotes'
+        assert 'se$c' not in text and 'us!er' not in text, 'hide credentials containing symbols'
     assert 'https://***@example.test:9' in json.loads(out)['documents'][0]['error']
     assert 'https://***@example.test:9' in err
 
@@ -644,7 +644,7 @@ def test_url_helpers_ignore_credentials():
     assert _hosts_match('https://u:p@Elab.Example.test', 'https://elab.example.test')
     assert entity_url('https://u:p@h.test/', 'items', 3) == 'https://h.test/database.php?mode=view&id=3'
     assert _server_key('https://u:p@H.test/x/') == _server_key('https://h.test/x')
-    assert _scrub({'server': 'https://u:p@h.test', 'messages': ['接続先はhttps://a:b"c@h.test/x']}, []) == \
+    assert _scrub({'server': 'https://u:p@h.test', 'messages': ['接続先はhttps://a:b$c@h.test/x']}, []) == \
         {'server': 'https://***@h.test', 'messages': ['接続先はhttps://***@h.test/x']}
     assert _scrub({'https://k:v@h.test': 1}, []) == {'https://***@h.test': 1}, 'mask URLs in dictionary keys too'
     text = '資料 https://example.test を参照。\n担当者 admin@example.test'
@@ -711,3 +711,20 @@ def test_masking_stays_inside_the_url_and_links_match_whole_targets():
         'do not take id=7%32 for article 7'
     assert _rewrite_elab_links_to_local('[y](https://example.test/database.php?mode=view&id=7#s)',
                                         'https://example.test', {'seven.md': 7}, 'items') == '[y](./seven.md#s)'
+
+
+def test_accepted_credentials_are_always_masked_and_masking_stops_at_quotes():
+    from elab_doc_sync.config import _valid_server_url
+    from elab_doc_sync.mcp_server import _scrub
+    from elab_doc_sync.sync import _rewrite_elab_links_to_local
+    for url in ('https://user:pa(ss)@elab.test', "https://user:pa'ss@elab.test", 'https://user:パス@elab.test',
+                'https://user:pa,ss@elab.test'):
+        assert not _valid_server_url(url), url
+    accepted = 'https://us.er~1:p%28a%29s!$&*+;=-s@elab.test'
+    assert _valid_server_url(accepted)
+    assert _scrub(f'[x]({accepted}/a)', []) == '[x](https://***@elab.test/a)', 'every accepted form is masked whole'
+    line = '+{"url":"https://elab.test","owner":"ops@example.org"}'
+    assert _scrub(line, []) == line, 'do not mask past a closing quote'
+    body = '[a](https://example.test/database.php?mode=view&id=7#section(1))'
+    assert _rewrite_elab_links_to_local(body, 'https://example.test', {'seven.md': 7}, 'items') == \
+        '[a](./seven.md#section(1))'

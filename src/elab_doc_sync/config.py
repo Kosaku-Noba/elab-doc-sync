@@ -161,8 +161,10 @@ def _valid_server_url(url) -> bool:
         return False
     try:
         parts = urlsplit(text)
-        # 認証情報に生の @ があると、表示用に伏せる範囲と接続先の判定がずれる（@ は %40 と書く）。
-        if "@" in parts.netloc.rpartition("@")[0]:
+        # 認証情報は、出力で伏せる範囲と同じ文字だけを受け付ける（@・括弧・引用符・日本語などは %xx と書く）。
+        from .result import URL_USERINFO_CHARS
+        userinfo = parts.netloc.rpartition("@")[0]
+        if "@" in parts.netloc and not re.fullmatch(f"[{URL_USERINFO_CHARS}]+", userinfo):
             return False
         parts.port  # 数字でないポートや 0〜65535 の範囲外（区切りの誤記でパスワードがポート扱いになった場合など）は ValueError
         return parts.scheme in ("http", "https") and bool(parts.hostname)
