@@ -24,6 +24,10 @@ async function readStatus(folder, run) {
     return { documents, notices, root: await fs.realpath(folder.uri.fsPath) };
 }
 
+function candidateKey(doc) {
+    return JSON.stringify([doc.target, doc.entity, doc.entity_id]);
+}
+
 function documentItem(folder, doc) {
     const item = new vscode.TreeItem(doc.file);
     item.description = doc.path || doc.target;
@@ -85,9 +89,21 @@ class StatusProvider {
                 entry.error = undefined;
                 const unassigned = new Set(value.documents.filter(doc => doc.path && doc.entity_id == null)
                     .map(doc => path.resolve(value.root, doc.path)));
+                const candidates = new Set(value.documents.filter(doc => !doc.path && doc.entity_id != null)
+                    .map(doc => candidateKey(doc)));
                 for (const [name, detail] of entry.details) {
-                    if (unassigned.has(name)) detail.dirty = true;
-                    else entry.details.delete(name);
+                    if (!unassigned.has(name)) {
+                        entry.details.delete(name);
+                        continue;
+                    }
+                    detail.dirty = true;
+                    // 改名元の候補が消えた場合、以前の照会結果は送信先として使えない。
+                    if (detail.documents?.some(doc => doc.renamed_from && doc.entity_id != null
+                            && !candidates.has(candidateKey(doc)))) {
+                        detail.generation += 1;
+                        detail.documents = undefined;
+                        detail.error = undefined;
+                    }
                 }
             }, error => {
                 entry.error = error.message;
@@ -118,17 +134,19 @@ class StatusProvider {
         if (!missing && doc.state !== '同期未完了') return doc;
         const key = path.resolve(entry.value.root, doc.path);
         const details = entry.details;
-        if (!details.has(key)) details.set(key, { dirty: true });
+        if (!details.has(key)) details.set(key, { dirty: true, generation: 0 });
         const detail = details.get(key);
         if (detail.dirty && !detail.loading) {
             detail.dirty = false;
             detail.loading = true;
+            const generation = detail.generation;
             loadDiff(folder, file, []).then(result => {
+                if (detail.generation !== generation) return;
                 detail.documents = result.documents.map(({ target, entity, entity_id, renamed_from, state, error }) =>
                     ({ target, entity, entity_id, renamed_from, state, error }));
                 detail.error = undefined;
             }, error => {
-                detail.error = error.message;
+                if (detail.generation === generation) detail.error = error.message;
             }).finally(() => {
                 detail.loading = false;
                 if (details.get(key) === detail && this.cache.get(folder.uri.toString()) === entry) this.currentEvents.fire();
@@ -139,9 +157,10 @@ class StatusProvider {
         const matches = detail.documents.filter(d => d.target === doc.target && d.entity === doc.entity);
         if (matches.length !== 1) return { ...doc, idMessage: '確認できません', error: '送信先ごとの記事 ID は差分で確認してください。' };
         const [match] = matches;
-        if (match.error) return { ...doc, idMessage: '確認できません', error: match.error };
-        return { ...doc, entity_id: match.entity_id, state: match.renamed_from ? match.state : doc.state,
-            error: doc.error };
+        // CLI は送信先 ID を決めた後に記事の取得に失敗すると、ID とエラーを両方返す。
+        if (match.error && match.entity_id == null) return { ...doc, idMessage: '確認できません', error: match.error };
+        return { ...doc, entity_id: match.entity_id, state: match.renamed_from && match.state ? match.state : doc.state,
+            error: match.error || doc.error };
     }
 
     getTreeItem(item) { return item; }

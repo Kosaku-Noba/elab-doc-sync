@@ -6,6 +6,60 @@ const path = require('node:path');
 const vscode = require('vscode');
 const { StatusProvider, CurrentDocumentProvider } = require('../status');
 
+// 改名元の候補が変わったら古い ID を捨て、取得エラーがあっても判明した ID は表示する。
+async function renameCandidates(folder, file, doc, waitForUpdate, events, currentEvents) {
+    const statuses = [];
+    const lookups = [];
+    const status = new StatusProvider(() => [folder], () => new Promise(resolve => statuses.push(resolve)),
+        events, currentEvents);
+    const current = new CurrentDocumentProvider(status, () => ({ file }), currentEvents,
+        () => new Promise(resolve => lookups.push(resolve)));
+    const respond = (documents) => statuses.at(-1)({ code: 0, stderr: '',
+        stdout: JSON.stringify({ documents, recovery_pending: false }) });
+    const candidate = id => ({ ...doc, file: 'old' + id + '.md', path: null, entity_id: id });
+    const renamed = (id, extra) => ({ documents: [{ ...doc, entity_id: id, renamed_from: 'old' + id + '.md',
+        state: 'リネーム予定', ...extra }] });
+    const idOf = async () => (await current.getChildren()).find(r => r.label === '記事 ID').description;
+
+    await current.getChildren();
+    let updated = waitForUpdate();
+    respond([doc, candidate(17)]);
+    await updated;
+    assert.equal(await idOf(), '確認中…');
+    updated = waitForUpdate();
+    lookups[0](renamed(17));
+    await updated;
+    assert.equal(await idOf(), '#17');
+
+    // 再照会中に候補が #17 から #42 に変わると、#17 の照会結果は表示しない。
+    status.invalidate();
+    await current.getChildren();
+    updated = waitForUpdate();
+    respond([doc, candidate(17)]);
+    await updated;
+    assert.equal(await idOf(), '#17', 'keep the confirmed ID while the same candidate is re-checked');
+    assert.equal(lookups.length, 2);
+    status.invalidate();
+    await current.getChildren();
+    updated = waitForUpdate();
+    respond([doc, candidate(42)]);
+    await updated;
+    assert.equal(await idOf(), '確認中…', 'drop an ID whose rename source left the candidates');
+    updated = waitForUpdate();
+    lookups[1](renamed(17));
+    await updated;
+    assert.equal(await idOf(), '確認中…', 'ignore a lookup started before the candidates changed');
+    assert.equal(lookups.length, 3, 'look up again after the stale request finishes');
+    updated = waitForUpdate();
+    lookups[2](renamed(42, { state: undefined, error: 'HTTP 403' }));
+    await updated;
+    const rows = await current.getChildren();
+    assert.equal(rows.find(r => r.label === '記事 ID').description, '#42', 'show the ID even if fetching it failed');
+    assert.ok(rows.find(r => r.label === 'HTTP 403'), 'keep the fetch error in its own row');
+    assert.equal(rows.find(r => r.label === '同期状態（保存時点）').description, '未追跡');
+    console.log('PASS: changed rename candidates, stale lookup, ID with fetch error');
+}
+
 exports.run = async function () {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'esync-panel-'));
     const events = new vscode.EventEmitter();
@@ -75,6 +129,7 @@ exports.run = async function () {
         const completed = waitForUpdate();
         for (const request of requests.slice(1)) respond(request, []);
         await completed;
+        await renameCandidates(folder, file, doc, waitForUpdate, events, currentEvents);
     } finally {
         events.dispose();
         currentEvents.dispose();
