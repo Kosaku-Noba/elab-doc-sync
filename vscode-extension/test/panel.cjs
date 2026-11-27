@@ -112,6 +112,21 @@ async function refreshStates(folder, file, doc, waitForUpdate, events, currentEv
     found = await status.documentsFor(file, undefined);
     assert.equal(found.waiting, true, 'a file missing from the previous list may appear after the refresh');
 
+    // CLI は記事の取得に失敗すると、終了コード 1 と文書ごとの error を返す。取り直し中は前回のものと示す。
+    await reply({ ...ok([{ ...doc, state: '確認失敗', error: 'HTTP 401' }]), code: 1 });
+    const current = new CurrentDocumentProvider(status, () => ({ file }), currentEvents, async () => ({ documents: [] }));
+    status.invalidate();
+    let rows = await current.getChildren();
+    assert.ok(rows.find(r => r.label === '同期状態を取得中…'), 'show that the state is being fetched again');
+    assert.equal(rows.find(r => r.label === '同期状態（保存時点）').description, '確認失敗（前回取得）');
+    assert.ok(rows.find(r => r.label === 'HTTP 401（前回取得）'), 'a cached document error is marked as previous');
+    await reply(ok([{ ...doc, state: '確認失敗', error: 'HTTP 401' }]));
+    rows = await current.getChildren();
+    assert.equal(rows.find(r => r.label === '同期状態（保存時点）').description, '確認失敗');
+    assert.ok(!rows.find(r => r.label === '同期状態を取得中…'));
+
+    status.invalidate();
+    await status.documentsFor(file, undefined);
     await reply({ code: 2, stdout: '', stderr: 'HTTP 401' });
     found = await status.documentsFor(file, undefined);
     assert.deepEqual(found.errors, ['Project — HTTP 401']);
@@ -122,7 +137,7 @@ async function refreshStates(folder, file, doc, waitForUpdate, events, currentEv
     await reply({ code: 2, stdout: '', stderr: 'HTTP 401' });
     assert.deepEqual((await status.documentsFor(file, undefined)).errors, ['Project — HTTP 401'],
         'report the failure again once the retry fails');
-    console.log('PASS: refresh of a new file, retry after a failure');
+    console.log('PASS: refresh of a new file, previous document errors, retry after a failure');
 }
 
 exports.run = async function () {
@@ -170,7 +185,8 @@ exports.run = async function () {
         assert.equal(requests.filter(r => r.projectFolder === folder).length, 2, 'coalesce saves into one follow-up');
         const updated = await current.getChildren();
         assert.equal(updated.find(r => r.label === '記事 ID').description, '#17');
-        assert.equal(updated.find(r => r.label === '同期状態（保存時点）').description, 'リネーム予定');
+        // 保存による取り直しがまだ終わっていないので、状態は前回取得したものとして示す。
+        assert.equal(updated.find(r => r.label === '同期状態（保存時点）').description, 'リネーム予定（前回取得）');
         assert.equal(updated.find(r => r.label === '差分を確認').command.arguments[0].folder, folder);
         const group = (await status.getChildren({ projectRoot: folder })).find(r => r.label === '未追跡');
         assert.equal(group.children[0].contextValue, 'esync.document');

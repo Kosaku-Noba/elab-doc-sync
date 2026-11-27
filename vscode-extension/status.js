@@ -346,8 +346,8 @@ class StatusProvider {
                     matches.push({ folder, stale, doc: this.effectiveDocument(entry, folder, file, doc, loadDiff) });
                 }
             }
-            // 新しく作った・改名した文書は前回の一覧にないので、取り直し中は同期対象外と決めない。
-            if (matches.length === found && entry.loading) waiting = true;
+            // 取り直し中は「取得中」と示す。新しく作った・改名した文書は前回の一覧にないので、同期対象外とも決めない。
+            if (entry.loading) waiting = true;
         }
         return { matches, errors, warnings, waiting };
     }
@@ -415,7 +415,10 @@ class CurrentDocumentProvider {
         if (!matches.length && !waiting && !failed) {
             rows.push(messageItem('この文書は同期対象に含まれていません。'));
         }
-        for (const { folder, doc } of matches) {
+        for (const { folder, stale, doc: current } of matches) {
+            // 取り直し中・取得失敗時の状態やエラーは前回のもの。今回の結果と取り違えないよう明示する。
+            const doc = stale ? { ...current, state: current.state + '（前回取得）',
+                error: current.error && current.error + '（前回取得）' } : current;
             const details = detailItems(folder, doc);
             if (matches.length === 1) rows.push(...details);
             else {
