@@ -5,7 +5,7 @@ VS Code の左端にある esync アイコンから、編集中の Markdown の�
 ## セットアップ
 
 1. elab-doc-sync のリポジトリ直下で `uv tool install --force .` を実行します。`esync --version` が 1.5.0 以降の版を使います。開発中の 1.5.0 には、この拡張が使うオプションがない版もあります。`esync pull --help`・`esync push --help`・`esync mv --help` を確かめ、どれか1つでも `--expect-id`・`--expect-server`・`--expect-entity`（`pull` はさらに `--json`）のいずれかが欠けていれば、この拡張と同じソースから CLI をインストールし直してください。`esync tag --help` に `--expect-article-url`、`esync metadata set --help` に `--edit-stdin`、`esync new --help` に `--list-targets` があることも確かめてください。開発版を使う場合や、メタデータ欄に CLI の再インストールが案内された場合は、拡張と同じコミットの CLI を使用してください。古い版や版を確認できない場合は、ワークスペースを開いたときに警告が表示されます。この確認は `esync.timeoutSeconds` によらず 30 秒で打ち切ります。応答しないという警告が出た場合は、`esync.executable` に指定した実行ファイルに `--version` を付けてターミナルで実行し、応答するか確かめてください。
-2. VS Code 1.85 以降のコマンドパレットで「Extensions: Install from VSIX...」を選び、`esync-0.3.0.vsix` を開きます。ソースから使う場合は、先に下の「VSIX の作成」を実行し、`dist/` にできたファイルを選びます。
+2. [GitHub Releases](https://github.com/Kosaku-Noba/elab-doc-sync/releases) の該当版の Assets から VSIX を取得します。開発版は下の「VSIX の作成」にある Actions 成果物を使えます。VS Code 1.85 以降のコマンドパレットで「Extensions: Install from VSIX...」を選び、`esync-0.3.0.vsix` を開きます。ソースから使う場合は、先に下の「VSIX の作成」を実行し、`dist/` にできたファイルを選びます。
 3. `.elab-sync.yaml` があるディレクトリをワークスペースフォルダーとして開きます。接続先や API キーは CLI と共通です。環境変数を使う場合は、VS Code の拡張ホストからも参照できるようにしてください。
 
 信頼済みのファイルシステム上のワークスペースで、PATH 上の `esync` を使います。別の環境にインストールした場合は、VS Code のユーザー設定 `esync.executable` に実行ファイルの絶対パスを指定できます。リポジトリで `uv sync` 済みなら、その `.venv/bin/esync`（Windows は `.venv\Scripts\esync.exe`）も指定できます。
@@ -51,7 +51,7 @@ Node.js 22 以降が必要です（テストに使う `@vscode/test-electron` �
 
 ## VSIX の作成
 
-Node.js 22 以降で、このディレクトリから実行します。
+Node.js 22.12.0 以降で、このディレクトリから実行します。
 
 ```sh
 npm ci
@@ -59,3 +59,4 @@ npm run package
 ```
 
 パッケージは `dist/esync-<拡張の版>.vsix` に生成されます。PR では GitHub Actions の Tests 実行画面から成果物 `esync-vsix` をダウンロードし、ZIP を展開してインストールできます。GitHub Release を公開すると、そのタグのコードでテストとパッケージ作成が実行され、成功後に同じ VSIX が Release の Assets に追加されます。
+同じ Release でジョブを再実行した際は、同名・同内容の添付ファイルを保持します。内容が異なる場合とアップロードが中断して空ファイルが残った場合は、ジョブのログに理由が表示されます。
