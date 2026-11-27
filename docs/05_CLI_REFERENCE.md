@@ -218,7 +218,7 @@ esync clone --url URL --entity TYPE --id ID [--dir DIR] [--no-verify]
 リモートの eLabFTW エンティティからローカルプロジェクトを構築する。
 `.elab-sync.yaml` とディレクトリ構造を自動生成。
 
-`ELABFTW_API_KEY` 環境変数が必須です。`--url` が [設定ファイル](04_CONFIGURATION.md) の `url` の条件を満たさない場合は、何も作らずに終了コード 2 で終わります。表示と結果の URL では認証情報を伏せます。`--entity` の既定は `items`、`--id` は複数指定できます。`--dir` を省略すると `elab-clone-<最初のID>` を作成します。生成する `.gitignore` には `.elab-sync.yaml`・`.elab-sync-ids/`・`.elab-sync-backups/`・`.elab-displaced-*/`・`.elab-sync-operations/`・`.elab-sync-recovery.json` を含みます。
+`ELABFTW_API_KEY` 環境変数が必須です。`--url` が [設定ファイル](04_CONFIGURATION.md) の `url` の条件を満たさない場合は、何も作らずに終了コード 2 で終わります。表示と結果の URL では認証情報を伏せます。ただし `--url` に含めたユーザー名・パスワードは、生成する `.elab-sync.yaml` の `elabftw.url` にはそのまま保存されるので、設定ファイルを共有しないでください（`.gitignore` には含まれます）。`--entity` の既定は `items`、`--id` は複数指定できます。`--dir` を省略すると `elab-clone-<最初のID>` を作成します。生成する `.gitignore` には `.elab-sync.yaml`・`.elab-sync-ids/`・`.elab-sync-backups/`・`.elab-displaced-*/`・`.elab-sync-operations/`・`.elab-sync-recovery.json` を含みます。
 
 同名の画像・添付や文書が同じ保存先を必要とする場合は、該当記事を取得できません。`clone --dry-run` で事前に確認できます。一括取得の衝突では先の記事と添付を保持し、後から衝突した記事だけが失敗します。残りの ID の取得を続け、部分成功の終了コードは 1 です。
 
