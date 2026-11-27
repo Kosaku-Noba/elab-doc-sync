@@ -699,3 +699,15 @@ def test_masking_diff_lines_and_old_style_userinfo_and_query_links():
     body = '[b](https://example.test/a/database.php?mode=view&id=7&lang=ja#section)'
     assert _rewrite_elab_links_to_local(body, 'https://example.test/a', {'b.md': 7}, 'items') == body, \
         'keep links whose extra query a local link cannot express'
+
+
+def test_masking_stays_inside_the_url_and_links_match_whole_targets():
+    from elab_doc_sync.mcp_server import _scrub
+    from elab_doc_sync.sync import _rewrite_elab_links_to_local
+    text = '[eLab](https://user:pw@elab.test)（担当：ops@example.org）'
+    assert _scrub(text, []) == '[eLab](https://***@elab.test)（担当：ops@example.org）'
+    body = '[x](https://example.test/database.php?mode=view&id=7%32&lang=ja#s)'
+    assert _rewrite_elab_links_to_local(body, 'https://example.test', {'seven.md': 7}, 'items') == body, \
+        'do not take id=7%32 for article 7'
+    assert _rewrite_elab_links_to_local('[y](https://example.test/database.php?mode=view&id=7#s)',
+                                        'https://example.test', {'seven.md': 7}, 'items') == '[y](./seven.md#s)'

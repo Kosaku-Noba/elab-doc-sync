@@ -112,9 +112,10 @@ def redact(text: str, *secrets: str | None) -> str:
 
 
 # URL に埋め込まれたユーザー名・パスワード（scheme://user:pass@host）の、:// の後ろの部分。引用符は含みうる。
-# ホストとの区切りは、空白・改行・/・?・# より前の最後の @（記事本文などには生の @ を含む旧い形式もありうる）。
-# 空白や ?・# の先までは伏せないので、URL の後ろのメールアドレスやクエリ内のアドレスは残る。
-_URL_USERINFO = re.compile(r"[^/\s?#]+@")
+# ホストとの区切りは、URL の中で / ? # より前にある最後の @（記事本文などには生の @ を含む旧い形式もありうる）。
+# 認証情報は ASCII の表示文字に限られるので、空白・全角文字・括弧（Markdown のリンクの終わり）の先までは伏せない。
+# URL の後ろのメールアドレスやクエリ内のアドレスは残る。
+_URL_USERINFO = re.compile(r"(?:(?![/?#()<>\[\]])[!-~])+@")
 _SCHEME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+.-")
 
 

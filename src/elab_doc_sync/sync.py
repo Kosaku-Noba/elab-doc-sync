@@ -721,9 +721,10 @@ def _rewrite_images(body: str, entity: str, entity_id: int, client: ELabFTWClien
 # フラグメント部分もキャプチャして逆変換時に保持する
 _ELAB_URL_RE = re.compile(
     # base はサブパスに設置した eLabFTW（https://host/elab）も含む。
-    # id の後に別のクエリが続くリンクは、ローカルリンクで表せないので対象にしない（元の URL を残す）。
-    r"(?P<base>https?://[^/?#\s]+(?:/[^?#\s]*?)?)/(?P<page>database|experiments)\.php\?mode=view&id=(?P<id>\d+)(?![\d&;])"
-    r"(?P<fragment>#[^\s)]*)?")
+    # リンク先全体がこの形のときだけ一致する。id の後に別のクエリや %xx などが続くリンクは、
+    # ローカルリンクで表せない（別の記事を指すこともある）ので対象にしない（元の URL を残す）。
+    r"(?P<base>https?://[^/?#\s]+(?:/[^?#\s]*?)?)/(?P<page>database|experiments)\.php\?mode=view&id=(?P<id>\d+)"
+    r"(?P<fragment>#[^\s)]*)?\Z")
 
 # eLabFTW の entity タイプと URL ページ名の対応
 _ENTITY_TO_PAGE = {"items": "database", "experiments": "experiments"}
