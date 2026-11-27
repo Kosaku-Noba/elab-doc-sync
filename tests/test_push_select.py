@@ -746,8 +746,16 @@ def test_mcp_error_fields_use_the_broad_mask_and_fragment_order_is_checked():
     from elab_doc_sync.result import redact_url_credentials
     from elab_doc_sync.sync import _rewrite_elab_links_to_local
     reply = {'warnings': ["エラー: key=value 形式で指定してください: https://u:pa'ss@h.test"], 'error': 'see https://a:b"c@h.test/x'}
-    assert _scrub(reply, []) == {'warnings': ['エラー: key=value 形式で指定してください: https://***@h.test'],
-                                 'error': 'see https://***@h.test/x'}
+    assert _scrub(reply, [], top=True) == {'warnings': ['エラー: key=value 形式で指定してください: https://***@h.test'],
+                                           'error': 'see https://***@h.test/x'}
+    # 広いマスクは元のキー名で、トップレベルの診断欄にだけ使う。利用者のメタデータの error 欄は加工しない。
+    assert _scrub({'warnings': ["x https://u:pa'ss@h.test"]}, ['warn'], top=True) == {'***ings': ['x https://***@h.test']}
+    meta = {'data': {'metadata': {'error': 'https://elab.test?to=a@example.org'}}, 'warnings': []}
+    assert _scrub(meta, [], top=True) == meta
+    from elab_doc_sync.result import error_text
+    started = time.monotonic()
+    error_text(ValueError('a' * 200_000 + ':/' + 'b' * 200_000))
+    assert time.monotonic() - started < 1, 'error_text stays linear'
     body = '[a](<https://example.test/database.php?mode=view&id=7#sec)mid(end>)'
     assert _rewrite_elab_links_to_local(body, 'https://example.test', {'seven.md': 7}, 'items') == body
     started = time.monotonic()
