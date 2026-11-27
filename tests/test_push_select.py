@@ -547,6 +547,27 @@ def test_profile_list_hides_url_credentials_and_add_rejects_bad_urls(project, ca
     assert urls == {'default': 'https://example.test', 'good': 'https://elab.example.test',
                     'bad': '（不正な URL）', 'wide': '（不正な URL）'}
     before = cfg.read_text(encoding='utf-8')
-    for url in ('https:/x:y z@host', 'https://example .test', 'https://elab.example.test:65536', '\u3000https://e.test'):
+    for url in ('https:/x:y z@host', 'https://example .test', 'https://elab.example.test:65536', '\u3000https://e.test',
+                'https://elab.example.test/la\u200bb'):
         code, text = _run(['profile', 'add', 'other', '--url', url], capsys)
         assert code == 2 and 'y z' not in text and cfg.read_text(encoding='utf-8') == before, url
+
+
+def test_init_and_clone_check_the_url_like_the_config_loader(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('ELABFTW_API_KEY', 'k')
+    code, text = _run(['clone', '--url', 'https://example.test/lab site', '--id', '1'], capsys)
+    assert code == 2 and 'url が不正です' in text.lower()
+    assert not any(tmp_path.iterdir()), 'clone creates nothing for a bad URL'
+
+
+def test_init_asks_again_for_a_url_the_config_loader_would_reject(tmp_path, monkeypatch, capsys):
+    from argparse import Namespace
+    from elab_doc_sync.cli import cmd_init
+    monkeypatch.chdir(tmp_path)
+    inputs = iter(['https://example.test/lab site', 'https://elab.example.com', 'n', '', '', 'items', 'md'])
+    monkeypatch.setattr('builtins.input', lambda _: next(inputs))
+    cfg = tmp_path / '.elab-sync.yaml'
+    cmd_init(Namespace(config=str(cfg)))
+    assert 'URL が不正です' in capsys.readouterr().out
+    assert yaml.safe_load(cfg.read_text(encoding='utf-8'))['elabftw']['url'] == 'https://elab.example.com'

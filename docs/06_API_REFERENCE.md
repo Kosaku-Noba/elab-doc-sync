@@ -230,7 +230,7 @@ YAML 設定読み込み・バリデーション。
 | `run_whoami` | `profiles`（`profile`・`url`・`error`・`firstname`・`lastname`・`email`・`userid`・`team`・`teams`） |
 | `run_verify` | `documents`（`target`・`file`・`entity`・`entity_id`・`ok`・`problem`）、`unsynced_targets`、`issues` |
 | `run_backup` | `backups`（`id`・`reason`） |
-| `run_profile_list` | `profiles`（`name`・`url`・`has_api_key`・`verify_ssl`） |
+| `run_profile_list` | `profiles`（`name`・`url`・`has_api_key`・`verify_ssl`）。`url` は、有効なら認証情報を伏せた URL、形が不正なら文字列 `（不正な URL）`、未設定なら `null`。`（不正な URL）` を接続先として使わないこと |
 | `run_tag` | `action`・`dry_run`・`unsynced_targets`、`entities`（`target`・`entity`・`entity_id`。list は `tags`、add/remove は `tag`・`result`: `added`/`exists`/`would_add`/`removed`/`not_found`/`would_remove`） |
 | `run_relate` | `action`・`dry_run`・`unsynced_targets`、`sources`（`entity`・`entity_id`。list は `links`: 種別ごとの `id`・`title`）、`changes`（`entity`・`entity_id`・`to_entity`・`to_id`・`result`: `added`/`exists`/`would_add`/`removed`/`not_found`/`would_remove`/`self`） |
 | `run_metadata` | `action`・`dry_run`・`unsynced_targets`、`entities`（`target`・`entity`・`entity_id`・`metadata`。set は `result`: `updated`/`would_update`、既存を読めなかったとき `unreadable_existing`） |

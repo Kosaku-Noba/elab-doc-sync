@@ -1398,6 +1398,10 @@ def cmd_init(args):
     url = ""
     while not url:
         url = input("eLabFTW の URL: ").strip().rstrip("/")
+        # 設定の読み込みと同じ条件で確かめる（保存した設定を push・pull で読めるように）。値は表示しない。
+        if url and not _valid_server_url(url):
+            print("  URL が不正です。https://elab.example.com のように、空白を含まない http:// または https:// の URL を入力してください")
+            url = ""
 
     ssl_input = input("SSL 証明書を検証しますか？ [Y/n]: ").strip().lower()
     verify_ssl = ssl_input != "n"
@@ -1445,6 +1449,8 @@ def run_clone(args, echo=None) -> CommandResult:
     res = CommandResult(data={"dry_run": getattr(args, "dry_run", False), "documents": []}, echo=echo)
 
     url = args.url.rstrip("/")
+    if not _valid_server_url(url):
+        return res.fail("エラー: --url が不正です。https://elab.example.com のように、空白を含まない http:// または https:// の URL を指定してください", 2)
     api_key = _os.environ.get("ELABFTW_API_KEY", "").strip()
     if not api_key:
         return res.fail("エラー: 環境変数 ELABFTW_API_KEY を設定してください")
