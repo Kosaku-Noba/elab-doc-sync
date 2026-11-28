@@ -19,6 +19,24 @@ function articleUri(doc) {
     return vscode.Uri.parse(url.href);
 }
 
+async function openBeside(doc) {
+    const uri = articleUri(doc);
+    const command = 'workbench.action.browser.open';
+    let message = 'この VS Code では統合ブラウザーを利用できません。';
+    if ((await vscode.commands.getCommands(true)).includes(command)) {
+        try {
+            await vscode.commands.executeCommand(command, { url: new URL(doc.url).href, openToSide: true });
+            return;
+        } catch (error) {
+            message = '統合ブラウザーで記事を開けませんでした。' + error.message;
+        }
+    }
+    const external = '外部ブラウザで開く';
+    if (await vscode.window.showInformationMessage(message, external) === external) {
+        await vscode.env.openExternal(uri);
+    }
+}
+
 /** @param {() => vscode.WorkspaceFolder[]} projects */
 function articleActions(run, projects, refresh, output, dialogs) {
     async function json(folder, args, writing = false, input = undefined) {
@@ -102,6 +120,101 @@ function articleActions(run, projects, refresh, output, dialogs) {
             label: folder.name, description: folder.uri.fsPath, folder })), { placeHolder: 'プロジェクトを選択' });
         return choice?.folder;
     }
+    async function openMarkdown(folder, doc, targets) {
+        if (doc.local_path) {
+            const local = vscode.Uri.file(path.resolve(folder.uri.fsPath, doc.local_path));
+            try {
+                const stat = await vscode.workspace.fs.stat(local);
+                if (stat.type & vscode.FileType.File) {
+                    await vscode.window.showTextDocument(local);
+                    return;
+                }
+            } catch (error) {
+                if (error.code !== 'FileNotFound') throw error;
+            }
+        }
+        const choices = targets.filter(t => t.entity === doc.entity && t.selector).map(t => ({
+            label: t.target, description: t.docs_dir, selector: t.selector,
+        }));
+        if (!targets.some(t => t.selector)) throw new Error('取得元の接続先を特定できません。ターゲットを確認してください。');
+        const target = !choices.length ? targets.find(t => t.selector) : choices.length === 1 ? choices[0]
+            : await vscode.window.showQuickPick(choices, { placeHolder: 'Markdown の保存先を選択' });
+        if (!target) return;
+        const args = ['pull', '--json', '--target=' + target.selector, '--entity=' + doc.entity,
+            '--id=' + doc.id, '--expect-article-url=' + doc.url];
+        const resultDoc = data => {
+            const result = data.documents.find(d => d.entity === doc.entity && d.entity_id === doc.id);
+            if (!result?.path || result.error) throw new Error(result?.error || '記事の保存先を確認できません。');
+            return result;
+        };
+        const plan = resultDoc(await json(folder, [...args, '--dry-run']));
+        const file = vscode.Uri.file(path.resolve(folder.uri.fsPath, plan.path));
+        if (plan.result !== 'existing') {
+            if (plan.result !== 'would_pull') throw new Error('この記事を取り込めません。同期状態を確認してください。');
+            const notice = choices.length ? '' : ' 必要に応じてこの保存先を同期設定に追加します。';
+            if (!await dialogs.confirm(kindName(doc.entity) + ' #' + doc.id + '「' + doc.title + '」を ' + plan.path + ' に取り込みます。' + notice, '取り込む')) return;
+            if (vscode.workspace.textDocuments.some(d => d.isDirty && d.uri.toString() === file.toString())) {
+                throw new Error(plan.path + ' に未保存の編集があります。');
+            }
+            try {
+                const result = resultDoc(await json(folder, [...args, '--expect-path=' + plan.path], true));
+                if (!['existing', 'pulled'].includes(result.result)) throw new Error('記事を取り込めませんでした。');
+                await vscode.window.showTextDocument(vscode.Uri.file(path.resolve(folder.uri.fsPath, result.path)));
+            } finally {
+                refresh();
+            }
+        } else {
+            await vscode.window.showTextDocument(file);
+        }
+    }
+    async function search() {
+        const folder = await project();
+        if (!folder) return;
+        const { targets } = await json(folder, ['new', '--json', '--list-targets']);
+        const connections = new Map();
+        for (const target of targets) {
+            const profile = target.profile ?? target.selector;
+            if (target.selector && !connections.has(profile)) connections.set(profile, target.selector);
+        }
+        if (!connections.size && targets.length) throw new Error('検索先を特定できません。ターゲットに一意の title を指定してください。');
+        const profiles = [...connections.keys()];
+        const profile = profiles.length > 1
+            ? await vscode.window.showQuickPick(profiles, { placeHolder: '検索する接続先' }) : profiles[0];
+        if (profiles.length && profile === undefined) return;
+        const keyword = await vscode.window.showInputBox({ prompt: '記事を検索（空欄で最近の記事を表示）' });
+        if (keyword === undefined) return;
+        const args = ['search', '--json', '--scope', 'all', '--entity', 'all', '--order', 'lastchange', '--sort', 'desc', '--limit', '20'];
+        if (profile !== undefined) args.push('--target=' + connections.get(profile));
+        let offset = 0;
+        while (true) {
+            const page = await json(folder, [...args, '--offset', String(offset), '--', ...(keyword.trim() ? [keyword.trim()] : [])]);
+            const limitMessage = '検索上限に達しました。検索語を絞ってください。';
+            if (!page.results.length) {
+                await vscode.window.showInformationMessage(page.truncated ? limitMessage : '該当する記事はありません。');
+                return;
+            }
+            /** @type {(vscode.QuickPickItem & { doc?: any })[]} */
+            const items = page.results.map(doc => ({
+                label: doc.title || '無題', description: kindName(doc.entity) + ' #' + doc.id,
+                detail: '更新日　' + (doc.modified_at || '不明'), doc,
+            }));
+            if (Number.isSafeInteger(page.next_offset) && page.next_offset > offset) items.push({ label: '次の20件' });
+            const choice = await vscode.window.showQuickPick(items, {
+                placeHolder: page.truncated ? limitMessage : '記事を選択',
+            });
+            if (!choice) return;
+            if (choice.doc) {
+                const markdown = choice.doc.local_path ? 'Markdown を開く' : 'Markdown に取り込む';
+                const beside = '記事を横に開く';
+                const action = await vscode.window.showQuickPick([beside, markdown], { placeHolder: choice.label });
+                if (action === beside) return openBeside(choice.doc);
+                if (action === markdown) return openMarkdown(folder, choice.doc,
+                    targets.filter(t => (t.profile ?? t.selector) === profile));
+                return;
+            }
+            offset = page.next_offset;
+        }
+    }
     async function newDocument() {
         const folder = await project();
         if (!folder) return;
@@ -138,6 +251,6 @@ function articleActions(run, projects, refresh, output, dialogs) {
         output.appendLine('── ' + folder.name + ' ──\n' + result.stdout.trimEnd());
         output.show(true);
     }
-    return { children, edit, newDocument, log };
+    return { children, edit, newDocument, search, log, project };
 }
-module.exports = { articleActions, articleGroups, articleUri };
+module.exports = { articleActions, articleGroups, articleUri, openBeside };

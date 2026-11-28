@@ -88,6 +88,20 @@ exports.run = async function () {
 // 取り込みと競合の解決。確認ダイアログは自動で応答し、CLI に渡した引数を確かめる。
 async function pullAndResolve(api, root, note, calls) {
     const bin = name => path.join(root, 'bin', name);
+    const fixtureDiff = JSON.parse(await fs.readFile(bin('diff.json'), 'utf8'));
+    const incoming = { ...fixtureDiff.documents[0], state: '取得待ち' };
+    await fs.writeFile(bin('diff.json'), JSON.stringify({ documents: [incoming] }));
+    await api.preview(note);
+    const comparison = vscode.window.tabGroups.activeTabGroup.activeTab;
+    assert.match(comparison.label, /eLabFTW の現在の本文/);
+    const incomingDiff = /** @type {vscode.TabInputTextDiff} */ (comparison.input);
+    assert.equal(incomingDiff.modified.scheme, 'esync-review');
+    assert.equal((await vscode.workspace.openTextDocument(incomingDiff.modified)).getText(), incoming.remote_body);
+    assert.equal((await vscode.workspace.openTextDocument(incomingDiff.original)).getText(), incoming.remote_base_body);
+    const beforeSend = (await calls()).length;
+    await vscode.commands.executeCommand('esync.push', incomingDiff.modified);
+    assert.ok(!(await calls()).slice(beforeSend).some(line => line.startsWith('push')), '取り込みの差分から送信しない');
+    await fs.writeFile(bin('diff.json'), JSON.stringify(fixtureDiff));
     const write = (name, value) => fs.writeFile(bin(name), JSON.stringify(value));
     const asked = [];
     api.dialogs.confirm = async (message, button) => { asked.push(button); return true; };

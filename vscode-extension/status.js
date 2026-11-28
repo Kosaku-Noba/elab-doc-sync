@@ -54,6 +54,13 @@ function candidateSet(documents) {
 
 // eLabFTW 側の変更を取り込める状態と、どちらかを採用して解決する状態。
 const pullStates = ['取得待ち', '競合'];
+const sendStates = ['送信待ち', '未追跡', 'リネーム予定'];
+const assetActions = { add: '追加', replace: '差し替え', missing: 'ファイルなし', unverified: '内容未確認' };
+const directions = {
+    '送信待ち': 'Markdown → eLabFTW',
+    '取得待ち': 'eLabFTW → Markdown',
+    '競合': '両方に変更あり',
+};
 
 /**
  * 行のメニューを出し分ける contextValue。push・diff と同じ文書なら esync.document を含む。
@@ -91,19 +98,15 @@ function field(label, value) {
     return item;
 }
 
-function detailItems(folder, doc) {
+function detailItems(folder, doc, reviewing) {
     const source = documentItem(folder, doc);
     const entity = doc.entity === 'items' ? 'リソース' : '実験ノート';
-    const action = treeItem('差分を確認');
-    action.iconPath = new vscode.ThemeIcon('diff');
-    action.command = { command: 'esync.previewFromPanel', title: '差分を確認', arguments: [source] };
     const id = doc.entity_id == null ? '未割り当て' : '#' + doc.entity_id;
     const rows = [
         field('同期状態（保存時点）', doc.state), field('送信先', doc.target + ' / ' + entity),
         field('記事 ID', doc.idMessage || id),
     ];
     if (doc.error) rows.push(messageItem(doc.error));
-    rows.push(action);
     const state = doc.syncState || doc.state;
     const command = (label, icon, name, tooltip) => {
         const item = treeItem(label);
@@ -112,13 +115,15 @@ function detailItems(folder, doc) {
         item.command = { command: name, title: label, arguments: [source] };
         rows.push(item);
     };
-    if (doc.url && doc.entity_id != null) {
-        command("eLabFTW で開く", "link-external", "esync.openArticle", doc.url);
-        if (doc.selector) rows.push(...articleGroups(folder, doc));
-    }
     if (pullStates.includes(state)) {
-        command('eLabFTW の変更を取り込む', 'cloud-download', 'esync.pull',
-            'ローカルでも編集している箇所はマージし、重なる箇所は競合マーカーで示します。');
+        command(state === '競合' ? '両方の変更をマージする' : 'eLabFTW から取り込む', 'cloud-download', 'esync.pull',
+            'eLabFTW の記事からこの Markdown に変更を取り込みます。対象の記事とファイルを確認してから実行します。');
+    }
+    if (!reviewing && sendStates.includes(state)) {
+        command('送信する変更を確認', 'diff', 'esync.previewFromPanel',
+            'この Markdown から eLabFTW に送る内容を比較します。送信は差分を確認した後に行います。');
+    } else if (!reviewing) {
+        command('差分を確認', 'diff', 'esync.previewFromPanel', '保存した Markdown の差分を開きます。');
     }
     if (state === '競合') {
         command('ローカルの内容で eLabFTW を上書き', 'arrow-up', 'esync.adoptLocal', 'push --force。eLabFTW 側の変更は失われます。');
@@ -129,25 +134,46 @@ function detailItems(folder, doc) {
     if (state === '競合マーカーあり') {
         rows.push(messageItem('競合マーカーを解消して保存してから、差分を確認して push してください。'));
     }
+    if (doc.url && doc.entity_id != null) {
+        command("eLabFTW の記事を横に開く", "open-preview", "esync.openArticleBeside", doc.url);
+        command("eLabFTW で開く", "link-external", "esync.openArticle", doc.url);
+        if (doc.selector) rows.push(...articleGroups(folder, doc));
+    }
     return rows;
 }
 
 /**
  * 差分タブで確認している内容。push される内容とその前提を表示する。
- * @param {{ uri: string, selected: any, warnings: string, remote: boolean }} preview
+ * @param {{ uri: string, selected: any, warnings: string, remote: boolean, baseLabel: string, submitted?: boolean }} preview
  */
 function previewItem(preview) {
     const doc = preview.selected;
     const group = treeItem('差分タブで確認中の内容', vscode.TreeItemCollapsibleState.Expanded);
     group.description = doc.state;
-    const rows = [field('送信先サーバー', doc.server), field('比較の基準（左側）', doc.base_label || '前回の同期')];
+    const rows = [field('接続先サーバー', doc.server), field('比較の基準（左側）', preview.baseLabel)];
+    if (preview.submitted) {
+        rows.push(messageItem('この差分での送信は完了しました。'));
+    } else if (sendStates.includes(doc.state)) {
+        const send = treeItem('eLabFTW に送信');
+        send.description = doc.target + (doc.entity_id == null ? '（新規作成）' : ' #' + doc.entity_id);
+        send.tooltip = '確認した Markdown を ' + send.description + ' に送信します。';
+        send.iconPath = new vscode.ThemeIcon('cloud-upload');
+        send.command = { command: 'esync.push', title: 'eLabFTW に送信', arguments: [preview.uri] };
+        rows.push(send);
+    }
     if (doc.renamed_from) rows.push(field('改名前の文書', doc.renamed_from));
+    if (sendStates.includes(doc.state) && doc.asset_changes?.length) {
+        const assets = treeItem('送信する画像・添付ファイル', vscode.TreeItemCollapsibleState.Expanded);
+        assets.description = doc.asset_changes.length + ' 件';
+        assets.children = doc.asset_changes.map(asset => field(assetActions[asset.action] || asset.action, asset.path));
+        rows.push(assets);
+    }
     if (doc.local_changed) rows.push(messageItem('画像・添付ファイルまたは設定に変更があります。push で送信されます。'));
     if (doc.remote_changes?.length || preview.remote) {
         const remote = treeItem('eLabFTW 側の変更');
         remote.description = (doc.remote_changes || []).join('、');
         remote.tooltip = '同期状態が「競合」「取得待ち」の文書は、通常の push では送信されません。'
-            + 'CLI で eLabFTW 側の変更を取り込むか、どちらかを採用してから差分を開き直してください（README「競合を確認・復旧する」）。';
+            + '「開いている文書」から eLabFTW の変更を取り込むか、競合を解消してから差分を開き直してください。';
         remote.iconPath = new vscode.ThemeIcon('warning');
         if (preview.remote) {
             remote.command = { command: 'esync.showRemoteChanges', title: 'eLabFTW 側の変更を表示', arguments: [preview.uri] };
@@ -443,7 +469,8 @@ class StatusProvider {
             }
             const group = groups.get(doc.state);
             group.children.push(documentItem(folder, doc));
-            group.description = String(group.children.length);
+            const direction = directions[doc.state];
+            group.description = group.children.length + ' 件' + (direction ? ' · ' + direction : '');
         }
         return rows.length ? rows : [messageItem('同期対象の文書はありません')];
     }
@@ -482,7 +509,9 @@ class CurrentDocumentProvider {
             // 取り直し中・取得失敗時の状態やエラーは前回のもの。今回の結果と取り違えないよう明示する。
             const doc = stale ? { ...current, syncState: current.state, state: previous(current.state),
                 error: current.error && previous(current.error) } : current;
-            const details = detailItems(folder, doc);
+            const reviewing = preview && folder === previewFolder && preview.selected.target === doc.target
+                && preview.selected.entity === doc.entity && preview.selected.selector === doc.selector;
+            const details = detailItems(folder, doc, reviewing);
             if (matches.length === 1) rows.push(...details);
             else {
                 const group = treeItem(doc.target, vscode.TreeItemCollapsibleState.Expanded);
@@ -495,4 +524,4 @@ class CurrentDocumentProvider {
     }
 }
 
-module.exports = { StatusProvider, CurrentDocumentProvider, statusBarView, fileDecoration };
+module.exports = { StatusProvider, CurrentDocumentProvider, statusBarView, fileDecoration, sendStates, assetActions };

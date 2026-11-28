@@ -100,6 +100,9 @@ esync pull [ファイル・ディレクトリ・glob ...] [--regex 式] [-t TARG
 | `--auto` | 振り分けを自動決定 |
 | ファイル・`--regex` | 取り込む追跡中の文書を push・diff と同じ方法で指定する（省略時は全文書）。`--id`・`--dir` とは併用できない（終了コード 2）。指定した文書がまだ記事と紐付いていない場合は取得せず、`result: "untracked"` を返す。改名した文書は旧名で紐付いているので、先に `esync mv <旧パス> <新パス>` で紐付けを移す |
 | `--expect-id`・`--expect-server`・`--expect-entity` | push と同じ照合を、取り込む前に行う。文書を指定し、選択結果が1つのターゲットの1文書のときだけ使える。異なれば何も変更せず終了コード 2 |
+| `--expect-article-url URL` | 検索した1件の `--id`・`--entity` と `--target` の接続先を照合する。追跡済みなら `result: existing` と既存の `path` を返す。取得した文書だけがリンク書き換えの対象になる。 |
+| `--incoming-only` | `--expect-id` と文書1件を指定した通常の pull で、取得待ちから状態が変わっていたら停止する。 |
+| `--expect-path PATH` | 上のどちらかの照合と併用する。dry-run の `documents[].path` を渡し、保存先が変わっていたら停止する。 |
 | `--json` | 結果を JSON で出力する。`documents` の要素は `result` ごとに次のキーを持つ。`pulled`・`would_pull`・`skipped`: `target`・`entity`・`entity_id`・`server`（認証情報を除いた URL）・`conflict`（今回競合マーカーを残したか）・`path`（本文の保存先。取得する場合はタイトルの変更による改名後の名前で、dry-run でも同じ。ローカルの編集を残してスキップした場合は、今の本文の場所）。`untracked`: `target`・`entity`・`path`。`needs_target`: `entity`・`entity_id`。取得に失敗した記事は `result` の代わりに `error` を持ち、`path` はない。記事の取得に失敗したときの `error` と標準エラーでは、URL に含まれるユーザー名・パスワードを `https://***@elab.example.com:8443/...` のように伏せる。`--expect-server` が一致しないときのエラーには、指定した値を表示しない。ほかに `pulled`・`skipped`・`failed`・`conflict_files`。保存先は対話で選ばない。警告は標準エラーに出る。引数や文書の指定の誤りは終了コード 2 で、標準エラーに理由を出す |
 | `--dir` | 保存先ディレクトリを指定。既存ターゲットの管理下なら取得元と種別・接続設定（URL、API キー、SSL 検証）が一致する必要がある。`--target` 省略時も照合する。ID を省略した一括取得では、選択したターゲットに不一致があれば全件の取得前に中止する。対象を限定するには `--target` を指定する |
 
@@ -171,7 +174,7 @@ v1.0.4 より前に同期した文書は、前回同期時のローカルの本�
 
 `--json` は差分と送信先を `documents` に返します。push と同じ改名判定をメモリ内で行い、改名予定の文書には旧名と既存の記事 ID を含めます。一つのファイルが複数のターゲットに一致する場合はそれぞれの結果を返します。`selector` がある場合は、その値を `--target` に指定して送信先を限定できます。
 
-`--json` に `--bodies` を加えると、比較に使った本文も文書ごとに返します（`--bodies` だけでは何も変わりません）。
+`--json` に `--bodies` を加えると、比較に使った本文も文書ごとに返します（`--bodies` だけでは何も変わりません）。 `asset_changes` は本文から参照するローカル添付と記事の添付一覧を比較し、`path`（本文の参照先）、`name`（アップロード名）、`action` を返します。`action` は `add`（追加）、`replace`（差し替え）、`missing`（ローカルファイルなし）、`unverified`（一覧から内容の一致を判定できない同名添付）です。
 
 - `base_label`・`base_body`: 比較の基準とその本文。`前回の同期`（前回同期した時点のローカルの本文）、`eLabFTW`（前回の本文が記録されていない文書の、現在の eLabFTW の本文）、`新規作成`（未追跡の文書。本文は空）のいずれか
 - `local_body`: 現在のファイルの本文（前後の空白を除く）
@@ -299,7 +302,7 @@ esync relate list --from exp/2026-10-20.md
 
 `tag`・`relate`・`metadata` はサブコマンドの前に `--json` を指定すると処理結果を JSON で返します。例えば `esync tag --target=週報 --json list --entity=experiments --id=42` のタグ一覧は `entities[0].tags` に入ります。`status --json` や `diff --json` が返す記事の `url` を `--expect-article-url` に渡すと、指定したターゲット・種別・ID が示す URL を実行時に照合します。前回同期時の接続先が確認できない記事の結果には `url` が入りません。
 
-`esync new --json --list-targets` は空の文書ディレクトリも含めて作成先候補を返します。一意に指定できるターゲットには `selector` が入ります。`new --json --target=<selector> --list` でテンプレートを取得し、`--template-id` と `--title` で作成すると、結果の `path` でファイルを開けます。
+`esync new --json --list-targets` は空の文書ディレクトリも含めて作成先候補を返します。各候補の `profile` は検索に使う接続プロファイル名です。一意に指定できるターゲットには `selector` が入ります。`new --json --target=<selector> --list` でテンプレートを取得し、`--template-id` と `--title` で作成すると、結果の `path` でファイルを開けます。
 
 ## tag — タグ操作
 

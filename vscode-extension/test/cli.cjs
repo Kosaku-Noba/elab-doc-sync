@@ -17,7 +17,7 @@ exports.run = async function () {
         const script = path.join(root, 'esync');
         const folder = { uri: vscode.Uri.file(root) };
         const logs = [];
-        let version = '1.5.0';
+        let version = '1.5.1';
         const run = createRunner(() => script, line => logs.push(line), () => 1000);
         const write = body => fs.writeFile(script, '#!/bin/sh\n' + body + '\n', { mode: 0o755 });
 
@@ -52,7 +52,7 @@ exports.run = async function () {
         };
         assert.equal(await checkVersion(versionRun, folder), undefined);
         version = '1.4.0';
-        assert.match(await checkVersion(versionRun, folder), /1\.4\.0 は古い.*1\.5\.0 以降/);
+        assert.match(await checkVersion(versionRun, folder), /1\.4\.0 は古い.*1\.5\.1 以降/);
         version = 'dev';
         assert.match(await checkVersion(versionRun, folder), /版を確認できませんでした/);
         const slow = () => Promise.reject(Object.assign(new Error('timeout'), { timedOut: true }));

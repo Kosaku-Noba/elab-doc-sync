@@ -210,13 +210,14 @@ exports.run = async function () {
         respond(requests[0], renamed);
         await published;
         const rows = await current.getChildren();
-        assert.ok(rows.find(r => r.label === '差分を確認'), 'show the ready project while other requests are pending');
+        assert.ok(!rows.some(row => row.command?.command === 'esync.openArticleBeside'), '未追跡の文書には記事を開く操作を出さない');
+        assert.ok(rows.find(r => r.label === '送信する変更を確認'), 'show the ready project while other requests are pending');
         assert.equal(requests.filter(r => r.projectFolder === folder).length, 2, 'coalesce saves into one follow-up');
         const updated = await current.getChildren();
         assert.equal(updated.find(r => r.label === '記事 ID').description, '#17');
         // 保存による取り直しがまだ終わっていないので、状態は前回取得したものとして示す。
         assert.equal(updated.find(r => r.label === '同期状態（保存時点）').description, 'リネーム予定（前回取得）');
-        assert.equal(updated.find(r => r.label === '差分を確認').command.arguments[0].folder, folder);
+        assert.equal(updated.find(r => r.label === '送信する変更を確認').command.arguments[0].folder, folder);
         const group = (await status.getChildren({ projectRoot: folder })).find(r => r.label === '未追跡');
         assert.equal(group.children[0].contextValue, 'esync.document');
         assert.equal(group.children[1].command, undefined);

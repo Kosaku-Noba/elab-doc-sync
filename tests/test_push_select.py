@@ -786,3 +786,65 @@ def test_article_url_requires_saved_destination(project):
     assert doc['entity_id'] and 'url' not in doc
     diff = cli.run_diff(parser.parse_args(['diff', '--json', '--', 'docs/a.md']))
     assert 'url' not in diff.data['documents'][0]
+
+
+def test_preview_classifies_referenced_uploads_by_name_and_digest(project, capsys):
+    import hashlib
+    root, remote = project
+    assert push('docs/a.md') in (0, None)
+    for name in ('new.png', 'file.pdf', 'keep.pdf', 'unknown.pdf'):
+        (root / 'docs' / name).write_bytes(b'local')
+    (root / 'docs/a.md').write_text(
+        '![追加](new.png) [置換](file.pdf) [同一](keep.pdf) [不明](unknown.pdf) [欠落](absent.pdf)')
+    CLIENTS[0].list_uploads.return_value = [
+        {'id': 10, 'real_name': 'file.pdf', 'sha256': '0' * 64, 'filesize': 5},
+        {'id': 11, 'real_name': 'keep.pdf', 'sha256': hashlib.sha256(b'local').hexdigest(), 'filesize': 5},
+        {'id': 12, 'real_name': 'unknown.pdf', 'filesize': 5},
+    ]
+    [doc] = bodies('docs/a.md', capsys)
+    assert {a['path']: a['action'] for a in doc['asset_changes']} == {
+        'new.png': 'add', 'file.pdf': 'replace', 'unknown.pdf': 'unverified', 'absent.pdf': 'missing'}
+
+
+def test_import_verified_article_and_reopen_local_edits(project):
+    from elab_doc_sync import cli
+    root, remote = project
+    remote[43] = {'id': 43, 'title': 'manual', 'body': '# manual', 'content_type': 2}
+    base = ['pull', '--json', '--id=43', '--entity=items', '-t', 'T',
+            '--expect-article-url=https://example.test/database.php?mode=view&id=43']
+    def run(*options):
+        return cli.run_pull(cli.build_parser().parse_args([*base, *options]))
+    assert run('--dry-run').data['documents'][0]['path'] == 'docs/manual.md'
+    assert run('--expect-path=docs/other.md').exit_code != 0
+    assert not (root / 'docs/manual.md').exists()
+    assert run('--expect-path=docs/manual.md').data['documents'][0]['result'] == 'pulled'
+    (root / 'docs/manual.md').write_text('local')
+    assert run().data['documents'][0]['result'] == 'existing'
+    assert (root / 'docs/manual.md').read_text() == 'local'
+    remote[43]['body'] = 'remote'
+    args = cli.build_parser().parse_args(['pull', '-t', 'T', '--incoming-only', '--expect-id=43', 'docs/manual.md'])
+    assert cli.run_pull(args).exit_code != 0
+    assert (root / 'docs/manual.md').read_text() == 'local'
+
+
+def test_search_import_other_entity_uses_selected_profile(project):
+    from elab_doc_sync import cli
+    root, remote = project
+    cfg = root / '.elab-sync.yaml'
+    settings = yaml.safe_load(cfg.read_text())
+    settings['profiles'] = {'lab': {'url': 'https://separate.test', 'api_key': 'dummy'}}
+    settings['targets'][0]['profile'] = 'lab'
+    cfg.write_text(yaml.safe_dump(settings))
+    CLIENTS[0].base_url = 'https://separate.test'
+    CLIENTS[0].get_experiment.return_value = {'id': 51, 'title': 'manual', 'body': '# directions', 'content_type': 2}
+    args = cli.build_parser().parse_args(['pull', '--json', '-t', 'T', '--entity=experiments', '--id=51',
+                                          '--expect-article-url=https://separate.test/experiments.php?mode=view&id=51'])
+    args.dry_run = True
+    original = cfg.read_bytes()
+    planned = cli.run_pull(args)
+    assert planned.exit_code == 0 and cfg.read_bytes() == original
+    args.expect_path = planned.data['documents'][0]['path']
+    args.dry_run = False
+    assert cli.run_pull(args).data['documents'][0]['result'] == 'pulled'
+    assert yaml.safe_load(cfg.read_text())['targets'][-1]['profile'] == 'lab'
+    assert (root / args.expect_path).is_file()

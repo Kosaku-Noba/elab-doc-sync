@@ -292,7 +292,16 @@ def test_new_targets_includes_empty_directory(tmp_path, capsys):
     cfg = _project(tmp_path)
     args = cli.build_parser().parse_args(["new", "--config", str(cfg), "--list-targets", "--json"])
     assert cli.cmd_new(args) == 0
-    assert json.loads(capsys.readouterr().out)["targets"] == [{"target": "T", "docs_dir": "docs/", "selector": "T", "pattern": "*.md"}]
+    assert json.loads(capsys.readouterr().out)["targets"] == [{"target": "T", "docs_dir": "docs/", "selector": "T", "pattern": "*.md", "profile": "default", "entity": "items"}]
+
+
+def test_new_targets_reports_connection_selected_by_team(tmp_path):
+    cfg = _project(tmp_path, profiles={"Lab": {"team": 3, "url": "https://lab.example", "api_key": "demo"}})
+    data = yaml.safe_load(cfg.read_text())
+    data["targets"][0]["team"] = 3
+    cfg.write_text(yaml.safe_dump(data))
+    args = cli.build_parser().parse_args(["new", "--config", str(cfg), "--list-targets", "--json"])
+    assert cli.run_new(args).data["targets"][0]["profile"] == "Lab"
 
 
 @pytest.mark.parametrize("output_options", [[], ["--json"], ["-o", "docs/../docs/old.md"]])

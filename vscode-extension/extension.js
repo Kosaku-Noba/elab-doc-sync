@@ -3,7 +3,8 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { StatusProvider, CurrentDocumentProvider, statusBarView, fileDecoration } = require('./status');
-const { articleActions, articleUri } = require('./articles');
+const { batchSync } = require('./batch');
+const { articleActions, articleUri, openBeside } = require('./articles');
 const { createRunner, checkVersion } = require('./cli');
 
 const configName = '.elab-sync.yaml';
@@ -11,6 +12,7 @@ const configName = '.elab-sync.yaml';
 const previewScheme = 'esync-preview';
 // 差分タブの左側や eLabFTW 側の本文。読み取り専用。
 const snapshotScheme = 'esync-snapshot';
+const reviewScheme = 'esync-review';
 const output = vscode.window.createOutputChannel('esync');
 const settings = () => vscode.workspace.getConfiguration('esync');
 const run = createRunner(() => settings().get('executable', 'esync'), line => output.appendLine(line),
@@ -49,7 +51,11 @@ async function activate(context) {
     const currentDocument = new CurrentDocumentProvider(status, () => {
         const doc = vscode.window.activeTextEditor?.document;
         if (!doc) return;
-        const entry = previews.get(doc.uri.toString());
+        const key = doc.uri.toString();
+        const entry = previews.get(key) || previews.get(owners.get(key));
+        if (entry?.remote && [entry.remote.left, entry.remote.right].some(uri => uri.toString() === key)) {
+            return { file: entry.file, folder: entry.folder };
+        }
         if (entry) return { file: entry.file, folder: entry.folder, preview: entry };
         if (doc.uri.scheme === 'file' && doc.languageId === 'markdown') return { file: doc.uri };
     }, currentEvents, loadDiff, row => articles.children(row));
@@ -138,7 +144,7 @@ async function activate(context) {
                 label: targetLabel(doc), description: doc.server + ' / ' + doc.entity, doc,
             }));
             const choice = await vscode.window.showQuickPick(items,
-                { placeHolder: '差分を確認して push するターゲットを選択' }, token);
+                { placeHolder: '差分を確認する送信先を選択' }, token);
             if (!choice || token?.isCancellationRequested) return;
             selected = choice.doc;
         }
@@ -146,7 +152,7 @@ async function activate(context) {
         if (selected.error) throw new Error(selected.error);
         if (diffResult.documents.length > 1 && !selected.selector) throw new Error('送信先を区別できるよう設定でターゲットに一意の title を付けてください。');
         if (!selected.preview_token || selected.local_body == null) {
-            throw new Error('esync CLI を 1.5.0 以降に更新してください。');
+            throw new Error('esync CLI を 1.5.1 以降に更新してください。');
         }
         const options = selected.selector ? ['--target=' + selected.selector] : [];
         if (token?.isCancellationRequested) return;
@@ -157,16 +163,22 @@ async function activate(context) {
             return uri;
         };
         // 右側は保存した文書そのものではなく、確認時点の内容。push はこの内容と一致する場合だけ送信する。
-        const previewUri = vscode.Uri.from({ scheme: previewScheme, path: file.path, query: id });
-        const left = snapshot('base', selected.base_body ?? '');
-        const remote = selected.remote_body == null ? undefined
+        const reviewOnly = ['取得待ち', '競合', '競合マーカーあり'].includes(selected.state);
+        const incoming = selected.state === '取得待ち' && selected.remote_body != null;
+        const previewUri = vscode.Uri.from({ scheme: reviewOnly ? reviewScheme : previewScheme, path: file.path, query: id });
+        const baseLabel = incoming ? '前回の同期' : selected.base_label || '前回の同期';
+        const baseText = (incoming ? selected.remote_base_body : selected.base_body) ?? '';
+        const text = incoming ? selected.remote_body : selected.local_body;
+        const left = snapshot('base', baseText);
+        const remote = selected.remote_body == null || incoming ? undefined
             : { left: snapshot('remote-base', selected.remote_base_body ?? ''), right: snapshot('remote', selected.remote_body) };
         const entry = { uri: previewUri.toString(), folder, file, hash, config, configHash, options, selected,
-            warnings, text: selected.local_body, snapshots: [left, remote?.left, remote?.right].filter(Boolean), remote };
+            warnings, text, baseLabel, reviewOnly, snapshots: [left, remote?.left, remote?.right].filter(Boolean), remote };
         previews.set(entry.uri, entry);
         for (const uri of entry.snapshots) owners.set(uri.toString(), entry.uri);
         const destination = selected.entity_id == null ? '新規作成' : '#' + selected.entity_id;
-        const title = path.basename(file.fsPath) + ': ' + (selected.base_label || '前回の同期') + ' ↔ 送信する内容（'
+        const rightLabel = incoming ? 'eLabFTW の現在の本文' : reviewOnly ? '保存した Markdown' : '送信する内容';
+        const title = path.basename(file.fsPath) + ': ' + baseLabel + ' ↔ ' + rightLabel + '（'
             + targetLabel(selected) + ' ' + destination + '）';
         try {
             await vscode.commands.executeCommand('vscode.diff', left, previewUri, title, { preview: true });
@@ -174,8 +186,13 @@ async function activate(context) {
             forget(entry);
             throw error;
         }
-        if ((selected.base_body ?? '') === selected.local_body) {
-            vscode.window.showInformationMessage(selected.local_changed
+        if (baseText === text) {
+            if (!reviewOnly && selected.asset_changes?.length) {
+                vscode.window.showInformationMessage('本文の変更はありません。画像・添付ファイル '
+                    + selected.asset_changes.length + ' 件の内訳を esync サイドバーで確認できます。');
+                return;
+            }
+            vscode.window.showInformationMessage(!reviewOnly && selected.local_changed
                 ? '本文の変更はありません。画像・添付ファイルまたは設定の変更が push で送信されます。'
                 : '本文の変更はありません。');
         }
@@ -396,6 +413,8 @@ async function activate(context) {
         const key = (uri || vscode.window.activeTextEditor?.document.uri)?.toString();
         const entry = previews.get(key) || previews.get(owners.get(key));
         if (!entry) throw new Error('送信する文書の差分を開き直してください。');
+        if (entry.submitted) throw new Error('この差分での送信は完了しました。次の変更は差分を開き直して確認してください。');
+        if (entry.reviewOnly) throw new Error('eLabFTW の変更を取り込むか、競合を解消してから送信してください。');
         const { folder, file, hash, config, configHash, options, selected } = entry;
         const project = folder.uri.toString();
         if (pushing.has(project)) throw new Error('このプロジェクトで push を実行中です。');
@@ -417,8 +436,9 @@ async function activate(context) {
             if (result.stdout.trim()) output.appendLine(result.stdout.trimEnd());
             if (result.code !== 0) {
                 output.show(true);
-                throw new Error('push に失敗しました。出力「esync」で結果を確認してください。');
+                throw new Error('eLabFTW への送信に失敗しました。出力「esync」で結果を確認してください。');
             }
+            entry.submitted = true;
             vscode.window.showInformationMessage(path.basename(file.fsPath) + ' — ' + (result.stdout.trim().split('\n').pop() || 'push 完了'));
         } finally {
             pushing.delete(project);
@@ -482,9 +502,9 @@ async function activate(context) {
                 checkCli();
             }
         }),
-        vscode.workspace.registerTextDocumentContentProvider(previewScheme, {
+        ...[previewScheme, reviewScheme].map(scheme => vscode.workspace.registerTextDocumentContentProvider(scheme, {
             provideTextDocumentContent: uri => previews.get(uri.toString())?.text,
-        }),
+        })),
         vscode.workspace.registerTextDocumentContentProvider(snapshotScheme, {
             provideTextDocumentContent: uri => snapshots.get(uri.toString()),
         }),
@@ -504,6 +524,10 @@ async function activate(context) {
         command('esync.pull', 'esync 取り込み中', pull),
         command('esync.adoptLocal', 'esync 上書き中', adoptLocal),
         command('esync.adoptRemote', 'esync 上書き中', adoptRemote),
+        command('esync.batchSync', '文書をまとめて同期中', async () =>
+            batchSync(await articles.project(), run, loadDiff, dialogs.confirm, refresh, output)),
+        command('esync.searchArticles', '記事を検索中', articles.search),
+        command('esync.openArticleBeside', '記事を横に開く', row => openBeside(row.doc)),
         command('esync.openArticle', '記事を開く', row => vscode.env.openExternal(articleUri(row.doc))),
         command('esync.editArticle', '記事を更新', row => articles.edit(row)),
         command('esync.removeArticleEntry', '記事を更新', row => articles.edit(row, true)),

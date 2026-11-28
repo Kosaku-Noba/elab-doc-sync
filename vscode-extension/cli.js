@@ -1,8 +1,8 @@
 const vscode = require('vscode');
 const { spawn } = require('node:child_process');
 
-// 拡張が使う --json と --expect-preview は 1.5.0 で入った。
-const minimumVersion = '1.5.0';
+// 記事の取り込み先の照合と一括取得の競合チェックを使う。
+const minimumVersion = '1.5.1';
 // 版の確認は esync.timeoutSeconds によらず、この時間で打ち切る。
 const versionTimeout = 30000;
 

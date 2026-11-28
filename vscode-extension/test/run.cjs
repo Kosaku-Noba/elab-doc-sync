@@ -15,7 +15,7 @@ function fixture() {
 dir=$(dirname "$0")
 echo "$*" >> "$dir/calls.log"
 case "$1" in
-  --version) echo "esync 1.5.0" ;;
+  --version) echo "esync 1.5.1" ;;
   status) cat "$dir/status.json" ;;
   diff) cat "$dir/diff.json" ;;
   push) echo "1 件を送信しました" ;;

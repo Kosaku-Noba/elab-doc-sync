@@ -310,8 +310,12 @@ def local_paths(config, project_root: Path, base_url: str) -> dict[tuple[str, in
             continue
         for name, eid in mapping.items():
             try:
-                found.setdefault((target.entity, eid), syncer.file_path(name))
-            except ValueError:
+                syncer.checked_state(name)
+                local = syncer.file_path(name)
+                previous = found.get((target.entity, eid))
+                if previous is None or (not previous.is_file() and local.is_file()):
+                    found[target.entity, eid] = local
+            except (ValueError, OSError, TypeError, KeyError):
                 continue
     return found
 

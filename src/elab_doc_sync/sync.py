@@ -1700,6 +1700,28 @@ class EachDocsSyncer:
                     _remember_asset(observed, src, digest)
         return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
 
+    def asset_changes(self, filename, body, observed, uploads):
+        """Compare referenced local files with the article's current uploads for a push preview."""
+        images = {link.url for link in _body_links(body) if link.image and not _is_video(link.url)}
+        changes = []
+        for src, digest in observed.items():
+            path = _resolve_asset_path(self.file_path(filename).parent, self.project_root, src, strict=True)
+            name = (_parse_image_local_name(path.name) if src in images else None) or path.name
+            candidates = [u for u in uploads if u.get("real_name") == name]
+            if digest == "missing":
+                action = "missing"
+            elif not candidates:
+                action = "add"
+            elif any(upload_sha256(u) == digest for u in candidates):
+                continue
+            else:
+                size = str(path.stat().st_size)
+                unknown = any(not upload_sha256(u) and (u.get("filesize") is None or str(u["filesize"]) == size)
+                              for u in candidates)
+                action = "unverified" if unknown else "replace"
+            changes.append({"path": src, "name": name, "action": action})
+        return changes
+
     def previous_asset_paths(self, filename):
         parent = self.file_path(filename).parent
         paths = set()

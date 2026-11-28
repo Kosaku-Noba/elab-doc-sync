@@ -2,7 +2,7 @@
   "name": "esync",
   "displayName": "esync for eLabFTW",
   "description": "Markdown の差分確認、文書単位の push、eLabFTW との同期状態の表示",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "license": "MIT",
   "publisher": "elab-doc-sync",
   "repository": { "type": "git", "url": "https://github.com/Kosaku-Noba/elab-doc-sync.git", "directory": "vscode-extension" },
@@ -15,7 +15,7 @@
     "virtualWorkspaces": { "supported": false }
   },
   "activationEvents": ["onStartupFinished"],
-  "files": ["extension.js", "status.js", "articles.js", "cli.js", "media/esync.svg", "README.md", "LICENSE.txt"],
+  "files": ["extension.js", "status.js", "articles.js", "batch.js", "cli.js", "media/esync.svg", "README.md", "LICENSE.txt"],
   "scripts": {
     "check": "tsc -p jsconfig.json",
     "test": "node test/run.cjs",
@@ -31,6 +31,9 @@
   },
   "contributes": {
     "commands": [
+      { "command": "esync.batchSync", "category": "esync", "title": "文書を選んで送信・取得", "icon": "$(checklist)" },
+      { "command": "esync.searchArticles", "category": "esync", "title": "記事を検索", "icon": "$(search)" },
+      { "command": "esync.openArticleBeside", "category": "esync", "title": "eLabFTW の記事を横に開く", "icon": "$(open-preview)" },
       { "command": "esync.openArticle", "category": "esync", "title": "eLabFTW で開く", "icon": "$(link-external)" },
       { "command": "esync.editArticle", "category": "esync", "title": "タグ・リンクを追加、またはメタデータを設定", "icon": "$(edit)" },
       { "command": "esync.removeArticleEntry", "category": "esync", "title": "タグ・リンクを外す", "icon": "$(remove)" },
@@ -38,11 +41,11 @@
       { "command": "esync.log", "category": "esync", "title": "同期ログを表示", "icon": "$(history)" },
       { "command": "esync.preview", "category": "esync", "title": "この文書の差分を確認", "icon": "$(diff)" },
       { "command": "esync.previewFromPanel", "category": "esync", "title": "この文書の差分を確認", "icon": "$(diff)" },
-      { "command": "esync.push", "category": "esync", "title": "この差分の文書を push", "icon": "$(cloud-upload)", "enablement": "resourceScheme == esync-preview" },
+      { "command": "esync.push", "category": "esync", "title": "eLabFTW に送信", "icon": "$(cloud-upload)" },
       { "command": "esync.refresh", "category": "esync", "title": "同期状態を更新", "icon": "$(refresh)" },
       { "command": "esync.showRemoteChanges", "category": "esync", "title": "eLabFTW 側の変更を表示", "icon": "$(cloud)" },
       { "command": "esync.previewFromStatusBar", "category": "esync", "title": "この文書の差分を確認", "icon": "$(diff)" },
-      { "command": "esync.pull", "category": "esync", "title": "eLabFTW の変更を取り込む", "icon": "$(cloud-download)" },
+      { "command": "esync.pull", "category": "esync", "title": "eLabFTW から取り込む", "icon": "$(cloud-download)" },
       { "command": "esync.adoptLocal", "category": "esync", "title": "ローカルの内容で eLabFTW を上書き（push --force）" },
       { "command": "esync.adoptRemote", "category": "esync", "title": "eLabFTW の内容でローカルを上書き（pull --force）" },
       { "command": "esync.showBackups", "category": "esync", "title": "バックアップの一覧を表示" }
@@ -62,6 +65,9 @@
         { "command": "esync.push", "when": "resourceScheme == esync-preview", "group": "navigation" }
       ],
       "commandPalette": [
+        { "command": "esync.batchSync", "when": "esync.hasProjects" },
+        { "command": "esync.searchArticles", "when": "esync.hasProjects" },
+        { "command": "esync.openArticleBeside", "when": "false" },
         { "command": "esync.log", "when": "esync.hasProjects" },
         { "command": "esync.newDocument", "when": "esync.hasProjects" },
         { "command": "esync.removeArticleEntry", "when": "false" },
@@ -79,10 +85,13 @@
         { "command": "esync.refresh", "when": "esync.hasProjects" }
       ],
       "view/title": [
+        { "command": "esync.batchSync", "when": "view == esync.status", "group": "navigation" },
+        { "command": "esync.searchArticles", "when": "view == esync.current", "group": "navigation" },
         { "command": "esync.newDocument", "when": "view == esync.current", "group": "navigation" },
         { "command": "esync.log", "when": "view == esync.status" },
         { "command": "esync.refresh", "when": "view == esync.status || view == esync.current", "group": "navigation" }],
       "view/item/context": [
+        { "command": "esync.openArticleBeside", "when": "view == esync.status && viewItem =~ /article/", "group": "inline" },
         { "command": "esync.openArticle", "when": "view == esync.status && viewItem =~ /article/", "group": "inline" },
         { "command": "esync.editArticle", "when": "view == esync.current && (viewItem =~ /esync[.]group[.]/ || viewItem == esync.entry.metadata)", "group": "1_article" },
         { "command": "esync.removeArticleEntry", "when": "view == esync.current && (viewItem == esync.entry.tag || viewItem == esync.entry.relate)", "group": "1_article" },
