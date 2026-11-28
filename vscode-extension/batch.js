@@ -8,7 +8,8 @@ async function batchSync(folder, run, loadDiff, confirm, refresh, output) {
     if (!folder) return;
     async function json(args, write = false) {
         const result = await run(folder, args, write ? { timeout: 0 } : {});
-        if (result.code) throw new Error(result.stderr.trim() || '同期結果を確認できません。');
+        const partialStatus = args[0] === 'status' && result.code === 1 && result.stdout.trim();
+        if (result.code && !partialStatus) throw new Error(result.stderr.trim() || '同期結果を確認できません。');
         return JSON.parse(result.stdout);
     }
     function clean(file) {
@@ -16,7 +17,8 @@ async function batchSync(folder, run, loadDiff, confirm, refresh, output) {
             throw new Error(path.basename(file.fsPath) + ' に未保存の編集があります。');
         }
     }
-    const { documents } = await json(['status', '--json']);
+    const { documents, recovery_pending } = await json(['status', '--json']);
+    if (recovery_pending) throw new Error('復旧待ちのローカル変更があります。esync backup list で確認してください。');
     /** @type {(vscode.QuickPickItem & { doc: any, pull: boolean })[]} */
     const choices = documents.filter(doc => doc.path && doc.selector && !doc.error &&
         (sendStates.includes(doc.state) || doc.state === '取得待ち')).map(doc => {

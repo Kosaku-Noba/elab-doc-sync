@@ -24,6 +24,8 @@ exports.run = async function () {
         await write('echo out; echo warn >&2; exit 1');
         assert.deepEqual(await run(folder, ['status', '--json']), { code: 1, stdout: 'out\n', stderr: 'warn\n' });
         assert.deepEqual(logs, ['esync status --json\nwarn'], 'record stderr in the output channel');
+        await run(folder, ['search', '未公開の研究名', '--json']);
+        assert.equal(logs.at(-1), 'esync search\nwarn');
 
         // 終了シグナルを無視する子孫がパイプを持ち続けても、呼び出しはその終了を待たずに戻る。
         await write("echo slow >&2; (trap '' TERM; sleep 3); echo done");

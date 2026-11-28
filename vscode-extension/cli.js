@@ -63,7 +63,7 @@ function createRunner(executable, log, defaultTimeout) {
                 clearTimeout(timer);
                 cancel?.dispose();
                 if (stderr.trim()) {
-                    const command = ['metadata', 'tag', 'new'].includes(args[0]) ? args[0] : args.join(' ');
+                    const command = ['metadata', 'tag', 'new', 'search'].includes(args[0]) ? args[0] : args.join(' ');
                     log('esync ' + command + '\n' + stderr.trimEnd());
                 }
             };

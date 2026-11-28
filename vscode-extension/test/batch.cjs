@@ -8,10 +8,10 @@ exports.run = async function () {
     const documents = ['送信待ち', '取得待ち', '競合'].map((state, i) => ({ ...base, state, entity_id: i + 1,
         path: 'notes/' + i + '.md', preview_token: 'token-' + i }));
     const writes = [], counts = [], history = [];
-    let approve = true, changed = false, reads = 0, refreshes = 0;
+    let approve = true, changed = false, recovery = false, reads = 0, refreshes = 0;
     const run = async (_, args) => {
         let result;
-        if (args[0] === 'status') result = { documents };
+        if (args[0] === 'status') return { code: 1, stdout: JSON.stringify({ documents, recovery_pending: recovery }), stderr: '' };
         else if (args.includes('--dry-run')) result = { documents: [{ entity_id: 2, result: 'would_pull', path: 'notes/1.md' }] };
         else {
             writes.push(args);
@@ -44,6 +44,9 @@ exports.run = async function () {
         await assert.rejects(perform(), /1\/2 件完了.*取得.*停止/);
         assert.equal(writes.length, 3);
         assert.equal(refreshes, 2);
+        recovery = true;
+        await assert.rejects(perform(), /復旧待ち/);
+        assert.equal(writes.length, 3);
     } finally {
         vscode.window.showQuickPick = old;
     }
